@@ -6,6 +6,8 @@ set(CMAKE_C_COMPILER clang)
 
 enable_testing()
 
+message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
+
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(EVENTPOLL_MECH epoll)
@@ -21,6 +23,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
                     -fno-optimize-sibling-calls -fstack-protector-all)
     add_link_options(-fsanitize=address)
 endif()    
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_definitions(-O3)
+endif()
 
 add_definitions(-g -Wall -DEVENTPOLL_MECH=${EVENTPOLL_MECH})
 

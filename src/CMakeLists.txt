@@ -2,6 +2,8 @@
 set(SRC
     eventpoll.c
     eventpoll.h
+    eventpoll_tcp.c
+    eventpoll_tcp.h
     eventpoll_config.c
     eventpoll_config.h
     eventpoll_internal.c
@@ -9,9 +11,9 @@ set(SRC
 )
 
 if (EVENTPOLL_MECH STREQUAL "epoll") 
-    set(SRC ${SRC} eventpoll_epoll.c eventpoll_epoll.h)
+    set(SRC ${SRC} eventpoll_core_epoll.c eventpoll_core_epoll.h)
 elseif (EVENTPOLL_MECH STREQUAL "kqueue")
-    set(SRC ${SRC} eventpoll_kqueue.c eventpoll_kqueue.h)
+    set(SRC ${SRC} eventpoll_core_kqueue.c eventpoll_core_kqueue.h)
 else()
     message(FATAL_ERROR "No supported EVENTPOLL_MECH specified")
 endif()

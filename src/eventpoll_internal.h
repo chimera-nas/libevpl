@@ -1,6 +1,8 @@
 #ifndef __EVENTPOLL_INTERNAL_H__
 #define __EVENTPOLL_INTERNAL_H__
 
+#include "eventpoll.h"
+
 struct eventpoll_config {
     int max_pending;
     int max_poll_fd;
@@ -35,5 +37,10 @@ void eventpoll_crash(const char *fmt, ...);
     if (cond) { \
         eventpoll_crash(__VA_ARGS__); \
     }
+
+struct eventpoll_conn;
+
+struct eventpoll_conn *
+eventpoll_alloc_conn(int protocol, const char *address, int port);
 
 #endif
