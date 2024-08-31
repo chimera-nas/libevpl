@@ -2,6 +2,10 @@
 set(SRC
     eventpoll.c
     eventpoll.h
+    eventpoll_config.c
+    eventpoll_config.h
+    eventpoll_internal.c
+    eventpoll_internal.h
 )
 
 if (EVENTPOLL_MECH STREQUAL "epoll") 
