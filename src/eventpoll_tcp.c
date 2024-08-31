@@ -17,7 +17,7 @@ void
 eventpoll_accept_tcp(
     struct eventpoll_event *event)
 {
-    struct eventpoll_socket *ls = event->backend_private_data;
+    struct eventpoll_socket *ls = eventpoll_event_backend(event);
     struct eventpoll_socket *s;
     struct eventpoll_conn *conn;
     struct sockaddr_storage client_addr;
@@ -117,7 +117,6 @@ eventpoll_listen_tcp(
 
     event->fd = fd;
     event->backend_read_callback = eventpoll_accept_tcp;
-    event->backend_private_data  = s;
 
     return 0;
 
@@ -134,7 +133,7 @@ void
 eventpoll_write_tcp(
     struct eventpoll_event *event)
 {
-    struct eventpoll_socket *s = event->backend_private_data;
+    struct eventpoll_socket *s = eventpoll_event_backend(event);
     int err, rc;
     socklen_t len;
 
@@ -233,7 +232,6 @@ eventpoll_connect_tcp(
     event->backend_read_callback = eventpoll_read_tcp;
     event->backend_write_callback = eventpoll_write_tcp;
     event->backend_error_callback = eventpoll_error_tcp;
-    event->backend_private_data = s;
 
     return 0;
 }

@@ -11,12 +11,11 @@ typedef void (*eventpoll_event_error_callback_t)(struct eventpoll_event *event);
 
 struct eventpoll_event {
     int                                 fd;
-    int                                 pad;
+    unsigned int                        flags;
 
     eventpoll_event_read_callback_t     backend_read_callback;
     eventpoll_event_write_callback_t    backend_write_callback;
     eventpoll_event_error_callback_t    backend_error_callback;
-    void                               *backend_private_data;
 
     eventpoll_connect_callback_t        user_connect_callback;
     eventpoll_recv_callback_t           user_recv_callback;
@@ -30,7 +29,9 @@ struct eventpoll_event {
  * some pointer casting to get backends from the opaque structure
  */
 
-#define eventpoll_conn_backend(conn) \
+#define eventpoll_event_backend(conn) \
     (void*)(((struct eventpoll_event *)conn)+1)
+
+#define eventpoll_conn_backend(conn) eventpoll_event_backend(conn)
 
 #endif
