@@ -46,9 +46,12 @@ struct eventpoll_listener {
 
 
 struct eventpoll {
+    struct eventpoll_core      core; /* must be first */
+
+    struct eventpoll_event   **active;
+    int                        num_active;
     struct eventpoll_config   *config;
     struct eventpoll_listener *listeners;
-    struct eventpoll_core      core;
 };
 
 struct eventpoll *
@@ -64,6 +67,8 @@ eventpoll_init(struct eventpoll_config *config)
 
     eventpoll = eventpoll_zalloc(sizeof(*eventpoll));
 
+    eventpoll->active = eventpoll_calloc(256, sizeof(struct eventpoll_event *));
+
     eventpoll->config = config;
 
     eventpoll_core_init(&eventpoll->core, 64);
@@ -71,10 +76,41 @@ eventpoll_init(struct eventpoll_config *config)
     return eventpoll;
 }
 
-int
+void
 eventpoll_wait(struct eventpoll *eventpoll, int max_msecs)
 {
-    return eventpoll_core_wait(&eventpoll->core, max_msecs);
+    struct eventpoll_event *event;
+    int i;
+
+    eventpoll_core_wait(&eventpoll->core, max_msecs);
+
+    eventpoll_debug("have %d active events", eventpoll->num_active);
+
+    while (eventpoll->num_active) {
+        for (i = 0; i < eventpoll->num_active; ++i) {
+            event = eventpoll->active[i];
+
+            if ((event->flags & EVENTPOLL_READ_READY) == EVENTPOLL_READ_READY) {
+                event->backend_read_callback(event);
+            } 
+
+            if ((event->flags & EVENTPOLL_WRITE_READY) == EVENTPOLL_WRITE_READY) {
+                event->backend_write_callback(event);
+            }
+
+            if ((event->flags & EVENTPOLL_READ_READY) != EVENTPOLL_READ_READY &&
+                (event->flags & EVENTPOLL_WRITE_READY) != EVENTPOLL_WRITE_READY) {
+
+                event->flags &= ~ EVENTPOLL_ACTIVE;
+
+                if (i + 1 < eventpoll->num_active) {
+                    eventpoll->active[i] = eventpoll->active[eventpoll->num_active-1];
+                }
+                --eventpoll->num_active;
+            
+            }
+        }
+    }
 }
 
 int
@@ -115,6 +151,8 @@ eventpoll_listen(
     listener->event.user_private_data = private_data;
 
     eventpoll_core_add(&eventpoll->core, &listener->event);
+
+    eventpoll_event_read_interest(eventpoll, &listener->event);    
 
     DL_APPEND(eventpoll->listeners, listener);
 
@@ -172,6 +210,8 @@ eventpoll_connect(
     conn->event.user_private_data = private_data;
 
     eventpoll_core_add(&eventpoll->core, &conn->event);
+
+    eventpoll_event_read_interest(eventpoll, &conn->event);
 }
 
 
@@ -189,6 +229,7 @@ eventpoll_destroy(
 
     eventpoll_core_destroy(&eventpoll->core);
     eventpoll_config_release(eventpoll->config);
+    eventpoll_free(eventpoll->active);
     eventpoll_free(eventpoll);
 }
 
@@ -217,4 +258,115 @@ int
 eventpoll_conn_port(struct eventpoll_conn *conn)
 {
     return conn->port;
+}
+
+void
+eventpoll_event_read_interest(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+
+    event->flags |= EVENTPOLL_READ_INTEREST;
+
+    if ((event->flags & EVENTPOLL_READ_READY) == EVENTPOLL_READ_READY &&
+        !(event->flags & EVENTPOLL_ACTIVE)) {
+
+        event->flags |= EVENTPOLL_ACTIVE;
+
+        eventpoll->active[eventpoll->num_active++] = event;
+    }
+
+}
+
+void
+eventpoll_event_read_disinterest(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+    event->flags &= ~EVENTPOLL_READ_INTEREST;
+}
+
+void
+eventpoll_event_write_interest(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+
+    event->flags |= EVENTPOLL_WRITE_INTEREST;
+
+    if ((event->flags & EVENTPOLL_WRITE_READY) == EVENTPOLL_WRITE_READY &&
+        !(event->flags & EVENTPOLL_ACTIVE)) {
+
+        event->flags |= EVENTPOLL_ACTIVE;
+
+        eventpoll->active[eventpoll->num_active++] = event;
+    }
+
+}
+
+void
+eventpoll_event_write_disinterest(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+
+    event->flags &= ~EVENTPOLL_WRITE_INTEREST;
+
+}
+
+
+void
+eventpoll_event_mark_readable(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+    event->flags |= EVENTPOLL_READABLE;
+
+    if ((event->flags & EVENTPOLL_READ_READY) == EVENTPOLL_READ_READY &&
+        !(event->flags & EVENTPOLL_ACTIVE)) {
+
+        event->flags |= EVENTPOLL_ACTIVE;
+
+        eventpoll->active[eventpoll->num_active++] = event; 
+    }
+}
+
+void
+eventpoll_event_mark_unreadable(
+    struct eventpoll_event *event)
+{
+    event->flags &= ~EVENTPOLL_READABLE;
+}
+
+void
+eventpoll_event_mark_writable(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+
+    event->flags |= EVENTPOLL_WRITABLE;
+
+    if ((event->flags & EVENTPOLL_WRITE_READY) == EVENTPOLL_WRITE_READY &&
+        !(event->flags & EVENTPOLL_ACTIVE)) {
+
+        event->flags |= EVENTPOLL_ACTIVE;
+
+        eventpoll->active[eventpoll->num_active++] = event;
+    }
+
+}
+
+void
+eventpoll_event_mark_unwritable(
+    struct eventpoll_event *event)
+{
+    event->flags &= ~EVENTPOLL_WRITABLE;
+}
+
+void
+eventpoll_event_mark_error(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+    event->flags |= EVENTPOLL_ERROR;
 }

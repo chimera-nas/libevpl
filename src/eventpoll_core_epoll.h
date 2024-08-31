@@ -14,7 +14,7 @@ void eventpoll_core_destroy(struct eventpoll_core *evc);
 
 void eventpoll_core_add(struct eventpoll_core *evc, struct eventpoll_event *event);
 
-int eventpoll_core_wait(struct eventpoll_core *evc, int max_msecs);
+void eventpoll_core_wait(struct eventpoll_core *evc, int max_msecs);
 
 
 #endif

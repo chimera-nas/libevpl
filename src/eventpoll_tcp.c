@@ -31,6 +31,12 @@ eventpoll_accept_tcp(
 
     fd = accept(ls->fd, client_addrp, &client_len);
 
+    if (fd < 0) {
+        eventpoll_event_mark_unreadable(event);
+        return;
+    }
+
+
     if (client_addrp->sa_family == AF_INET) {
         struct sockaddr_in *ipv4 = (struct sockaddr_in *)client_addrp;
         addr = &(ipv4->sin_addr);

@@ -14,7 +14,7 @@ struct eventpoll * eventpoll_init(struct eventpoll_config *config);
 
 void eventpoll_destroy(struct eventpoll *eventpoll);
 
-int eventpoll_wait(struct eventpoll *eventpoll, int max_msecs);
+void eventpoll_wait(struct eventpoll *eventpoll, int max_msecs);
 
 typedef int (*eventpoll_connect_callback_t)(
     struct eventpoll_conn *conn,

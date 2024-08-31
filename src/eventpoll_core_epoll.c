@@ -53,9 +53,10 @@ eventpoll_core_add(
 }
 
 
-int
+void
 eventpoll_core_wait(struct eventpoll_core *evc, int max_msecs)
 {
+    struct eventpoll *eventpoll = eventpoll_from_core(evc);
     struct eventpoll_event *event;
     struct epoll_event *ev;
     int i, n;
@@ -72,18 +73,16 @@ eventpoll_core_wait(struct eventpoll_core *evc, int max_msecs)
         event = ev->data.ptr; 
 
         if (ev->events & EPOLLIN) {
-            event->backend_read_callback(event);
+            eventpoll_event_mark_readable(eventpoll, event);
         }
 
         if (ev->events & EPOLLOUT) {
-            event->backend_write_callback(event);
+            eventpoll_event_mark_writable(eventpoll, event);
         }
 
         if (ev->events & EPOLLERR) {
-            event->backend_error_callback(event);
+            eventpoll_event_mark_error(eventpoll, event);
         }
 
     }
-
-    return n;
 }
