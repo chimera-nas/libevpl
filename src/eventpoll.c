@@ -38,6 +38,7 @@ struct eventpoll_listener {
         struct eventpoll_socket s;
     };
 
+    eventpoll_accept_callback_t accept_callback;
     int protocol;
 
     struct eventpoll_listener *prev;
@@ -91,11 +92,11 @@ eventpoll_wait(struct eventpoll *eventpoll, int max_msecs)
             event = eventpoll->active[i];
 
             if ((event->flags & EVENTPOLL_READ_READY) == EVENTPOLL_READ_READY) {
-                event->backend_read_callback(event);
+                event->backend_read_callback(eventpoll, event);
             } 
 
             if ((event->flags & EVENTPOLL_WRITE_READY) == EVENTPOLL_WRITE_READY) {
-                event->backend_write_callback(event);
+                event->backend_write_callback(eventpoll, event);
             }
 
             if ((event->flags & EVENTPOLL_READ_READY) != EVENTPOLL_READ_READY &&
@@ -119,9 +120,7 @@ eventpoll_listen(
     int protocol,
     const char *address,
     int port,
-    eventpoll_connect_callback_t connect_callback,
-    eventpoll_recv_callback_t   recv_callback,
-    eventpoll_error_callback_t error_callback,
+    eventpoll_accept_callback_t accept_callback,
     void *private_data)
 {
     struct eventpoll_listener *listener;
@@ -130,6 +129,7 @@ eventpoll_listen(
     listener = eventpoll_zalloc(sizeof(*listener));
 
     listener->protocol = protocol;
+    listener->accept_callback = accept_callback;
 
     switch (protocol) {
     case EVENTPOLL_PROTO_TCP:
@@ -145,9 +145,6 @@ eventpoll_listen(
         return 1;
     }
 
-    listener->event.user_connect_callback = connect_callback;
-    listener->event.user_recv_callback = recv_callback;
-    listener->event.user_error_callback = error_callback;
     listener->event.user_private_data = private_data;
 
     eventpoll_core_add(&eventpoll->core, &listener->event);
@@ -174,13 +171,12 @@ eventpoll_listener_destroy(
     eventpoll_free(listener);
 }
 
-void
+struct eventpoll_conn *
 eventpoll_connect(
     struct eventpoll *eventpoll,
     int protocol,
     const char *address,
     int port,
-    eventpoll_connect_callback_t connect_callback,
     eventpoll_recv_callback_t   recv_callback,
     eventpoll_error_callback_t error_callback,
     void *private_data)
@@ -199,19 +195,17 @@ eventpoll_connect(
     }
 
     if (rc) {
-        eventpoll_free(conn);
-        error_callback(ENOTCONN, private_data);
-        return;
+        eventpoll_event_mark_error(eventpoll, &conn->event);
+    } else {
+        eventpoll_core_add(&eventpoll->core, &conn->event);
+        eventpoll_event_read_interest(eventpoll, &conn->event);
     }
     
-    conn->event.user_connect_callback = connect_callback;
     conn->event.user_recv_callback = recv_callback;
     conn->event.user_error_callback = error_callback;
     conn->event.user_private_data = private_data;
 
-    eventpoll_core_add(&eventpoll->core, &conn->event);
-
-    eventpoll_event_read_interest(eventpoll, &conn->event);
+    return conn;
 }
 
 
@@ -369,4 +363,20 @@ eventpoll_event_mark_error(
     struct eventpoll_event *event)
 {
     event->flags |= EVENTPOLL_ERROR;
+}
+
+void eventpoll_accept(
+    struct eventpoll *eventpoll,
+    struct eventpoll_listener *listener,
+    struct eventpoll_conn *conn)
+{
+
+    eventpoll_event_read_interest(eventpoll, &conn->event);
+
+    listener->accept_callback(
+        conn,
+        &conn->event.user_recv_callback,
+        &conn->event.user_error_callback,
+        &conn->event.user_private_data,
+        listener->event.user_private_data);
 }

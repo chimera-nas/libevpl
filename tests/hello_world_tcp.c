@@ -15,23 +15,12 @@ int client_recv_callback(
     return 0;
 }
 
-int error_callback(
+void 
+test_error_callback(
     int error_code,
     void *private_data)
 {
     eventpoll_fatal("error_callback with error_code %d", error_code);
-    return 0;
-}
-
-int client_connect_callback(
-    struct eventpoll_conn *conn,
-    void       *private_data)
-{
-    eventpoll_info("Connected to %s:%d", 
-        eventpoll_conn_address(conn),
-        eventpoll_conn_port(conn));
-
-    return 0;
 }
 
 void *
@@ -43,7 +32,7 @@ client_thread(void *arg)
 
     eventpoll_info("Client connecting");
     eventpoll_connect(eventpoll, EVENTPOLL_PROTO_TCP, "127.0.0.1", 8000,
-                      client_connect_callback, client_recv_callback, error_callback, NULL);
+                      client_recv_callback, test_error_callback, NULL);
 
     eventpoll_info("Client waiting");
 
@@ -57,17 +46,6 @@ client_thread(void *arg)
     return NULL;
 }
 
-int server_connect_callback(
-    struct eventpoll_conn *conn,
-    void       *private_data)
-{
-    eventpoll_info("Received connection from %s:%d",
-        eventpoll_conn_address(conn),
-        eventpoll_conn_port(conn));
-
-    return 0;
-}
-
 int server_recv_callback(
     struct iovec *iov,
     int niov,
@@ -77,6 +55,21 @@ int server_recv_callback(
     return 0;
 }
 
+void accept_callback(
+    struct eventpoll_conn *conn,
+    eventpoll_recv_callback_t  *recv_callback,
+    eventpoll_error_callback_t  *error_callback,
+    void **conn_private_data,
+    void       *private_data)
+{
+    eventpoll_info("Received connection from %s:%d",
+        eventpoll_conn_address(conn),
+        eventpoll_conn_port(conn));
+
+    *recv_callback = server_recv_callback;
+    *error_callback = test_error_callback;
+    *conn_private_data = NULL;
+}
 int
 main(int argc, char *argv[])
 {
@@ -87,7 +80,7 @@ main(int argc, char *argv[])
 
 
     eventpoll_listen(eventpoll, EVENTPOLL_PROTO_TCP,
-                     "0.0.0.0", 8000, server_connect_callback, server_recv_callback, error_callback, NULL);
+                     "0.0.0.0", 8000, accept_callback, NULL);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 

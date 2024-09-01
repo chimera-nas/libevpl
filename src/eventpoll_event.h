@@ -3,11 +3,13 @@
 
 #include "eventpoll.h"
 
+struct eventpoll_listener;
+struct eventpoll_conn;
 struct eventpoll_event;
 
-typedef void (*eventpoll_event_read_callback_t)(struct eventpoll_event *evnet);
-typedef void (*eventpoll_event_write_callback_t)(struct eventpoll_event *event);
-typedef void (*eventpoll_event_error_callback_t)(struct eventpoll_event *event);
+typedef void (*eventpoll_event_read_callback_t)(struct eventpoll *eventpoll, struct eventpoll_event *event);
+typedef void (*eventpoll_event_write_callback_t)(struct eventpoll *eventpoll, struct eventpoll_event *event);
+typedef void (*eventpoll_event_error_callback_t)(struct eventpoll *eventpoll, struct eventpoll_event *event);
 
 #define EVENTPOLL_READABLE 0x01
 #define EVENTPOLL_WRITABLE 0x02
@@ -22,12 +24,12 @@ typedef void (*eventpoll_event_error_callback_t)(struct eventpoll_event *event);
 struct eventpoll_event {
     int                                 fd;
     unsigned int                        flags;
+    int                                 pad[2];
 
     eventpoll_event_read_callback_t     backend_read_callback;
     eventpoll_event_write_callback_t    backend_write_callback;
     eventpoll_event_error_callback_t    backend_error_callback;
 
-    eventpoll_connect_callback_t        user_connect_callback;
     eventpoll_recv_callback_t           user_recv_callback;
     eventpoll_error_callback_t          user_error_callback;
     void                               *user_private_data;
@@ -46,6 +48,9 @@ void eventpoll_event_mark_unwritable(struct eventpoll_event *event);
 void eventpoll_event_mark_error(struct eventpoll *eventpoll, struct eventpoll_event *event);
 
 
+void eventpoll_accept(struct eventpoll *eventpoll,
+                      struct eventpoll_listener *listener,
+                      struct eventpoll_conn *conn);
 /*
  * The eventpoll_core is always the first member of eventpoll,
  * so we can cast between them
@@ -62,5 +67,8 @@ void eventpoll_event_mark_error(struct eventpoll *eventpoll, struct eventpoll_ev
     (void*)(((struct eventpoll_event *)conn)+1)
 
 #define eventpoll_conn_backend(conn) eventpoll_event_backend(conn)
+
+#define eventpoll_event_conn(event) ((struct eventpoll_conn *)event)
+#define eventpoll_event_listener(event) ((struct eventpoll_listener *)event)
 
 #endif

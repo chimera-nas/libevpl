@@ -15,9 +15,11 @@
 
 void
 eventpoll_accept_tcp(
+    struct eventpoll *eventpoll,
     struct eventpoll_event *event)
 {
     struct eventpoll_socket *ls = eventpoll_event_backend(event);
+    struct eventpoll_listener *listener = eventpoll_event_listener(event);
     struct eventpoll_socket *s;
     struct eventpoll_conn *conn;
     struct sockaddr_storage client_addr;
@@ -29,34 +31,38 @@ eventpoll_accept_tcp(
 
     client_addrp =  (struct sockaddr *)&client_addr;
 
-    fd = accept(ls->fd, client_addrp, &client_len);
 
-    if (fd < 0) {
-        eventpoll_event_mark_unreadable(event);
-        return;
+    while (1) {
+
+        fd = accept(ls->fd, client_addrp, &client_len);
+
+        if (fd < 0) {
+            eventpoll_event_mark_unreadable(event);
+            return;
+        }
+
+        if (client_addrp->sa_family == AF_INET) {
+            struct sockaddr_in *ipv4 = (struct sockaddr_in *)client_addrp;
+            addr = &(ipv4->sin_addr);
+            port = ntohs(ipv4->sin_port);
+        } else {
+            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)client_addrp;
+            addr = &(ipv6->sin6_addr);
+            port = ntohs(ipv6->sin6_port);
+        }
+
+        inet_ntop(client_addrp->sa_family, addr, ip_str, sizeof(ip_str));
+
+        conn = eventpoll_alloc_conn(EVENTPOLL_PROTO_TCP, ip_str, port);
+
+        s = eventpoll_conn_backend(conn);
+
+        s->fd = fd;
+        s->connected = 1;
+
+        eventpoll_accept(eventpoll, listener, conn);
     }
 
-
-    if (client_addrp->sa_family == AF_INET) {
-        struct sockaddr_in *ipv4 = (struct sockaddr_in *)client_addrp;
-        addr = &(ipv4->sin_addr);
-        port = ntohs(ipv4->sin_port);
-    } else {
-        struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)client_addrp;
-        addr = &(ipv6->sin6_addr);
-        port = ntohs(ipv6->sin6_port);
-    }
-
-    inet_ntop(client_addrp->sa_family, addr, ip_str, sizeof(ip_str));
-
-    conn = eventpoll_alloc_conn(EVENTPOLL_PROTO_TCP, ip_str, port);
-
-    s = eventpoll_conn_backend(conn);
-
-    s->fd = fd;
-    s->connected = 1;
-
-    event->user_connect_callback(conn, event->user_private_data);
 }
 
 int
@@ -71,6 +77,8 @@ eventpoll_listen_tcp(
     struct addrinfo hints, *res, *p;
     int rc, fd;
     const int yes = 1;
+
+    s->fd = -1;
 
     snprintf(port_str, sizeof(port_str), "%d", port);
 
@@ -130,6 +138,7 @@ eventpoll_listen_tcp(
 
 void
 eventpoll_read_tcp(
+    struct eventpoll *eventpoll,
     struct eventpoll_event *event)
 {
     eventpoll_debug("tcp socket readable");
@@ -137,6 +146,7 @@ eventpoll_read_tcp(
 
 void
 eventpoll_write_tcp(
+    struct eventpoll *eventpoll,
     struct eventpoll_event *event)
 {
     struct eventpoll_socket *s = eventpoll_event_backend(event);
@@ -150,12 +160,8 @@ eventpoll_write_tcp(
         rc = getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len);
         eventpoll_fatal_if(rc,"Failed to get SO_ERROR from socket");
 
-        if (err == 0) {
-            /* Casting event to conn is safe */
-            event->user_connect_callback((struct eventpoll_conn *)event,
-                                         event->user_private_data);
-        } else {
-            event->user_error_callback(err, event->user_private_data);
+        if (err) {
+            eventpoll_event_mark_error(eventpoll, event);
         }
 
         s->connected = 1;
@@ -164,6 +170,7 @@ eventpoll_write_tcp(
 
 void
 eventpoll_error_tcp(
+    struct eventpoll *eventpoll,
     struct eventpoll_event *event)
 {
     eventpoll_debug("tcp socket error");
@@ -180,6 +187,8 @@ eventpoll_connect_tcp(
     char port_str[8];
     struct addrinfo hints, *res, *p;
     int rc, fd, flags;
+
+    s->fd = -1;
 
     snprintf(port_str, sizeof(port_str), "%d", port);
 
@@ -216,7 +225,6 @@ eventpoll_connect_tcp(
         if (connect(fd, p->ai_addr, p->ai_addrlen) == -1) {
             if (errno != EINPROGRESS) {
                 eventpoll_debug("connect errno: %s", strerror(errno));
-                close(fd);
                 continue;
             }
         }
@@ -246,5 +254,7 @@ void
 eventpoll_close_tcp(
     struct eventpoll_socket *s)
 {
-    close(s->fd);
+    if (s->fd >= 0) {
+        close(s->fd);
+    }
 }
