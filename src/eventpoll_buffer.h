@@ -73,7 +73,7 @@ eventpoll_bvec_ring_alloc(
     int size,
     int alignment)
 {
-    ring->bvec = eventpoll_valloc(size, alignment);
+    ring->bvec = eventpoll_valloc(size, 64);
 
     ring->size = size;
     ring->mask = size - 1;
