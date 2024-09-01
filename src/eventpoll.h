@@ -13,8 +13,9 @@ struct eventpoll_buffer;
 
 struct eventpoll_bvec {
     struct eventpoll_buffer *buffer;
-    unsigned int             offset;
+    void                    *data;
     unsigned int             length;
+    unsigned int             flags;
 };
 
 struct eventpoll * eventpoll_init(struct eventpoll_config *config);
@@ -24,6 +25,8 @@ void eventpoll_destroy(struct eventpoll *eventpoll);
 void eventpoll_wait(struct eventpoll *eventpoll, int max_msecs);
 
 typedef int (*eventpoll_recv_callback_t)(
+    struct eventpoll *eventpoll,
+    struct eventpoll_conn *conn,
     struct iovec *iov,
     int niov,
     void *private_data);
@@ -70,6 +73,13 @@ eventpoll_bvec_release(
     struct eventpoll *eventpoll,
     struct eventpoll_bvec *bvec);
 
+static inline void *
+eventpoll_bvec_data(
+    struct eventpoll_bvec *bvec)
+{
+    return bvec->data;
+}
+
 void
 eventpoll_bvec_addref(
     struct eventpoll_bvec *bvec);
@@ -89,5 +99,7 @@ eventpoll_conn_address(struct eventpoll_conn *conn);
 int
 eventpoll_conn_port(struct eventpoll_conn *conn);
     
+struct eventpoll_config *
+eventpoll_config(struct eventpoll *eventpoll);
 
 #endif

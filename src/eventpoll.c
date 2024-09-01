@@ -19,18 +19,7 @@
 #include "eventpoll_tcp.h"
 #include "eventpoll_event.h"
 #include "eventpoll_buffer.h"
-
-struct eventpoll_conn {
-    struct eventpoll_event  event; /* must be first member */
-
-    union { /* must be second member */
-        struct eventpoll_socket s;
-    };
-    
-    char address[256];
-    int port;
-    int protocol;
-};
+#include "eventpoll_conn.h"
 
 struct eventpoll_listener {
     struct eventpoll_event  event; /* must be first member */
@@ -137,7 +126,7 @@ eventpoll_listen(
 
     switch (protocol) {
     case EVENTPOLL_PROTO_TCP:
-        rc = eventpoll_listen_tcp(eventpoll->config, &listener->s, &listener->event, address, port);
+        rc = eventpoll_listen_tcp(eventpoll, &listener->s, &listener->event, address, port);
         break;
     default:
         rc = EINVAL;
@@ -188,11 +177,11 @@ eventpoll_connect(
     struct eventpoll_conn *conn;
     int rc;
 
-    conn = eventpoll_alloc_conn(protocol, address, port);
+    conn = eventpoll_alloc_conn(eventpoll, protocol, address, port);
 
     switch (protocol) {
     case EVENTPOLL_PROTO_TCP:
-        rc = eventpoll_connect_tcp(eventpoll->config, &conn->s, &conn->event, address, port);
+        rc = eventpoll_connect_tcp(eventpoll, &conn->s, &conn->event, address, port);
         break;
     default:
         rc = EINVAL;
@@ -232,11 +221,25 @@ eventpoll_destroy(
 }
 
 struct eventpoll_conn *
-eventpoll_alloc_conn(int protocol, const char *address, int port)
+eventpoll_alloc_conn(
+    struct eventpoll *eventpoll,
+    int protocol,
+    const char *address,
+    int port)
 {
     struct eventpoll_conn *conn;
 
     conn = eventpoll_zalloc(sizeof(struct eventpoll_conn));
+
+    eventpoll_bvec_ring_alloc(
+        &conn->send_ring,
+        eventpoll->config->bvec_ring_size,
+        eventpoll->config->page_size);
+
+    eventpoll_bvec_ring_alloc(
+        &conn->recv_ring,
+        eventpoll->config->bvec_ring_size,
+        eventpoll->config->page_size);
 
     conn->protocol = protocol;
     conn->port = port;
@@ -278,7 +281,6 @@ eventpoll_event_read_interest(
 
 void
 eventpoll_event_read_disinterest(
-    struct eventpoll *eventpoll,
     struct eventpoll_event *event)
 {
     event->flags &= ~EVENTPOLL_READ_INTEREST;
@@ -304,7 +306,6 @@ eventpoll_event_write_interest(
 
 void
 eventpoll_event_write_disinterest(
-    struct eventpoll *eventpoll,
     struct eventpoll_event *event)
 {
 
@@ -374,7 +375,10 @@ void eventpoll_accept(
     struct eventpoll_listener *listener,
     struct eventpoll_conn *conn)
 {
+    
+    eventpoll_debug("accepted new conn");
 
+    eventpoll_core_add(&eventpoll->core, &conn->event);
     eventpoll_event_read_interest(eventpoll, &conn->event);
 
     listener->accept_callback(
@@ -431,11 +435,20 @@ eventpoll_bvec_alloc(
     buffer->used += pad;
 
     r_bvec->buffer = buffer;
-    r_bvec->offset = buffer->used;
+    r_bvec->data   = buffer->data + buffer->used;
     r_bvec->length = length;
+    r_bvec->flags  = 0;
     
     buffer->used += length;
 
+}
+
+void eventpoll_buffer_release(
+    struct eventpoll *eventpoll,
+    struct eventpoll_buffer *buffer)
+{
+    buffer->used = 0;
+    LL_PREPEND(eventpoll->free_buffers, buffer);
 }
 
 void
@@ -443,21 +456,14 @@ eventpoll_bvec_release(
     struct eventpoll *eventpoll,
     struct eventpoll_bvec *bvec)
 {
-    struct eventpoll_buffer *buffer = bvec->buffer;
-
-    --buffer->refcnt;
-
-    if (buffer->refcnt == 0) {
-        buffer->used = 0;
-        LL_PREPEND(eventpoll->free_buffers, buffer);
-    }
+    eventpoll_bvec_decref(eventpoll, bvec);
 }
 
 void
 eventpoll_bvec_addref(
     struct eventpoll_bvec *bvec)
 {
-    ++bvec->buffer->refcnt;
+    eventpoll_bvec_incref(bvec);
 }
 
 void
@@ -467,5 +473,21 @@ eventpoll_send(
     struct eventpoll_bvec   **bvecs,
     int                     nbufvecs)
 {
+    int i;
+
+    if (nbufvecs == 0) return;
+
+    for (i = 0; i < nbufvecs; ++i) {
+        eventpoll_bvec_ring_add(&conn->send_ring, bvecs[i]);
+    }
+
+    eventpoll_event_write_interest(eventpoll, &conn->event);
 
 }
+
+struct eventpoll_config *
+eventpoll_config(struct eventpoll *eventpoll)
+{
+    return eventpoll->config;
+}
+

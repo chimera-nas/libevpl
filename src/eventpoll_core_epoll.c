@@ -73,14 +73,17 @@ eventpoll_core_wait(struct eventpoll_core *evc, int max_msecs)
         event = ev->data.ptr; 
 
         if (ev->events & EPOLLIN) {
+            eventpoll_debug("fd %d is readable", event->fd);
             eventpoll_event_mark_readable(eventpoll, event);
         }
 
         if (ev->events & EPOLLOUT) {
+            eventpoll_debug("fd %d is writable", event->fd);
             eventpoll_event_mark_writable(eventpoll, event);
         }
 
         if (ev->events & EPOLLERR) {
+            eventpoll_debug("fd %d has error", event->fd);
             eventpoll_event_mark_error(eventpoll, event);
         }
 

@@ -36,9 +36,9 @@ struct eventpoll_event {
 };
 
 void eventpoll_event_read_interest(struct eventpoll *eventpoll, struct eventpoll_event *event);
-void eventpoll_event_read_disinterest(struct eventpoll *eventpoll, struct eventpoll_event *event);
+void eventpoll_event_read_disinterest(struct eventpoll_event *event);
 void eventpoll_event_write_interest(struct eventpoll *eventpoll, struct eventpoll_event *event);
-void eventpoll_event_write_disinterest(struct eventpoll *eventpoll, struct eventpoll_event *event);
+void eventpoll_event_write_disinterest(struct eventpoll_event *event);
 
 
 void eventpoll_event_mark_readable(struct eventpoll *eventpoll, struct eventpoll_event *event);

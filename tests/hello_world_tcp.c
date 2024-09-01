@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <sys/uio.h>
 
@@ -7,11 +8,13 @@
 #include "eventpoll_internal.h"
 
 int client_recv_callback(
+    struct eventpoll *eventpoll,
+    struct eventpoll_conn *conn,
     struct iovec *iov,
     int niov,
     void *private_data)
 {
-    eventpoll_info("client recv callback\n");
+    eventpoll_info("client recv callback");
     return 0;
 }
 
@@ -27,14 +30,23 @@ void *
 client_thread(void *arg)
 {
     struct eventpoll *eventpoll;
+    struct eventpoll_conn *conn;
+    struct eventpoll_bvec bvec, *bvecp;
+    const char hello[] = "Hello World!";
+    int slen = strlen(hello);
 
     eventpoll = eventpoll_init(NULL);
 
-    eventpoll_info("Client connecting");
-    eventpoll_connect(eventpoll, EVENTPOLL_PROTO_TCP, "127.0.0.1", 8000,
+    conn = eventpoll_connect(eventpoll, EVENTPOLL_PROTO_TCP, "127.0.0.1", 8000,
                       client_recv_callback, test_error_callback, NULL);
 
-    eventpoll_info("Client waiting");
+    eventpoll_bvec_alloc(eventpoll, slen, 0, &bvec);
+
+    memcpy(eventpoll_bvec_data(&bvec), hello, slen);
+
+    bvecp = &bvec;
+
+    eventpoll_send(eventpoll, conn, &bvecp, 1);
 
     while (1) {
     
@@ -47,11 +59,25 @@ client_thread(void *arg)
 }
 
 int server_recv_callback(
+    struct eventpoll *eventpoll,
+    struct eventpoll_conn *conn,
     struct iovec *iov,
     int niov,
     void *private_data)
 {
-    eventpoll_info("server recv callback\n");
+    struct eventpoll_bvec bvec, *bvecp;
+    const char hello[] = "Hello World!";
+    int slen = strlen(hello);
+
+    eventpoll_info("Received server recv callback niov %d", niov);
+
+    eventpoll_bvec_alloc(eventpoll, slen, 0, &bvec);
+
+    memcpy(eventpoll_bvec_data(&bvec), hello, slen);
+
+    bvecp = &bvec;
+
+    eventpoll_send(eventpoll, conn, &bvecp, 1);
     return 0;
 }
 

@@ -41,9 +41,4 @@ void eventpoll_crash(const char *fmt, ...);
         eventpoll_crash(__VA_ARGS__); \
     }
 
-struct eventpoll_conn;
-
-struct eventpoll_conn *
-eventpoll_alloc_conn(int protocol, const char *address, int port);
-
 #endif
