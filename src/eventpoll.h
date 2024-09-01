@@ -9,6 +9,13 @@ struct iovec;
 
 struct eventpoll;
 struct eventpoll_conn;
+struct eventpoll_buffer;
+
+struct eventpoll_bvec {
+    struct eventpoll_buffer *buffer;
+    unsigned int             offset;
+    unsigned int             length;
+};
 
 struct eventpoll * eventpoll_init(struct eventpoll_config *config);
 
@@ -50,6 +57,31 @@ eventpoll_connect(
     eventpoll_recv_callback_t   recv_callback,
     eventpoll_error_callback_t error_callback,
     void *private_data);
+
+void
+eventpoll_bvec_alloc(
+    struct eventpoll *eventpoll,
+    unsigned int length,
+    unsigned int alignment,
+    struct eventpoll_bvec *r_bvec);
+
+void
+eventpoll_bvec_release(
+    struct eventpoll *eventpoll,
+    struct eventpoll_bvec *bvec);
+
+void
+eventpoll_bvec_addref(
+    struct eventpoll_bvec *bvec);
+
+
+void
+eventpoll_send(
+    struct eventpoll       *eventpoll,
+    struct eventpoll_conn  *conn,
+    struct eventpoll_bvec **bvecs,
+    int                     nbufvecs);
+
 
 const char *
 eventpoll_conn_address(struct eventpoll_conn *conn);

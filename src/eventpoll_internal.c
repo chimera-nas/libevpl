@@ -101,6 +101,18 @@ eventpoll_calloc(unsigned int n, unsigned int size)
     return p;
 }
 
+void *
+eventpoll_valloc(unsigned int size, unsigned int alignment)
+{
+    void *p = aligned_alloc(alignment, size);
+
+    if (!p) {
+        eventpoll_fatal("Failed to allocate %u bytes\n", size);
+    }
+
+    return p;
+}
+
 void
 eventpoll_free(void *p)
 {

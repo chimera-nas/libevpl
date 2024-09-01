@@ -4,15 +4,18 @@
 #include "eventpoll.h"
 
 struct eventpoll_config {
-    int max_pending;
-    int max_poll_fd;
-
-    int refcnt;
+    unsigned int max_pending;
+    unsigned int max_poll_fd;
+    unsigned int buffer_size;
+    unsigned int page_size;
+    unsigned int refcnt;
+    unsigned int bvec_ring_size;
 };
 
 void * eventpoll_malloc(unsigned int size);
 void * eventpoll_zalloc(unsigned int size);
 void * eventpoll_calloc(unsigned int n, unsigned int size);
+void * eventpoll_valloc(unsigned int size, unsigned int alignment);
 void   eventpoll_free(void *p);
 
 #define EVENTPOLL_LOG_NONE  0

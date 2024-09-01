@@ -18,6 +18,7 @@
 #include "eventpoll_config.h"
 #include "eventpoll_tcp.h"
 #include "eventpoll_event.h"
+#include "eventpoll_buffer.h"
 
 struct eventpoll_conn {
     struct eventpoll_event  event; /* must be first member */
@@ -51,6 +52,9 @@ struct eventpoll {
 
     struct eventpoll_event   **active;
     int                        num_active;
+
+    struct eventpoll_buffer   *current_buffer;
+    struct eventpoll_buffer   *free_buffers;
     struct eventpoll_config   *config;
     struct eventpoll_listener *listeners;
 };
@@ -379,4 +383,89 @@ void eventpoll_accept(
         &conn->event.user_error_callback,
         &conn->event.user_private_data,
         listener->event.user_private_data);
+}
+
+void
+eventpoll_bvec_alloc(
+    struct eventpoll *eventpoll,
+    unsigned int length,
+    unsigned int alignment,
+    struct eventpoll_bvec *r_bvec)
+{
+    struct eventpoll_buffer *buffer = eventpoll->current_buffer;
+    unsigned int pad;
+
+    eventpoll_fatal_if(length > eventpoll->config->buffer_size,
+        "Requested allocation exceeds config buffer_size (%u > %u)",
+        length, eventpoll->config->buffer_size);
+
+    if (buffer) {
+        pad = eventpoll_buffer_pad(buffer, alignment);
+
+        if (eventpoll_buffer_left(buffer) < pad + length) {
+            buffer = NULL;
+        }
+    }
+
+    if (buffer == NULL) {
+        if (eventpoll->free_buffers) {
+            buffer = eventpoll->free_buffers;
+            LL_DELETE(eventpoll->free_buffers, buffer);
+            eventpoll->current_buffer = buffer;
+        } else {
+            buffer = eventpoll_malloc(sizeof(*buffer));
+
+            buffer->refcnt = 0;
+            buffer->used = 0;
+            buffer->size = eventpoll->config->buffer_size;
+
+            buffer->data = eventpoll_valloc(
+                buffer->size,
+                eventpoll->config->page_size);
+
+        }
+    }
+    
+    ++buffer->refcnt;
+
+    buffer->used += pad;
+
+    r_bvec->buffer = buffer;
+    r_bvec->offset = buffer->used;
+    r_bvec->length = length;
+    
+    buffer->used += length;
+
+}
+
+void
+eventpoll_bvec_release(
+    struct eventpoll *eventpoll,
+    struct eventpoll_bvec *bvec)
+{
+    struct eventpoll_buffer *buffer = bvec->buffer;
+
+    --buffer->refcnt;
+
+    if (buffer->refcnt == 0) {
+        buffer->used = 0;
+        LL_PREPEND(eventpoll->free_buffers, buffer);
+    }
+}
+
+void
+eventpoll_bvec_addref(
+    struct eventpoll_bvec *bvec)
+{
+    ++bvec->buffer->refcnt;
+}
+
+void
+eventpoll_send(
+    struct eventpoll       *eventpoll,
+    struct eventpoll_conn  *conn,
+    struct eventpoll_bvec   **bvecs,
+    int                     nbufvecs)
+{
+
 }
