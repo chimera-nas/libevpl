@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2024 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
+
 macro(unit_test source_file)
     # Get the file name without extension
     get_filename_component(test_name ${source_file} NAME_WE)

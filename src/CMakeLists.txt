@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2024 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
 
 set(SRC
     eventpoll.c

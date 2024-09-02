@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2024 Ben Jarvis
+ *
+ * SPDX-License-Identifier: LGPL
+ */
+
 #include <unistd.h>
 #include "eventpoll_config.h"
 #include "eventpoll_internal.h"

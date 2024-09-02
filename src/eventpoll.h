@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2024 Ben Jarvis
+ *
+ * SPDX-License-Identifier: LGPL
+ */
+
 #ifndef __EVENTPOLL_CLIENT_H__
 #define __EVENTPOLL_CLIENT_H__
 

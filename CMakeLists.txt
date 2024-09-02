@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2024 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
+
 cmake_minimum_required(VERSION 3.22)
 
 project(libeventpoll C)
@@ -29,6 +33,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 add_definitions(-g -Wall -DEVENTPOLL_MECH=${EVENTPOLL_MECH})
+
+include_directories(3rdparty/uthash)
 
 add_subdirectory(src)
 
