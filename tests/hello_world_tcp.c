@@ -7,23 +7,25 @@
 #include "eventpoll.h"
 #include "eventpoll_internal.h"
 
-int client_recv_callback(
+int
+client_callback(
     struct eventpoll *eventpoll,
     struct eventpoll_conn *conn,
-    struct iovec *iov,
-    int niov,
+    unsigned int event_type,
+    unsigned int event_code,
     void *private_data)
 {
-    eventpoll_info("client recv callback");
-    return 0;
-}
+    int *run = private_data;
 
-void 
-test_error_callback(
-    int error_code,
-    void *private_data)
-{
-    eventpoll_fatal("error_callback with error_code %d", error_code);
+    eventpoll_info("client callback event %u code %u", event_type, event_code);
+
+    switch (event_type) {
+    case EVENTPOLL_EVENT_DISCONNECTED:
+        *run = 0;
+        break;
+    }
+
+    return 0;
 }
 
 void *
@@ -34,11 +36,12 @@ client_thread(void *arg)
     struct eventpoll_bvec bvec, *bvecp;
     const char hello[] = "Hello World!";
     int slen = strlen(hello);
+    int run = 1;
 
     eventpoll = eventpoll_init(NULL);
 
     conn = eventpoll_connect(eventpoll, EVENTPOLL_PROTO_TCP, "127.0.0.1", 8000,
-                      client_recv_callback, test_error_callback, NULL);
+                      client_callback, &run);
 
     eventpoll_bvec_alloc(eventpoll, slen, 0, &bvec);
 
@@ -48,43 +51,56 @@ client_thread(void *arg)
 
     eventpoll_send(eventpoll, conn, &bvecp, 1);
 
-    while (1) {
+    while (run) {
     
         eventpoll_wait(eventpoll, -1);
     }
+
+    eventpoll_debug("client loop out");
 
     eventpoll_destroy(eventpoll);
 
     return NULL;
 }
 
-int server_recv_callback(
+int server_callback(
     struct eventpoll *eventpoll,
     struct eventpoll_conn *conn,
-    struct iovec *iov,
-    int niov,
+    unsigned int event_type,
+    unsigned int event_code,
     void *private_data)
 {
     struct eventpoll_bvec bvec, *bvecp;
     const char hello[] = "Hello World!";
     int slen = strlen(hello);
+    int *run = private_data;
 
-    eventpoll_info("Received server recv callback niov %d", niov);
+    eventpoll_info("server callback event %u code %u", event_type, event_code);
 
-    eventpoll_bvec_alloc(eventpoll, slen, 0, &bvec);
+    switch (event_type) {
+    case EVENTPOLL_EVENT_DISCONNECTED:
+        *run = 0;
+        break;
+    case EVENTPOLL_EVENT_RECEIVED:
 
-    memcpy(eventpoll_bvec_data(&bvec), hello, slen);
+        eventpoll_bvec_alloc(eventpoll, slen, 0, &bvec);
 
-    bvecp = &bvec;
+        memcpy(eventpoll_bvec_data(&bvec), hello, slen);
 
-    eventpoll_send(eventpoll, conn, &bvecp, 1);
+        bvecp = &bvec;
+
+        eventpoll_send(eventpoll, conn, &bvecp, 1);
+
+        eventpoll_finish(eventpoll, conn);
+        break;
+    }
+
     return 0;
 }
 
 void accept_callback(
     struct eventpoll_conn *conn,
-    eventpoll_recv_callback_t  *recv_callback,
-    eventpoll_error_callback_t  *error_callback,
+    eventpoll_event_callback_t *callback,
     void **conn_private_data,
     void       *private_data)
 {
@@ -92,25 +108,25 @@ void accept_callback(
         eventpoll_conn_address(conn),
         eventpoll_conn_port(conn));
 
-    *recv_callback = server_recv_callback;
-    *error_callback = test_error_callback;
-    *conn_private_data = NULL;
+    *callback = server_callback;
+    *conn_private_data = private_data;
 }
 int
 main(int argc, char *argv[])
 {
     pthread_t thr;
     struct eventpoll *eventpoll;
+    int run = 1;
 
     eventpoll = eventpoll_init(NULL);
 
 
     eventpoll_listen(eventpoll, EVENTPOLL_PROTO_TCP,
-                     "0.0.0.0", 8000, accept_callback, NULL);
+                     "0.0.0.0", 8000, accept_callback, &run);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 
-    while (1) {
+    while (run) {
         eventpoll_wait(eventpoll, -1);
     }
 

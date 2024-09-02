@@ -31,6 +31,32 @@ eventpoll_socket_init(
     s->recv_size = config->buffer_size;
 }
 
+static inline void
+eventpoll_check_conn(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+    struct eventpoll_socket *s = eventpoll_event_backend(event);
+    struct eventpoll_conn   *conn = eventpoll_event_conn(event);
+
+    socklen_t len;
+    int rc, err;
+
+    if (!s->connected) {
+        len = sizeof(err);
+        rc = getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len);
+        eventpoll_fatal_if(rc,"Failed to get SO_ERROR from socket");
+
+        if (err) {
+            eventpoll_event_mark_close(eventpoll, event);
+        } else {
+            conn->callback(eventpoll, conn, EVENTPOLL_EVENT_CONNECTED, 0, conn->private_data);
+        }
+
+        s->connected = 1;
+    }
+
+}
 
 void
 eventpoll_read_tcp(
@@ -42,10 +68,12 @@ eventpoll_read_tcp(
     struct iovec iov[8];
     struct msghdr msghdr;
     ssize_t res, total, remain;
-    int cb = 0, niov;
+    int cb = 0;
 
 
     eventpoll_debug("tcp socket %d readable", s->fd);
+
+    eventpoll_check_conn(eventpoll, event);
 
     while (1) {
 
@@ -82,7 +110,11 @@ eventpoll_read_tcp(
         if (res < 0) {
             eventpoll_error("socket read returned %ld", res);
             eventpoll_event_mark_unreadable(event);
+            eventpoll_event_mark_close(eventpoll, event);
             break;
+        } else if (res == 0) {
+            eventpoll_event_mark_unreadable(event);
+            eventpoll_event_mark_close(eventpoll, event);
         }
 
         eventpoll_debug("read %ld bytes of %ld total", res, total);
@@ -103,8 +135,7 @@ eventpoll_read_tcp(
     }
 
     if (cb) {
-        niov = eventpoll_bvec_ring_iov(&total, iov, 8, &conn->recv_ring);
-        conn->event.user_recv_callback(eventpoll, conn, iov, niov, conn->event.user_private_data);
+        conn->callback(eventpoll, conn, EVENTPOLL_EVENT_RECEIVED, 0, conn->private_data);
     }
 }
 
@@ -115,8 +146,6 @@ eventpoll_write_tcp(
 {
     struct eventpoll_socket *s = eventpoll_event_backend(event);
     struct eventpoll_conn   *conn = eventpoll_event_conn(event);
-    int err, rc;
-    socklen_t len;
     struct iovec iov[8];
     int niov;
     struct msghdr msghdr;
@@ -124,17 +153,7 @@ eventpoll_write_tcp(
 
     eventpoll_debug("tcp socket writable");
 
-    if (!s->connected) {
-        len = sizeof(err);
-        rc = getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len);
-        eventpoll_fatal_if(rc,"Failed to get SO_ERROR from socket");
-
-        if (err) {
-            eventpoll_event_mark_error(eventpoll, event);
-        }
-
-        s->connected = 1;
-    }
+    eventpoll_check_conn(eventpoll, event);
 
     while (!eventpoll_bvec_ring_is_empty(&conn->send_ring)) {
 
@@ -153,7 +172,7 @@ eventpoll_write_tcp(
         if (res < 0) {
             eventpoll_error("socket write returned %ld", res);
             eventpoll_event_mark_unwritable(event);
-            eventpoll_event_mark_error(eventpoll, event);
+            eventpoll_event_mark_close(eventpoll, event);
             break;
         }
 
@@ -170,6 +189,7 @@ eventpoll_write_tcp(
     if (eventpoll_bvec_ring_is_empty(&conn->send_ring)) {
         eventpoll_event_write_disinterest(event);
     }
+
 }
 
 void
@@ -246,9 +266,9 @@ eventpoll_connect_tcp(
     eventpoll_socket_init(eventpoll, s, fd, 0);
 
     event->fd = fd;
-    event->backend_read_callback = eventpoll_read_tcp;
-    event->backend_write_callback = eventpoll_write_tcp;
-    event->backend_error_callback = eventpoll_error_tcp;
+    event->read_callback = eventpoll_read_tcp;
+    event->write_callback = eventpoll_write_tcp;
+    event->error_callback = eventpoll_error_tcp;
 
     return 0;
 }
@@ -258,6 +278,7 @@ eventpoll_close_tcp(
     struct eventpoll_socket *s)
 {
     if (s->fd >= 0) {
+        eventpoll_debug("closing tcp socket fd %d", s->fd);
         close(s->fd);
     }
 }
@@ -311,9 +332,9 @@ eventpoll_accept_tcp(
         eventpoll_socket_init(eventpoll, s, fd, 1);
 
         conn->event.fd = fd;
-        conn->event.backend_read_callback = eventpoll_read_tcp;
-        conn->event.backend_write_callback = eventpoll_write_tcp;
-        conn->event.backend_error_callback = eventpoll_error_tcp;
+        conn->event.read_callback = eventpoll_read_tcp;
+        conn->event.write_callback = eventpoll_write_tcp;
+        conn->event.error_callback = eventpoll_error_tcp;
 
         eventpoll_accept(eventpoll, listener, conn);
     }
@@ -385,7 +406,7 @@ eventpoll_listen_tcp(
     s->fd = fd;
 
     event->fd = fd;
-    event->backend_read_callback = eventpoll_accept_tcp;
+    event->read_callback = eventpoll_accept_tcp;
 
     return 0;
 

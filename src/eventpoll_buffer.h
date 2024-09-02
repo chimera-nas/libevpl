@@ -23,11 +23,6 @@ struct eventpoll_bvec_ring {
     int tail;
 };
 
-struct eventpoll_bvec_ring_cursor {
-    struct eventpoll_bvec_ring *ring;
-    int position;
-};
-
 void eventpoll_buffer_release(
     struct eventpoll *eventpoll,
     struct eventpoll_buffer *buffer);
@@ -159,32 +154,12 @@ eventpoll_bvec_ring_remove(struct eventpoll_bvec_ring *ring)
 }
 
 static inline void
-eventpoll_bvec_ring_cursor_init(
-    struct eventpoll_bvec_ring_cursor *cursor,
-    struct eventpoll_bvec_ring *ring)
+eventpoll_bvec_ring_clear(struct eventpoll_bvec_ring *ring)
 {
-    cursor->ring = ring;
-    cursor->position = ring->tail;
+    ring->head = 0;
+    ring->tail = 0;
 }
 
-static inline struct eventpoll_bvec *
-eventpoll_bvec_ring_cursor_get(struct eventpoll_bvec_ring_cursor *cursor)
-{
-    return &cursor->ring->bvec[cursor->position];
-}
-
-static inline int
-eventpoll_bvec_ring_cursor_has_next(struct eventpoll_bvec_ring_cursor *cursor)
-{
-    int next_position = (cursor->position + 1) & cursor->ring->mask;
-    return next_position != cursor->ring->head;
-}
-
-static inline void
-eventpoll_bvec_ring_cursor_advance(struct eventpoll_bvec_ring_cursor *cursor)
-{
-    cursor->position = (cursor->position + 1) & cursor->ring->mask;
-}
 
 static inline int
 eventpoll_bvec_ring_iov(

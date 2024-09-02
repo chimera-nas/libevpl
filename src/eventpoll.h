@@ -24,21 +24,20 @@ void eventpoll_destroy(struct eventpoll *eventpoll);
 
 void eventpoll_wait(struct eventpoll *eventpoll, int max_msecs);
 
-typedef int (*eventpoll_recv_callback_t)(
+#define EVENTPOLL_EVENT_CONNECTED       1
+#define EVENTPOLL_EVENT_DISCONNECTED    2
+#define EVENTPOLL_EVENT_RECEIVED        3
+
+typedef int (*eventpoll_event_callback_t)(
     struct eventpoll *eventpoll,
     struct eventpoll_conn *conn,
-    struct iovec *iov,
-    int niov,
-    void *private_data);
-
-typedef void (*eventpoll_error_callback_t)(
-    int error_code,
+    unsigned int event_type,
+    unsigned int event_code,
     void *private_data);
 
 typedef void (*eventpoll_accept_callback_t)(
     struct eventpoll_conn      *conn,
-    eventpoll_recv_callback_t  *recv_callback,
-    eventpoll_error_callback_t *error_callback,
+    eventpoll_event_callback_t *callback,
     void                       **conn_private_data,
     void                        *private_data);
 
@@ -57,8 +56,7 @@ eventpoll_connect(
     int protocol,
     const char *address,
     int port,
-    eventpoll_recv_callback_t   recv_callback,
-    eventpoll_error_callback_t error_callback,
+    eventpoll_event_callback_t callback,
     void *private_data);
 
 void
@@ -92,6 +90,16 @@ eventpoll_send(
     struct eventpoll_bvec **bvecs,
     int                     nbufvecs);
 
+
+void
+eventpoll_close(
+    struct eventpoll *eventpoll,
+    struct eventpoll_conn *conn);
+
+void
+eventpoll_finish(
+    struct eventpoll *eventpoll,
+    struct eventpoll_conn *conn);
 
 const char *
 eventpoll_conn_address(struct eventpoll_conn *conn);

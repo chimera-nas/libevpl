@@ -45,8 +45,6 @@ eventpoll_core_add(
     ev.events = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLET;
     ev.data.ptr = event;
 
-    eventpoll_debug("adding fd %d to epoll fd %d", event->fd, evc->fd);
-
     rc = epoll_ctl(evc->fd, EPOLL_CTL_ADD, event->fd, &ev);
 
     eventpoll_fatal_if(rc, "Failed to add file descriptor to epoll");
@@ -61,11 +59,7 @@ eventpoll_core_wait(struct eventpoll_core *evc, int max_msecs)
     struct epoll_event *ev;
     int i, n;
 
-    eventpoll_debug("entering epoll_wait on fd %d", evc->fd);
-
     n = epoll_wait(evc->fd, evc->events, evc->max_events, max_msecs);
-
-    eventpoll_debug("epoll got %d events", n);
 
     for (i = 0; i < n; ++i) {
         ev = &evc->events[i];
@@ -73,18 +67,15 @@ eventpoll_core_wait(struct eventpoll_core *evc, int max_msecs)
         event = ev->data.ptr; 
 
         if (ev->events & EPOLLIN) {
-            eventpoll_debug("fd %d is readable", event->fd);
             eventpoll_event_mark_readable(eventpoll, event);
         }
 
         if (ev->events & EPOLLOUT) {
-            eventpoll_debug("fd %d is writable", event->fd);
             eventpoll_event_mark_writable(eventpoll, event);
         }
 
         if (ev->events & EPOLLERR) {
-            eventpoll_debug("fd %d has error", event->fd);
-            eventpoll_event_mark_error(eventpoll, event);
+            eventpoll_event_mark_close(eventpoll, event);
         }
 
     }

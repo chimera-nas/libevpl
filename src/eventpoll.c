@@ -29,6 +29,7 @@ struct eventpoll_listener {
     };
 
     eventpoll_accept_callback_t accept_callback;
+    void                       *private_data;
     int protocol;
 
     struct eventpoll_listener *prev;
@@ -44,6 +45,7 @@ struct eventpoll {
 
     struct eventpoll_buffer   *current_buffer;
     struct eventpoll_buffer   *free_buffers;
+    struct eventpoll_conn     *free_conns;
     struct eventpoll_config   *config;
     struct eventpoll_listener *listeners;
 };
@@ -85,15 +87,20 @@ eventpoll_wait(struct eventpoll *eventpoll, int max_msecs)
             event = eventpoll->active[i];
 
             if ((event->flags & EVENTPOLL_READ_READY) == EVENTPOLL_READ_READY) {
-                event->backend_read_callback(eventpoll, event);
+                event->read_callback(eventpoll, event);
             } 
 
             if ((event->flags & EVENTPOLL_WRITE_READY) == EVENTPOLL_WRITE_READY) {
-                event->backend_write_callback(eventpoll, event);
+                event->write_callback(eventpoll, event);
             }
 
-            if ((event->flags & EVENTPOLL_READ_READY) != EVENTPOLL_READ_READY &&
+            if ((event->flags & EVENTPOLL_FINISH) &&
                 (event->flags & EVENTPOLL_WRITE_READY) != EVENTPOLL_WRITE_READY) {
+
+                event->flags |= EVENTPOLL_CLOSE;
+            }
+
+            if (event->flags & EVENTPOLL_CLOSE) {
 
                 event->flags &= ~ EVENTPOLL_ACTIVE;
 
@@ -101,7 +108,18 @@ eventpoll_wait(struct eventpoll *eventpoll, int max_msecs)
                     eventpoll->active[i] = eventpoll->active[eventpoll->num_active-1];
                 }
                 --eventpoll->num_active;
-            
+
+                eventpoll_conn_destroy(eventpoll, eventpoll_event_conn(event));
+    
+            } else  if ((event->flags & EVENTPOLL_READ_READY) != EVENTPOLL_READ_READY &&
+                        (event->flags & EVENTPOLL_WRITE_READY) != EVENTPOLL_WRITE_READY) {
+
+                event->flags &= ~ EVENTPOLL_ACTIVE;
+
+                if (i + 1 < eventpoll->num_active) {
+                    eventpoll->active[i] = eventpoll->active[eventpoll->num_active-1];
+                }
+                --eventpoll->num_active;
             }
         }
     }
@@ -138,7 +156,7 @@ eventpoll_listen(
         return 1;
     }
 
-    listener->event.user_private_data = private_data;
+    listener->private_data= private_data;
 
     eventpoll_core_add(&eventpoll->core, &listener->event);
 
@@ -170,8 +188,7 @@ eventpoll_connect(
     int protocol,
     const char *address,
     int port,
-    eventpoll_recv_callback_t   recv_callback,
-    eventpoll_error_callback_t error_callback,
+    eventpoll_event_callback_t callback,
     void *private_data)
 {
     struct eventpoll_conn *conn;
@@ -188,15 +205,14 @@ eventpoll_connect(
     }
 
     if (rc) {
-        eventpoll_event_mark_error(eventpoll, &conn->event);
+        eventpoll_event_mark_close(eventpoll, &conn->event);
     } else {
         eventpoll_core_add(&eventpoll->core, &conn->event);
         eventpoll_event_read_interest(eventpoll, &conn->event);
     }
     
-    conn->event.user_recv_callback = recv_callback;
-    conn->event.user_error_callback = error_callback;
-    conn->event.user_private_data = private_data;
+    conn->callback = callback;
+    conn->private_data = private_data;
 
     return conn;
 }
@@ -363,12 +379,34 @@ eventpoll_event_mark_unwritable(
 }
 
 void
-eventpoll_event_mark_error(
+eventpoll_event_mark_finish(
     struct eventpoll *eventpoll,
     struct eventpoll_event *event)
 {
-    event->flags |= EVENTPOLL_ERROR;
+    event->flags |= EVENTPOLL_FINISH;
+
+    if (!(event->flags & EVENTPOLL_ACTIVE)) {
+        event->flags |= EVENTPOLL_ACTIVE;
+        eventpoll->active[eventpoll->num_active++] = event;
+    }
+
 }
+
+void
+eventpoll_event_mark_close(
+    struct eventpoll *eventpoll,
+    struct eventpoll_event *event)
+{
+    event->flags |= EVENTPOLL_CLOSE;
+
+    if (!(event->flags & EVENTPOLL_ACTIVE)) {
+        event->flags |= EVENTPOLL_ACTIVE;
+        eventpoll->active[eventpoll->num_active++] = event;
+    }
+
+}
+
+
 
 void eventpoll_accept(
     struct eventpoll *eventpoll,
@@ -383,10 +421,11 @@ void eventpoll_accept(
 
     listener->accept_callback(
         conn,
-        &conn->event.user_recv_callback,
-        &conn->event.user_error_callback,
-        &conn->event.user_private_data,
-        listener->event.user_private_data);
+        &conn->callback,
+        &conn->private_data,
+        listener->private_data);
+
+    conn->callback(eventpoll, conn, EVENTPOLL_EVENT_CONNECTED, 0, conn->private_data);
 }
 
 void
@@ -485,9 +524,43 @@ eventpoll_send(
 
 }
 
+void
+eventpoll_close(
+    struct eventpoll *eventpoll,
+    struct eventpoll_conn *conn)
+{
+    eventpoll_event_mark_close(eventpoll, &conn->event);
+}
+
+void
+eventpoll_finish(
+    struct eventpoll *eventpoll,
+    struct eventpoll_conn *conn)
+{
+    eventpoll_event_mark_finish(eventpoll, &conn->event);
+}
+
 struct eventpoll_config *
 eventpoll_config(struct eventpoll *eventpoll)
 {
     return eventpoll->config;
 }
 
+void
+eventpoll_conn_destroy(
+    struct eventpoll *eventpoll,
+    struct eventpoll_conn *conn)
+{
+
+    conn->callback(eventpoll, conn, EVENTPOLL_EVENT_DISCONNECTED, 0, conn->private_data);
+
+    switch (conn->protocol) {
+    case EVENTPOLL_PROTO_TCP:
+        eventpoll_close_tcp(&conn->s);
+        break;
+    default:    
+        abort();
+    }
+
+    LL_PREPEND(eventpoll->free_conns, conn);
+}
