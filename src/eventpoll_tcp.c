@@ -115,6 +115,7 @@ eventpoll_read_tcp(
         } else if (res == 0) {
             eventpoll_event_mark_unreadable(event);
             eventpoll_event_mark_close(eventpoll, event);
+            break;
         }
 
         eventpoll_debug("read %ld bytes of %ld total", res, total);
@@ -178,7 +179,7 @@ eventpoll_write_tcp(
 
         eventpoll_debug("wrote %ld bytes", res);
 
-        eventpoll_bvec_ring_consume(&conn->send_ring, res);
+        eventpoll_bvec_ring_consume(eventpoll, &conn->send_ring, res);
 
         if (res != total) {
             eventpoll_event_mark_unwritable(event);
@@ -275,12 +276,24 @@ eventpoll_connect_tcp(
 
 void
 eventpoll_close_tcp(
+    struct eventpoll *eventpoll,
     struct eventpoll_socket *s)
 {
     if (s->fd >= 0) {
         eventpoll_debug("closing tcp socket fd %d", s->fd);
         close(s->fd);
     }
+
+    if (s->recv1.length) {
+        eventpoll_bvec_release(eventpoll, &s->recv1);
+        s->recv1.length = 0;
+    }
+
+    if (s->recv2.length) {
+        eventpoll_bvec_release(eventpoll, &s->recv2);
+        s->recv2.length = 0;
+    }
+
 }
 
 void

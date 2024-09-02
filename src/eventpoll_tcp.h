@@ -27,6 +27,7 @@ eventpoll_connect_tcp(
 
 void
 eventpoll_close_tcp(
+    struct eventpoll *eventpoll,
     struct eventpoll_socket *s);
 
 #endif

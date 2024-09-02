@@ -169,11 +169,12 @@ eventpoll_listen(
 
 void
 eventpoll_listener_destroy(
+    struct eventpoll *eventpoll,
     struct eventpoll_listener *listener)
 {
     switch (listener->protocol) {
     case EVENTPOLL_PROTO_TCP:
-        eventpoll_close_tcp(&listener->s);
+        eventpoll_close_tcp(eventpoll, &listener->s);
         break;
     default:
         break;
@@ -223,13 +224,33 @@ eventpoll_destroy(
     struct eventpoll *eventpoll)
 {
     struct eventpoll_listener *listener;
+    struct eventpoll_conn *conn;
+    struct eventpoll_buffer *buffer;
 
     while (eventpoll->listeners) {
         listener = eventpoll->listeners;
         DL_DELETE(eventpoll->listeners, listener);
-        eventpoll_listener_destroy(listener);
+        eventpoll_listener_destroy(eventpoll, listener);
     }
 
+    while (eventpoll->free_conns) {
+        conn = eventpoll->free_conns;
+        LL_DELETE(eventpoll->free_conns, conn);
+
+        eventpoll_bvec_ring_free(&conn->send_ring);
+        eventpoll_bvec_ring_free(&conn->recv_ring);
+        eventpoll_free(conn);
+    }
+
+    while (eventpoll->free_buffers) {
+        buffer = eventpoll->free_buffers;
+        LL_DELETE(eventpoll->free_buffers, buffer);
+
+        eventpoll_fatal_if(buffer->refcnt, "Buffer has refcnt %u at eventpoll_destroy", buffer->refcnt);
+
+        eventpoll_free(buffer->data);
+        eventpoll_free(buffer);
+    }
     eventpoll_core_destroy(&eventpoll->core);
     eventpoll_config_release(eventpoll->config);
     eventpoll_free(eventpoll->active);
@@ -556,7 +577,7 @@ eventpoll_conn_destroy(
 
     switch (conn->protocol) {
     case EVENTPOLL_PROTO_TCP:
-        eventpoll_close_tcp(&conn->s);
+        eventpoll_close_tcp(eventpoll, &conn->s);
         break;
     default:    
         abort();

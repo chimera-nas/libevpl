@@ -79,7 +79,7 @@ eventpoll_bvec_ring_alloc(
 }
 
 static inline void
-eventpoll_bvec_free(struct eventpoll_bvec_ring *ring)
+eventpoll_bvec_ring_free(struct eventpoll_bvec_ring *ring)
 {
     eventpoll_free(ring->bvec);
 }
@@ -191,6 +191,7 @@ eventpoll_bvec_ring_iov(
 
 static inline void
 eventpoll_bvec_ring_consume(
+    struct eventpoll *eventpoll,
     struct eventpoll_bvec_ring *ring,
     size_t length)
 {
@@ -201,6 +202,7 @@ eventpoll_bvec_ring_consume(
         bvec = &ring->bvec[ring->tail];
 
         if (bvec->length <= length) {
+            eventpoll_bvec_release(eventpoll, bvec);
             length -= bvec->length;
             ring->tail = (ring->tail + 1) & ring->mask;
         } else {
@@ -225,6 +227,7 @@ eventpoll_bvec_ring_append(
     if (head && head->data + head->length == append->data) {
         head->length += length;
     } else {
+        eventpoll_info("incrementing refcnt on buffer");
         eventpoll_bvec_incref(append);
         head = eventpoll_bvec_ring_add(ring, append);
         head->length = length;
