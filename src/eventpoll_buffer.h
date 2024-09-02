@@ -13,29 +13,29 @@
 #include "eventpoll_internal.h"
 
 struct eventpoll_buffer {
-    void *data;
-    int refcnt;
-    unsigned int used;
-    unsigned int size;
+    void                    *data;
+    int                      refcnt;
+    unsigned int             used;
+    unsigned int             size;
     struct eventpoll_buffer *next;
 };
 
 struct eventpoll_bvec_ring {
     struct eventpoll_bvec *bvec;
-    int size;
-    int mask;
-    int alignment;
-    int head;
-    int tail;
+    int                    size;
+    int                    mask;
+    int                    alignment;
+    int                    head;
+    int                    tail;
 };
 
 void eventpoll_buffer_release(
-    struct eventpoll *eventpoll,
+    struct eventpoll        *eventpoll,
     struct eventpoll_buffer *buffer);
 
 static inline void
 eventpoll_bvec_decref(
-    struct eventpoll *eventpoll,
+    struct eventpoll      *eventpoll,
     struct eventpoll_bvec *bvec)
 {
     struct eventpoll_buffer *buffer = bvec->buffer;
@@ -45,14 +45,13 @@ eventpoll_bvec_decref(
     if (buffer->refcnt == 0) {
         eventpoll_buffer_release(eventpoll, buffer);
     }
-}
+} // eventpoll_bvec_decref
 
 static inline void
-eventpoll_bvec_incref(
-    struct eventpoll_bvec *bvec)
+eventpoll_bvec_incref(struct eventpoll_bvec *bvec)
 {
     ++bvec->buffer->refcnt;
-}
+} // eventpoll_bvec_incref
 
 
 
@@ -60,48 +59,53 @@ static inline unsigned int
 eventpoll_buffer_left(struct eventpoll_buffer *buffer)
 {
     return buffer->size - buffer->used;
-}
+} // eventpoll_buffer_left
 
 static inline unsigned int
-eventpoll_buffer_pad(struct eventpoll_buffer *buffer, unsigned int alignment)
+eventpoll_buffer_pad(
+    struct eventpoll_buffer *buffer,
+    unsigned int             alignment)
 {
     return (alignment - (buffer->used & (alignment - 1))) & (alignment - 1);
-}
+} // eventpoll_buffer_pad
 
 static inline void
 eventpoll_bvec_ring_alloc(
     struct eventpoll_bvec_ring *ring,
-    int size,
-    int alignment)
+    int                         size,
+    int                         alignment)
 {
     ring->bvec = eventpoll_valloc(size, 64);
 
-    ring->size = size;
-    ring->mask = size - 1;
+    ring->size      = size;
+    ring->mask      = size - 1;
     ring->alignment = alignment;
-    ring->head = 0;
-    ring->tail = 0;
+    ring->head      = 0;
+    ring->tail      = 0;
 
-}
+} // eventpoll_bvec_ring_alloc
 
 static inline void
 eventpoll_bvec_ring_free(struct eventpoll_bvec_ring *ring)
 {
     eventpoll_free(ring->bvec);
-}
+} // eventpoll_bvec_ring_free
 
 static inline void
 eventpoll_bvec_ring_resize(struct eventpoll_bvec_ring *ring)
 {
-    int new_size = ring->size << 1;
+    int                    new_size = ring->size << 1;
     struct eventpoll_bvec *new_bvec = eventpoll_valloc(
         new_size * sizeof(struct eventpoll_bvec), ring->alignment);
 
     if (ring->head > ring->tail) {
-        memcpy(new_bvec, &ring->bvec[ring->tail], (ring->head - ring->tail) * sizeof(struct eventpoll_bvec));
+        memcpy(new_bvec, &ring->bvec[ring->tail], (ring->head - ring->tail) *
+               sizeof(struct eventpoll_bvec));
     } else {
-        memcpy(new_bvec, &ring->bvec[ring->tail], (ring->size - ring->tail) * sizeof(struct eventpoll_bvec));
-        memcpy(&new_bvec[ring->size - ring->tail], ring->bvec, ring->head * sizeof(struct eventpoll_bvec));
+        memcpy(new_bvec, &ring->bvec[ring->tail], (ring->size - ring->tail) *
+               sizeof(struct eventpoll_bvec));
+        memcpy(&new_bvec[ring->size - ring->tail], ring->bvec, ring->head *
+               sizeof(struct eventpoll_bvec));
     }
 
     ring->head = ring->size - 1;
@@ -112,19 +116,19 @@ eventpoll_bvec_ring_resize(struct eventpoll_bvec_ring *ring)
     ring->bvec = new_bvec;
     ring->size = new_size;
     ring->mask = new_size - 1;
-}
+} // eventpoll_bvec_ring_resize
 
 static inline int
 eventpoll_bvec_ring_is_empty(const struct eventpoll_bvec_ring *ring)
 {
     return ring->head == ring->tail;
-}
+} // eventpoll_bvec_ring_is_empty
 
 static inline int
 eventpoll_bvec_ring_is_full(const struct eventpoll_bvec_ring *ring)
 {
     return ((ring->head + 1) & ring->mask) == ring->tail;
-}
+} // eventpoll_bvec_ring_is_full
 
 static inline struct eventpoll_bvec *
 eventpoll_bvec_ring_head(struct eventpoll_bvec_ring *ring)
@@ -134,10 +138,12 @@ eventpoll_bvec_ring_head(struct eventpoll_bvec_ring *ring)
     } else {
         return &ring->bvec[ring->head];
     }
-}
+} // eventpoll_bvec_ring_head
 
 static inline struct eventpoll_bvec *
-eventpoll_bvec_ring_add(struct eventpoll_bvec_ring *ring, const struct eventpoll_bvec *bvec)
+eventpoll_bvec_ring_add(
+    struct eventpoll_bvec_ring  *ring,
+    const struct eventpoll_bvec *bvec)
 {
     struct eventpoll_bvec *res;
 
@@ -148,42 +154,42 @@ eventpoll_bvec_ring_add(struct eventpoll_bvec_ring *ring, const struct eventpoll
     res = &ring->bvec[ring->head];
 
     ring->bvec[ring->head] = *bvec;
-    ring->head = (ring->head + 1) & ring->mask;
+    ring->head             = (ring->head + 1) & ring->mask;
 
     return res;
-}
+} // eventpoll_bvec_ring_add
 
 static inline void
 eventpoll_bvec_ring_remove(struct eventpoll_bvec_ring *ring)
 {
     ring->tail = (ring->tail + 1) & ring->mask;
-}
+} // eventpoll_bvec_ring_remove
 
 static inline void
 eventpoll_bvec_ring_clear(struct eventpoll_bvec_ring *ring)
 {
     ring->head = 0;
     ring->tail = 0;
-}
+} // eventpoll_bvec_ring_clear
 
 
 static inline int
 eventpoll_bvec_ring_iov(
-    ssize_t *r_total,
-    struct iovec *iov,
-    int max_iov,
+    ssize_t                    *r_total,
+    struct iovec               *iov,
+    int                         max_iov,
     struct eventpoll_bvec_ring *ring)
 {
     struct eventpoll_bvec *bvec;
-    int niov = 0;
-    int pos = ring->tail;
-    int total = 0;
+    int                    niov  = 0;
+    int                    pos   = ring->tail;
+    int                    total = 0;
 
     while (niov < max_iov && pos != ring->head) {
         bvec = &ring->bvec[pos];
 
         iov[niov].iov_base = bvec->data;
-        iov[niov].iov_len = bvec->length;
+        iov[niov].iov_len  = bvec->length;
         niov++;
         total += bvec->length;
 
@@ -193,13 +199,13 @@ eventpoll_bvec_ring_iov(
     *r_total = total;
 
     return niov;
-}
+} // eventpoll_bvec_ring_iov
 
 static inline void
 eventpoll_bvec_ring_consume(
-    struct eventpoll *eventpoll,
+    struct eventpoll           *eventpoll,
     struct eventpoll_bvec_ring *ring,
-    size_t length)
+    size_t                      length)
 {
     struct eventpoll_bvec *bvec;
 
@@ -209,7 +215,7 @@ eventpoll_bvec_ring_consume(
 
         if (bvec->length <= length) {
             eventpoll_bvec_release(eventpoll, bvec);
-            length -= bvec->length;
+            length    -= bvec->length;
             ring->tail = (ring->tail + 1) & ring->mask;
         } else {
             bvec->data   += length;
@@ -218,13 +224,13 @@ eventpoll_bvec_ring_consume(
             length = 0;
         }
     }
-}
+} // eventpoll_bvec_ring_consume
 static inline void
 eventpoll_bvec_ring_append(
-    struct eventpoll *eventpoll,
+    struct eventpoll           *eventpoll,
     struct eventpoll_bvec_ring *ring,
-    struct eventpoll_bvec *append,
-    int length)
+    struct eventpoll_bvec      *append,
+    int                         length)
 {
     struct eventpoll_bvec *head;
 
@@ -235,7 +241,7 @@ eventpoll_bvec_ring_append(
     } else {
         eventpoll_info("incrementing refcnt on buffer");
         eventpoll_bvec_incref(append);
-        head = eventpoll_bvec_ring_add(ring, append);
+        head         = eventpoll_bvec_ring_add(ring, append);
         head->length = length;
     }
 
@@ -245,6 +251,6 @@ eventpoll_bvec_ring_append(
     if (append->length == 0) {
         eventpoll_bvec_decref(eventpoll, append);
     }
-}
+} // eventpoll_bvec_ring_append
 
-#endif
+#endif // ifndef __EVENTPOLL_BUFFER_H__

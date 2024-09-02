@@ -17,23 +17,23 @@ struct eventpoll_socket {
 
 int
 eventpoll_listen_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll        *eventpoll,
     struct eventpoll_socket *s,
-    struct eventpoll_event *event,
-    const char *address,
-    int port);
+    struct eventpoll_event  *event,
+    const char              *address,
+    int                      port);
 
 int
 eventpoll_connect_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll        *eventpoll,
     struct eventpoll_socket *s,
-    struct eventpoll_event *event,
-    const char *address,
-    int port);
+    struct eventpoll_event  *event,
+    const char              *address,
+    int                      port);
 
 void
 eventpoll_close_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll        *eventpoll,
     struct eventpoll_socket *s);
 
-#endif
+#endif // ifndef __EVENTPOLL_TCP_H__

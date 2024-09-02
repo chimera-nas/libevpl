@@ -9,8 +9,10 @@
 
 struct eventpoll_config;
 
-struct eventpoll_config * eventpoll_config_init(void);
+struct eventpoll_config * eventpoll_config_init(
+    void);
 
-void eventpoll_config_release(struct eventpoll_config *config);
+void eventpoll_config_release(
+    struct eventpoll_config *config);
 
-#endif
+#endif // ifndef __EVENTPOLL_CONFIG_H__

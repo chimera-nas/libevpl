@@ -25,56 +25,57 @@
 
 void
 eventpoll_socket_init(
-    struct eventpoll *eventpoll,
+    struct eventpoll        *eventpoll,
     struct eventpoll_socket *s,
-    int fd,
-    int connected)
+    int                      fd,
+    int                      connected)
 {
     struct eventpoll_config *config = eventpoll_config(eventpoll);
 
-    s->fd = fd;
+    s->fd        = fd;
     s->connected = connected;
     s->recv_size = config->buffer_size;
-}
+} /* eventpoll_socket_init */
 
 static inline void
 eventpoll_check_conn(
-    struct eventpoll *eventpoll,
+    struct eventpoll       *eventpoll,
     struct eventpoll_event *event)
 {
-    struct eventpoll_socket *s = eventpoll_event_backend(event);
+    struct eventpoll_socket *s    = eventpoll_event_backend(event);
     struct eventpoll_conn   *conn = eventpoll_event_conn(event);
 
-    socklen_t len;
-    int rc, err;
+    socklen_t                len;
+    int                      rc, err;
 
     if (!s->connected) {
         len = sizeof(err);
-        rc = getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len);
-        eventpoll_fatal_if(rc,"Failed to get SO_ERROR from socket");
+        rc  = getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len);
+        eventpoll_fatal_if(rc, "Failed to get SO_ERROR from socket");
 
         if (err) {
             eventpoll_event_mark_close(eventpoll, event);
         } else {
-            conn->callback(eventpoll, conn, EVENTPOLL_EVENT_CONNECTED, 0, conn->private_data);
+            conn->callback(eventpoll, conn, EVENTPOLL_EVENT_CONNECTED, 0,
+                           conn->private_data);
         }
 
         s->connected = 1;
     }
 
-}
+} /* eventpoll_check_conn */
 
 void
 eventpoll_read_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll       *eventpoll,
     struct eventpoll_event *event)
 {
-    struct eventpoll_socket *s = eventpoll_event_backend(event);
+    struct eventpoll_socket *s    = eventpoll_event_backend(event);
     struct eventpoll_conn   *conn = eventpoll_event_conn(event);
-    struct iovec iov[8];
-    struct msghdr msghdr;
-    ssize_t res, total, remain;
-    int cb = 0;
+    struct iovec             iov[8];
+    struct msghdr            msghdr;
+    ssize_t                  res, total, remain;
+    int                      cb = 0;
 
 
     eventpoll_debug("tcp socket %d readable", s->fd);
@@ -85,7 +86,7 @@ eventpoll_read_tcp(
 
         if (s->recv1.length == 0) {
             if (s->recv2.length) {
-                s->recv1 = s->recv2;
+                s->recv1        = s->recv2;
                 s->recv2.length = 0;
             } else {
                 eventpoll_bvec_alloc(eventpoll, s->recv_size, 0, &s->recv1);
@@ -128,13 +129,16 @@ eventpoll_read_tcp(
         cb = 1;
 
         if (s->recv1.length >= res) {
-            eventpoll_bvec_ring_append(eventpoll, &conn->recv_ring, &s->recv1, res);
+            eventpoll_bvec_ring_append(eventpoll, &conn->recv_ring, &s->recv1,
+                                       res);
         } else {
             remain = res - s->recv1.length;
-            eventpoll_bvec_ring_append(eventpoll, &conn->recv_ring, &s->recv1, s->recv1.length);
-            eventpoll_bvec_ring_append(eventpoll, &conn->recv_ring, &s->recv2, remain);
+            eventpoll_bvec_ring_append(eventpoll, &conn->recv_ring, &s->recv1,
+                                       s->recv1.length);
+            eventpoll_bvec_ring_append(eventpoll, &conn->recv_ring, &s->recv2,
+                                       remain);
         }
-            
+
         if (res < total) {
             eventpoll_event_mark_unreadable(event);
             break;
@@ -142,21 +146,22 @@ eventpoll_read_tcp(
     }
 
     if (cb) {
-        conn->callback(eventpoll, conn, EVENTPOLL_EVENT_RECEIVED, 0, conn->private_data);
+        conn->callback(eventpoll, conn, EVENTPOLL_EVENT_RECEIVED, 0,
+                       conn->private_data);
     }
-}
+} /* eventpoll_read_tcp */
 
 void
 eventpoll_write_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll       *eventpoll,
     struct eventpoll_event *event)
 {
-    struct eventpoll_socket *s = eventpoll_event_backend(event);
+    struct eventpoll_socket *s    = eventpoll_event_backend(event);
     struct eventpoll_conn   *conn = eventpoll_event_conn(event);
-    struct iovec iov[8];
-    int niov;
-    struct msghdr msghdr;
-    ssize_t res, total;
+    struct iovec             iov[8];
+    int                      niov;
+    struct msghdr            msghdr;
+    ssize_t                  res, total;
 
     eventpoll_debug("tcp socket writable");
 
@@ -197,34 +202,34 @@ eventpoll_write_tcp(
         eventpoll_event_write_disinterest(event);
     }
 
-}
+} /* eventpoll_write_tcp */
 
 void
 eventpoll_error_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll       *eventpoll,
     struct eventpoll_event *event)
 {
     eventpoll_debug("tcp socket error");
-}
+} /* eventpoll_error_tcp */
 
 int
 eventpoll_connect_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll        *eventpoll,
     struct eventpoll_socket *s,
-    struct eventpoll_event *event,
-    const char *address,
-    int port)
+    struct eventpoll_event  *event,
+    const char              *address,
+    int                      port)
 {
-    char port_str[8];
+    char            port_str[8];
     struct addrinfo hints, *res, *p;
-    int rc, fd, flags;
+    int             rc, fd, flags;
 
     s->fd = -1;
 
     snprintf(port_str, sizeof(port_str), "%d", port);
 
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
+    hints.ai_family   = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
     rc = getaddrinfo(address, port_str, &hints, &res);
@@ -272,17 +277,17 @@ eventpoll_connect_tcp(
 
     eventpoll_socket_init(eventpoll, s, fd, 0);
 
-    event->fd = fd;
-    event->read_callback = eventpoll_read_tcp;
+    event->fd             = fd;
+    event->read_callback  = eventpoll_read_tcp;
     event->write_callback = eventpoll_write_tcp;
     event->error_callback = eventpoll_error_tcp;
 
     return 0;
-}
+} /* eventpoll_connect_tcp */
 
 void
 eventpoll_close_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll        *eventpoll,
     struct eventpoll_socket *s)
 {
     if (s->fd >= 0) {
@@ -300,25 +305,25 @@ eventpoll_close_tcp(
         s->recv2.length = 0;
     }
 
-}
+} /* eventpoll_close_tcp */
 
 void
 eventpoll_accept_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll       *eventpoll,
     struct eventpoll_event *event)
 {
-    struct eventpoll_socket *ls = eventpoll_event_backend(event);
+    struct eventpoll_socket   *ls       = eventpoll_event_backend(event);
     struct eventpoll_listener *listener = eventpoll_event_listener(event);
-    struct eventpoll_socket *s;
-    struct eventpoll_conn *conn;
-    struct sockaddr_storage client_addr;
-    struct sockaddr *client_addrp;
-    socklen_t client_len = sizeof(client_addr);
-    char ip_str[INET6_ADDRSTRLEN];
-    int fd, port;
-    void *addr;
+    struct eventpoll_socket   *s;
+    struct eventpoll_conn     *conn;
+    struct sockaddr_storage    client_addr;
+    struct sockaddr           *client_addrp;
+    socklen_t                  client_len = sizeof(client_addr);
+    char                       ip_str[INET6_ADDRSTRLEN];
+    int                        fd, port;
+    void                      *addr;
 
-    client_addrp =  (struct sockaddr *)&client_addr;
+    client_addrp =  (struct sockaddr *) &client_addr;
 
 
     while (1) {
@@ -331,18 +336,19 @@ eventpoll_accept_tcp(
         }
 
         if (client_addrp->sa_family == AF_INET) {
-            struct sockaddr_in *ipv4 = (struct sockaddr_in *)client_addrp;
+            struct sockaddr_in *ipv4 = (struct sockaddr_in *) client_addrp;
             addr = &(ipv4->sin_addr);
             port = ntohs(ipv4->sin_port);
         } else {
-            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)client_addrp;
+            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *) client_addrp;
             addr = &(ipv6->sin6_addr);
             port = ntohs(ipv6->sin6_port);
         }
 
         inet_ntop(client_addrp->sa_family, addr, ip_str, sizeof(ip_str));
 
-        conn = eventpoll_alloc_conn(eventpoll, EVENTPOLL_PROTO_TCP, ip_str, port);
+        conn = eventpoll_alloc_conn(eventpoll, EVENTPOLL_PROTO_TCP, ip_str,
+                                    port);
 
         s = eventpoll_conn_backend(conn);
 
@@ -350,37 +356,37 @@ eventpoll_accept_tcp(
 
         eventpoll_socket_init(eventpoll, s, fd, 1);
 
-        conn->event.fd = fd;
-        conn->event.read_callback = eventpoll_read_tcp;
+        conn->event.fd             = fd;
+        conn->event.read_callback  = eventpoll_read_tcp;
         conn->event.write_callback = eventpoll_write_tcp;
         conn->event.error_callback = eventpoll_error_tcp;
 
         eventpoll_accept(eventpoll, listener, conn);
     }
 
-}
+} /* eventpoll_accept_tcp */
 
 int
 eventpoll_listen_tcp(
-    struct eventpoll *eventpoll,
+    struct eventpoll        *eventpoll,
     struct eventpoll_socket *s,
-    struct eventpoll_event *event,
-    const char *address,
-    int port)
+    struct eventpoll_event  *event,
+    const char              *address,
+    int                      port)
 {
-    char port_str[8];
+    char            port_str[8];
     struct addrinfo hints, *res, *p;
-    int rc, fd;
-    const int yes = 1;
+    int             rc, fd;
+    const int       yes = 1;
 
     s->fd = -1;
 
     snprintf(port_str, sizeof(port_str), "%d", port);
 
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
+    hints.ai_family   = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_flags    = AI_PASSIVE;
 
     rc = getaddrinfo(address, port_str, &hints, &res);
 
@@ -424,9 +430,9 @@ eventpoll_listen_tcp(
 
     s->fd = fd;
 
-    event->fd = fd;
+    event->fd            = fd;
     event->read_callback = eventpoll_accept_tcp;
 
     return 0;
 
-}
+} /* eventpoll_listen_tcp */

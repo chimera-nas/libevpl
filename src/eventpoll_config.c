@@ -14,11 +14,11 @@ eventpoll_config_init(void)
 {
     struct eventpoll_config *config = eventpoll_zalloc(sizeof(*config));
 
-    config->max_pending     = 16;
-    config->max_poll_fd     = 16;
-    config->buffer_size     = 2*1024*1024;
-    config->refcnt          = 1;
-    config->bvec_ring_size  = 256;
+    config->max_pending    = 16;
+    config->max_poll_fd    = 16;
+    config->buffer_size    = 2 * 1024 * 1024;
+    config->refcnt         = 1;
+    config->bvec_ring_size = 256;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 
@@ -27,7 +27,7 @@ eventpoll_config_init(void)
     }
 
     return config;
-}
+} /* eventpoll_config_init */
 
 void
 eventpoll_config_release(struct eventpoll_config *config)
@@ -37,4 +37,4 @@ eventpoll_config_release(struct eventpoll_config *config)
     if (config->refcnt == 0) {
         eventpoll_free(config);
     }
-}
+} /* eventpoll_config_release */
