@@ -11,7 +11,7 @@
 #include "core/internal.h"
 
 void
-eventpoll_vlog(
+evpl_vlog(
     int         level,
     const char *fmt,
     va_list     argp)
@@ -21,114 +21,114 @@ eventpoll_vlog(
     bp += vsnprintf(bp, sizeof(buf), fmt, argp);
     bp += snprintf(bp, (buf + sizeof(buf)) - bp, "\n");
     fprintf(stderr, "%s", buf);
-} /* eventpoll_vlog */
+} /* evpl_vlog */
 
 
 void
-eventpoll_debug(
+evpl_debug(
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    eventpoll_vlog(EVENTPOLL_LOG_DEBUG, fmt, argp);
+    evpl_vlog(EVPL_LOG_DEBUG, fmt, argp);
     va_end(argp);
-} /* eventpoll_debug */
+} /* evpl_debug */
 
 void
-eventpoll_info(
+evpl_info(
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    eventpoll_vlog(EVENTPOLL_LOG_INFO, fmt, argp);
+    evpl_vlog(EVPL_LOG_INFO, fmt, argp);
     va_end(argp);
-} /* eventpoll_info */
+} /* evpl_info */
 
 void
-eventpoll_error(
+evpl_error(
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    eventpoll_vlog(EVENTPOLL_LOG_ERROR, fmt, argp);
+    evpl_vlog(EVPL_LOG_ERROR, fmt, argp);
     va_end(argp);
-} /* eventpoll_error */
+} /* evpl_error */
 
 void
-eventpoll_fatal(
+evpl_fatal(
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    eventpoll_vlog(EVENTPOLL_LOG_FATAL, fmt, argp);
+    evpl_vlog(EVPL_LOG_FATAL, fmt, argp);
     va_end(argp);
 
     exit(1);
-} /* eventpoll_fatal */
+} /* evpl_fatal */
 
 void
-eventpoll_abort(
+evpl_abort(
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    eventpoll_vlog(EVENTPOLL_LOG_FATAL, fmt, argp);
+    evpl_vlog(EVPL_LOG_FATAL, fmt, argp);
     va_end(argp);
 
     abort();
-} /* eventpoll_abort */
+} /* evpl_abort */
 
 
 void *
-eventpoll_malloc(unsigned int size)
+evpl_malloc(unsigned int size)
 {
     void *p = malloc(size);
 
     if (!p) {
-        eventpoll_fatal("Failed to allocate %u bytes\n", size);
+        evpl_fatal("Failed to allocate %u bytes\n", size);
     }
 
     return p;
-} /* eventpoll_malloc */
+} /* evpl_malloc */
 
 void *
-eventpoll_zalloc(unsigned int size)
+evpl_zalloc(unsigned int size)
 {
     void *p = calloc(1, size);
 
     if (!p) {
-        eventpoll_fatal("Failed to allocate %u bytes\n", size);
+        evpl_fatal("Failed to allocate %u bytes\n", size);
     }
 
     return p;
-} /* eventpoll_zalloc */
+} /* evpl_zalloc */
 
 void *
-eventpoll_calloc(
+evpl_calloc(
     unsigned int n,
     unsigned int size)
 {
     void *p = calloc(n, size);
 
     if (!p) {
-        eventpoll_fatal("Failed to allocate %u chunks of %u bytes\n", n, size);
+        evpl_fatal("Failed to allocate %u chunks of %u bytes\n", n, size);
     }
 
     return p;
-} /* eventpoll_calloc */
+} /* evpl_calloc */
 
 void *
-eventpoll_valloc(
+evpl_valloc(
     unsigned int size,
     unsigned int alignment)
 {
@@ -138,14 +138,14 @@ eventpoll_valloc(
     p = aligned_alloc(alignment, padded_size);
 
     if (!p) {
-        eventpoll_fatal("Failed to allocate %u bytes\n", size);
+        evpl_fatal("Failed to allocate %u bytes\n", size);
     }
 
     return p;
-} /* eventpoll_valloc */
+} /* evpl_valloc */
 
 void
-eventpoll_free(void *p)
+evpl_free(void *p)
 {
     free(p);
-} /* eventpoll_free */
+} /* evpl_free */

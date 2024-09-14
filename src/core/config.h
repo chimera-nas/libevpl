@@ -6,10 +6,10 @@
 
 #pragma once
 
-struct eventpoll_config;
+struct evpl_config;
 
-struct eventpoll_config * eventpoll_config_init(
+struct evpl_config * evpl_config_init(
     void);
 
-void eventpoll_config_release(
-    struct eventpoll_config *config);
+void evpl_config_release(
+    struct evpl_config *config);

@@ -6,9 +6,9 @@
 
 #pragma once
 
-#include "core/eventpoll.h"
+#include "core/evpl.h"
 
-struct eventpoll_config {
+struct evpl_config {
     unsigned int max_pending;
     unsigned int max_poll_fd;
     unsigned int buffer_size;
@@ -17,48 +17,48 @@ struct eventpoll_config {
     unsigned int bvec_ring_size;
 };
 
-void * eventpoll_malloc(
+void * evpl_malloc(
     unsigned int size);
-void * eventpoll_zalloc(
+void * evpl_zalloc(
     unsigned int size);
-void * eventpoll_calloc(
+void * evpl_calloc(
     unsigned int n,
     unsigned int size);
-void * eventpoll_valloc(
+void * evpl_valloc(
     unsigned int size,
     unsigned int alignment);
-void eventpoll_free(
+void evpl_free(
     void *p);
 
-#define EVENTPOLL_LOG_NONE  0
-#define EVENTPOLL_LOG_DEBUG 1
-#define EVENTPOLL_LOG_INFO  2
-#define EVENTPOLL_LOG_ERROR 3
-#define EVENTPOLL_LOG_FATAL 4
+#define EVPL_LOG_NONE  0
+#define EVPL_LOG_DEBUG 1
+#define EVPL_LOG_INFO  2
+#define EVPL_LOG_ERROR 3
+#define EVPL_LOG_FATAL 4
 
 
-void eventpoll_debug(
+void evpl_debug(
     const char *fmt,
     ...);
-void eventpoll_info(
+void evpl_info(
     const char *fmt,
     ...);
-void eventpoll_error(
+void evpl_error(
     const char *fmt,
     ...);
-void eventpoll_fatal(
+void evpl_fatal(
     const char *fmt,
     ...);
-void eventpoll_crash(
+void evpl_crash(
     const char *fmt,
     ...);
 
-#define eventpoll_fatal_if(cond, ...) \
+#define evpl_fatal_if(cond, ...) \
     if (cond) { \
-        eventpoll_fatal(__VA_ARGS__); \
+        evpl_fatal(__VA_ARGS__); \
     }
 
-#define eventpoll_crash_if(cond, ...) \
+#define evpl_crash_if(cond, ...) \
     if (cond) { \
-        eventpoll_crash(__VA_ARGS__); \
+        evpl_crash(__VA_ARGS__); \
     }

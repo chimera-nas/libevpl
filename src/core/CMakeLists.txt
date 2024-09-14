@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: LGPL
 
 set(CORE_SRC
-    eventpoll.c
-    eventpoll.h
+    evpl.c
+    evpl.h
     tcp.c
     tcp.h
     config.c
@@ -13,15 +13,14 @@ set(CORE_SRC
     internal.h
 )
 
-if (EVENTPOLL_MECH STREQUAL "epoll") 
+if (EVPL_MECH STREQUAL "epoll") 
     set(CORE_SRC ${CORE_SRC} epoll.c epoll.h)
-elseif (EVENTPOLL_MECH STREQUAL "kqueue")
+elseif (EVPL_MECH STREQUAL "kqueue")
     set(CORE_SRC ${COER_SRC} kqueue.c kqueue.h)
 else()
-    message(FATAL_ERROR "No supported EVENTPOLL_MECH specified")
+    message(FATAL_ERROR "No supported EVPL_MECH specified")
 endif()
 
-add_library(eventpoll_core SHARED ${CORE_SRC})
-
+add_library(evpl_core SHARED ${CORE_SRC})
 
 add_subdirectory(tests)

@@ -6,25 +6,25 @@
 
 #pragma once
 
-struct eventpoll_event;
+struct evpl_event;
 
-struct eventpoll_core {
+struct evpl_core {
     int                 fd;
     int                 max_events;
     struct epoll_event *events;
 };
 
-int eventpoll_core_init(
-    struct eventpoll_core *evc,
-    int                    max_events);
-void eventpoll_core_destroy(
-    struct eventpoll_core *evc);
+int evpl_core_init(
+    struct evpl_core *evc,
+    int               max_events);
+void evpl_core_destroy(
+    struct evpl_core *evc);
 
-void eventpoll_core_add(
-    struct eventpoll_core  *evc,
-    struct eventpoll_event *event);
+void evpl_core_add(
+    struct evpl_core  *evc,
+    struct evpl_event *event);
 
-void eventpoll_core_wait(
-    struct eventpoll_core *evc,
-    int                    max_msecs);
+void evpl_core_wait(
+    struct evpl_core *evc,
+    int               max_msecs);
 

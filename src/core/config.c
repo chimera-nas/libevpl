@@ -9,10 +9,10 @@
 #include "core/internal.h"
 
 
-struct eventpoll_config *
-eventpoll_config_init(void)
+struct evpl_config *
+evpl_config_init(void)
 {
-    struct eventpoll_config *config = eventpoll_zalloc(sizeof(*config));
+    struct evpl_config *config = evpl_zalloc(sizeof(*config));
 
     config->max_pending    = 16;
     config->max_poll_fd    = 16;
@@ -27,14 +27,14 @@ eventpoll_config_init(void)
     }
 
     return config;
-} /* eventpoll_config_init */
+} /* evpl_config_init */
 
 void
-eventpoll_config_release(struct eventpoll_config *config)
+evpl_config_release(struct evpl_config *config)
 {
     --config->refcnt;
 
     if (config->refcnt == 0) {
-        eventpoll_free(config);
+        evpl_free(config);
     }
-} /* eventpoll_config_release */
+} /* evpl_config_release */

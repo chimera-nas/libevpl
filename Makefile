@@ -31,6 +31,10 @@ debug: build_debug test_debug
 .PHONY: release
 release: build_release test_release
 
-clean:
+.PHONY: uncrustify
+uncrustify:
+	@uncrustify -c etc/uncrustify.cfg --replace --no-backup src/*/*.[ch]
+
+cleat:
 	@rm -rf build
 		

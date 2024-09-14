@@ -3,44 +3,42 @@
 #include "rpc2/rpc2_client.h"
 #include "core/internal.h"
 
-struct eventpoll_rpc2_client {
-    struct eventpoll *eventpoll;
+struct evpl_rpc2_client {
+    struct evpl *evpl;
 };
 
-struct eventpoll_rpc2_endpoint {
+struct evpl_rpc2_endpoint {
     int protocol;
 };
 
-struct eventpoll_rpc2_client *
-eventpoll_rpc2_client_init(
-    struct eventpoll *eventpoll)
+struct evpl_rpc2_client *
+evpl_rpc2_client_init(struct evpl *evpl)
 {
-    struct eventpoll_rpc2_client *client;
+    struct evpl_rpc2_client *client;
 
-    client = eventpoll_zalloc(sizeof(*client));
+    client = evpl_zalloc(sizeof(*client));
 
-    client->eventpoll = eventpoll;
+    client->evpl = evpl;
 
     return client;
-}
+} /* evpl_rpc2_client_init */
 
 void
-eventpoll_rpc2_client_destroy(
-    struct eventpoll_rpc2_client *client)
+evpl_rpc2_client_destroy(struct evpl_rpc2_client *client)
 {
-    eventpoll_free(client);
-}
+    evpl_free(client);
+} /* evpl_rpc2_client_destroy */
 
-struct eventpoll_rpc2_endpoint *
-eventpoll_rpc2_client_connect(
-    struct eventpoll_rpc2_client *client,
-    int                        protocol,
-    const char                *address,
-    int                        port)
+struct evpl_rpc2_endpoint *
+evpl_rpc2_client_connect(
+    struct evpl_rpc2_client *client,
+    int                      protocol,
+    const char              *address,
+    int                      port)
 {
-    struct eventpoll_rpc2_endpoint *endpoint;
+    struct evpl_rpc2_endpoint *endpoint;
 
-    endpoint = eventpoll_zalloc(sizeof(*endpoint));
+    endpoint = evpl_zalloc(sizeof(*endpoint));
 
     return endpoint;
-}
+} /* evpl_rpc2_client_connect */

@@ -8,73 +8,73 @@
 
 #include <sys/uio.h>
 
-#include "core/eventpoll.h"
+#include "core/evpl.h"
 #include "core/internal.h"
 
-struct eventpoll_buffer {
-    void                    *data;
-    int                      refcnt;
-    unsigned int             used;
-    unsigned int             size;
-    struct eventpoll_buffer *next;
+struct evpl_buffer {
+    void               *data;
+    int                 refcnt;
+    unsigned int        used;
+    unsigned int        size;
+    struct evpl_buffer *next;
 };
 
-struct eventpoll_bvec_ring {
-    struct eventpoll_bvec *bvec;
-    int                    size;
-    int                    mask;
-    int                    alignment;
-    int                    head;
-    int                    tail;
+struct evpl_bvec_ring {
+    struct evpl_bvec *bvec;
+    int               size;
+    int               mask;
+    int               alignment;
+    int               head;
+    int               tail;
 };
 
-void eventpoll_buffer_release(
-    struct eventpoll        *eventpoll,
-    struct eventpoll_buffer *buffer);
+void evpl_buffer_release(
+    struct evpl        *evpl,
+    struct evpl_buffer *buffer);
 
 static inline void
-eventpoll_bvec_decref(
-    struct eventpoll      *eventpoll,
-    struct eventpoll_bvec *bvec)
+evpl_bvec_decref(
+    struct evpl      *evpl,
+    struct evpl_bvec *bvec)
 {
-    struct eventpoll_buffer *buffer = bvec->buffer;
+    struct evpl_buffer *buffer = bvec->buffer;
 
     --buffer->refcnt;
 
     if (buffer->refcnt == 0) {
-        eventpoll_buffer_release(eventpoll, buffer);
+        evpl_buffer_release(evpl, buffer);
     }
-} // eventpoll_bvec_decref
+} // evpl_bvec_decref
 
 static inline void
-eventpoll_bvec_incref(struct eventpoll_bvec *bvec)
+evpl_bvec_incref(struct evpl_bvec *bvec)
 {
     ++bvec->buffer->refcnt;
-} // eventpoll_bvec_incref
+} // evpl_bvec_incref
 
 
 
 static inline unsigned int
-eventpoll_buffer_left(struct eventpoll_buffer *buffer)
+evpl_buffer_left(struct evpl_buffer *buffer)
 {
     return buffer->size - buffer->used;
-} // eventpoll_buffer_left
+} // evpl_buffer_left
 
 static inline unsigned int
-eventpoll_buffer_pad(
-    struct eventpoll_buffer *buffer,
-    unsigned int             alignment)
+evpl_buffer_pad(
+    struct evpl_buffer *buffer,
+    unsigned int        alignment)
 {
     return (alignment - (buffer->used & (alignment - 1))) & (alignment - 1);
-} // eventpoll_buffer_pad
+} // evpl_buffer_pad
 
 static inline void
-eventpoll_bvec_ring_alloc(
-    struct eventpoll_bvec_ring *ring,
-    int                         size,
-    int                         alignment)
+evpl_bvec_ring_alloc(
+    struct evpl_bvec_ring *ring,
+    int                    size,
+    int                    alignment)
 {
-    ring->bvec = eventpoll_valloc(size, 64);
+    ring->bvec = evpl_valloc(size, 64);
 
     ring->size      = size;
     ring->mask      = size - 1;
@@ -82,72 +82,72 @@ eventpoll_bvec_ring_alloc(
     ring->head      = 0;
     ring->tail      = 0;
 
-} // eventpoll_bvec_ring_alloc
+} // evpl_bvec_ring_alloc
 
 static inline void
-eventpoll_bvec_ring_free(struct eventpoll_bvec_ring *ring)
+evpl_bvec_ring_free(struct evpl_bvec_ring *ring)
 {
-    eventpoll_free(ring->bvec);
-} // eventpoll_bvec_ring_free
+    evpl_free(ring->bvec);
+} // evpl_bvec_ring_free
 
 static inline void
-eventpoll_bvec_ring_resize(struct eventpoll_bvec_ring *ring)
+evpl_bvec_ring_resize(struct evpl_bvec_ring *ring)
 {
-    int                    new_size = ring->size << 1;
-    struct eventpoll_bvec *new_bvec = eventpoll_valloc(
-        new_size * sizeof(struct eventpoll_bvec), ring->alignment);
+    int               new_size = ring->size << 1;
+    struct evpl_bvec *new_bvec = evpl_valloc(
+        new_size * sizeof(struct evpl_bvec), ring->alignment);
 
     if (ring->head > ring->tail) {
         memcpy(new_bvec, &ring->bvec[ring->tail], (ring->head - ring->tail) *
-               sizeof(struct eventpoll_bvec));
+               sizeof(struct evpl_bvec));
     } else {
         memcpy(new_bvec, &ring->bvec[ring->tail], (ring->size - ring->tail) *
-               sizeof(struct eventpoll_bvec));
+               sizeof(struct evpl_bvec));
         memcpy(&new_bvec[ring->size - ring->tail], ring->bvec, ring->head *
-               sizeof(struct eventpoll_bvec));
+               sizeof(struct evpl_bvec));
     }
 
     ring->head = ring->size - 1;
     ring->tail = 0;
 
-    eventpoll_free(ring->bvec);
+    evpl_free(ring->bvec);
 
     ring->bvec = new_bvec;
     ring->size = new_size;
     ring->mask = new_size - 1;
-} // eventpoll_bvec_ring_resize
+} // evpl_bvec_ring_resize
 
 static inline int
-eventpoll_bvec_ring_is_empty(const struct eventpoll_bvec_ring *ring)
+evpl_bvec_ring_is_empty(const struct evpl_bvec_ring *ring)
 {
     return ring->head == ring->tail;
-} // eventpoll_bvec_ring_is_empty
+} // evpl_bvec_ring_is_empty
 
 static inline int
-eventpoll_bvec_ring_is_full(const struct eventpoll_bvec_ring *ring)
+evpl_bvec_ring_is_full(const struct evpl_bvec_ring *ring)
 {
     return ((ring->head + 1) & ring->mask) == ring->tail;
-} // eventpoll_bvec_ring_is_full
+} // evpl_bvec_ring_is_full
 
-static inline struct eventpoll_bvec *
-eventpoll_bvec_ring_head(struct eventpoll_bvec_ring *ring)
+static inline struct evpl_bvec *
+evpl_bvec_ring_head(struct evpl_bvec_ring *ring)
 {
     if (ring->head == ring->tail) {
         return NULL;
     } else {
         return &ring->bvec[ring->head];
     }
-} // eventpoll_bvec_ring_head
+} // evpl_bvec_ring_head
 
-static inline struct eventpoll_bvec *
-eventpoll_bvec_ring_add(
-    struct eventpoll_bvec_ring  *ring,
-    const struct eventpoll_bvec *bvec)
+static inline struct evpl_bvec *
+evpl_bvec_ring_add(
+    struct evpl_bvec_ring  *ring,
+    const struct evpl_bvec *bvec)
 {
-    struct eventpoll_bvec *res;
+    struct evpl_bvec *res;
 
-    if (eventpoll_bvec_ring_is_full(ring)) {
-        eventpoll_bvec_ring_resize(ring);
+    if (evpl_bvec_ring_is_full(ring)) {
+        evpl_bvec_ring_resize(ring);
     }
 
     res = &ring->bvec[ring->head];
@@ -156,33 +156,33 @@ eventpoll_bvec_ring_add(
     ring->head             = (ring->head + 1) & ring->mask;
 
     return res;
-} // eventpoll_bvec_ring_add
+} // evpl_bvec_ring_add
 
 static inline void
-eventpoll_bvec_ring_remove(struct eventpoll_bvec_ring *ring)
+evpl_bvec_ring_remove(struct evpl_bvec_ring *ring)
 {
     ring->tail = (ring->tail + 1) & ring->mask;
-} // eventpoll_bvec_ring_remove
+} // evpl_bvec_ring_remove
 
 static inline void
-eventpoll_bvec_ring_clear(struct eventpoll_bvec_ring *ring)
+evpl_bvec_ring_clear(struct evpl_bvec_ring *ring)
 {
     ring->head = 0;
     ring->tail = 0;
-} // eventpoll_bvec_ring_clear
+} // evpl_bvec_ring_clear
 
 
 static inline int
-eventpoll_bvec_ring_iov(
-    ssize_t                    *r_total,
-    struct iovec               *iov,
-    int                         max_iov,
-    struct eventpoll_bvec_ring *ring)
+evpl_bvec_ring_iov(
+    ssize_t               *r_total,
+    struct iovec          *iov,
+    int                    max_iov,
+    struct evpl_bvec_ring *ring)
 {
-    struct eventpoll_bvec *bvec;
-    int                    niov  = 0;
-    int                    pos   = ring->tail;
-    int                    total = 0;
+    struct evpl_bvec *bvec;
+    int               niov  = 0;
+    int               pos   = ring->tail;
+    int               total = 0;
 
     while (niov < max_iov && pos != ring->head) {
         bvec = &ring->bvec[pos];
@@ -198,22 +198,22 @@ eventpoll_bvec_ring_iov(
     *r_total = total;
 
     return niov;
-} // eventpoll_bvec_ring_iov
+} // evpl_bvec_ring_iov
 
 static inline void
-eventpoll_bvec_ring_consume(
-    struct eventpoll           *eventpoll,
-    struct eventpoll_bvec_ring *ring,
-    size_t                      length)
+evpl_bvec_ring_consume(
+    struct evpl           *evpl,
+    struct evpl_bvec_ring *ring,
+    size_t                 length)
 {
-    struct eventpoll_bvec *bvec;
+    struct evpl_bvec *bvec;
 
     while (length > 0 && ring->tail != ring->head) {
 
         bvec = &ring->bvec[ring->tail];
 
         if (bvec->length <= length) {
-            eventpoll_bvec_release(eventpoll, bvec);
+            evpl_bvec_release(evpl, bvec);
             length    -= bvec->length;
             ring->tail = (ring->tail + 1) & ring->mask;
         } else {
@@ -223,24 +223,24 @@ eventpoll_bvec_ring_consume(
             length = 0;
         }
     }
-} // eventpoll_bvec_ring_consume
+} // evpl_bvec_ring_consume
 static inline void
-eventpoll_bvec_ring_append(
-    struct eventpoll           *eventpoll,
-    struct eventpoll_bvec_ring *ring,
-    struct eventpoll_bvec      *append,
-    int                         length)
+evpl_bvec_ring_append(
+    struct evpl           *evpl,
+    struct evpl_bvec_ring *ring,
+    struct evpl_bvec      *append,
+    int                    length)
 {
-    struct eventpoll_bvec *head;
+    struct evpl_bvec *head;
 
-    head = eventpoll_bvec_ring_head(ring);
+    head = evpl_bvec_ring_head(ring);
 
     if (head && head->data + head->length == append->data) {
         head->length += length;
     } else {
-        eventpoll_info("incrementing refcnt on buffer");
-        eventpoll_bvec_incref(append);
-        head         = eventpoll_bvec_ring_add(ring, append);
+        evpl_info("incrementing refcnt on buffer");
+        evpl_bvec_incref(append);
+        head         = evpl_bvec_ring_add(ring, append);
         head->length = length;
     }
 
@@ -248,6 +248,6 @@ eventpoll_bvec_ring_append(
     append->length -= length;
 
     if (append->length == 0) {
-        eventpoll_bvec_decref(eventpoll, append);
+        evpl_bvec_decref(evpl, append);
     }
-} // eventpoll_bvec_ring_append
+} // evpl_bvec_ring_append

@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.22)
 
-project(libeventpoll C)
+project(libevpl C)
 
 set(CMAKE_C_COMPILER clang)
 
@@ -14,9 +14,9 @@ message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
 
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(EVENTPOLL_MECH epoll)
+    set(EVPL_MECH epoll)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(EVENTPOLL_MECH kqueue)
+    set(EVPL_MECH kqueue)
 else()
     message(FATAL_ERROR "Unsupported build platform ${CMAKE_SYSTEM_NAME}")
 endif()
@@ -32,7 +32,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_definitions(-O3)
 endif()
 
-add_definitions(-g -Wall -DEVENTPOLL_MECH=${EVENTPOLL_MECH})
+add_definitions(-g -Wall -DEVPL_MECH=${EVPL_MECH})
 
 include_directories(3rdparty/uthash)
 

@@ -6,91 +6,91 @@
 
 #pragma once
 
-#include "core/eventpoll.h"
+#include "core/evpl.h"
 
-struct eventpoll_listener;
-struct eventpoll_conn;
-struct eventpoll_event;
+struct evpl_listener;
+struct evpl_conn;
+struct evpl_event;
 
-typedef void (*eventpoll_event_read_callback_t)(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
-typedef void (*eventpoll_event_write_callback_t)(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
-typedef void (*eventpoll_event_error_callback_t)(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
+typedef void (*evpl_event_read_callback_t)(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+typedef void (*evpl_event_write_callback_t)(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+typedef void (*evpl_event_error_callback_t)(
+    struct evpl       *evpl,
+    struct evpl_event *event);
 
-#define EVENTPOLL_READABLE       0x01
-#define EVENTPOLL_WRITABLE       0x02
-#define EVENTPOLL_READ_INTEREST  0x04
-#define EVENTPOLL_WRITE_INTEREST 0x08
-#define EVENTPOLL_ACTIVE         0x10
-#define EVENTPOLL_FINISH         0x20
-#define EVENTPOLL_CLOSE          0x40
+#define EVPL_READABLE       0x01
+#define EVPL_WRITABLE       0x02
+#define EVPL_READ_INTEREST  0x04
+#define EVPL_WRITE_INTEREST 0x08
+#define EVPL_ACTIVE         0x10
+#define EVPL_FINISH         0x20
+#define EVPL_CLOSE          0x40
 
-#define EVENTPOLL_READ_READY     (EVENTPOLL_READABLE | EVENTPOLL_READ_INTEREST)
-#define EVENTPOLL_WRITE_READY    (EVENTPOLL_WRITABLE | EVENTPOLL_WRITE_INTEREST)
+#define EVPL_READ_READY     (EVPL_READABLE | EVPL_READ_INTEREST)
+#define EVPL_WRITE_READY    (EVPL_WRITABLE | EVPL_WRITE_INTEREST)
 
-struct eventpoll_event {
-    int                              fd;
-    unsigned int                     flags;
-    eventpoll_event_read_callback_t  read_callback;
-    eventpoll_event_write_callback_t write_callback;
-    eventpoll_event_error_callback_t error_callback;
+struct evpl_event {
+    int                         fd;
+    unsigned int                flags;
+    evpl_event_read_callback_t  read_callback;
+    evpl_event_write_callback_t write_callback;
+    evpl_event_error_callback_t error_callback;
 };
 
-void eventpoll_event_read_interest(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
-void eventpoll_event_read_disinterest(
-    struct eventpoll_event *event);
-void eventpoll_event_write_interest(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
-void eventpoll_event_write_disinterest(
-    struct eventpoll_event *event);
+void evpl_event_read_interest(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+void evpl_event_read_disinterest(
+    struct evpl_event *event);
+void evpl_event_write_interest(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+void evpl_event_write_disinterest(
+    struct evpl_event *event);
 
 
-void eventpoll_event_mark_readable(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
-void eventpoll_event_mark_unreadable(
-    struct eventpoll_event *event);
-void eventpoll_event_mark_writable(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
-void eventpoll_event_mark_unwritable(
-    struct eventpoll_event *event);
-void eventpoll_event_mark_finish(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
-void eventpoll_event_mark_close(
-    struct eventpoll       *eventpoll,
-    struct eventpoll_event *event);
+void evpl_event_mark_readable(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+void evpl_event_mark_unreadable(
+    struct evpl_event *event);
+void evpl_event_mark_writable(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+void evpl_event_mark_unwritable(
+    struct evpl_event *event);
+void evpl_event_mark_finish(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+void evpl_event_mark_close(
+    struct evpl       *evpl,
+    struct evpl_event *event);
 
 
-void eventpoll_accept(
-    struct eventpoll          *eventpoll,
-    struct eventpoll_listener *listener,
-    struct eventpoll_conn     *conn);
+void evpl_accept(
+    struct evpl          *evpl,
+    struct evpl_listener *listener,
+    struct evpl_conn     *conn);
 /*
- * The eventpoll_core is always the first member of eventpoll,
+ * The evpl_core is always the first member of evpl,
  * so we can cast between them
  */
 
-#define eventpoll_from_core(core)       ((struct eventpoll *) core)
+#define evpl_from_core(core)       ((struct evpl *) core)
 /*
- * The backend structure is always immediately following the eventpoll_event
- * in an eventpoll_conn, and eventpoll_event is always first, so we can do
+ * The backend structure is always immediately following the evpl_event
+ * in an evpl_conn, and evpl_event is always first, so we can do
  * some pointer casting to get backends from the opaque structure
  */
 
-#define eventpoll_event_backend(conn) \
-    (void *) (((struct eventpoll_event *) conn) + 1)
+#define evpl_event_backend(conn) \
+    (void *) (((struct evpl_event *) conn) + 1)
 
-#define eventpoll_conn_backend(conn)    eventpoll_event_backend(conn)
+#define evpl_conn_backend(conn)    evpl_event_backend(conn)
 
-#define eventpoll_event_conn(event)     ((struct eventpoll_conn *) event)
-#define eventpoll_event_listener(event) ((struct eventpoll_listener *) event)
+#define evpl_event_conn(event)     ((struct evpl_conn *) event)
+#define evpl_event_listener(event) ((struct evpl_listener *) event)

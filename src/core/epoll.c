@@ -15,11 +15,11 @@
 #include "core/event.h"
 
 int
-eventpoll_core_init(
-    struct eventpoll_core *evc,
-    int                    max_events)
+evpl_core_init(
+    struct evpl_core *evc,
+    int               max_events)
 {
-    evc->fd = epoll_create(255); /* size is ignored in linux >= 2.6.8 */
+    evc->fd = epoll_create(255);     /* size is ignored in linux >= 2.6.8 */
 
     if (evc->fd < 0) {
         return errno;
@@ -30,19 +30,19 @@ eventpoll_core_init(
     evc->events = calloc(max_events, sizeof(struct epoll_event));
 
     return 0;
-} /* eventpoll_core_init */
+} /* evpl_core_init */
 
 void
-eventpoll_core_destroy(struct eventpoll_core *evc)
+evpl_core_destroy(struct evpl_core *evc)
 {
     free(evc->events);
     close(evc->fd);
-} /* eventpoll_core_destroy */
+} /* evpl_core_destroy */
 
 void
-eventpoll_core_add(
-    struct eventpoll_core  *evc,
-    struct eventpoll_event *event)
+evpl_core_add(
+    struct evpl_core  *evc,
+    struct evpl_event *event)
 {
     struct epoll_event ev;
     int                rc;
@@ -52,19 +52,19 @@ eventpoll_core_add(
 
     rc = epoll_ctl(evc->fd, EPOLL_CTL_ADD, event->fd, &ev);
 
-    eventpoll_fatal_if(rc, "Failed to add file descriptor to epoll");
-} /* eventpoll_core_add */
+    evpl_fatal_if(rc, "Failed to add file descriptor to epoll");
+} /* evpl_core_add */
 
 
 void
-eventpoll_core_wait(
-    struct eventpoll_core *evc,
-    int                    max_msecs)
+evpl_core_wait(
+    struct evpl_core *evc,
+    int               max_msecs)
 {
-    struct eventpoll       *eventpoll = eventpoll_from_core(evc);
-    struct eventpoll_event *event;
-    struct epoll_event     *ev;
-    int                     i, n;
+    struct evpl        *evpl = evpl_from_core(evc);
+    struct evpl_event  *event;
+    struct epoll_event *ev;
+    int                 i, n;
 
     n = epoll_wait(evc->fd, evc->events, evc->max_events, max_msecs);
 
@@ -74,16 +74,16 @@ eventpoll_core_wait(
         event = ev->data.ptr;
 
         if (ev->events & EPOLLIN) {
-            eventpoll_event_mark_readable(eventpoll, event);
+            evpl_event_mark_readable(evpl, event);
         }
 
         if (ev->events & EPOLLOUT) {
-            eventpoll_event_mark_writable(eventpoll, event);
+            evpl_event_mark_writable(evpl, event);
         }
 
         if (ev->events & EPOLLERR) {
-            eventpoll_event_mark_close(eventpoll, event);
+            evpl_event_mark_close(evpl, event);
         }
 
     }
-} /* eventpoll_core_wait */
+} /* evpl_core_wait */

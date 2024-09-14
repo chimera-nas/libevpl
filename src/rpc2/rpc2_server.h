@@ -1,20 +1,20 @@
 #pragma once
 
-struct eventpoll;
-struct eventpoll_rpc2_server;
-struct eventpoll_rpc2_msg;
+struct evpl;
+struct evpl_rpc2_server;
+struct evpl_rpc2_msg;
 
-struct eventpoll_rpc2_server *
-eventpoll_rpc2_server_init(
-    struct eventpoll *eventpoll);
+struct evpl_rpc2_server *
+evpl_rpc2_server_init(
+    struct evpl *evpl);
 
 void
-eventpoll_rpc2_server_destroy(
-    struct eventpoll_rpc2_server *server);
+evpl_rpc2_server_destroy(
+    struct evpl_rpc2_server *server);
 
 int
-eventpoll_rpc2_server_listen(
-    struct eventpoll_rpc2_server *server,
-    int protocol,
-    const char *address,
-    int port);
+evpl_rpc2_server_listen(
+    struct evpl_rpc2_server *server,
+    int                      protocol,
+    const char              *address,
+    int                      port);
