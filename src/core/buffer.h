@@ -4,13 +4,12 @@
  * SPDX-License-Identifier: LGPL
  */
 
-#ifndef __EVENTPOLL_BUFFER_H__
-#define __EVENTPOLL_BUFFER_H__
+#pragma once
 
 #include <sys/uio.h>
 
-#include "eventpoll.h"
-#include "eventpoll_internal.h"
+#include "core/eventpoll.h"
+#include "core/internal.h"
 
 struct eventpoll_buffer {
     void                    *data;
@@ -252,5 +251,3 @@ eventpoll_bvec_ring_append(
         eventpoll_bvec_decref(eventpoll, append);
     }
 } // eventpoll_bvec_ring_append
-
-#endif // ifndef __EVENTPOLL_BUFFER_H__

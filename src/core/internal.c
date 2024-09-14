@@ -8,7 +8,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
-#include "eventpoll_internal.h"
+#include "core/internal.h"
 
 void
 eventpoll_vlog(

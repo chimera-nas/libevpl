@@ -1,25 +1,19 @@
-# SPDX-FileCopyrightText: 2024 Ben Jarvis
-#
-# SPDX-License-Identifier: LGPL
+macro(unit_test source_file)
+    # Get the file name without extension
+    get_filename_component(test_name ${source_file} NAME_WE)
 
-set(SRC
-    eventpoll.c
-    eventpoll.h
-    eventpoll_tcp.c
-    eventpoll_tcp.h
-    eventpoll_config.c
-    eventpoll_config.h
-    eventpoll_internal.c
-    eventpoll_internal.h
-)
+    # Define the executable
+    add_executable(${test_name} ${source_file})
 
-if (EVENTPOLL_MECH STREQUAL "epoll") 
-    set(SRC ${SRC} eventpoll_core_epoll.c eventpoll_core_epoll.h)
-elseif (EVENTPOLL_MECH STREQUAL "kqueue")
-    set(SRC ${SRC} eventpoll_core_kqueue.c eventpoll_core_kqueue.h)
-else()
-    message(FATAL_ERROR "No supported EVENTPOLL_MECH specified")
-endif()
+    # Link libraries (add any required libraries here)
+    target_link_libraries(${test_name} eventpoll_core pthread)
 
-add_library(eventpoll SHARED ${SRC})
+    # Add the test
+    add_test(NAME ${test_name} COMMAND ${test_name})
+endmacro()
 
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
+add_subdirectory(core)
+add_subdirectory(rpc2)

@@ -5,8 +5,8 @@
  */
 
 #include <unistd.h>
-#include "eventpoll_config.h"
-#include "eventpoll_internal.h"
+#include "core/config.h"
+#include "core/internal.h"
 
 
 struct eventpoll_config *

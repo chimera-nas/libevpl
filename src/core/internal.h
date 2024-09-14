@@ -4,10 +4,9 @@
  * SPDX-License-Identifier: LGPL
  */
 
-#ifndef __EVENTPOLL_INTERNAL_H__
-#define __EVENTPOLL_INTERNAL_H__
+#pragma once
 
-#include "eventpoll.h"
+#include "core/eventpoll.h"
 
 struct eventpoll_config {
     unsigned int max_pending;
@@ -63,5 +62,3 @@ void eventpoll_crash(
     if (cond) { \
         eventpoll_crash(__VA_ARGS__); \
     }
-
-#endif // ifndef __EVENTPOLL_INTERNAL_H__

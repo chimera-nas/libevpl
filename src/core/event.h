@@ -4,10 +4,9 @@
  * SPDX-License-Identifier: LGPL
  */
 
-#ifndef __EVENTPOLL_EVENT_H__
-#define __EVENTPOLL_EVENT_H__
+#pragma once
 
-#include "eventpoll.h"
+#include "core/eventpoll.h"
 
 struct eventpoll_listener;
 struct eventpoll_conn;
@@ -95,5 +94,3 @@ void eventpoll_accept(
 
 #define eventpoll_event_conn(event)     ((struct eventpoll_conn *) event)
 #define eventpoll_event_listener(event) ((struct eventpoll_listener *) event)
-
-#endif // ifndef __EVENTPOLL_EVENT_H__

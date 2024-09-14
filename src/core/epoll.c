@@ -10,9 +10,9 @@
 #include <unistd.h>
 #include <errno.h>
 
-#include "eventpoll_core_epoll.h"
-#include "eventpoll_internal.h"
-#include "eventpoll_event.h"
+#include "core/epoll.h"
+#include "core/internal.h"
+#include "core/event.h"
 
 int
 eventpoll_core_init(

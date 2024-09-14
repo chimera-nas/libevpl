@@ -37,6 +37,3 @@ add_definitions(-g -Wall -DEVENTPOLL_MECH=${EVENTPOLL_MECH})
 include_directories(3rdparty/uthash)
 
 add_subdirectory(src)
-
-include_directories(src)
-add_subdirectory(tests)

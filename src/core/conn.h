@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: LGPL
  */
 
-#ifndef __EVENTPOLL_CONN_H__
-#define __EVENTPOLL_CONN_H__
+#pragma once
 
 struct eventpoll_conn {
     struct eventpoll_event     event; /* must be first member */
@@ -38,6 +37,3 @@ void
 eventpoll_conn_destroy(
     struct eventpoll      *eventpoll,
     struct eventpoll_conn *conn);
-
-
-#endif // ifndef __EVENTPOLL_CONN_H__

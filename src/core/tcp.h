@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: LGPL
  */
 
-#ifndef __EVENTPOLL_TCP_H__
-#define __EVENTPOLL_TCP_H__
+#pragma once
 
 struct eventpoll_socket {
     int                   fd;
@@ -35,5 +34,3 @@ void
 eventpoll_close_tcp(
     struct eventpoll        *eventpoll,
     struct eventpoll_socket *s);
-
-#endif // ifndef __EVENTPOLL_TCP_H__

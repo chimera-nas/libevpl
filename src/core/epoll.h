@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: LGPL
  */
 
-#ifndef __EVENTPOLL_CORE_H__
-#define __EVENTPOLL_CORE_H__
+#pragma once
 
 struct eventpoll_event;
 
@@ -29,5 +28,3 @@ void eventpoll_core_wait(
     struct eventpoll_core *evc,
     int                    max_msecs);
 
-
-#endif // ifndef __EVENTPOLL_CORE_H__

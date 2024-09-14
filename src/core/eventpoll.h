@@ -4,12 +4,10 @@
  * SPDX-License-Identifier: LGPL
  */
 
-#ifndef __EVENTPOLL_CLIENT_H__
-#define __EVENTPOLL_CLIENT_H__
+#pragma once
 
 struct iovec;
-
-#include "eventpoll_config.h"
+struct eventpoll_config;
 
 #define EVENTPOLL_PROTO_TCP 1
 
@@ -121,5 +119,3 @@ eventpoll_conn_port(
 struct eventpoll_config *
 eventpoll_config(
     struct eventpoll *eventpoll);
-
-#endif // ifndef __EVENTPOLL_CLIENT_H__

@@ -15,13 +15,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "eventpoll.h"
-#include "eventpoll_internal.h"
-#include "eventpoll_event.h"
-#include "eventpoll_tcp.h"
-#include "eventpoll_buffer.h"
-#include "eventpoll_conn.h"
-#include "eventpoll_event.h"
+#include "core/eventpoll.h"
+#include "core/internal.h"
+#include "core/event.h"
+#include "core/tcp.h"
+#include "core/buffer.h"
+#include "core/conn.h"
 
 void
 eventpoll_socket_init(

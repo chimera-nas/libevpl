@@ -14,18 +14,18 @@
 #include "utlist.h"
 
 #if EVENTPOLL_MECH == epoll
-#include "eventpoll_core_epoll.h"
+#include "core/epoll.h"
 #else  /* if EVENTPOLL_MECH == epoll */
 #error  No EVENTPOLL_MECH
 #endif /* if EVENTPOLL_MECH == epoll */
 
-#include "eventpoll.h"
-#include "eventpoll_internal.h"
-#include "eventpoll_config.h"
-#include "eventpoll_tcp.h"
-#include "eventpoll_event.h"
-#include "eventpoll_buffer.h"
-#include "eventpoll_conn.h"
+#include "core/eventpoll.h"
+#include "core/internal.h"
+#include "core/config.h"
+#include "core/tcp.h"
+#include "core/event.h"
+#include "core/buffer.h"
+#include "core/conn.h"
 
 struct eventpoll_listener {
     struct eventpoll_event      event; /* must be first member */

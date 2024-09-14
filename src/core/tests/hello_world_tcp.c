@@ -10,8 +10,8 @@
 #include <pthread.h>
 #include <sys/uio.h>
 
-#include "eventpoll.h"
-#include "eventpoll_internal.h"
+#include "core/eventpoll.h"
+#include "core/internal.h"
 
 int
 client_callback(
