@@ -6,8 +6,6 @@ cmake_minimum_required(VERSION 3.22)
 
 project(libevpl C)
 
-set(CMAKE_C_COMPILER clang)
-
 enable_testing()
 
 message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
@@ -32,8 +30,21 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_definitions(-O3)
 endif()
 
-add_definitions(-g -Wall -DEVPL_MECH=${EVPL_MECH})
+find_library(RDMACM_LIB NAMES rdmacm NAMES mylib)
+find_path(RDMACM_INCLUDE_DIR NAMES rdma/rdma_cma.h)
+
+if (RDMACM_LIB AND RDMACM_INCLUDE_DIR) 
+    message(STATUS "RDMACM library ${RDMACM_LIB}")
+    message(STATUS "RDMACM include ${RDMACM_INCLUDE_DIR}")
+    include_directories(${RDMACM_INCLUDE_DIR})
+    add_definitions(-DHAVE_RDMACM)
+else()
+    message(STATUS "rdmacm library not found.")
+endif()
+
+add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
 
 include_directories(3rdparty/uthash)
 
+add_subdirectory(ext)
 add_subdirectory(src)

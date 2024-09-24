@@ -2,5 +2,5 @@
 #
 # SPDX-License-Identifier: LGPL
 
-unit_test(core hello_world_tcp.c)
+unit_test(evpl_core hello_world_tcp hello_world_tcp.c)
 

@@ -35,6 +35,6 @@ release: build_release test_release
 uncrustify:
 	@uncrustify -c etc/uncrustify.cfg --replace --no-backup src/*/*.[ch]
 
-cleat:
+clean:
 	@rm -rf build
 		

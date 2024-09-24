@@ -11,25 +11,7 @@
 #include <sys/uio.h>
 
 #include "core/evpl.h"
-#include "rpc2/rpc2.h"
-
 #include "core/internal.h"
-
-#include "hello_world_tcp_xdr.h"
-
-typedef void (*GreetingCallback)(struct Hello *msg, void *private_data);
-
-
-void
-hello_greeting_call(
-    struct evpl_rpc2_agent *agent,
-    struct evpl_conn *conn,
-    struct Hello *hello,
-    GreetingCallback callback,
-    void *private_data)
-{
-
-}
 
 int
 client_callback(
@@ -52,46 +34,39 @@ client_callback(
     return 0;
 }
 
-void client_dispatch(
-    struct evpl_rpc2_agent *agent,
-    struct evpl_rpc2_request *msg,
-    void *private_data)
-{
-    evpl_info("Received rpc2 request");
-}
-
 void *
 client_thread(void *arg)
 {
     struct evpl *evpl;
-    struct evpl_rpc2_agent *agent;
+    struct evpl_endpoint *ep;
     struct evpl_conn *conn;
-    struct Hello hello;
-    static const char hello_string[] = "Hello World!";
+    struct evpl_bvec bvec;
+    const char hello[] = "Hello World!";
+    int slen = strlen(hello);
     int run = 1;
 
-    evpl = evpl_init(NULL);
+    evpl = evpl_create();
 
-    agent = evpl_rpc2_init(evpl);
+    ep = evpl_endpoint_create(evpl, EVPL_RDMACM_RC, "127.0.0.1", 8000);
 
-    conn = evpl_rpc2_connect(agent, EVPL_PROTO_TCP, "127.0.0.1", 8000,
-                      client_dispatch, &run);
+    conn = evpl_connect(evpl, ep, client_callback, &run);
 
-    hello.id = 42;
+    evpl_bvec_alloc(evpl, slen, 0, 1, &bvec);
 
-    xdr_set_str_static(&hello, greeting, hello_string, strlen(hello_string));
+    memcpy(evpl_bvec_data(&bvec), hello, slen);
 
-    evpl_rpc2_call(agent, conn, 1, 1, 1);
+    evpl_send(evpl, conn, &bvec, 1);
 
     while (run) {
-    
         evpl_wait(evpl, -1);
     }
 
     evpl_debug("client loop out");
 
     evpl_close(evpl, conn);
-    evpl_rpc2_destroy(agent);
+
+    evpl_endpoint_close(evpl, ep);
+
     evpl_destroy(evpl);
 
     return NULL;
@@ -104,9 +79,9 @@ int server_callback(
     unsigned int event_code,
     void *private_data)
 {
-    //struct evpl_bvec bvec, *bvecp;
-    //const char hello[] = "Hello World!";
-    //int slen = strlen(hello);
+    struct evpl_bvec bvec;
+    const char hello[] = "Hello World!";
+    int slen = strlen(hello);
     int *run = private_data;
 
     evpl_info("server callback event %u code %u", event_type, event_code);
@@ -117,45 +92,51 @@ int server_callback(
         break;
     case EVPL_EVENT_RECEIVED:
 
-/*
-        evpl_bvec_alloc(evpl, slen, 0, &bvec);
+        evpl_bvec_alloc(evpl, slen, 0, 1, &bvec);
 
         memcpy(evpl_bvec_data(&bvec), hello, slen);
 
-        bvecp = &bvec;
-
-        evpl_send(evpl, conn, &bvecp, 1);
+        evpl_send(evpl, conn, &bvec, 1);
 
         evpl_finish(evpl, conn);
-*/
         break;
     }
 
     return 0;
 }
 
-void server_dispatch(
-    struct evpl_rpc2_agent *agent,
-    struct evpl_rpc2_request *msg,
-    void *private_data)
+void accept_callback(
+    struct evpl_conn *conn,
+    evpl_event_callback_t *callback,
+    void **conn_private_data,
+    void       *private_data)
 {
-    evpl_info("Received rpc2 request");
-}
+    const struct evpl_endpoint *ep = evpl_conn_endpoint(conn);
 
+    evpl_info("Received connection from %s:%d",
+        evpl_endpoint_address(ep),
+        evpl_endpoint_port(ep));
+
+    *callback = server_callback;
+    *conn_private_data = private_data;
+}
 int
 main(int argc, char *argv[])
 {
     pthread_t thr;
     struct evpl *evpl;
-    struct evpl_rpc2_agent *agent;
+    struct evpl_listener *listener;
     int run = 1;
+    struct evpl_endpoint *ep;
 
-    evpl = evpl_init(NULL);
+    evpl_init(NULL);
 
-    agent = evpl_rpc2_init(evpl);
+    evpl = evpl_create();
 
-    evpl_rpc2_listen(agent, EVPL_PROTO_TCP,
-                     "0.0.0.0", 8000, server_dispatch, &run);
+
+    ep = evpl_endpoint_create(evpl, EVPL_RDMACM_RC, "0.0.0.0", 8000);
+
+    listener = evpl_listen(evpl, ep, accept_callback, &run);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 
@@ -165,8 +146,13 @@ main(int argc, char *argv[])
 
     pthread_join(thr, NULL);
 
-    evpl_rpc2_destroy(agent);
+    evpl_listener_destroy(evpl, listener);
+
+    evpl_endpoint_close(evpl, ep);
+
     evpl_destroy(evpl);
+
+    evpl_cleanup();
 
     return 0;
 }

@@ -1,19 +1,51 @@
-macro(unit_test module source_file)
-    # Get the file name without extension
-    get_filename_component(test_name ${source_file} NAME_WE)
+macro(unit_test module test_name)
 
-    # Define the executable
-    add_executable(${module}_${test_name} ${source_file})
+    set(sources ${ARGN})
 
-    # Link libraries (add any required libraries here)
-    target_link_libraries(${module}_${test_name} evpl_core pthread)
+    add_executable(${module}_${test_name} ${sources})
+
+    target_link_libraries(${module}_${test_name} ${module} pthread)
 
     # Add the test
     add_test(NAME ${module}_${test_name} COMMAND ${module}_${test_name})
+
+    set_tests_properties(${module}_${test_name} PROPERTIES LABELS ${module})
 endmacro()
 
+macro(unit_test_xdr module test_name xdr_file)
+    set(sources ${ARGN})
+
+
+    set(XDR_C ${CMAKE_CURRENT_BINARY_DIR}/${test_name}_xdr.c)
+    set(XDR_H ${CMAKE_CURRENT_BINARY_DIR}/${test_name}_xdr.h)
+    set(XDR_X ${CMAKE_CURRENT_SOURCE_DIR}/${xdr_file})
+
+    add_custom_command(
+        OUTPUT ${XDR_C} ${XDR_H}
+        COMMAND ${XDRZCC} ${XDR_X} ${XDR_C} ${XDR_H}
+        DEPENDS ${xdr_file} ${XDRZCC}
+        COMMENT "Compiling ${xdr_file}"
+    )
+
+    set_source_files_properties(
+        ${XDR_C} PROPERTIES COMPILE_OPTIONS -Wno-unused
+    )
+
+    include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
+    unit_test(${module} ${test_name} ${sources} ${XDR_C} ${XDR_H})
+
+    add_dependencies(${module}_${test_name} xdrzcc)
+
+endmacro()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 add_subdirectory(core)
-add_subdirectory(rpc2)
+add_subdirectory(socket)
+
+if (RDMACM_LIB)
+    add_subdirectory(rdmacm)
+endif()
+
+#add_subdirectory(rpc2)

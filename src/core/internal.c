@@ -4,9 +4,14 @@
  * SPDX-License-Identifier: LGPL
  */
 
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <time.h>
+#include <sys/types.h>
 
 #include "core/internal.h"
 
@@ -16,9 +21,25 @@ evpl_vlog(
     const char *fmt,
     va_list     argp)
 {
+    struct timespec ts;
+    struct tm tm_info;
     char buf[256], *bp = buf;
+    uint64_t pid, tid;
 
-    bp += vsnprintf(bp, sizeof(buf), fmt, argp);
+    clock_gettime(CLOCK_REALTIME, &ts);
+    
+    gmtime_r(&ts.tv_sec, &tm_info);
+
+    pid = getpid();
+
+    tid = gettid();
+
+    bp += snprintf(bp, sizeof(buf), "time=%04d-%02d-%02dT%02d:%02d:%02d.%09ldZ process=%lu thread=%lu ",
+             tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
+             tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec, ts.tv_nsec,
+             pid, tid);
+
+    bp += vsnprintf(bp, (buf + sizeof(buf)) - bp, fmt, argp);
     bp += snprintf(bp, (buf + sizeof(buf)) - bp, "\n");
     fprintf(stderr, "%s", buf);
 } /* evpl_vlog */

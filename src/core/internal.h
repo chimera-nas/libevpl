@@ -5,6 +5,9 @@
  */
 
 #pragma once
+#include <stdint.h>
+#include <stdlib.h>
+#include <stddef.h>
 
 #include "core/evpl.h"
 
@@ -49,7 +52,7 @@ void evpl_error(
 void evpl_fatal(
     const char *fmt,
     ...);
-void evpl_crash(
+void evpl_abort(
     const char *fmt,
     ...);
 
@@ -58,7 +61,20 @@ void evpl_crash(
         evpl_fatal(__VA_ARGS__); \
     }
 
-#define evpl_crash_if(cond, ...) \
+#define evpl_abort_if(cond, ...) \
     if (cond) { \
-        evpl_crash(__VA_ARGS__); \
+        evpl_abort(__VA_ARGS__); \
     }
+
+#ifndef unlikely
+#define unlikely(x)    __builtin_expect(!!(x), 0)
+#endif
+
+#define container_of(ptr, type, member) ({            \
+    typeof(((type *)0)->member) *__mptr = (ptr); \
+    (type *)((char *)__mptr - offsetof(type, member)); })
+
+
+#ifndef FORCE_INLINE
+#define FORCE_INLINE __attribute__((always_inline)) inline
+#endif

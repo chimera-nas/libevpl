@@ -47,6 +47,10 @@ evpl_core_add(
     struct epoll_event ev;
     int                rc;
 
+    if (event->fd <= 0) {
+        abort();
+    }
+
     ev.events   = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLET;
     ev.data.ptr = event;
 
@@ -68,21 +72,26 @@ evpl_core_wait(
 
     n = epoll_wait(evc->fd, evc->events, evc->max_events, max_msecs);
 
+    evpl_debug("epoll_wait got %d events", n);
+
     for (i = 0; i < n; ++i) {
         ev = &evc->events[i];
 
         event = ev->data.ptr;
 
         if (ev->events & EPOLLIN) {
+            evpl_debug("fd %d is readable", event->fd);
             evpl_event_mark_readable(evpl, event);
         }
 
         if (ev->events & EPOLLOUT) {
+            evpl_debug("fd %d is writable", event->fd);
             evpl_event_mark_writable(evpl, event);
         }
 
         if (ev->events & EPOLLERR) {
-            evpl_event_mark_close(evpl, event);
+            evpl_debug("is err");
+            evpl_event_mark_error(evpl, event);
         }
 
     }

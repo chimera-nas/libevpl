@@ -38,24 +38,24 @@ void *
 client_thread(void *arg)
 {
     struct evpl *evpl;
+    struct evpl_endpoint *ep;
     struct evpl_conn *conn;
-    struct evpl_bvec bvec, *bvecp;
+    struct evpl_bvec bvec;
     const char hello[] = "Hello World!";
     int slen = strlen(hello);
     int run = 1;
 
-    evpl = evpl_init(NULL);
+    evpl = evpl_create();
 
-    conn = evpl_connect(evpl, EVPL_PROTO_TCP, "127.0.0.1", 8000,
-                      client_callback, &run);
+    ep = evpl_endpoint_create(evpl, EVPL_SOCKET_TCP, "127.0.0.1", 8000);
 
-    evpl_bvec_alloc(evpl, slen, 0, &bvec);
+    conn = evpl_connect(evpl, ep, client_callback, &run);
+
+    evpl_bvec_alloc(evpl, slen, 0, 1, &bvec);
 
     memcpy(evpl_bvec_data(&bvec), hello, slen);
 
-    bvecp = &bvec;
-
-    evpl_send(evpl, conn, &bvecp, 1);
+    evpl_send(evpl, conn, &bvec, 1);
 
     while (run) {
     
@@ -63,6 +63,10 @@ client_thread(void *arg)
     }
 
     evpl_debug("client loop out");
+
+    evpl_close(evpl, conn);
+
+    evpl_endpoint_close(evpl, ep);
 
     evpl_destroy(evpl);
 
@@ -76,7 +80,7 @@ int server_callback(
     unsigned int event_code,
     void *private_data)
 {
-    struct evpl_bvec bvec, *bvecp;
+    struct evpl_bvec bvec;
     const char hello[] = "Hello World!";
     int slen = strlen(hello);
     int *run = private_data;
@@ -89,13 +93,11 @@ int server_callback(
         break;
     case EVPL_EVENT_RECEIVED:
 
-        evpl_bvec_alloc(evpl, slen, 0, &bvec);
+        evpl_bvec_alloc(evpl, slen, 0, 1, &bvec);
 
         memcpy(evpl_bvec_data(&bvec), hello, slen);
 
-        bvecp = &bvec;
-
-        evpl_send(evpl, conn, &bvecp, 1);
+        evpl_send(evpl, conn, &bvec, 1);
 
         evpl_finish(evpl, conn);
         break;
@@ -110,9 +112,11 @@ void accept_callback(
     void **conn_private_data,
     void       *private_data)
 {
+    const struct evpl_endpoint *ep = evpl_conn_endpoint(conn);
+
     evpl_info("Received connection from %s:%d",
-        evpl_conn_address(conn),
-        evpl_conn_port(conn));
+        evpl_endpoint_address(ep),
+        evpl_endpoint_port(ep));
 
     *callback = server_callback;
     *conn_private_data = private_data;
@@ -122,13 +126,18 @@ main(int argc, char *argv[])
 {
     pthread_t thr;
     struct evpl *evpl;
+    struct evpl_listener *listener;
     int run = 1;
+    struct evpl_endpoint *ep;
 
-    evpl = evpl_init(NULL);
+    evpl_init(NULL);
+
+    evpl = evpl_create();
 
 
-    evpl_listen(evpl, EVPL_PROTO_TCP,
-                     "0.0.0.0", 8000, accept_callback, &run);
+    ep = evpl_endpoint_create(evpl, EVPL_SOCKET_TCP, "0.0.0.0", 8000);
+
+    listener = evpl_listen(evpl, ep, accept_callback, &run);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 
@@ -136,9 +145,17 @@ main(int argc, char *argv[])
         evpl_wait(evpl, -1);
     }
 
+    evpl_info("server loop out");
+
     pthread_join(thr, NULL);
 
+    evpl_listener_destroy(evpl, listener);
+
+    evpl_endpoint_close(evpl, ep);
+
     evpl_destroy(evpl);
+
+    evpl_cleanup();
 
     return 0;
 }

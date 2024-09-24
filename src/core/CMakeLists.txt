@@ -5,8 +5,6 @@
 set(CORE_SRC
     evpl.c
     evpl.h
-    tcp.c
-    tcp.h
     config.c
     config.h
     internal.c
@@ -23,4 +21,8 @@ endif()
 
 add_library(evpl_core SHARED ${CORE_SRC})
 
-add_subdirectory(tests)
+target_link_libraries(evpl_core evpl_socket)
+
+if (RDMACM_LIB)
+    target_link_libraries(evpl_core evpl_rdmacm)
+endif()
