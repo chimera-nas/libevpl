@@ -709,19 +709,17 @@ void *
 evpl_rdmacm_register(
     void *buffer,
     int size,
-    void *thread_private)
+    void *private_data)
 {
-    struct evpl_rdmacm *rdmacm = thread_private;
-    struct evpl_rdmacm_device *dev;
+    struct evpl_rdmacm_devices *rdmacm_devices = private_data;
     struct ibv_mr **mrset;
     int i;
 
-    mrset = evpl_zalloc(sizeof(struct ibv_mr) * rdmacm->num_devices);
+    mrset = evpl_zalloc(sizeof(struct ibv_mr) * rdmacm_devices->num_devices);
 
-    for (i = 0; i < rdmacm->num_devices; ++i) {
-        dev = &rdmacm->devices[i];
+    for (i = 0; i < rdmacm_devices->num_devices; ++i) {
 
-        mrset[i] = ibv_reg_mr(dev->pd, buffer, size,
+        mrset[i] = ibv_reg_mr(rdmacm_devices->pd[i], buffer, size,
             IBV_ACCESS_LOCAL_WRITE |
             IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE |
             IBV_ACCESS_RELAXED_ORDERING);
@@ -736,13 +734,13 @@ evpl_rdmacm_register(
 void 
 evpl_rdmacm_unregister(
     void *buffer_private,
-    void *thread_private)
+    void *private_data)
 {
+    struct evpl_rdmacm_devices *rdmacm_devices = private_data;
     struct ibv_mr **mrset = buffer_private;
-    struct evpl_rdmacm *rdmacm = thread_private;
     int i;
 
-    for (i = 0; i < rdmacm->num_devices; ++i) {
+    for (i = 0; i < rdmacm_devices->num_devices; ++i) {
         evpl_rdmacm_debug("Dereg mr %p", mrset[i]);
 
         ibv_dereg_mr(mrset[i]);

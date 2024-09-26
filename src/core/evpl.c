@@ -382,6 +382,14 @@ evpl_destroy(struct evpl *evpl)
         evpl_buffer_release(evpl, buffer);
     }
 
+    for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
+        framework = evpl_shared->framework[i];
+
+        if (!framework->destroy) continue;
+
+        framework->destroy(evpl, evpl->framework_private[i]);
+    }
+
     while (evpl->free_buffers) {
         buffer = evpl->free_buffers;
         evpl_core_debug("XXX freeing buffer %p", buffer);
@@ -398,19 +406,11 @@ evpl_destroy(struct evpl *evpl)
 
             framework->unregister_buffer(
                 buffer->framework_private[i],
-                evpl->framework_private[i]);
+                evpl_shared->framework_private[i]);
         }
 
         evpl_free(buffer->data);
         evpl_free(buffer);
-    }
-
-    for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
-        framework = evpl_shared->framework[i];
-
-        if (!framework->destroy) continue;
-
-        framework->destroy(evpl, evpl->framework_private[i]);
     }
 
     evpl_core_destroy(&evpl->core);
@@ -644,7 +644,7 @@ struct evpl *evpl)
 
             buffer->framework_private[i] = framework->register_buffer(
                     buffer->data, buffer->size,
-                    evpl->framework_private[i]);
+                    evpl_shared->framework_private[i]);
 
         }
 
