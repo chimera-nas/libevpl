@@ -6,6 +6,6 @@
 
 #pragma once
 
-struct evpl_protocol;
+struct evpl_conn_protocol;
 
-extern struct evpl_protocol evpl_socket_tcp;
+extern struct evpl_conn_protocol evpl_socket_tcp;

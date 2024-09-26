@@ -5,7 +5,6 @@ struct addrinfo;
 struct evpl_endpoint {
     char                  address[256];
     int                   port;
-    int                   protocol;
     int                   refcnt;
     struct addrinfo      *ai;
 };

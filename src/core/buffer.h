@@ -16,6 +16,8 @@ struct evpl_buffer {
     int                 refcnt;
     unsigned int        used;
     unsigned int        size;
+
+    void               *framework_private[EVPL_NUM_FRAMEWORK];
     struct evpl_buffer *next;
 };
 
@@ -40,11 +42,11 @@ evpl_bvec_decref(
 {
     struct evpl_buffer *buffer = bvec->buffer;
 
-    evpl_abort_if(buffer->refcnt == 0,
+    evpl_core_abort_if(buffer->refcnt == 0,
                   "Released bvec %p with zero refcnt", bvec);
    
      
-    evpl_debug("evpl %p bvec %p released buffer %p refcnt %d",
+    evpl_core_debug("evpl %p bvec %p released buffer %p refcnt %d",
         evpl, bvec, buffer, buffer->refcnt);
 
     evpl_buffer_release(evpl, buffer);
@@ -60,7 +62,7 @@ evpl_bvec_incref(
 
     ++buffer->refcnt;
 
-    evpl_debug("evpl %p bvec %p incref buffer %p refcnt now %d",
+    evpl_core_debug("evpl %p bvec %p incref buffer %p refcnt now %d",
         evpl, bvec, buffer, buffer->refcnt);
 
 } // evpl_bvec_incref
@@ -179,7 +181,8 @@ evpl_bvec_ring_next(
 static inline struct evpl_bvec *
 evpl_bvec_ring_add(
     struct evpl_bvec_ring  *ring,
-    const struct evpl_bvec *bvec)
+    const struct evpl_bvec *bvec,
+    int                     eom)
 {
     struct evpl_bvec *res;
 
@@ -190,6 +193,7 @@ evpl_bvec_ring_add(
     res = &ring->bvec[ring->head];
 
     ring->bvec[ring->head] = *bvec;
+    ring->bvec[ring->head].eom = eom;
     ring->head             = (ring->head + 1) & ring->mask;
 
     return res;
@@ -276,17 +280,18 @@ evpl_bvec_ring_append(
     struct evpl           *evpl,
     struct evpl_bvec_ring *ring,
     struct evpl_bvec      *append,
-    int                    length)
+    int                    length,
+    unsigned int           eom)
 {
     struct evpl_bvec *head;
 
     head = evpl_bvec_ring_head(ring);
 
-    if (head && head->data + head->length == append->data) {
+    if (head && !head->eom && head->data + head->length == append->data) {
         head->length += length;
     } else {
         evpl_bvec_incref(evpl, append);
-        head         = evpl_bvec_ring_add(ring, append);
+        head         = evpl_bvec_ring_add(ring, append, eom);
         head->length = length;
     }
 
@@ -297,3 +302,10 @@ evpl_bvec_ring_append(
         evpl_bvec_decref(evpl, append);
     }
 } // evpl_bvec_ring_append
+
+static inline void *
+evpl_buffer_private(struct evpl_buffer *buffer, int id)
+{
+    return buffer->framework_private[id];
+}
+

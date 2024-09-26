@@ -56,7 +56,7 @@ evpl_core_add(
 
     rc = epoll_ctl(evc->fd, EPOLL_CTL_ADD, event->fd, &ev);
 
-    evpl_fatal_if(rc, "Failed to add file descriptor to epoll");
+    evpl_core_fatal_if(rc, "Failed to add file descriptor to epoll");
 } /* evpl_core_add */
 
 
@@ -72,25 +72,20 @@ evpl_core_wait(
 
     n = epoll_wait(evc->fd, evc->events, evc->max_events, max_msecs);
 
-    evpl_debug("epoll_wait got %d events", n);
-
     for (i = 0; i < n; ++i) {
         ev = &evc->events[i];
 
         event = ev->data.ptr;
 
         if (ev->events & EPOLLIN) {
-            evpl_debug("fd %d is readable", event->fd);
             evpl_event_mark_readable(evpl, event);
         }
 
         if (ev->events & EPOLLOUT) {
-            evpl_debug("fd %d is writable", event->fd);
             evpl_event_mark_writable(evpl, event);
         }
 
         if (ev->events & EPOLLERR) {
-            evpl_debug("is err");
             evpl_event_mark_error(evpl, event);
         }
 

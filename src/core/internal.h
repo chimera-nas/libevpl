@@ -41,18 +41,23 @@ void evpl_free(
 
 
 void evpl_debug(
+    const char *mod,
     const char *fmt,
     ...);
 void evpl_info(
+    const char *mod,
     const char *fmt,
     ...);
 void evpl_error(
+    const char *mod,
     const char *fmt,
     ...);
 void evpl_fatal(
+    const char *mod,
     const char *fmt,
     ...);
 void evpl_abort(
+    const char *mod,
     const char *fmt,
     ...);
 
@@ -65,6 +70,20 @@ void evpl_abort(
     if (cond) { \
         evpl_abort(__VA_ARGS__); \
     }
+
+#define evpl_core_debug(...) evpl_debug("core", __VA_ARGS__)
+#define evpl_core_info(...)  evpl_info("core", __VA_ARGS__)
+#define evpl_core_error(...) evpl_error("core", __VA_ARGS__)
+#define evpl_core_fatal(...) evpl_fatal("core", __VA_ARGS__)
+#define evpl_core_abort(...) evpl_abort("core", __VA_ARGS__)
+
+#define evpl_core_fatal_if(cond, ...) \
+    evpl_fatal_if(cond, "core", __VA_ARGS__)
+
+#define evpl_core_abort_if(cond, ...) \
+    evpl_fatal_if(cond, "core", __VA_ARGS__)
+
+
 
 #ifndef unlikely
 #define unlikely(x)    __builtin_expect(!!(x), 0)

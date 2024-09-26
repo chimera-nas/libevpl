@@ -9,13 +9,15 @@
 struct iovec;
 struct evpl_config;
 
-enum evpl_protocol_id {
-    EVPL_SOCKET_TCP      = 1,
-    EVPL_SOCKET_UDP      = 2,
-    EVPL_SOCKET_UNIX     = 3,
-    EVPL_RDMACM_RC       = 4,
-    EVPL_RDMACM_UD       = 5,
-    EVPL_NUM_PROTO       = 6
+enum evpl_framework_id {
+    EVPL_FRAMEWORK_RDMACM = 0,
+    EVPL_NUM_FRAMEWORK = 1
+};
+
+enum evpl_conn_protocol_id {
+    EVPL_CONN_SOCKET_TCP = 0,
+    EVPL_CONN_RDMACM_RC  = 1,
+    EVPL_CONN_NUM_PROTO  = 2
 };
 
 struct evpl;
@@ -27,6 +29,7 @@ struct evpl_bvec {
     struct evpl_buffer *buffer;
     void               *data;
     unsigned int        length;
+    unsigned int        eom;
 };
 
 void
@@ -65,7 +68,6 @@ typedef void (*evpl_accept_callback_t)(
 struct evpl_endpoint *
 evpl_endpoint_create(
     struct evpl           *evpl,
-    int                    protocol,
     const char            *address,
     int                    port);
 
@@ -77,6 +79,7 @@ evpl_endpoint_close(
 struct evpl_listener *
 evpl_listen(
     struct evpl           *evpl,
+    enum evpl_conn_protocol_id protocol,
     struct evpl_endpoint  *endpoint,
     evpl_accept_callback_t acceot_callback,
     void                  *private_data);
@@ -89,6 +92,7 @@ evpl_listener_destroy(
 struct evpl_conn *
 evpl_connect(
     struct evpl          *evpl,
+    enum evpl_conn_protocol_id protocol,
     struct evpl_endpoint *endpoint,
     evpl_event_callback_t callback,
     void                 *private_data);

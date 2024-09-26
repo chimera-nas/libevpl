@@ -11,7 +11,7 @@
 #include <sys/uio.h>
 
 #include "core/evpl.h"
-#include "core/internal.h"
+#include "core/test_log.h"
 
 int
 client_callback(
@@ -23,10 +23,11 @@ client_callback(
 {
     int *run = private_data;
 
-    evpl_info("client callback event %u code %u", event_type, event_code);
+    evpl_test_info("client callback event %u code %u", event_type, event_code);
 
     switch (event_type) {
     case EVPL_EVENT_DISCONNECTED:
+        evpl_test_debug("setting run 0");
         *run = 0;
         break;
     }
@@ -47,9 +48,9 @@ client_thread(void *arg)
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, EVPL_RDMACM_RC, "127.0.0.1", 8000);
+    ep = evpl_endpoint_create(evpl, "10.67.15.105", 8000);
 
-    conn = evpl_connect(evpl, ep, client_callback, &run);
+    conn = evpl_connect(evpl, EVPL_CONN_RDMACM_RC, ep, client_callback, &run);
 
     evpl_bvec_alloc(evpl, slen, 0, 1, &bvec);
 
@@ -61,7 +62,7 @@ client_thread(void *arg)
         evpl_wait(evpl, -1);
     }
 
-    evpl_debug("client loop out");
+    evpl_test_debug("client loop out");
 
     evpl_close(evpl, conn);
 
@@ -84,7 +85,7 @@ int server_callback(
     int slen = strlen(hello);
     int *run = private_data;
 
-    evpl_info("server callback event %u code %u", event_type, event_code);
+    evpl_test_info("server callback event %u code %u", event_type, event_code);
 
     switch (event_type) {
     case EVPL_EVENT_DISCONNECTED:
@@ -98,6 +99,7 @@ int server_callback(
 
         evpl_send(evpl, conn, &bvec, 1);
 
+        evpl_test_debug("finishing conn");
         evpl_finish(evpl, conn);
         break;
     }
@@ -113,7 +115,7 @@ void accept_callback(
 {
     const struct evpl_endpoint *ep = evpl_conn_endpoint(conn);
 
-    evpl_info("Received connection from %s:%d",
+    evpl_test_info("Received connection from %s:%d",
         evpl_endpoint_address(ep),
         evpl_endpoint_port(ep));
 
@@ -134,9 +136,9 @@ main(int argc, char *argv[])
     evpl = evpl_create();
 
 
-    ep = evpl_endpoint_create(evpl, EVPL_RDMACM_RC, "0.0.0.0", 8000);
+    ep = evpl_endpoint_create(evpl, "10.67.15.105", 8000);
 
-    listener = evpl_listen(evpl, ep, accept_callback, &run);
+    listener = evpl_listen(evpl, EVPL_CONN_RDMACM_RC, ep, accept_callback, &run);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 

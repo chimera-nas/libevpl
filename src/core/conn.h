@@ -16,8 +16,7 @@
 #define EVPL_CONN_FINISH    0x01
 
 struct evpl_conn {
-    struct evpl_bvec_ring send_ring;
-    struct evpl_bvec_ring recv_ring;
+    struct evpl_conn_protocol *protocol;
     uint64_t              flags;
     struct evpl_deferral  flush_deferral;
     struct evpl_deferral  close_deferral;
@@ -25,10 +24,14 @@ struct evpl_conn {
     void                 *private_data;
     struct evpl_endpoint *endpoint;
     struct evpl_conn     *next;
+
+    struct evpl_bvec_ring send_ring;
+    struct evpl_bvec_ring recv_ring;
     /* protocol specific private data follows */
 };
 
 struct evpl_listener {
+    struct evpl_conn_protocol *protocol;
     struct evpl_endpoint  *endpoint;
     evpl_accept_callback_t accept_callback;
     void                  *private_data;
