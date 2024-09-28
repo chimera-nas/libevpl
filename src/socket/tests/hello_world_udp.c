@@ -13,6 +13,10 @@
 #include "core/evpl.h"
 #include "core/test_log.h"
 
+const char hello[] = "Hello World!";
+const int  hellolen = strlen(hello) + 1;
+
+
 int
 client_callback(
     struct evpl *evpl,
@@ -21,11 +25,21 @@ client_callback(
     unsigned int notify_code,
     void *private_data)
 {
-    int *run = private_data;
+    char buffer[hellolen];
+    int length, *run = private_data;
 
     switch (notify_type) {
-    case EVPL_NOTIFY_DISCONNECTED:
-        *run = 0;
+    case EVPL_NOTIFY_RECEIVED:
+
+        length = evpl_recv(evpl, bind, buffer, hellolen);
+
+        if (length == hellolen) {
+
+            evpl_test_info("client received '%s'", buffer);
+
+            *run = 0;
+        }
+
         break;
     }
 
@@ -38,24 +52,18 @@ client_thread(void *arg)
     struct evpl *evpl;
     struct evpl_endpoint *ep;
     struct evpl_bind *bind;
-    struct evpl_bvec bvec;
-    const char hello[] = "Hello World!";
-    int slen = strlen(hello);
     int run = 1;
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, "10.67.15.105", 8000);
+    ep = evpl_endpoint_create(evpl, "127.0.0.1", 8000);
 
-    bind = evpl_connect(evpl, EVPL_RDMACM_RC, ep, client_callback, &run);
+    bind = evpl_bind(evpl, EVPL_SOCKET_UDP, ep, client_callback, &run);
 
-    evpl_bvec_alloc(evpl, slen, 0, 1, &bvec);
-
-    memcpy(evpl_bvec_data(&bvec), hello, slen);
-
-    evpl_sendv(evpl, bind, &bvec, 1, slen);
+    evpl_send(evpl, bind,  hello, hellolen);
 
     while (run) {
+    
         evpl_wait(evpl, -1);
     }
 
@@ -73,45 +81,30 @@ int server_callback(
     unsigned int notify_code,
     void *private_data)
 {
-    struct evpl_bvec bvec;
-    const char hello[] = "Hello World!";
-    int slen = strlen(hello);
-    int *run = private_data;
+    char buffer[hellolen];
+    int length, *run = private_data;
 
     switch (notify_type) {
-    case EVPL_NOTIFY_DISCONNECTED:
-        *run = 0;
-        break;
     case EVPL_NOTIFY_RECEIVED:
 
-        evpl_bvec_alloc(evpl, slen, 0, 1, &bvec);
+        length = evpl_recv(evpl, bind, buffer, hellolen);
 
-        memcpy(evpl_bvec_data(&bvec), hello, slen);
+        if (length == hellolen) {
 
-        evpl_sendv(evpl, bind, &bvec, 1, slen);
+            evpl_test_info("server received '%s'", buffer);
 
-        evpl_finish(evpl, bind);
+            evpl_send(evpl, bind, buffer, hellolen);
+        }
+        break;
+    case EVPL_NOTIFY_SENT:
+        evpl_test_info("server send complete");
+        *run = 0;
         break;
     }
 
     return 0;
 }
 
-void accept_callback(
-    struct evpl_bind *bind,
-    evpl_notify_callback_t *callback,
-    void **conn_private_data,
-    void       *private_data)
-{
-    const struct evpl_endpoint *ep = evpl_bind_endpoint(bind);
-
-    evpl_test_info("Received connection from %s:%d",
-        evpl_endpoint_address(ep),
-        evpl_endpoint_port(ep));
-
-    *callback = server_callback;
-    *conn_private_data = private_data;
-}
 int
 main(int argc, char *argv[])
 {
@@ -122,9 +115,9 @@ main(int argc, char *argv[])
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, "10.67.15.105", 8000);
+    ep = evpl_endpoint_create(evpl, "0.0.0.0", 8000);
 
-    evpl_listen(evpl, EVPL_RDMACM_RC, ep, accept_callback, &run);
+    evpl_bind(evpl, EVPL_SOCKET_UDP, ep, server_callback, &run);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 

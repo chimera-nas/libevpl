@@ -23,54 +23,17 @@
 #include "core/conn.h"
 #include "core/protocol.h"
 
+#include "socket/common.h"
 #include "socket/tcp.h"
-
-#define evpl_socket_debug(...) evpl_debug("socket", __VA_ARGS__)
-#define evpl_socket_info(...)  evpl_info("socket", __VA_ARGS__)
-#define evpl_socket_error(...) evpl_error("socket", __VA_ARGS__)
-#define evpl_socket_fatal(...) evpl_fatal("socket", __VA_ARGS__)
-#define evpl_socket_abort(...) evpl_abort("socket", __VA_ARGS__)
-
-#define evpl_socket_fatal_if(cond, ...) \
-    evpl_fatal_if(cond, "socket", __VA_ARGS__)
-
-#define evpl_socket_abort_if(cond, ...) \
-    evpl_abort_if(cond, "socket", __VA_ARGS__)
-
-
-struct evpl_socket {
-    struct evpl_event   event;
-    int                 fd;
-    int                 connected;
-    int                 recv_size;
-    struct evpl_bvec    recv1;
-    struct evpl_bvec    recv2;
-};
-
-#define evpl_event_socket(eventp) container_of((eventp), struct evpl_socket, event)
-
-void
-evpl_socket_init(
-    struct evpl        *evpl,
-    struct evpl_socket *s,
-    int                 fd,
-    int                 connected)
-{
-    struct evpl_config *config = evpl_config(evpl);
-
-    s->fd        = fd;
-    s->connected = connected;
-    s->recv_size = config->buffer_size;
-} /* evpl_socket_init */
 
 static inline void
 evpl_check_conn(
-    struct evpl       *evpl,
-    struct evpl_conn  *conn,
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
     struct evpl_socket *s)
 {
-    socklen_t           len;
-    int                 rc, err;
+    socklen_t len;
+    int       rc, err;
 
     if (!s->connected) {
         len = sizeof(err);
@@ -78,10 +41,10 @@ evpl_check_conn(
         evpl_socket_fatal_if(rc, "Failed to get SO_ERROR from socket");
 
         if (err) {
-            evpl_defer(evpl, &conn->close_deferral);
+            evpl_defer(evpl, &bind->close_deferral);
         } else {
-            conn->callback(evpl, conn, EVPL_EVENT_CONNECTED, 0,
-                           conn->private_data);
+            bind->callback(evpl, bind, EVPL_NOTIFY_CONNECTED, 0,
+                           bind->private_data);
         }
 
         s->connected = 1;
@@ -95,16 +58,13 @@ evpl_socket_tcp_read(
     struct evpl_event *event)
 {
     struct evpl_socket *s    = evpl_event_socket(event);
-    struct evpl_conn   *conn = evpl_private2conn(s);
+    struct evpl_bind   *bind = evpl_private2bind(s);
     struct iovec        iov[8];
     struct msghdr       msghdr;
     ssize_t             res, total, remain;
     int                 cb = 0;
 
-
-    evpl_socket_debug("tcp socket %d readable", s->fd);
-
-    evpl_check_conn(evpl, conn, s);
+    evpl_check_conn(evpl, bind, s);
 
     while (1) {
 
@@ -139,28 +99,25 @@ evpl_socket_tcp_read(
         res = recvmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
 
         if (res < 0) {
-            evpl_socket_error("socket read returned %ld", res);
             evpl_event_mark_unreadable(event);
-            evpl_defer(evpl, &conn->close_deferral);
+            evpl_defer(evpl, &bind->close_deferral);
             break;
         } else if (res == 0) {
-            evpl_socket_error("socket peer discon fd %d", s->fd);
             evpl_event_mark_unreadable(event);
-            evpl_defer(evpl, &conn->close_deferral);
+            evpl_defer(evpl, &bind->close_deferral);
             break;
         }
 
-        evpl_socket_debug("fd %d read %ld bytes of %ld total", s->fd, res, total);
         cb = 1;
 
         if (s->recv1.length >= res) {
-            evpl_bvec_ring_append(evpl, &conn->recv_ring, &s->recv1,
+            evpl_bvec_ring_append(evpl, &bind->recv_ring, &s->recv1,
                                   res, 0);
         } else {
             remain = res - s->recv1.length;
-            evpl_bvec_ring_append(evpl, &conn->recv_ring, &s->recv1,
+            evpl_bvec_ring_append(evpl, &bind->recv_ring, &s->recv1,
                                   s->recv1.length, 0);
-            evpl_bvec_ring_append(evpl, &conn->recv_ring, &s->recv2,
+            evpl_bvec_ring_append(evpl, &bind->recv_ring, &s->recv2,
                                   remain, 0);
         }
 
@@ -171,8 +128,8 @@ evpl_socket_tcp_read(
     }
 
     if (cb) {
-        conn->callback(evpl, conn, EVPL_EVENT_RECEIVED, 0,
-                       conn->private_data);
+        bind->callback(evpl, bind, EVPL_NOTIFY_RECEIVED, 0,
+                       bind->private_data);
     }
 } /* evpl_read_tcp */
 
@@ -182,19 +139,17 @@ evpl_socket_tcp_write(
     struct evpl_event *event)
 {
     struct evpl_socket *s    = evpl_event_socket(event);
-    struct evpl_conn   *conn = evpl_private2conn(s);
+    struct evpl_bind   *bind = evpl_private2bind(s);
     struct iovec        iov[8];
     int                 niov;
     struct msghdr       msghdr;
     ssize_t             res, total;
 
-    evpl_socket_debug("tcp socket writable fd %d", s->fd);
+    evpl_check_conn(evpl, bind, s);
 
-    evpl_check_conn(evpl, conn, s);
+    while (!evpl_bvec_ring_is_empty(&bind->send_ring)) {
 
-    while (!evpl_bvec_ring_is_empty(&conn->send_ring)) {
-
-        niov = evpl_bvec_ring_iov(&total, iov, 8, &conn->send_ring);
+        niov = evpl_bvec_ring_iov(&total, iov, 8, 0, &bind->send_ring);
 
         msghdr.msg_name       = NULL;
         msghdr.msg_namelen    = 0;
@@ -204,20 +159,15 @@ evpl_socket_tcp_write(
         msghdr.msg_controllen = 0;
         msghdr.msg_flags      = 0;
 
-        evpl_socket_debug("attempting to write %d iov", niov);
-
         res = sendmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
 
         if (res < 0) {
-            evpl_socket_error("socket write returned %ld: %s", res, strerror(errno));
             evpl_event_mark_unwritable(event);
-            evpl_defer(evpl, &conn->close_deferral);
+            evpl_defer(evpl, &bind->close_deferral);
             break;
         }
 
-        evpl_socket_debug("fd %d wrote %ld bytes", s->fd, res);
-
-        evpl_bvec_ring_consume(evpl, &conn->send_ring, res);
+        evpl_bvec_ring_consume(evpl, &bind->send_ring, res);
 
         if (res != total) {
             evpl_event_mark_unwritable(event);
@@ -225,12 +175,11 @@ evpl_socket_tcp_write(
         }
     }
 
-    if (evpl_bvec_ring_is_empty(&conn->send_ring)) {
+    if (evpl_bvec_ring_is_empty(&bind->send_ring)) {
         evpl_event_write_disinterest(event);
 
-        if (conn->flags & EVPL_CONN_FINISH) {
-            evpl_socket_debug("arming close deferral");
-            evpl_defer(evpl, &conn->close_deferral);
+        if (bind->flags & EVPL_BIND_FINISH) {
+            evpl_defer(evpl, &bind->close_deferral);
         }
     }
 
@@ -246,18 +195,16 @@ evpl_socket_tcp_error(
 
 void
 evpl_socket_tcp_connect(
-    struct evpl        *evpl,
-    struct evpl_conn   *conn)
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
 {
-    struct evpl_socket *s = evpl_conn_private(conn);
-    struct addrinfo *p;
-    int             fd, flags;
-
-    evpl_socket_debug("evpl_socket_tcp_connect: entry");
+    struct evpl_socket *s = evpl_bind_private(bind);
+    struct addrinfo    *p;
+    int                 fd, flags;
 
     s->fd = -1;
 
-    for (p = conn->endpoint->ai; p != NULL; p = p->ai_next) {
+    for (p = bind->endpoint->ai; p != NULL; p = p->ai_next) {
 
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
@@ -299,59 +246,10 @@ evpl_socket_tcp_connect(
     s->event.write_callback = evpl_socket_tcp_write;
     s->event.error_callback = evpl_socket_tcp_error;
 
-    evpl_socket_debug("connect fd %d", fd);
     evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
 
-} /* evpl_connect_tcp */
-
-void
-evpl_socket_tcp_flush(
-    struct evpl        *evpl,
-    struct evpl_conn   *conn)
-{
-    struct evpl_socket *s = evpl_conn_private(conn);
-
-    evpl_event_write_interest(evpl, &s->event);
-}
-
-void
-evpl_socket_tcp_close_conn(
-    struct evpl        *evpl,
-    struct evpl_conn   *conn)
-{
-    struct evpl_socket *s = evpl_conn_private(conn);
-
-    if (s->fd >= 0) {
-        evpl_socket_debug("closing tcp socket fd %d", s->fd);
-        close(s->fd);
-    }
-
-    if (s->recv1.length) {
-        evpl_bvec_release(evpl, &s->recv1);
-        s->recv1.length = 0;
-    }
-
-    if (s->recv2.length) {
-        evpl_bvec_release(evpl, &s->recv2);
-        s->recv2.length = 0;
-    }
-
-} /* evpl_tcp_close_conn */
-
-void
-evpl_socket_tcp_close_listener(
-    struct evpl        *evpl,
-    struct evpl_listener *listener)
-{
-    struct evpl_socket *s = evpl_listener_private(listener);
-
-    if (s->fd >= 0) {
-        evpl_socket_debug("closing tcp socket fd %d", s->fd);
-        close(s->fd);
-    }
-
-} /* evpl_tcp_close_listener */
+} /* evpl_bindect_tcp */
 
 void
 evpl_accept_tcp(
@@ -359,10 +257,10 @@ evpl_accept_tcp(
     struct evpl_event *event)
 {
     struct evpl_socket     *ls       = evpl_event_socket(event);
-    struct evpl_listener   *listener = evpl_private2listener(ls);
+    struct evpl_bind       *listen_bind     = evpl_private2bind(ls);
     struct evpl_endpoint   *endpoint;
     struct evpl_socket     *s;
-    struct evpl_conn       *conn;
+    struct evpl_bind       *new_bind;
     struct sockaddr_storage client_addr;
     struct sockaddr        *client_addrp;
     socklen_t               client_len = sizeof(client_addr);
@@ -396,15 +294,13 @@ evpl_accept_tcp(
 
         endpoint = evpl_endpoint_create(evpl, ip_str, port);
 
-        conn = evpl_alloc_conn(evpl, endpoint);
+        new_bind = evpl_bind_alloc(evpl, endpoint);
 
-        conn->protocol = listener->protocol;
+        new_bind->protocol = listen_bind->protocol;
 
         evpl_endpoint_close(evpl, endpoint); /* drop our reference */
 
-        s = evpl_conn_private(conn);
-
-        evpl_socket_debug("new conn is fd %d", fd);
+        s = evpl_bind_private(new_bind);
 
         evpl_socket_init(evpl, s, fd, 1);
 
@@ -413,28 +309,27 @@ evpl_accept_tcp(
         s->event.write_callback = evpl_socket_tcp_write;
         s->event.error_callback = evpl_socket_tcp_error;
 
-        evpl_socket_debug("accept fd %d", fd);
         evpl_add_event(evpl, &s->event);
         evpl_event_read_interest(evpl, &s->event);
 
-        evpl_accept(evpl, listener, conn);
+        evpl_accept(evpl, listen_bind, new_bind);
     }
 
 } /* evpl_accept_tcp */
 
 void
 evpl_socket_tcp_listen(
-    struct evpl        *evpl,
-    struct evpl_listener *listener)
+    struct evpl          *evpl,
+    struct evpl_bind     *listen_bind)
 {
-    struct evpl_socket *s = evpl_listener_private(listener);
-    struct addrinfo *p;
-    int             rc, fd;
-    const int       yes = 1;
+    struct evpl_socket *s = evpl_bind_private(listen_bind);
+    struct addrinfo    *p;
+    int                 rc, fd;
+    const int           yes = 1;
 
     s->fd = -1;
 
-    for (p = listener->endpoint->ai; p != NULL; p = p->ai_next) {
+    for (p = listen_bind->endpoint->ai; p != NULL; p = p->ai_next) {
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
         if (fd == -1) {
@@ -470,18 +365,17 @@ evpl_socket_tcp_listen(
     s->event.fd            = fd;
     s->event.read_callback = evpl_accept_tcp;
 
-    evpl_socket_debug("tcp_listen fd %d", fd);
     evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
 
 } /* evpl_socket_tcp_listen */
 
-struct evpl_conn_protocol evpl_socket_tcp = {
-    .id = EVPL_CONN_SOCKET_TCP,
-    .name = "SOCKET_TCP",
-    .connect = evpl_socket_tcp_connect,
-    .close_conn = evpl_socket_tcp_close_conn,
-    .listen = evpl_socket_tcp_listen,
-    .close_listen = evpl_socket_tcp_close_listener,
-    .flush = evpl_socket_tcp_flush,
+struct evpl_protocol evpl_socket_tcp = {
+    .id           = EVPL_SOCKET_TCP,
+    .connected    = 1,
+    .name         = "SOCKET_TCP",
+    .connect      = evpl_socket_tcp_connect,
+    .close        = evpl_socket_close,
+    .listen       = evpl_socket_tcp_listen,
+    .flush        = evpl_socket_flush,
 };

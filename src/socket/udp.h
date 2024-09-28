@@ -8,4 +8,4 @@
 
 struct evpl_protocol;
 
-extern struct evpl_protocol evpl_socket_tcp;
+extern struct evpl_protocol evpl_socket_udp;

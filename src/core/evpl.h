@@ -11,18 +11,20 @@ struct evpl_config;
 
 enum evpl_framework_id {
     EVPL_FRAMEWORK_RDMACM = 0,
-    EVPL_NUM_FRAMEWORK = 1
+    EVPL_NUM_FRAMEWORK    = 1
 };
 
-enum evpl_conn_protocol_id {
-    EVPL_CONN_SOCKET_TCP = 0,
-    EVPL_CONN_RDMACM_RC  = 1,
-    EVPL_CONN_NUM_PROTO  = 2
+enum evpl_protocol_id  {
+    EVPL_SOCKET_UDP = 0,
+    EVPL_SOCKET_TCP = 1,
+    EVPL_RDMACM_RC  = 2,
+    EVPL_NUM_PROTO  = 3
 };
 
 struct evpl;
 struct evpl_endpoint;
-struct evpl_conn;
+struct evpl_bind;
+struct evpl_bind;
 struct evpl_buffer;
 
 struct evpl_bvec {
@@ -33,13 +35,16 @@ struct evpl_bvec {
 };
 
 void
-evpl_init(struct evpl_config *config);
+evpl_init(
+    struct evpl_config *config);
 
 void
-evpl_cleanup(void);
+evpl_cleanup(
+    void);
 
 
-struct evpl * evpl_create(void);
+struct evpl * evpl_create(
+    void);
 
 void evpl_destroy(
     struct evpl *evpl);
@@ -48,54 +53,64 @@ void evpl_wait(
     struct evpl *evpl,
     int          max_msecs);
 
-#define EVPL_EVENT_CONNECTED    1
-#define EVPL_EVENT_DISCONNECTED 2
-#define EVPL_EVENT_RECEIVED     3
+#define EVPL_NOTIFY_CONNECTED    1
+#define EVPL_NOTIFY_DISCONNECTED 2
+#define EVPL_NOTIFY_RECEIVED     3
+#define EVPL_NOTIFY_SENT         4
 
-typedef int (*evpl_event_callback_t)(
+
+typedef int (*evpl_notify_callback_t)(
     struct evpl      *evpl,
-    struct evpl_conn *conn,
-    unsigned int      event_type,
-    unsigned int      event_code,
+    struct evpl_bind *bind,
+    unsigned int      notify_type,
+    unsigned int      notify_status,
     void             *private_data);
 
 typedef void (*evpl_accept_callback_t)(
-    struct evpl_conn      *conn,
-    evpl_event_callback_t *callback,
+    struct evpl_bind      *bind,
+    evpl_notify_callback_t *callback,
     void                 **conn_private_data,
     void                  *private_data);
 
 struct evpl_endpoint *
 evpl_endpoint_create(
-    struct evpl           *evpl,
-    const char            *address,
-    int                    port);
+    struct evpl *evpl,
+    const char  *address,
+    int          port);
 
 void
 evpl_endpoint_close(
-    struct evpl *evpl,
+    struct evpl          *evpl,
     struct evpl_endpoint *endpoint);
 
-struct evpl_listener *
+struct evpl_bind *
 evpl_listen(
-    struct evpl           *evpl,
-    enum evpl_conn_protocol_id protocol,
-    struct evpl_endpoint  *endpoint,
-    evpl_accept_callback_t acceot_callback,
-    void                  *private_data);
+    struct evpl               *evpl,
+    enum evpl_protocol_id      protocol,
+    struct evpl_endpoint      *endpoint,
+    evpl_accept_callback_t     accept_callback,
+    void                      *private_data);
+
+struct evpl_bind *
+evpl_connect(
+    struct evpl               *evpl,
+    enum evpl_protocol_id      protocol_id,
+    struct evpl_endpoint      *endpoint,
+    evpl_notify_callback_t     callback,
+    void                      *private_data);
+
+struct evpl_bind *
+evpl_bind(
+    struct evpl               *evpl,
+    enum evpl_protocol_id      protocol,
+    struct evpl_endpoint      *endpoint,
+    evpl_notify_callback_t     callback,
+    void                      *private_data);
 
 void
-evpl_listener_destroy(
-    struct evpl *evpl,
-    struct evpl_listener *listener);
-
-struct evpl_conn *
-evpl_connect(
-    struct evpl          *evpl,
-    enum evpl_conn_protocol_id protocol,
-    struct evpl_endpoint *endpoint,
-    evpl_event_callback_t callback,
-    void                 *private_data);
+evpl_unbind(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind);
 
 int
 evpl_bvec_alloc(
@@ -115,9 +130,9 @@ evpl_bvec_reserve(
 
 void
 evpl_bvec_commit(
-    struct evpl *evpl,
+    struct evpl      *evpl,
     struct evpl_bvec *bvecs,
-    int         nbvecs);
+    int               nbvecs);
 
 
 void
@@ -133,58 +148,68 @@ evpl_bvec_data(struct evpl_bvec *bvec)
 
 void
 evpl_bvec_addref(
-    struct evpl *evpl,
+    struct evpl      *evpl,
     struct evpl_bvec *bvec);
 
 
 void
 evpl_send(
-    struct evpl       *evpl,
-    struct evpl_conn  *conn,
-    struct evpl_bvec  *bvecs,
-    int                nbufvecs);
+    struct evpl      *evpl,
+    struct evpl_bind *conn,
+    const void       *buffer,
+    unsigned int      length);
+
+void
+evpl_sendv(
+    struct evpl      *evpl,
+    struct evpl_bind *conn,
+    struct evpl_bvec *bvecs,
+    int               nbufvecs,
+    int               length);
 
 int
 evpl_peek(
-    struct evpl       *evpl,
-    struct evpl_conn  *conn,
-    void              *buffer,
-    int                length);
+    struct evpl      *evpl,
+    struct evpl_bind *conn,
+    void             *buffer,
+    int               length);
 
 int
-evpl_read(
-    struct evpl       *evpl,
-    struct evpl_conn  *conn,
-    void              *buffer,
-    int                length);
+evpl_recv(
+    struct evpl      *evpl,
+    struct evpl_bind *conn,
+    void             *buffer,
+    int               length);
 
 int
-evpl_readv(
-    struct evpl       *evpl,
-    struct evpl_conn  *conn,
-    struct evpl_bvec  *bvecs,
-    int                maxbvecs,
-    int                length);
+evpl_recvv(
+    struct evpl      *evpl,
+    struct evpl_bind *conn,
+    struct evpl_bvec *bvecs,
+    int               maxbvecs,
+    int               length);
 
 void
-evpl_close(
+evpl_disconnect(
     struct evpl      *evpl,
-    struct evpl_conn *conn);
+    struct evpl_bind *conn);
 
 void
 evpl_finish(
     struct evpl      *evpl,
-    struct evpl_conn *conn);
+    struct evpl_bind *conn);
 
 const struct evpl_endpoint *
-evpl_conn_endpoint(
-    struct evpl_conn *conn);
+evpl_bind_endpoint(
+    struct evpl_bind *conn);
 
 const char *
-evpl_endpoint_address(const struct evpl_endpoint *ep);
+evpl_endpoint_address(
+    const struct evpl_endpoint *ep);
 
 int
-evpl_endpoint_port(const struct evpl_endpoint *ep);
+evpl_endpoint_port(
+    const struct evpl_endpoint *ep);
 
 
 struct evpl_config *

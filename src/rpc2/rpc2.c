@@ -9,22 +9,22 @@
 #define RPC2_MAX_BVEC 16
 
 struct evpl_rpc2_msg {
-    uint32_t            hdr;
-    int                 nbvec;
-    struct evpl_bvec    bvec[RPC2_MAX_BVEC];
-    struct rpc_msg      msg;
-    xdr_dbuf           *dbuf;
+    uint32_t         hdr;
+    int              nbvec;
+    struct evpl_bvec bvec[RPC2_MAX_BVEC];
+    struct rpc_msg   msg;
+    xdr_dbuf        *dbuf;
 };
 
 
 struct evpl_rpc2_conn {
     struct evpl_rpc2_agent *agent;
-    struct evpl_rpc2_msg *recv_msg;
+    struct evpl_rpc2_msg   *recv_msg;
     uint32_t                next_xid;
 };
 
 struct evpl_rpc2_agent {
-    struct evpl    *evpl;
+    struct evpl *evpl;
 };
 
 static FORCE_INLINE uint32_t
@@ -32,20 +32,20 @@ rpc2_hton32(uint32_t value)
 {
 #if __BYTE_ORDER == __LITTLE_ENDIAN
     return __builtin_bswap32(value);
-#else
+#else  /* if __BYTE_ORDER == __LITTLE_ENDIAN */
     return value;
-#endif
-}
+#endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
+} /* rpc2_hton32 */
 
 static FORCE_INLINE uint32_t
 rpc2_ntoh32(uint32_t value)
 {
 #if __BYTE_ORDER == __LITTLE_ENDIAN
     return __builtin_bswap32(value);
-#else
+#else  /* if __BYTE_ORDER == __LITTLE_ENDIAN */
     return value;
-#endif
-}
+#endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
+} /* rpc2_ntoh32 */
 
 
 struct evpl_rpc2_agent *
@@ -69,12 +69,12 @@ evpl_rpc2_destroy(struct evpl_rpc2_agent *agent)
 static int
 evpl_rpc2_recv(
     struct evpl_rpc2_agent *agent,
-    struct evpl_rpc2_conn *rpc2_conn,
-    struct evpl_conn *conn)
+    struct evpl_rpc2_conn  *rpc2_conn,
+    struct evpl_conn       *conn)
 {
     struct evpl_rpc2_msg *msg;
-    int         length;
-    int         rc;
+    int                   length;
+    int                   rc;
 
     if (!rpc2_conn->recv_msg) {
         rpc2_conn->recv_msg = evpl_zalloc(sizeof(*rpc2_conn->recv_msg));
@@ -100,7 +100,8 @@ evpl_rpc2_recv(
 
     evpl_info("rpc2 reading msg");
 
-    msg->nbvec = evpl_readv(agent->evpl, conn, msg->bvec, RPC2_MAX_BVEC, msg->hdr);
+    msg->nbvec = evpl_readv(agent->evpl, conn, msg->bvec, RPC2_MAX_BVEC,
+                            msg->hdr);
 
     if (msg->nbvec < 0) {
         return 0;
@@ -112,41 +113,43 @@ evpl_rpc2_recv(
 
     evpl_info("unmarshalled rpc msg used %d bytes", rc);
 
-    if (unlikely(rc < 0)) return rc;
+    if (unlikely(rc < 0)) {
+        return rc;
+    }
 
     return 0;
-}
+} /* evpl_rpc2_recv */
 
 static int
 evpl_rpc2_event(
-    struct evpl *evpl,
+    struct evpl      *evpl,
     struct evpl_conn *conn,
-    unsigned int event_type,
-    unsigned int event_code,
-    void *private_data)
+    unsigned int      event_type,
+    unsigned int      event_code,
+    void             *private_data)
 {
-    struct evpl_rpc2_conn *rpc2_conn = private_data;
-    struct evpl_rpc2_agent *agent = rpc2_conn->agent;
+    struct evpl_rpc2_conn  *rpc2_conn = private_data;
+    struct evpl_rpc2_agent *agent     = rpc2_conn->agent;
 
     evpl_info("rpc2 event conn %p type %u", conn, event_type);
 
     switch (event_type) {
-    case EVPL_EVENT_CONNECTED:
-        evpl_info("rpc2 conn connected");
-        break;
-    case EVPL_EVENT_DISCONNECTED:
-        evpl_info("rpc2 conn disconnected");
-        break;
-    case EVPL_EVENT_RECEIVED:
-        evpl_rpc2_recv(agent, rpc2_conn, conn);
-        break;
-    default:
-        evpl_info("rpc2 unhandled event");
-    }
+        case EVPL_EVENT_CONNECTED:
+            evpl_info("rpc2 conn connected");
+            break;
+        case EVPL_EVENT_DISCONNECTED:
+            evpl_info("rpc2 conn disconnected");
+            break;
+        case EVPL_EVENT_RECEIVED:
+            evpl_rpc2_recv(agent, rpc2_conn, conn);
+            break;
+        default:
+            evpl_info("rpc2 unhandled event");
+    } /* switch */
 
 
     return 0;
-}
+} /* evpl_rpc2_event */
 
 static void
 evpl_rpc2_accept(
@@ -158,13 +161,13 @@ evpl_rpc2_accept(
     struct evpl_rpc2_conn *rpc2_conn;
 
     evpl_info("Received RPC2 connection from %s:%d",
-        evpl_conn_address(conn),
-        evpl_conn_port(conn));
+              evpl_conn_address(conn),
+              evpl_conn_port(conn));
 
-    rpc2_conn = evpl_zalloc(sizeof(*rpc2_conn));
+    rpc2_conn        = evpl_zalloc(sizeof(*rpc2_conn));
     rpc2_conn->agent = private_data;
 
-    *callback = evpl_rpc2_event;
+    *callback          = evpl_rpc2_event;
     *conn_private_data = rpc2_conn;
 
 } /* evpl_rpc2_accept */
@@ -207,39 +210,40 @@ evpl_rpc2_connect(
     conn->agent = agent;
 
     return evpl_connect(agent->evpl, protocol, address, port,
-        evpl_rpc2_event, conn);
+                        evpl_rpc2_event, conn);
 
 } /* evpl_rpc2_connect */
 
 void
 evpl_rpc2_call(
-    struct evpl_rpc2_agent       *agent,
-    struct evpl_conn             *conn,
-    unsigned int                  program,
-    unsigned int                  version,
-    unsigned int                  procedure)
+    struct evpl_rpc2_agent *agent,
+    struct evpl_conn       *conn,
+    unsigned int            program,
+    unsigned int            version,
+    unsigned int            procedure)
 {
     struct evpl_rpc2_conn *rpc2_conn = conn->private_data;
-    struct evpl_rpc2_msg *msg;
-    struct evpl_bvec space[RPC2_MAX_BVEC];
-    int nspace, rc;
+    struct evpl_rpc2_msg  *msg;
+    struct evpl_bvec       space[RPC2_MAX_BVEC];
+    int                    nspace, rc;
 
     msg = evpl_zalloc(sizeof(*msg));
 
     evpl_info("sending rpc2 call");
 
-    msg->msg.xid = rpc2_conn->next_xid++;
-    msg->msg.body.mtype = CALL;
-    msg->msg.body.cbody.rpcvers = 2;
-    msg->msg.body.cbody.prog = program;
-    msg->msg.body.cbody.vers = version;
-    msg->msg.body.cbody.proc = procedure;
-    msg->msg.body.cbody.cred.flavor = AUTH_NONE;
+    msg->msg.xid                         = rpc2_conn->next_xid++;
+    msg->msg.body.mtype                  = CALL;
+    msg->msg.body.cbody.rpcvers          = 2;
+    msg->msg.body.cbody.prog             = program;
+    msg->msg.body.cbody.vers             = version;
+    msg->msg.body.cbody.proc             = procedure;
+    msg->msg.body.cbody.cred.flavor      = AUTH_NONE;
     msg->msg.body.cbody.cred.body.length = 0;
-    msg->msg.body.cbody.verf.flavor = AUTH_NONE;
+    msg->msg.body.cbody.verf.flavor      = AUTH_NONE;
     msg->msg.body.cbody.verf.body.length = 0;
 
-    nspace = evpl_bvec_reserve(agent->evpl, 2*1024*1024, 8, RPC2_MAX_BVEC, space);
+    nspace = evpl_bvec_reserve(agent->evpl, 2 * 1024 * 1024, 8, RPC2_MAX_BVEC,
+                               space);
 
     if (unlikely(nspace < 0)) {
         evpl_fatal("Failed to reserve space for RPC2 call");
@@ -247,7 +251,8 @@ evpl_rpc2_call(
 
     msg->nbvec = RPC2_MAX_BVEC;
 
-    rc = marshall_rpc_msg(&msg->msg, 1, space, nspace, msg->bvec, &msg->nbvec, sizeof(uint32_t));
+    rc = marshall_rpc_msg(&msg->msg, 1, space, nspace, msg->bvec, &msg->nbvec,
+                          sizeof(uint32_t));
 
     if (unlikely(rc < 0)) {
         evpl_fatal("Failed to marshall RPC2 call headeR");
@@ -255,9 +260,9 @@ evpl_rpc2_call(
 
     evpl_bvec_commit(agent->evpl, msg->bvec, msg->nbvec);
 
-    *(uint32_t*)msg->bvec[0].data = rpc2_hton32(rc);
+    *(uint32_t *) msg->bvec[0].data = rpc2_hton32(rc);
 
     evpl_send(agent->evpl, conn, msg->bvec, msg->nbvec);
 
-}
+} /* evpl_rpc2_call */
 

@@ -13,8 +13,13 @@
 #include "core/evpl.h"
 #include "core/test_log.h"
 
-const char hello[] = "Hello World!";
-const int  hellolen = strlen(hello) + 1;
+struct client_state {
+    int run;
+    int sent;
+    int recv;
+    int niters;
+    uint32_t value;
+};
 
 
 int
@@ -25,9 +30,9 @@ client_callback(
     unsigned int notify_code,
     void *private_data)
 {
-    struct evpl_bvec bvec;
-    int nbvecs;
-    int *run = private_data;
+    struct client_state *state = private_data;
+    uint32_t value;
+    int length;
 
     switch (notify_type) {
     case EVPL_NOTIFY_CONNECTED:
@@ -35,13 +40,13 @@ client_callback(
         break;
     case EVPL_NOTIFY_RECEIVED:
 
-        nbvecs = evpl_recvv(evpl, bind, &bvec, 1, hellolen);
+        length = evpl_recv(evpl, bind, &value, sizeof(value));
 
-        if (nbvecs) {
+        if (length == sizeof(value)) {
+        
+            state->recv++;
 
-            evpl_test_info("client received '%s'", bvec.data);
-
-            evpl_bvec_release(evpl, &bvec);
+            evpl_test_info("client received %u sent %u recv %u", value, state->sent, state->recv);
 
         }
 
@@ -49,7 +54,6 @@ client_callback(
 
     case EVPL_NOTIFY_DISCONNECTED:
         evpl_test_info("client disconnected");
-        *run = 0;
         break;
     }
 
@@ -62,25 +66,37 @@ client_thread(void *arg)
     struct evpl *evpl;
     struct evpl_endpoint *ep;
     struct evpl_bind *bind;
-    struct evpl_bvec bvec;
-    int run = 1;
+    struct client_state *state = arg;
 
     evpl = evpl_create();
 
     ep = evpl_endpoint_create(evpl, "127.0.0.1", 8000);
 
-    bind = evpl_connect(evpl, EVPL_SOCKET_TCP, ep, client_callback, &run);
+    bind = evpl_connect(evpl, EVPL_SOCKET_TCP, ep, client_callback, state);
 
-    evpl_bvec_alloc(evpl, hellolen, 0, 1, &bvec);
+    while (state->recv != state->niters) {
 
-    memcpy(evpl_bvec_data(&bvec), hello, hellolen);
+        evpl_test_debug("client loop entry sent %u recv %u", 
+            state->sent, state->recv);
+   
+        if (state->sent == state->recv) {
 
-    evpl_sendv(evpl, bind, &bvec, 1, hellolen);
+            evpl_send(evpl, bind, &state->value, sizeof(state->value));
 
-    while (run) {
-    
+            state->value++;
+            state->sent++;
+
+            evpl_test_debug("client sent sent %u recv %u",
+                state->sent, state->recv);
+
+        }
+ 
         evpl_wait(evpl, -1);
     }
+
+    evpl_test_debug("client completed iterations");
+
+    state->run = 0;
 
     evpl_endpoint_close(evpl, ep);
 
@@ -96,9 +112,8 @@ int server_callback(
     unsigned int notify_code,
     void *private_data)
 {
-    struct evpl_bvec bvec;
-    int nbvecs;
-    int *run = private_data;
+    uint32_t value;
+    int length;
 
     switch (notify_type) {
     case EVPL_NOTIFY_CONNECTED:
@@ -106,26 +121,16 @@ int server_callback(
         break;
     case EVPL_NOTIFY_DISCONNECTED:
         evpl_test_info("server disconnected");
-        *run = 0;
         break;
     case EVPL_NOTIFY_RECEIVED:
 
-        nbvecs = evpl_recvv(evpl, bind, &bvec, 1, hellolen);
+        length = evpl_recv(evpl, bind, &value, sizeof(value));
 
-        if (nbvecs) {
-
-            evpl_test_info("server received '%s'", bvec.data);
-
-            evpl_bvec_release(evpl, &bvec);
-
-            evpl_bvec_alloc(evpl, hellolen, 0, 1, &bvec);
-
-            memcpy(evpl_bvec_data(&bvec), hello, hellolen);
-
-            evpl_sendv(evpl, bind, &bvec, 1, hellolen);
-
-            evpl_finish(evpl, bind);
+        if (length == sizeof(value)) {
+            evpl_test_debug("server received %u", value);
+            evpl_send(evpl, bind, &value, sizeof(value));
         }
+
         break;
     }
 
@@ -152,8 +157,14 @@ main(int argc, char *argv[])
 {
     pthread_t thr;
     struct evpl *evpl;
-    int run = 1;
     struct evpl_endpoint *ep;
+    struct client_state state = {
+        .run = 1,
+        .sent = 0,
+        .recv = 0,
+        .niters = 100,
+        .value = 1
+    };
 
     evpl_init(NULL);
 
@@ -161,12 +172,12 @@ main(int argc, char *argv[])
 
     ep = evpl_endpoint_create(evpl, "0.0.0.0", 8000);
 
-    evpl_listen(evpl, EVPL_SOCKET_TCP, ep, accept_callback, &run);
+    evpl_listen(evpl, EVPL_SOCKET_TCP, ep, accept_callback, NULL);
 
-    pthread_create(&thr, NULL, client_thread, NULL);
+    pthread_create(&thr, NULL, client_thread, &state);
 
-    while (run) {
-        evpl_wait(evpl, -1);
+    while (state.run) {
+        evpl_wait(evpl, 1);
     }
 
     pthread_join(thr, NULL);

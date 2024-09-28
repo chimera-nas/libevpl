@@ -43,6 +43,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 add_subdirectory(core)
 add_subdirectory(socket)
+add_subdirectory(thread)
 
 if (RDMACM_LIB)
     add_subdirectory(rdmacm)

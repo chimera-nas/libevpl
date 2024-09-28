@@ -19,10 +19,10 @@ else()
     message(FATAL_ERROR "No supported EVPL_MECH specified")
 endif()
 
-add_library(evpl_core SHARED ${CORE_SRC})
+add_library(evpl SHARED ${CORE_SRC})
 
-target_link_libraries(evpl_core evpl_socket)
+target_link_libraries(evpl evpl_socket evpl_thread)
 
 if (RDMACM_LIB)
-    target_link_libraries(evpl_core evpl_rdmacm)
+    target_link_libraries(evpl evpl_rdmacm)
 endif()

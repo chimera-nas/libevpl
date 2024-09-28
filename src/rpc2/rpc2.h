@@ -15,7 +15,7 @@ evpl_rpc2_destroy(
 typedef void (*evpl_rpc2_dispatch_callback_t)(
     struct evpl_rpc2_agent   *agent,
     struct evpl_rpc2_request *request,
-    void *private_data);
+    void                     *private_data);
 
 int
 evpl_rpc2_listen(
@@ -38,8 +38,8 @@ evpl_rpc2_connect(
 
 void
 evpl_rpc2_call(
-    struct evpl_rpc2_agent       *agent,
-    struct evpl_conn             *conn,
-    unsigned int                  program,
-    unsigned int                  version,
-    unsigned int                  opcode);
+    struct evpl_rpc2_agent *agent,
+    struct evpl_conn       *conn,
+    unsigned int            program,
+    unsigned int            version,
+    unsigned int            opcode);

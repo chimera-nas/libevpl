@@ -72,13 +72,13 @@ void evpl_event_mark_error(
 
 void evpl_accept(
     struct evpl          *evpl,
-    struct evpl_listener *listener,
-    struct evpl_conn     *conn);
+    struct evpl_bind     *bind,
+    struct evpl_bind     *new_bind);
 
 
 void
 evpl_add_event(
-    struct evpl *evpl,
+    struct evpl       *evpl,
     struct evpl_event *event);
 
 /*
@@ -86,4 +86,4 @@ evpl_add_event(
  * so we can cast between them
  */
 
-#define evpl_from_core(core)       ((struct evpl *) core)
+#define evpl_from_core(core) ((struct evpl *) core)

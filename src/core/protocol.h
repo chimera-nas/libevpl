@@ -3,6 +3,7 @@
 #include "core/evpl.h"
 
 struct evpl_event;
+struct evpl_bind;
 
 /*
  * Some sets of protocols share a common framework that requires
@@ -13,56 +14,85 @@ struct evpl_event;
 
 struct evpl_framework {
     /* unique ID number for each framework */
-    unsigned int    id;
+    unsigned int id;
     /* human readable name for framework, no spaces */
-    const char     *name;
+    const char  *name;
 
     /* process global state, can be NULL if not required */
-    void * (*init)(void);
-    void (*cleanup)(void *private_data);
+    void       * (*init)(
+        void);
+    void         (*cleanup)(
+        void *private_data);
 
     /* per-thread state, passed global state, can be NULL if not required  */
-    void *  (*create)(struct evpl *evpl, void *private_data);
-    void (*destroy)(struct evpl *evpl, void *private_data);
+    void       * (*create)(
+        struct evpl *evpl,
+        void        *private_data);
+    void         (*destroy)(
+        struct evpl *evpl,
+        void        *private_data);
 
     /* per-memory-buffer state, can be NULL if not required */
-    void * (*register_buffer)(void *buffer, int size, void *thread_private);
-    void (*unregister_buffer)(void *buffer_private, void *thread_private);
+    void       * (*register_buffer)(
+        void *buffer,
+        int   size,
+        void *thread_private);
+    void         (*unregister_buffer)(
+        void *buffer_private,
+        void *thread_private);
 };
 
 
 /*
  * API for connection oriented protocols
  */
-struct evpl_conn_protocol {
+struct evpl_protocol {
     /* unique ID number for each protocol */
-    unsigned int    id;
+    unsigned int id;
+    
+    /* 1 iff connection oriented protocol */
+    unsigned int connected;
+
     /* human readable name for protocol, no spaces */
-    const char     *name;
+    const char  *name;
 
-    void (*connect)(
-        struct evpl *evpl,
-        struct evpl_conn *conn);
+    /*
+     * Callbacks needed for all protocols
+     */
 
-    void (*close_conn)(
-        struct evpl *evpl,
-        struct evpl_conn *conn);
+    void (*close)(
+        struct evpl      *evpl,
+        struct evpl_bind *bind);
 
-    void (*listen)(
-        struct evpl        *evpl,
-        struct evpl_listener *listener);
+    /* Called when new data is available to be written */
+    void         (*flush)(
+        struct evpl      *evpl,
+        struct evpl_bind *bind);
 
-    void (*close_listen)(
-        struct evpl       *evpl,
-        struct evpl_listener *listener);
 
-    /* Called when connection has new data available to be written */
+    /*
+     * Callbacks for connection-oriented protocols
+     */
 
-    void (*flush)(
-        struct evpl       *evpl,
-        struct evpl_conn  *conn);
+    void         (*connect)(
+        struct evpl      *evpl,
+        struct evpl_bind *bind);
+
+    void         (*listen)(
+        struct evpl          *evpl,
+        struct evpl_bind     *bind);
+
+    /*
+     * Callbacks for non-connection-oriented protocols
+     */
+
+    void         (*bind)(
+        struct evpl      *evpl,
+        struct evpl_bind *bind);
 };
 
 void *
-evpl_framework_private(struct evpl *evpl, int id);
+evpl_framework_private(
+    struct evpl *evpl,
+    int          id);
 

@@ -35,6 +35,39 @@ void evpl_buffer_release(
     struct evpl        *evpl,
     struct evpl_buffer *buffer);
 
+/*
+ * Copy 'length' bytes of data from 'buffer' into
+ * an array of byte vectors 'bvecs'.
+ * Sufficient vectors or space is not checked.
+ */
+
+static inline void
+evpl_bvec_memcpy(
+    struct evpl_bvec *bvecs,
+    const void       *buffer,
+    unsigned int      length)
+{
+    struct evpl_bvec *bvec = bvecs;
+    const void       *ptr = buffer;
+    unsigned int      left = length, chunk;
+
+    while (left) {
+
+        chunk = left;
+
+        if (bvec->length < chunk) {
+            chunk = bvec->length;
+        }
+
+        memcpy(bvec->data, ptr, chunk);
+
+        ptr  += chunk;
+        left -= chunk;
+        bvec++;
+    }
+
+} // evpl_bvec_memcpy
+
 static inline void
 evpl_bvec_decref(
     struct evpl      *evpl,
@@ -43,27 +76,21 @@ evpl_bvec_decref(
     struct evpl_buffer *buffer = bvec->buffer;
 
     evpl_core_abort_if(buffer->refcnt == 0,
-                  "Released bvec %p with zero refcnt", bvec);
-   
-     
-    evpl_core_debug("evpl %p bvec %p released buffer %p refcnt %d",
-        evpl, bvec, buffer, buffer->refcnt);
+                       "Released bvec %p with zero refcnt", bvec);
+
 
     evpl_buffer_release(evpl, buffer);
 
 } // evpl_bvec_decref
 
 static inline void
-evpl_bvec_incref(   
-    struct evpl *evpl,
+evpl_bvec_incref(
+    struct evpl      *evpl,
     struct evpl_bvec *bvec)
 {
     struct evpl_buffer *buffer = bvec->buffer;
 
     ++buffer->refcnt;
-
-    evpl_core_debug("evpl %p bvec %p incref buffer %p refcnt now %d",
-        evpl, bvec, buffer, buffer->refcnt);
 
 } // evpl_bvec_incref
 
@@ -89,7 +116,7 @@ evpl_bvec_ring_alloc(
     int                    size,
     int                    alignment)
 {
-    ring->bvec = evpl_valloc(size, 64);
+    ring->bvec = evpl_valloc(size * sizeof(struct evpl_bvec), 64);
 
     ring->size      = size;
     ring->mask      = size - 1;
@@ -167,7 +194,7 @@ evpl_bvec_ring_tail(struct evpl_bvec_ring *ring)
 static inline struct evpl_bvec *
 evpl_bvec_ring_next(
     struct evpl_bvec_ring *ring,
-    struct evpl_bvec *cur)
+    struct evpl_bvec      *cur)
 {
     int index = ((cur - ring->bvec) + 1) & ring->mask;
 
@@ -176,7 +203,7 @@ evpl_bvec_ring_next(
     }
 
     return &ring->bvec[index];
-}
+} // evpl_bvec_ring_next
 
 static inline struct evpl_bvec *
 evpl_bvec_ring_add(
@@ -192,9 +219,9 @@ evpl_bvec_ring_add(
 
     res = &ring->bvec[ring->head];
 
-    ring->bvec[ring->head] = *bvec;
+    ring->bvec[ring->head]     = *bvec;
     ring->bvec[ring->head].eom = eom;
-    ring->head             = (ring->head + 1) & ring->mask;
+    ring->head                 = (ring->head + 1) & ring->mask;
 
     return res;
 } // evpl_bvec_ring_add
@@ -207,7 +234,7 @@ evpl_bvec_ring_remove(struct evpl_bvec_ring *ring)
 
 static inline void
 evpl_bvec_ring_clear(
-    struct evpl *evpl,
+    struct evpl           *evpl,
     struct evpl_bvec_ring *ring)
 {
     struct evpl_bvec *bvec;
@@ -228,6 +255,7 @@ evpl_bvec_ring_iov(
     ssize_t               *r_total,
     struct iovec          *iov,
     int                    max_iov,
+    int                    stop_on_eom,
     struct evpl_bvec_ring *ring)
 {
     struct evpl_bvec *bvec;
@@ -242,6 +270,8 @@ evpl_bvec_ring_iov(
         iov[niov].iov_len  = bvec->length;
         niov++;
         total += bvec->length;
+
+        if (stop_on_eom && bvec->eom) break;
 
         pos = (pos + 1) & ring->mask;
     }
@@ -304,8 +334,10 @@ evpl_bvec_ring_append(
 } // evpl_bvec_ring_append
 
 static inline void *
-evpl_buffer_private(struct evpl_buffer *buffer, int id)
+evpl_buffer_private(
+    struct evpl_buffer *buffer,
+    int                 id)
 {
     return buffer->framework_private[id];
-}
+} // evpl_buffer_private
 
