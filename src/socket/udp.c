@@ -35,45 +35,44 @@ evpl_socket_udp_read(
     struct evpl_event *event)
 {
 
-    struct evpl_socket      *s = evpl_event_socket(event);
-    struct evpl_bind        *bind = evpl_private2bind(s);
-    struct evpl_socket_msg **msgs, *msg;
-    struct evpl_notify       notify;
-    struct msghdr           *msghdr;
-    struct mmsghdr          *msgvecs, *msgvec;
-    ssize_t                  res;
-    int                      i, nmsg = s->config->max_msg_batch;
+    struct evpl_socket           *s = evpl_event_socket(event);
+    struct evpl_bind             *bind = evpl_private2bind(s);
+    struct evpl_socket_datagram **datagrams, *datagram;
+    struct evpl_notify            notify;
+    struct msghdr                *msghdr;
+    struct mmsghdr               *msgvecs, *msgvec;
+    struct evpl_endpoint_stub    *eps;
+    struct iovec                 *iov;
+    ssize_t                       res;
+    int                           i, nmsg = s->config->max_datagram_batch;
 
-    evpl_socket_debug("udp readable");
-
-
-    msgs    = alloca(sizeof(struct evpl_socket_msg *) * nmsg);
-    msgvecs = alloca(sizeof(struct mmsghdr) * nmsg);
+    datagrams = alloca(sizeof(struct evpl_socket_datagram * ) * nmsg);
+    msgvecs   = alloca(sizeof(struct mmsghdr) * nmsg);
+    eps       = alloca(sizeof(struct evpl_endpoint_stub) * nmsg);
+    iov       = alloca(sizeof(struct iovec) * nmsg);
 
     for (i = 0; i < nmsg; ++i) {
         msgvec = &msgvecs[i];
 
         msghdr = &msgvec->msg_hdr;
 
-        msg = evpl_socket_msg_alloc(evpl, s);
+        datagram = evpl_socket_datagram_alloc(evpl, s);
 
-        msgs[i] = msg;
+        datagrams[i] = datagram;
 
-        msghdr->msg_name       = &msg->eps.addr;
-        msghdr->msg_namelen    = sizeof(msg->eps.addr);
-        msghdr->msg_iov        = &msg->iov;
+        msghdr->msg_name       = &eps[i].addr;
+        msghdr->msg_namelen    = sizeof(eps[i].addr);
+        msghdr->msg_iov        = &iov[i];
         msghdr->msg_iovlen     = 1;
         msghdr->msg_control    = NULL;
         msghdr->msg_controllen = 0;
         msghdr->msg_flags      = 0;
 
-        msg->iov.iov_base = msg->bvec.data;
-        msg->iov.iov_len  = msg->bvec.length;
+        iov[i].iov_base = datagram->bvec.data;
+        iov[i].iov_len  = datagram->bvec.length;
     }
 
     res = recvmmsg(s->fd, msgvecs, nmsg, MSG_NOSIGNAL | MSG_DONTWAIT, NULL);
-
-    evpl_socket_debug("udp recv read %d msg", res);
 
     if (res < 0) {
         evpl_event_mark_unreadable(event);
@@ -87,29 +86,29 @@ evpl_socket_udp_read(
 
     for (i = 0; i < res; ++i) {
 
-        msg    = msgs[i];
-        msghdr = &msgvecs[i].msg_hdr;
+        datagram = datagrams[i];
+        msghdr   = &msgvecs[i].msg_hdr;
 
-        msg->eps.addrlen = msghdr->msg_namelen;
+        eps[i].addrlen = msghdr->msg_namelen;
 
         notify.notify_type   = EVPL_NOTIFY_RECV_DATAGRAM;
         notify.notify_status = 0;
 
-        msg->bvec.length =  msgvecs[i].msg_len;
+        datagram->bvec.length =  msgvecs[i].msg_len;
 
-        notify.recv_msg.bvec  = &msg->bvec;
+        notify.recv_msg.bvec  = &datagram->bvec;
         notify.recv_msg.nbvec = 1;
-        notify.recv_msg.eps   = &msg->eps;
+        notify.recv_msg.eps   = &eps[i];
 
         bind->callback(evpl, bind, &notify, bind->private_data);
 
-        evpl_bvec_release(evpl, &msg->bvec);
-        evpl_socket_msg_reload(evpl, s, msg);
+        evpl_bvec_release(evpl, &datagram->bvec);
+        evpl_socket_datagram_reload(evpl, s, datagram);
 
     }
 
     for (i = 0; i < nmsg; ++i) {
-        evpl_socket_msg_free(evpl, s, msgs[i]);
+        evpl_socket_datagram_free(evpl, s, datagrams[i]);
     }
 
     if (res < nmsg) {
@@ -132,8 +131,6 @@ evpl_socket_udp_write(
     struct msghdr      *msghdr;
     struct mmsghdr      msgvec[8];
     ssize_t             res, total;
-
-    evpl_socket_debug("udp writable");
 
     dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 

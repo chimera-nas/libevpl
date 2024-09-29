@@ -75,6 +75,7 @@ struct evpl {
     int                    max_active_deferrals;
 
     struct evpl_buffer    *current_buffer;
+    struct evpl_buffer    *datagram_buffer;
     struct evpl_buffer    *free_buffers;
     struct evpl_bind      *free_binds;
     struct evpl_endpoint  *endpoints;
@@ -457,13 +458,6 @@ evpl_destroy(struct evpl *evpl)
         evpl_endpoint_close(evpl, evpl->endpoints);
     }
 
-    while (evpl->current_buffer) {
-        buffer = evpl->current_buffer;
-        LL_DELETE(evpl->current_buffer, buffer);
-
-        evpl_buffer_release(evpl, buffer);
-    }
-
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
         framework = evpl_shared->framework[i];
 
@@ -472,6 +466,17 @@ evpl_destroy(struct evpl *evpl)
         }
 
         framework->destroy(evpl, evpl->framework_private[i]);
+    }
+
+    while (evpl->current_buffer) {
+        buffer = evpl->current_buffer;
+        LL_DELETE(evpl->current_buffer, buffer);
+
+        evpl_buffer_release(evpl, buffer);
+    }
+
+    if (evpl->datagram_buffer) {
+        evpl_buffer_release(evpl, evpl->datagram_buffer);
     }
 
     while (evpl->free_buffers) {
@@ -870,6 +875,34 @@ evpl_bvec_alloc_whole(
     r_bvec->length = buffer->size;
     r_bvec->buffer = buffer;
 } /* evpl_bvec_alloc_whole */
+
+void
+evpl_bvec_alloc_datagram(
+    struct evpl      *evpl,
+    struct evpl_bvec *r_bvec)
+{
+    struct evpl_buffer *buffer;
+
+    if (!evpl->datagram_buffer) {
+        evpl->datagram_buffer = evpl_buffer_alloc(evpl);
+        evpl->datagram_buffer->refcnt++;
+    }
+
+    buffer = evpl->datagram_buffer;
+
+    r_bvec->data   = buffer->data + buffer->used;
+    r_bvec->length = evpl->config->max_datagram_size;
+    r_bvec->buffer = buffer;
+
+    buffer->used += evpl->config->max_datagram_size;
+    buffer->refcnt++;
+
+    if (buffer->size - buffer->used < evpl->config->max_datagram_size) {
+        evpl_buffer_release(evpl, evpl->datagram_buffer);
+        evpl->datagram_buffer = NULL;
+    }
+
+} /* evpl_bvec_alloc_datagram */
 
 void
 evpl_buffer_release(
@@ -1307,3 +1340,4 @@ evpl_bind_request_send_notifications(
 {
     bind->flags |= EVPL_BIND_SENT_NOTIFY;
 } /* evpl_bind_request_send_notifications */
+

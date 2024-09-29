@@ -16,8 +16,8 @@ struct evpl_config {
     unsigned int max_poll_fd;
     unsigned int buffer_size;
     unsigned int page_size;
-    unsigned int max_msg_size;
-    unsigned int max_msg_batch;
+    unsigned int max_datagram_size;
+    unsigned int max_datagram_batch;
     unsigned int refcnt;
     unsigned int bvec_ring_size;
     unsigned int dgram_ring_size;
@@ -98,9 +98,23 @@ void evpl_abort(
 #ifndef FORCE_INLINE
 #define FORCE_INLINE __attribute__((always_inline)) inline
 
+/* Allocate a bvec representing an entire evpl_buffer
+ * guaranteed to be contiguous
+ */
+
 void
 evpl_bvec_alloc_whole(
     struct evpl      *evpl,
     struct evpl_bvec *r_bvec);
+
+/*
+ * Allocate a bvec to hold one datagram of maximal size
+ * guaranteed to be contiguous
+ */
+void
+evpl_bvec_alloc_datagram(
+    struct evpl      *evpl,
+    struct evpl_bvec *r_bvec);
+
 
 #endif // ifndef FORCE_INLINE

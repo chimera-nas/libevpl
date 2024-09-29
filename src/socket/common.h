@@ -15,60 +15,58 @@
 #define evpl_socket_abort_if(cond, ...) \
     evpl_abort_if(cond, "socket", __VA_ARGS__)
 
-struct evpl_socket_msg {
-    struct evpl_endpoint_stub eps;
-    struct evpl_bvec          bvec;
-    struct iovec              iov;
-    struct evpl_socket_msg   *next;
+struct evpl_socket_datagram {
+    struct evpl_bvec             bvec;
+    struct evpl_socket_datagram *next;
 };
 
 struct evpl_socket {
-    struct evpl_event         event;
-    int                       fd;
-    int                       connected;
-    const struct evpl_config *config;
-    struct evpl_socket_msg   *free_msgs;
-    struct evpl_bvec          recv1;
-    struct evpl_bvec          recv2;
+    struct evpl_event            event;
+    int                          fd;
+    int                          connected;
+    const struct evpl_config    *config;
+    struct evpl_socket_datagram *free_datagrams;
+    struct evpl_bvec             recv1;
+    struct evpl_bvec             recv2;
 };
 
 #define evpl_event_socket(eventp) container_of((eventp), struct evpl_socket, \
                                                event)
 
-static inline struct evpl_socket_msg *
-evpl_socket_msg_alloc(
+static inline struct evpl_socket_datagram *
+evpl_socket_datagram_alloc(
     struct evpl        *evpl,
     struct evpl_socket *s)
 {
-    struct evpl_socket_msg *msg;
+    struct evpl_socket_datagram *datagram;
 
-    if (s->free_msgs) {
-        msg = s->free_msgs;
-        LL_DELETE(s->free_msgs, msg);
+    if (s->free_datagrams) {
+        datagram = s->free_datagrams;
+        LL_DELETE(s->free_datagrams, datagram);
     } else {
-        msg = evpl_zalloc(sizeof(*msg));
-        evpl_bvec_alloc(evpl, s->config->max_msg_size, 0, 1, &msg->bvec);
+        datagram = evpl_zalloc(sizeof(*datagram));
+        evpl_bvec_alloc_datagram(evpl, &datagram->bvec);
     }
 
-    return msg;
-} // evpl_socket_msg_alloc
+    return datagram;
+} // evpl_socket_datagram_alloc
 
 static inline void
-evpl_socket_msg_free(
-    struct evpl            *evpl,
-    struct evpl_socket     *s,
-    struct evpl_socket_msg *msg)
+evpl_socket_datagram_free(
+    struct evpl                 *evpl,
+    struct evpl_socket          *s,
+    struct evpl_socket_datagram *datagram)
 {
-    LL_PREPEND(s->free_msgs, msg);
+    LL_PREPEND(s->free_datagrams, datagram);
 } // evpl_socket_msg_free
 
 static inline void
-evpl_socket_msg_reload(
-    struct evpl            *evpl,
-    struct evpl_socket     *s,
-    struct evpl_socket_msg *msg)
+evpl_socket_datagram_reload(
+    struct evpl                 *evpl,
+    struct evpl_socket          *s,
+    struct evpl_socket_datagram *datagram)
 {
-    evpl_bvec_alloc(evpl, s->config->max_msg_size, 0, 1, &msg->bvec);
+    evpl_bvec_alloc_datagram(evpl, &datagram->bvec);
 } // evpl_socket_msg_reload
 
 static inline void
@@ -89,8 +87,8 @@ evpl_socket_close(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
-    struct evpl_socket     *s = evpl_bind_private(bind);
-    struct evpl_socket_msg *msg;
+    struct evpl_socket          *s = evpl_bind_private(bind);
+    struct evpl_socket_datagram *datagram;
 
     if (s->fd >= 0) {
         close(s->fd);
@@ -106,11 +104,11 @@ evpl_socket_close(
         s->recv2.length = 0;
     }
 
-    while (s->free_msgs) {
-        msg = s->free_msgs;
-        LL_DELETE(s->free_msgs, msg);
-        evpl_bvec_release(evpl, &msg->bvec);
-        evpl_free(msg);
+    while (s->free_datagrams) {
+        datagram = s->free_datagrams;
+        LL_DELETE(s->free_datagrams, datagram);
+        evpl_bvec_release(evpl, &datagram->bvec);
+        evpl_free(datagram);
     }
 
 } /* evpl_tcp_close_conn */
