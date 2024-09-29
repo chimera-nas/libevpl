@@ -450,7 +450,6 @@ evpl_destroy(struct evpl *evpl)
         evpl_bvec_ring_free(&bind->bvec_send);
         evpl_bvec_ring_free(&bind->bvec_recv);
         evpl_dgram_ring_free(&bind->dgram_send);
-        evpl_dgram_ring_free(&bind->dgram_recv);
         evpl_free(bind);
     }
 
@@ -550,11 +549,6 @@ evpl_bind_alloc(struct evpl *evpl)
         evpl_bvec_ring_alloc(
             &bind->bvec_send,
             evpl->config->bvec_ring_size,
-            evpl->config->page_size);
-
-        evpl_dgram_ring_alloc(
-            &bind->dgram_recv,
-            evpl->config->dgram_ring_size,
             evpl->config->page_size);
 
         evpl_dgram_ring_alloc(

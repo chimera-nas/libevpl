@@ -36,7 +36,6 @@ struct evpl_bind {
     struct evpl_bvec_ring     bvec_recv;
 
     struct evpl_dgram_ring    dgram_send;
-    struct evpl_dgram_ring    dgram_recv;
 
     struct evpl_endpoint_stub local;
     struct evpl_endpoint_stub remote;
