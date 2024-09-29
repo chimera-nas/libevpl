@@ -147,32 +147,33 @@ evpl_socket_tcp_write(
 
     evpl_check_conn(evpl, bind, s);
 
-    while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
 
-        niov = evpl_bvec_ring_iov(&total, iov, 8, 0, &bind->bvec_send);
+    niov = evpl_bvec_ring_iov(&total, iov, 8, 0, &bind->bvec_send);
 
-        msghdr.msg_name       = NULL;
-        msghdr.msg_namelen    = 0;
-        msghdr.msg_iov        = iov;
-        msghdr.msg_iovlen     = niov;
-        msghdr.msg_control    = NULL;
-        msghdr.msg_controllen = 0;
-        msghdr.msg_flags      = 0;
+    msghdr.msg_name       = NULL;
+    msghdr.msg_namelen    = 0;
+    msghdr.msg_iov        = iov;
+    msghdr.msg_iovlen     = niov;
+    msghdr.msg_control    = NULL;
+    msghdr.msg_controllen = 0;
+    msghdr.msg_flags      = 0;
 
-        res = sendmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
+    res = sendmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
 
-        if (res < 0) {
-            evpl_event_mark_unwritable(event);
-            evpl_defer(evpl, &bind->close_deferral);
-            break;
-        }
+    if (res < 0) {
+        evpl_event_mark_unwritable(event);
+        evpl_defer(evpl, &bind->close_deferral);
+        return;
+    }
 
-        evpl_bvec_ring_consume(evpl, &bind->bvec_send, res);
+    evpl_bvec_ring_consume(evpl, &bind->bvec_send, res);
 
-        if (res != total) {
-            evpl_event_mark_unwritable(event);
-            break;
-        }
+    if (res != total) {
+        evpl_event_mark_unwritable(event);
+    }
+
+    if (res) {
+        bind->callback(evpl, bind, EVPL_NOTIFY_SENT, 0, bind->private_data);
     }
 
     if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {

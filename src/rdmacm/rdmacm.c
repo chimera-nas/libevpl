@@ -381,6 +381,7 @@ evpl_rdmacm_poll_cq(
 
                 break;
             case IBV_WC_SEND:
+
                 sr = (struct evpl_rdmacm_sr *) cq->wr_id;
 
                 for (i = 0; i < sr->nbufref; ++i) {
@@ -392,6 +393,9 @@ evpl_rdmacm_poll_cq(
                 bind = evpl_private2bind(rdmacm_id);
 
                 --rdmacm_id->active_sends;
+
+                bind->callback(evpl, bind, EVPL_NOTIFY_SENT, 0,
+                               bind->private_data);
 
                 if (rdmacm_id->active_sends == 0 &&
                     evpl_bvec_ring_is_empty(&bind->bvec_send)) {
