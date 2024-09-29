@@ -136,8 +136,8 @@ evpl_rdmacm_create_qp(
     qp_attr.send_cq          = dev->cq;
     qp_attr.recv_cq          = dev->cq;
     qp_attr.srq              = dev->srq;
-    qp_attr.cap.max_send_wr  = 10;
-    qp_attr.cap.max_recv_wr  = 10;
+    qp_attr.cap.max_send_wr  = rdmacm->config->rdmacm_sq_size;
+    qp_attr.cap.max_recv_wr  = rdmacm->config->rdmacm_cq_size;
     qp_attr.cap.max_send_sge = rdmacm->config->max_num_bvec;
     qp_attr.cap.max_recv_sge = rdmacm->config->max_num_bvec;
     qp_attr.sq_sig_all       = 1;
@@ -179,7 +179,10 @@ evpl_rdmacm_event_callback(
 
     switch (cm_event->event) {
         case RDMA_CM_EVENT_ADDR_RESOLVED:
-            rc = rdma_resolve_route(cm_event->id, 5000);
+
+            rc = rdma_resolve_route(cm_event->id,
+                                    rdmacm->config->resolve_timeout_ms);
+
             evpl_rdmacm_abort_if(rc, "rdma_resolve_route error %s", strerror(
                                      errno));
             break;
@@ -189,8 +192,8 @@ evpl_rdmacm_event_callback(
 
             memset(&conn_param, 0, sizeof(conn_param));
             conn_param.private_data    = rdmacm_id;
-            conn_param.retry_count     = 1;
-            conn_param.rnr_retry_count = 1;
+            conn_param.retry_count     = rdmacm->config->rdmacm_retry_count;
+            conn_param.rnr_retry_count = rdmacm->config->rdmacm_rnr_retry_count;
 
             rc = rdma_connect(cm_event->id, &conn_param);
             evpl_rdmacm_abort_if(rc, "rdma_connect error %s", strerror(errno));
@@ -226,11 +229,12 @@ evpl_rdmacm_event_callback(
             evpl_rdmacm_create_qp(evpl, rdmacm, new_rdmacm_id);
 
             memset(&conn_param, 0, sizeof(conn_param));
-            conn_param.private_data        = rdmacm;
-            conn_param.retry_count         = 1;
-            conn_param.rnr_retry_count     = 1;
-            conn_param.responder_resources = 1;
-            conn_param.initiator_depth     = 16;
+            conn_param.private_data    = rdmacm;
+            conn_param.retry_count     = rdmacm->config->rdmacm_retry_count;
+            conn_param.rnr_retry_count =
+                rdmacm->config->rdmacm_rnr_retry_count;
+            conn_param.responder_resources = 0;
+            conn_param.initiator_depth     = 0;
 
             rc = rdma_accept(cm_event->id, &conn_param);
 
@@ -592,7 +596,7 @@ evpl_rdmacm_create(
 
         memset(&cq_attr, 0, sizeof(cq_attr));
 
-        cq_attr.cqe           = 255;
+        cq_attr.cqe           = rdmacm->config->rdmacm_cq_size;
         cq_attr.cq_context    = dev;
         cq_attr.channel       = dev->comp_channel;
         cq_attr.comp_vector   = 0;
@@ -611,13 +615,13 @@ evpl_rdmacm_create(
 
         memset(&srq_init_attr, 0, sizeof(srq_init_attr));
 
-        srq_init_attr.attr.max_wr  = 256;
-        srq_init_attr.attr.max_sge = 8;
+        srq_init_attr.attr.max_wr  = rdmacm->config->rdmacm_sq_size;
+        srq_init_attr.attr.max_sge = 1;
 
         dev->srq = ibv_create_srq(dev->pd, &srq_init_attr);
 
-        dev->srq_max = 16;
-        dev->srq_min = 8;
+        dev->srq_max = rdmacm->config->rdmacm_srq_size;
+        dev->srq_min = rdmacm->config->rdmacm_srq_min;
 
         dev->srq_reqs = evpl_zalloc(sizeof(struct evpl_rdmacm_request) *
                                     dev->srq_max);
@@ -755,7 +759,7 @@ evpl_rdmacm_connect(
     evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
 
     rc = rdma_resolve_addr(rdmacm_id->id, NULL, ep->ai->ai_addr,
-                           5000);
+                           rdmacm->config->resolve_timeout_ms);
 
     bind->local.addrlen = 0;
 

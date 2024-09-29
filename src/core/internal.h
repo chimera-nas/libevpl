@@ -22,6 +22,14 @@ struct evpl_config {
     unsigned int refcnt;
     unsigned int bvec_ring_size;
     unsigned int dgram_ring_size;
+    unsigned int resolve_timeout_ms;
+
+    unsigned int rdmacm_cq_size;
+    unsigned int rdmacm_sq_size;
+    unsigned int rdmacm_srq_size;
+    unsigned int rdmacm_srq_min;
+    unsigned int rdmacm_retry_count;
+    unsigned int rdmacm_rnr_retry_count;
 };
 
 void * evpl_malloc(

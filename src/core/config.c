@@ -23,12 +23,20 @@ evpl_config_init(void)
     config->dgram_ring_size    = 256;
     config->max_datagram_size  = 4096;
     config->max_datagram_batch = 16;
+    config->resolve_timeout_ms = 5000;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 
     if (config->page_size == -1) {
         config->page_size = 4096;
     }
+
+    config->rdmacm_cq_size         = 256;
+    config->rdmacm_sq_size         = 256;
+    config->rdmacm_srq_size        = 32;
+    config->rdmacm_srq_min         = 16;
+    config->rdmacm_retry_count     = 1;
+    config->rdmacm_rnr_retry_count = 1;
 
     return config;
 } /* evpl_config_init */
