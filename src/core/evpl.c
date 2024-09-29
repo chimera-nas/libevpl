@@ -703,6 +703,7 @@ evpl_accept(
     struct evpl_bind *bind,
     struct evpl_bind *new_bind)
 {
+    struct evpl_notify notify;
 
     bind->accept_callback(
         bind,
@@ -710,8 +711,10 @@ evpl_accept(
         &new_bind->private_data,
         bind->private_data);
 
-    new_bind->callback(evpl, new_bind, EVPL_NOTIFY_CONNECTED, 0,
-                       new_bind->private_data);
+    notify.notify_type   = EVPL_NOTIFY_CONNECTED;
+    notify.notify_status = 0;
+
+    new_bind->callback(evpl, new_bind, &notify, new_bind->private_data);
 
 } /* evpl_accept */
 
@@ -991,8 +994,8 @@ evpl_sendtov(
     memcpy(&dgram->addr, endpoint->ai->ai_addr, endpoint->ai->ai_addrlen);
     dgram->addrlen = endpoint->ai->ai_addrlen;
 
-
     evpl_defer(evpl, &bind->flush_deferral);
+
 } /* evpl_sendtov */
 
 
@@ -1029,10 +1032,13 @@ evpl_bind_destroy(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
+    struct evpl_notify notify;
+
     if (bind->callback) {
-        bind->callback(
-            evpl, bind, EVPL_NOTIFY_DISCONNECTED, 0,
-            bind->private_data);
+        notify.notify_type   = EVPL_NOTIFY_DISCONNECTED;
+        notify.notify_status = 0;
+
+        bind->callback(evpl, bind, &notify, bind->private_data);
     }
 
     bind->protocol->close(evpl, bind);
@@ -1088,7 +1094,7 @@ evpl_peek(
 int
 evpl_recv(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     void             *buffer,
     int               length)
 {
@@ -1096,7 +1102,7 @@ evpl_recv(
     struct evpl_bvec *cur;
     void             *ptr = buffer;
 
-    cur = evpl_bvec_ring_tail(&conn->bvec_recv);
+    cur = evpl_bvec_ring_tail(&bind->bvec_recv);
 
     while (cur && left) {
 
@@ -1110,14 +1116,14 @@ evpl_recv(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&conn->bvec_recv, cur);
+        cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
 
         if (cur == NULL) {
             return -1;
         }
     }
 
-    evpl_bvec_ring_consume(evpl, &conn->bvec_recv, length);
+    evpl_bvec_ring_consume(evpl, &bind->bvec_recv, length);
 
     return length;
 
@@ -1126,7 +1132,7 @@ evpl_recv(
 int
 evpl_recvv(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     struct evpl_bvec *bvecs,
     int               maxbvecs,
     int               length)
@@ -1134,7 +1140,7 @@ evpl_recvv(
     int               left = length, chunk, nbvecs = 0;
     struct evpl_bvec *cur, *out;
 
-    cur = evpl_bvec_ring_tail(&conn->bvec_recv);
+    cur = evpl_bvec_ring_tail(&bind->bvec_recv);
 
     while (cur && left) {
 
@@ -1157,7 +1163,7 @@ evpl_recvv(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&conn->bvec_recv, cur);
+        cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
 
         if (cur == NULL) {
             return -1;
@@ -1165,11 +1171,10 @@ evpl_recvv(
     }
 
 
-    evpl_bvec_ring_consume(evpl, &conn->bvec_recv, length);
+    evpl_bvec_ring_consume(evpl, &bind->bvec_recv, length);
 
     return nbvecs;
 } /* evpl_recvv */
-
 
 int
 evpl_recv_peek_bvec(

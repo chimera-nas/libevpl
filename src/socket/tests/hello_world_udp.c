@@ -21,24 +21,17 @@ int
 client_callback(
     struct evpl *evpl,
     struct evpl_bind *bind,
-    unsigned int notify_type,
-    unsigned int notify_code,
+    const struct evpl_notify *notify,
     void *private_data)
 {
-    char buffer[hellolen];
-    int length, *run = private_data;
+    int *run = private_data;
 
-    switch (notify_type) {
-    case EVPL_NOTIFY_RECEIVED:
+    switch (notify->notify_type) {
+    case EVPL_NOTIFY_RECEIVED_MSG:
 
-        length = evpl_recv(evpl, bind, buffer, hellolen);
+        evpl_test_info("client received '%s'", notify->recv_msg.bvec[0].data);
 
-        if (length == hellolen) {
-
-            evpl_test_info("client received '%s'", buffer);
-
-            *run = 0;
-        }
+        *run = 0;
 
         break;
     }
@@ -76,31 +69,28 @@ client_thread(void *arg)
 int server_callback(
     struct evpl *evpl,
     struct evpl_bind *bind,
-    unsigned int notify_type,
-    unsigned int notify_code,
+    const struct evpl_notify *notify,
     void *private_data)
 {
-    char buffer[hellolen];
     struct evpl_endpoint *client;
-    int length, *run = private_data;
+    int *run = private_data;
 
-    switch (notify_type) {
-    case EVPL_NOTIFY_RECEIVED:
-    
-        length = evpl_recv(evpl, bind, buffer, hellolen);
+    switch (notify->notify_type) {
+    case EVPL_NOTIFY_RECEIVED_MSG:
+   
+        evpl_test_info("server received '%s'", notify->recv_msg.bvec[0].data); 
 
-        if (length == hellolen) {
+        client = evpl_endpoint_create(evpl, "127.0.0.1", 8001);
 
-            client = evpl_endpoint_create(evpl, "127.0.0.1", 8001);
+        evpl_sendto(evpl, bind, client, hello, hellolen);
 
-            evpl_test_info("server received '%s'", buffer);
+        evpl_finish(evpl, bind);
 
-            evpl_sendto(evpl, bind, client, buffer, hellolen);
-        }
         break;
-    case EVPL_NOTIFY_SENT:
-        evpl_test_info("server send complete");
+
+    case EVPL_NOTIFY_DISCONNECTED:
         *run = 0;
+
         break;
     }
 

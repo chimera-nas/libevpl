@@ -333,6 +333,7 @@ evpl_rdmacm_poll_cq(
     struct evpl_rdmacm_request *req;
     struct evpl_rdmacm_sr      *sr;
     struct evpl_bind           *bind;
+    struct evpl_notify          notify;
     struct ibv_cq_ex           *cq = (struct ibv_cq_ex *) dev->cq;
     struct ibv_poll_cq_attr     cq_attr = { .comp_mask = 0 };
     int                         rc, i, n = 0;
@@ -372,8 +373,10 @@ evpl_rdmacm_poll_cq(
 
                 evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec, 1);
 
-                bind->callback(evpl, bind, EVPL_NOTIFY_RECEIVED, 0,
-                               bind->private_data);
+                notify.notify_type   = EVPL_NOTIFY_RECEIVED_DATA;
+                notify.notify_status = 0;
+
+                bind->callback(evpl, bind, &notify, bind->private_data);
 
                 --dev->srq_fill;
                 req->used = 0;
@@ -394,8 +397,10 @@ evpl_rdmacm_poll_cq(
 
                 --rdmacm_id->active_sends;
 
-                bind->callback(evpl, bind, EVPL_NOTIFY_SENT, 0,
-                               bind->private_data);
+                notify.notify_type   = EVPL_NOTIFY_SENT;
+                notify.notify_status = 0;
+
+                bind->callback(evpl, bind, &notify, bind->private_data);
 
                 if (rdmacm_id->active_sends == 0 &&
                     evpl_bvec_ring_is_empty(&bind->bvec_send)) {

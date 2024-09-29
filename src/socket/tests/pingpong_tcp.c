@@ -26,19 +26,18 @@ int
 client_callback(
     struct evpl *evpl,
     struct evpl_bind *bind,
-    unsigned int notify_type,
-    unsigned int notify_code,
+    const struct evpl_notify *notify,
     void *private_data)
 {
     struct client_state *state = private_data;
     uint32_t value;
     int length;
 
-    switch (notify_type) {
+    switch (notify->notify_type) {
     case EVPL_NOTIFY_CONNECTED:
         evpl_test_info("client connected");
         break;
-    case EVPL_NOTIFY_RECEIVED:
+    case EVPL_NOTIFY_RECEIVED_DATA:
 
         length = evpl_recv(evpl, bind, &value, sizeof(value));
 
@@ -108,21 +107,20 @@ client_thread(void *arg)
 int server_callback(
     struct evpl *evpl,
     struct evpl_bind *bind,
-    unsigned int notify_type,
-    unsigned int notify_code,
+    const struct evpl_notify *notify,
     void *private_data)
 {
     uint32_t value;
     int length;
 
-    switch (notify_type) {
+    switch (notify->notify_type) {
     case EVPL_NOTIFY_CONNECTED:
         evpl_test_info("server connected");
         break;
     case EVPL_NOTIFY_DISCONNECTED:
         evpl_test_info("server disconnected");
         break;
-    case EVPL_NOTIFY_RECEIVED:
+    case EVPL_NOTIFY_RECEIVED_DATA:
 
         length = evpl_recv(evpl, bind, &value, sizeof(value));
 

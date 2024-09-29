@@ -32,8 +32,9 @@ evpl_check_conn(
     struct evpl_bind   *bind,
     struct evpl_socket *s)
 {
-    socklen_t len;
-    int       rc, err;
+    struct evpl_notify notify;
+    socklen_t          len;
+    int                rc, err;
 
     if (!s->connected) {
         len = sizeof(err);
@@ -43,8 +44,9 @@ evpl_check_conn(
         if (err) {
             evpl_defer(evpl, &bind->close_deferral);
         } else {
-            bind->callback(evpl, bind, EVPL_NOTIFY_CONNECTED, 0,
-                           bind->private_data);
+            notify.notify_type   = EVPL_NOTIFY_CONNECTED;
+            notify.notify_status = 0;
+            bind->callback(evpl, bind, &notify, bind->private_data);
         }
 
         s->connected = 1;
@@ -59,6 +61,7 @@ evpl_socket_tcp_read(
 {
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
+    struct evpl_notify  notify;
     struct iovec        iov[8];
     struct msghdr       msghdr;
     ssize_t             res, total, remain;
@@ -128,8 +131,9 @@ evpl_socket_tcp_read(
     }
 
     if (cb) {
-        bind->callback(evpl, bind, EVPL_NOTIFY_RECEIVED, 0,
-                       bind->private_data);
+        notify.notify_type   = EVPL_NOTIFY_RECEIVED_DATA;
+        notify.notify_status = 0;
+        bind->callback(evpl, bind, &notify, bind->private_data);
     }
 } /* evpl_read_tcp */
 
@@ -140,6 +144,7 @@ evpl_socket_tcp_write(
 {
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
+    struct evpl_notify  notify;
     struct iovec        iov[8];
     int                 niov;
     struct msghdr       msghdr;
@@ -173,7 +178,9 @@ evpl_socket_tcp_write(
     }
 
     if (res) {
-        bind->callback(evpl, bind, EVPL_NOTIFY_SENT, 0, bind->private_data);
+        notify.notify_type   = EVPL_NOTIFY_SENT;
+        notify.notify_status = 0;
+        bind->callback(evpl, bind, &notify, bind->private_data);
     }
 
     if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {

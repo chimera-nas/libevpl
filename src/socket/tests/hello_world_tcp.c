@@ -21,15 +21,14 @@ int
 client_callback(
     struct evpl *evpl,
     struct evpl_bind *bind,
-    unsigned int notify_type,
-    unsigned int notify_code,
+    const struct evpl_notify *notify,
     void *private_data)
 {
     char buffer[hellolen];
     int length, *run = private_data;
 
-    switch (notify_type) {
-    case EVPL_NOTIFY_RECEIVED:
+    switch (notify->notify_type) {
+    case EVPL_NOTIFY_RECEIVED_DATA:
 
         length = evpl_recv(evpl, bind, buffer, hellolen);
 
@@ -77,18 +76,17 @@ client_thread(void *arg)
 int server_callback(
     struct evpl *evpl,
     struct evpl_bind *bind,
-    unsigned int notify_type,
-    unsigned int notify_code,
+    const struct evpl_notify *notify,
     void *private_data)
 {
     char buffer[hellolen];
     int length, *run = private_data;
 
-    switch (notify_type) {
+    switch (notify->notify_type) {
     case EVPL_NOTIFY_DISCONNECTED:
         *run = 0;
         break;
-    case EVPL_NOTIFY_RECEIVED:
+    case EVPL_NOTIFY_RECEIVED_DATA:
 
         length = evpl_recv(evpl, bind, buffer, hellolen);
 

@@ -38,11 +38,11 @@ evpl_socket_udp_read(
     struct evpl_socket      *s = evpl_event_socket(event);
     struct evpl_bind        *bind = evpl_private2bind(s);
     struct evpl_socket_msg **msgs, *msg;
-    struct evpl_dgram       *dgram;
+    struct evpl_notify       notify;
     struct msghdr           *msghdr;
     struct mmsghdr          *msgvecs, *msgvec;
     ssize_t                  res;
-    int                      cb = 0, i, nmsg = s->config->max_msg_batch;
+    int                      i, nmsg = s->config->max_msg_batch;
 
     evpl_socket_debug("udp readable");
 
@@ -85,8 +85,6 @@ evpl_socket_udp_read(
         return;
     }
 
-    cb = 1;
-
     for (i = 0; i < res; ++i) {
 
         msg    = msgs[i];
@@ -94,16 +92,21 @@ evpl_socket_udp_read(
 
         evpl_socket_debug("msg %d len %d", i, msgvecs[i].msg_len);
 
-        dgram = evpl_dgram_ring_add(&bind->dgram_recv);
+        notify.notify_type   = EVPL_NOTIFY_RECEIVED_MSG;
+        notify.notify_status = 0;
 
-        memcpy(&dgram->addr, msghdr->msg_name, msghdr->msg_namelen);
-        dgram->addrlen = msghdr->msg_namelen;
+        msg->bvec.length =  msgvecs[i].msg_len;
 
+        notify.recv_msg.bvec  = &msg->bvec;
+        notify.recv_msg.nbvec = 1;
+
+        memcpy(notify.recv_msg.eps.addr, msghdr->msg_name, msghdr->msg_namelen);
+        notify.recv_msg.eps.addrlen = msghdr->msg_namelen;
+
+        bind->callback(evpl, bind, &notify, bind->private_data);
+
+        evpl_bvec_release(evpl, &msg->bvec);
         evpl_socket_msg_reload(evpl, s, msg);
-
-        dgram->bvec = evpl_bvec_ring_add(&bind->bvec_recv, &msg->bvec,
-                                         1);
-        dgram->bvec->length = msgvecs[i].msg_len;
 
     }
 
@@ -115,11 +118,6 @@ evpl_socket_udp_read(
         evpl_event_mark_unreadable(event);
     }
 
-    if (cb) {
-        evpl_socket_debug("udp making receive callback");
-        bind->callback(evpl, bind, EVPL_NOTIFY_RECEIVED, 0,
-                       bind->private_data);
-    }
 } /* evpl_socket_udp_read */
 
 void
@@ -130,6 +128,7 @@ evpl_socket_udp_write(
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
     struct evpl_dgram  *dgram;
+    struct evpl_notify  notify;
     struct iovec        iov[8];
     int                 niov, nmsg = 0, nmsgleft;
     struct msghdr      *msghdr;
@@ -195,7 +194,9 @@ evpl_socket_udp_write(
     }
 
     if (res > 0) {
-        bind->callback(evpl, bind, EVPL_NOTIFY_SENT, 0, bind->private_data);
+        notify.notify_type   = EVPL_NOTIFY_SENT;
+        notify.notify_status = 0;
+        bind->callback(evpl, bind, &notify, bind->private_data);
     }
 
 

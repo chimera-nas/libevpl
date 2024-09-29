@@ -17,13 +17,12 @@ int
 client_callback(
     struct evpl *evpl,
     struct evpl_bind *bind,
-    unsigned int notify_type,
-    unsigned int notify_code,
+    const struct evpl_notify *notify,
     void *private_data)
 {
     int *run = private_data;
 
-    switch (notify_type) {
+    switch (notify->notify_type) {
     case EVPL_NOTIFY_DISCONNECTED:
         *run = 0;
         break;
@@ -69,8 +68,7 @@ client_thread(void *arg)
 int server_callback(
     struct evpl *evpl,
     struct evpl_bind *bind,
-    unsigned int notify_type,
-    unsigned int notify_code,
+    const struct evpl_notify *notify,
     void *private_data)
 {
     struct evpl_bvec bvec;
@@ -78,11 +76,11 @@ int server_callback(
     int slen = strlen(hello);
     int *run = private_data;
 
-    switch (notify_type) {
+    switch (notify->notify_type) {
     case EVPL_NOTIFY_DISCONNECTED:
         *run = 0;
         break;
-    case EVPL_NOTIFY_RECEIVED:
+    case EVPL_NOTIFY_RECEIVED_DATA:
 
         evpl_bvec_alloc(evpl, slen, 0, 1, &bvec);
 

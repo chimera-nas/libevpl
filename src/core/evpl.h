@@ -23,6 +23,7 @@ enum evpl_protocol_id {
 
 struct evpl;
 struct evpl_endpoint;
+struct evpl_endpoint_stub;
 struct evpl_bind;
 struct evpl_bind;
 struct evpl_buffer;
@@ -32,6 +33,23 @@ struct evpl_bvec {
     void               *data;
     unsigned int        length;
     unsigned int        eom;
+};
+
+struct evpl_endpoint_stub {
+    unsigned char addr[128];
+    int           addrlen;
+};
+
+struct evpl_notify {
+    unsigned int notify_type;
+    int          notify_status;
+    union {
+        struct {
+            struct evpl_bvec         *bvec;
+            unsigned int              nbvec;
+            struct evpl_endpoint_stub eps;
+        } recv_msg;
+    };
 };
 
 void
@@ -53,18 +71,18 @@ void evpl_wait(
     struct evpl *evpl,
     int          max_msecs);
 
-#define EVPL_NOTIFY_CONNECTED    1
-#define EVPL_NOTIFY_DISCONNECTED 2
-#define EVPL_NOTIFY_RECEIVED     3
-#define EVPL_NOTIFY_SENT         4
+#define EVPL_NOTIFY_CONNECTED     1
+#define EVPL_NOTIFY_DISCONNECTED  2
+#define EVPL_NOTIFY_RECEIVED_DATA 3
+#define EVPL_NOTIFY_RECEIVED_MSG  4
+#define EVPL_NOTIFY_SENT          5
 
 
 typedef int (*evpl_notify_callback_t)(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    unsigned int      notify_type,
-    unsigned int      notify_status,
-    void             *private_data);
+    struct evpl              *evpl,
+    struct evpl_bind         *bind,
+    const struct evpl_notify *notify,
+    void                     *private_data);
 
 typedef void (*evpl_accept_callback_t)(
     struct evpl_bind       *bind,
