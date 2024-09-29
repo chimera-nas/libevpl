@@ -372,7 +372,8 @@ evpl_rdmacm_poll_cq(
 
                 evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec, 1);
 
-                bind->callback(evpl, bind, EVPL_NOTIFY_RECEIVED, 0, bind->private_data);
+                bind->callback(evpl, bind, EVPL_NOTIFY_RECEIVED, 0,
+                               bind->private_data);
 
                 --dev->srq_fill;
                 req->used = 0;
@@ -647,8 +648,8 @@ evpl_rdmacm_destroy(
 
 void
 evpl_rdmacm_listen(
-    struct evpl          *evpl,
-    struct evpl_bind     *bind)
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
 {
     struct evpl_rdmacm    *rdmacm;
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
@@ -838,7 +839,7 @@ evpl_rdmacm_close(
 
 } /* evpl_rdmacm_close */
 
-struct evpl_framework     evpl_rdmacm = {
+struct evpl_framework evpl_rdmacm = {
     .id                = EVPL_FRAMEWORK_RDMACM,
     .name              = "RDMACM",
     .init              = evpl_rdmacm_init,
@@ -849,12 +850,12 @@ struct evpl_framework     evpl_rdmacm = {
     .unregister_buffer = evpl_rdmacm_unregister,
 };
 
-struct evpl_protocol evpl_rdmacm_rc = {
-    .id           = EVPL_RDMACM_RC,
-    .connected    = 1,
-    .name         = "RDMACM_RC",
-    .listen       = evpl_rdmacm_listen,
-    .connect      = evpl_rdmacm_connect,
-    .close        = evpl_rdmacm_close,
-    .flush        = evpl_rdmacm_flush,
+struct evpl_protocol  evpl_rdmacm_rc = {
+    .id        = EVPL_RDMACM_RC,
+    .connected = 1,
+    .name      = "RDMACM_RC",
+    .listen    = evpl_rdmacm_listen,
+    .connect   = evpl_rdmacm_connect,
+    .close     = evpl_rdmacm_close,
+    .flush     = evpl_rdmacm_flush,
 };

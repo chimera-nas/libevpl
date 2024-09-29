@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: LGPL
  */
 
+#define _GNU_SOURCE
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,82 +34,92 @@ evpl_socket_udp_read(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-#if 0
-    struct evpl_socket *s    = evpl_event_socket(event);
-    struct evpl_conn   *conn = evpl_private2conn(s);
-    struct iovec        iov[8];
-    struct msghdr       msghdr;
-    ssize_t             res, total, remain;
-    int                 cb = 0;
 
-    evpl_check_conn(evpl, conn, s);
+    struct evpl_socket      *s = evpl_event_socket(event);
+    struct evpl_bind        *bind = evpl_private2bind(s);
+    struct evpl_socket_msg **msgs, *msg;
+    struct evpl_dgram       *dgram;
+    struct msghdr           *msghdr;
+    struct mmsghdr          *msgvecs, *msgvec;
+    ssize_t                  res;
+    int                      cb = 0, i, nmsg = s->config->max_msg_batch;
 
-    while (1) {
+    evpl_socket_debug("udp readable");
 
-        if (s->recv1.length == 0) {
-            if (s->recv2.length) {
-                s->recv1        = s->recv2;
-                s->recv2.length = 0;
-            } else {
-                evpl_bvec_alloc(evpl, s->recv_size, 0, 1, &s->recv1);
-            }
-        }
 
-        if (s->recv2.length == 0) {
-            evpl_bvec_alloc(evpl, s->recv_size, 0, 1, &s->recv2);
-        }
+    msgs    = alloca(sizeof(struct evpl_socket_msg *) * nmsg);
+    msgvecs = alloca(sizeof(struct mmsghdr) * nmsg);
 
-        iov[0].iov_base = s->recv1.data;
-        iov[0].iov_len  = s->recv1.length;
-        iov[1].iov_base = s->recv2.data;
-        iov[1].iov_len  = s->recv2.length;
+    for (i = 0; i < nmsg; ++i) {
+        msgvec = &msgvecs[i];
 
-        total = iov[0].iov_len + iov[1].iov_len;
+        msghdr = &msgvec->msg_hdr;
 
-        msghdr.msg_name       = NULL;
-        msghdr.msg_namelen    = 0;
-        msghdr.msg_iov        = iov;
-        msghdr.msg_iovlen     = 2;
-        msghdr.msg_control    = NULL;
-        msghdr.msg_controllen = 0;
-        msghdr.msg_flags      = 0;
+        msg = evpl_socket_msg_alloc(evpl, s);
 
-        res = recvmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
+        msgs[i] = msg;
 
-        if (res < 0) {
-            evpl_event_mark_unreadable(event);
-            evpl_defer(evpl, &conn->close_deferral);
-            break;
-        } else if (res == 0) {
-            evpl_event_mark_unreadable(event);
-            evpl_defer(evpl, &conn->close_deferral);
-            break;
-        }
+        msghdr->msg_name       = &msg->addr;
+        msghdr->msg_namelen    = sizeof(msg->addr);
+        msghdr->msg_iov        = &msg->iov;
+        msghdr->msg_iovlen     = 1;
+        msghdr->msg_control    = NULL;
+        msghdr->msg_controllen = 0;
+        msghdr->msg_flags      = 0;
 
-        cb = 1;
+        msg->iov.iov_base = msg->bvec.data;
+        msg->iov.iov_len  = msg->bvec.length;
+    }
 
-        if (s->recv1.length >= res) {
-            evpl_bvec_ring_append(evpl, &conn->recv_ring, &s->recv1,
-                                  res, 0);
-        } else {
-            remain = res - s->recv1.length;
-            evpl_bvec_ring_append(evpl, &conn->recv_ring, &s->recv1,
-                                  s->recv1.length, 0);
-            evpl_bvec_ring_append(evpl, &conn->recv_ring, &s->recv2,
-                                  remain, 0);
-        }
+    res = recvmmsg(s->fd, msgvecs, nmsg, MSG_NOSIGNAL | MSG_DONTWAIT, NULL);
 
-        if (res < total) {
-            evpl_event_mark_unreadable(event);
-            break;
-        }
+    evpl_socket_debug("udp recv read %d msg", res);
+
+    if (res < 0) {
+        evpl_event_mark_unreadable(event);
+        evpl_defer(evpl, &bind->close_deferral);
+        return;
+    } else if (res == 0) {
+        evpl_event_mark_unreadable(event);
+        evpl_defer(evpl, &bind->close_deferral);
+        return;
+    }
+
+    cb = 1;
+
+    for (i = 0; i < res; ++i) {
+
+        msg    = msgs[i];
+        msghdr = &msgvecs[i].msg_hdr;
+
+        evpl_socket_debug("msg %d len %d", i, msgvecs[i].msg_len);
+
+        dgram = evpl_dgram_ring_add(&bind->dgram_recv);
+
+        memcpy(&dgram->addr, msghdr->msg_name, msghdr->msg_namelen);
+        dgram->addrlen = msghdr->msg_namelen;
+
+        evpl_socket_msg_reload(evpl, s, msg);
+
+        dgram->bvec = evpl_bvec_ring_add(&bind->bvec_recv, &msg->bvec,
+                                         1);
+        dgram->bvec->length = msgvecs[i].msg_len;
+
+    }
+
+    for (i = 0; i < nmsg; ++i) {
+        evpl_socket_msg_free(evpl, s, msgs[i]);
+    }
+
+    if (res < nmsg) {
+        evpl_event_mark_unreadable(event);
     }
 
     if (cb) {
-        conn->callback(evpl, conn, EVPL_EVENT_RECEIVED, 0,
-                       conn->private_data);
+        evpl_socket_debug("udp making receive callback");
+        bind->callback(evpl, bind, EVPL_NOTIFY_RECEIVED, 0,
+                       bind->private_data);
     }
-#endif /* if 0 */
 } /* evpl_socket_udp_read */
 
 void
@@ -114,28 +127,35 @@ evpl_socket_udp_write(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-#if 0
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
+    struct evpl_dgram  *dgram;
     struct iovec        iov[8];
-    int                 niov, nmsg = 0;
+    int                 niov, nmsg = 0, nmsgleft;
     struct msghdr      *msghdr;
-    struct msghdr       msgvec[8];
+    struct mmsghdr      msgvec[8];
     ssize_t             res, total;
 
-    while (!evpl_bvec_ring_is_empty(&ring->send_ring)) {
+    evpl_socket_debug("udp writable");
+
+    dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+    while (dgram && nmsg < 8) {
 
         msghdr = &msgvec[nmsg].msg_hdr;
 
-        niov = evpl_bvec_ring_iov(&total, iov, 8, 1, &bind->send_ring);
+        niov = evpl_bvec_ring_iov(&total, iov, dgram->nbvec, 1,
+                                  &bind->bvec_send);
 
-        msghdr-<msg_name       = NULL;
-        msghdr->msg_namelen    = 0;
+        msghdr->msg_name       = &dgram->addr;
+        msghdr->msg_namelen    = dgram->addrlen;
         msghdr->msg_iov        = iov;
         msghdr->msg_iovlen     = niov;
         msghdr->msg_control    = NULL;
         msghdr->msg_controllen = 0;
         msghdr->msg_flags      = 0;
+
+        dgram = evpl_dgram_ring_next(&bind->dgram_send, dgram);
 
         nmsg++;
     }
@@ -143,29 +163,42 @@ evpl_socket_udp_write(
 
     res = sendmmsg(s->fd, msgvec, nmsg, MSG_NOSIGNAL | MSG_DONTWAIT);
 
-        if (res < 0) {
-            evpl_event_mark_unwritable(event);
-            evpl_defer(evpl, &conn->close_deferral);
-            break;
-        }
-
-        evpl_bvec_ring_consume(evpl, &conn->send_ring, res);
-
-        if (res != total) {
-            evpl_event_mark_unwritable(event);
-            break;
-        }
+    if (res < 0) {
+        evpl_event_mark_unwritable(event);
+        evpl_defer(evpl, &bind->close_deferral);
+        return;
     }
 
-    if (evpl_bvec_ring_is_empty(&conn->send_ring)) {
+    nmsgleft = nmsg;
+
+    while (nmsgleft) {
+        dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+        evpl_bvec_ring_consumev(evpl, &bind->bvec_send, dgram->nbvec);
+
+        evpl_dgram_ring_remove(&bind->dgram_send);
+
+        --nmsgleft;
+    }
+
+    if (res != total) {
+        evpl_event_mark_unwritable(event);
+    }
+
+
+    if (evpl_dgram_ring_is_empty(&bind->dgram_send)) {
         evpl_event_write_disinterest(event);
 
-        if (conn->flags & EVPL_CONN_FINISH) {
-            evpl_defer(evpl, &conn->close_deferral);
+        if (bind->flags & EVPL_BIND_FINISH) {
+            evpl_defer(evpl, &bind->close_deferral);
         }
     }
 
-#endif /* if 0 */
+    if (res > 0) {
+        bind->callback(evpl, bind, EVPL_NOTIFY_SENT, 0, bind->private_data);
+    }
+
+
 } /* evpl_socket_udp_write */
 
 void
@@ -189,7 +222,7 @@ evpl_socket_udp_bind(
 
     for (p = evbind->endpoint->ai; p != NULL; p = p->ai_next) {
 
-        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        fd = socket(p->ai_family, SOCK_DGRAM, p->ai_protocol);
 
         if (fd == -1) {
             continue;
@@ -234,10 +267,10 @@ evpl_socket_udp_bind(
 } /* evpl_socket_udp_bind */
 
 struct evpl_protocol evpl_socket_udp = {
-    .id     = EVPL_SOCKET_UDP,
+    .id        = EVPL_SOCKET_UDP,
     .connected = 0,
-    .name   = "SOCKET_UDP",
-    .bind   = evpl_socket_udp_bind,
-    .close  = evpl_socket_close,
-    .flush  = evpl_socket_flush,
+    .name      = "SOCKET_UDP",
+    .bind      = evpl_socket_udp_bind,
+    .close     = evpl_socket_close,
+    .flush     = evpl_socket_flush,
 };

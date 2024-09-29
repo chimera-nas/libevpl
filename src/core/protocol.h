@@ -49,7 +49,7 @@ struct evpl_framework {
 struct evpl_protocol {
     /* unique ID number for each protocol */
     unsigned int id;
-    
+
     /* 1 iff connection oriented protocol */
     unsigned int connected;
 
@@ -60,7 +60,7 @@ struct evpl_protocol {
      * Callbacks needed for all protocols
      */
 
-    void (*close)(
+    void         (*close)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
@@ -79,8 +79,8 @@ struct evpl_protocol {
         struct evpl_bind *bind);
 
     void         (*listen)(
-        struct evpl          *evpl,
-        struct evpl_bind     *bind);
+        struct evpl      *evpl,
+        struct evpl_bind *bind);
 
     /*
      * Callbacks for non-connection-oriented protocols

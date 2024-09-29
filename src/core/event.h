@@ -71,9 +71,9 @@ void evpl_event_mark_error(
     struct evpl_event *event);
 
 void evpl_accept(
-    struct evpl          *evpl,
-    struct evpl_bind     *bind,
-    struct evpl_bind     *new_bind);
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_bind *new_bind);
 
 
 void

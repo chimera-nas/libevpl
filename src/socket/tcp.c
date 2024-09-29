@@ -73,12 +73,12 @@ evpl_socket_tcp_read(
                 s->recv1        = s->recv2;
                 s->recv2.length = 0;
             } else {
-                evpl_bvec_alloc(evpl, s->recv_size, 0, 1, &s->recv1);
+                evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv1);
             }
         }
 
         if (s->recv2.length == 0) {
-            evpl_bvec_alloc(evpl, s->recv_size, 0, 1, &s->recv2);
+            evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv2);
         }
 
         iov[0].iov_base = s->recv1.data;
@@ -206,7 +206,7 @@ evpl_socket_tcp_connect(
 
     for (p = bind->endpoint->ai; p != NULL; p = p->ai_next) {
 
-        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        fd = socket(p->ai_family, SOCK_STREAM, p->ai_protocol);
 
         if (fd == -1) {
             continue;
@@ -256,8 +256,8 @@ evpl_accept_tcp(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    struct evpl_socket     *ls       = evpl_event_socket(event);
-    struct evpl_bind       *listen_bind     = evpl_private2bind(ls);
+    struct evpl_socket     *ls          = evpl_event_socket(event);
+    struct evpl_bind       *listen_bind = evpl_private2bind(ls);
     struct evpl_endpoint   *endpoint;
     struct evpl_socket     *s;
     struct evpl_bind       *new_bind;
@@ -319,8 +319,8 @@ evpl_accept_tcp(
 
 void
 evpl_socket_tcp_listen(
-    struct evpl          *evpl,
-    struct evpl_bind     *listen_bind)
+    struct evpl      *evpl,
+    struct evpl_bind *listen_bind)
 {
     struct evpl_socket *s = evpl_bind_private(listen_bind);
     struct addrinfo    *p;
@@ -371,11 +371,11 @@ evpl_socket_tcp_listen(
 } /* evpl_socket_tcp_listen */
 
 struct evpl_protocol evpl_socket_tcp = {
-    .id           = EVPL_SOCKET_TCP,
-    .connected    = 1,
-    .name         = "SOCKET_TCP",
-    .connect      = evpl_socket_tcp_connect,
-    .close        = evpl_socket_close,
-    .listen       = evpl_socket_tcp_listen,
-    .flush        = evpl_socket_flush,
+    .id        = EVPL_SOCKET_TCP,
+    .connected = 1,
+    .name      = "SOCKET_TCP",
+    .connect   = evpl_socket_tcp_connect,
+    .close     = evpl_socket_close,
+    .listen    = evpl_socket_tcp_listen,
+    .flush     = evpl_socket_flush,
 };

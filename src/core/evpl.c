@@ -43,15 +43,15 @@
 #include "socket/tcp.h"
 
 struct evpl_shared {
-    struct evpl_config     *config;
-    struct evpl_framework  *framework[EVPL_NUM_FRAMEWORK];
-    void                   *framework_private[EVPL_NUM_FRAMEWORK];
-    struct evpl_protocol   *protocol[EVPL_NUM_PROTO];
-    void                   *protocol_private[EVPL_NUM_PROTO];
+    struct evpl_config    *config;
+    struct evpl_framework *framework[EVPL_NUM_FRAMEWORK];
+    void                  *framework_private[EVPL_NUM_FRAMEWORK];
+    struct evpl_protocol  *protocol[EVPL_NUM_PROTO];
+    void                  *protocol_private[EVPL_NUM_PROTO];
 };
 
-pthread_once_t evpl_shared_once = PTHREAD_ONCE_INIT;
-struct evpl_shared *evpl_shared = NULL;
+pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
+struct evpl_shared *evpl_shared      = NULL;
 
 struct evpl {
     struct evpl_core       core; /* must be first */
@@ -77,6 +77,7 @@ struct evpl {
     struct evpl_buffer    *current_buffer;
     struct evpl_buffer    *free_buffers;
     struct evpl_bind      *free_binds;
+    struct evpl_endpoint  *endpoints;
     struct evpl_config    *config;
     struct evpl_bind      *binds;
 
@@ -126,10 +127,10 @@ evpl_shared_init(struct evpl_config *config)
     evpl_shared->config = config;
 
     evpl_protocol_init(evpl_shared, EVPL_SOCKET_UDP,
-                            &evpl_socket_udp);
+                       &evpl_socket_udp);
 
     evpl_protocol_init(evpl_shared, EVPL_SOCKET_TCP,
-                            &evpl_socket_tcp);
+                       &evpl_socket_tcp);
 
 #ifdef HAVE_RDMACM
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_RDMACM, &evpl_rdmacm);
@@ -142,7 +143,7 @@ void
 evpl_init(struct evpl_config *config)
 {
     evpl_shared_init(config);
-}
+} /* evpl_init */
 
 static void
 evpl_init_once(void)
@@ -152,11 +153,11 @@ evpl_init_once(void)
          *  User has not called evpl_init() before evpl_create(),
          * so we will initialize ourselves and cleanup atexit()
          */
-        
+
         evpl_shared_init(NULL);
         atexit(evpl_cleanup);
     }
-}
+} /* evpl_init_once */
 
 
 void
@@ -191,8 +192,8 @@ evpl_create()
     evpl->active_events     = evpl_calloc(256, sizeof(struct evpl_event *));
     evpl->max_active_events = 256;
 
-    evpl->active_deferrals     = evpl_calloc(256, sizeof(struct
-                                                         evpl_deferral *));
+    evpl->active_deferrals = evpl_calloc(256, sizeof(struct
+                                                     evpl_deferral *));
     evpl->max_active_deferrals = 256;
 
     evpl->config = evpl_shared->config;
@@ -281,11 +282,11 @@ evpl_wait(
 
 struct evpl_bind *
 evpl_listen(
-    struct evpl               *evpl,
-    enum evpl_protocol_id      protocol_id,
-    struct evpl_endpoint      *endpoint,
-    evpl_accept_callback_t     accept_callback,
-    void                      *private_data)
+    struct evpl           *evpl,
+    enum evpl_protocol_id  protocol_id,
+    struct evpl_endpoint  *endpoint,
+    evpl_accept_callback_t accept_callback,
+    void                  *private_data)
 {
     struct evpl_bind *bind;
 
@@ -294,12 +295,14 @@ evpl_listen(
     bind->protocol = evpl_shared->protocol[protocol_id];
 
     evpl_core_abort_if(!bind->protocol->listen,
-                  "evpl_listen called with non-connection oriented protocol");
+                       "evpl_listen called with non-connection oriented protocol");
 
     bind->accept_callback = accept_callback;
     bind->private_data    = private_data;
 
-    evpl_endpoint_resolve(evpl, endpoint);
+    if (!endpoint->resolved) {
+        evpl_endpoint_resolve(evpl, endpoint);
+    }
 
     bind->protocol->listen(evpl, bind);
 
@@ -320,6 +323,8 @@ evpl_endpoint_create(
     ep->refcnt = 1;
     strncpy(ep->address, address, sizeof(ep->address) - 1);
 
+    DL_APPEND(evpl->endpoints, ep);
+
     return ep;
 } /* evpl_endpoint_create */
 
@@ -333,6 +338,7 @@ evpl_endpoint_close(
 
     if (endpoint->refcnt == 0) {
         freeaddrinfo(endpoint->ai);
+        DL_DELETE(evpl->endpoints, endpoint);
         evpl_free(endpoint);
     }
 } /* evpl_endpoint_close */
@@ -342,32 +348,24 @@ evpl_endpoint_resolve(
     struct evpl          *evpl,
     struct evpl_endpoint *endpoint)
 {
-    char            port_str[8], ipstr[256];
-    struct addrinfo hints, *p;
-    int             rc, cnt=0;
+    char            port_str[8];
+    struct addrinfo hints;
+    int             rc;
 
     snprintf(port_str, sizeof(port_str), "%d", endpoint->port);
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags    = 0;//AI_PASSIVE;
+    hints.ai_socktype = 0;//SOCK_DGRAM;
+    hints.ai_flags    = 0;
 
     rc = getaddrinfo(endpoint->address, port_str, &hints, &endpoint->ai);
-
-    for (p = endpoint->ai; p != NULL; p = p->ai_next) {
-        inet_ntop(p->ai_family, &((struct sockaddr_in*)p->ai_addr)->sin_addr, ipstr, sizeof(ipstr));
-        evpl_core_debug("resolved %s:%s to %s",
-                        endpoint->address, port_str, ipstr);
-        cnt++;
-    }
-
-    evpl_core_debug("resolved %s:%s to %d addrinfos", endpoint->address, port_str, cnt);
-
 
     if (unlikely(rc < 0)) {
         return rc;
     }
+
+    endpoint->resolved = 1;
 
     return 0;
 } /* evpl_endpoint_resolve */
@@ -375,23 +373,26 @@ evpl_endpoint_resolve(
 
 struct evpl_bind *
 evpl_connect(
-    struct evpl               *evpl,
-    enum evpl_protocol_id      protocol_id,
-    struct evpl_endpoint      *endpoint,
-    evpl_notify_callback_t     callback,
-    void                      *private_data)
+    struct evpl           *evpl,
+    enum evpl_protocol_id  protocol_id,
+    struct evpl_endpoint  *endpoint,
+    evpl_notify_callback_t callback,
+    void                  *private_data)
 {
-    struct evpl_bind *bind;
+    struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
-    evpl_core_abort_if(!protocol->connect,"Called evpl_connect with non-connection oriented protocol");
+    evpl_core_abort_if(!protocol->connect,
+                       "Called evpl_connect with non-connection oriented protocol");
 
     bind               = evpl_bind_alloc(evpl, endpoint);
     bind->protocol     = protocol;
     bind->callback     = callback;
     bind->private_data = private_data;
 
-    evpl_endpoint_resolve(evpl, endpoint);
+    if (!endpoint->resolved) {
+        evpl_endpoint_resolve(evpl, endpoint);
+    }
 
     bind->protocol->connect(evpl, bind);
 
@@ -400,28 +401,31 @@ evpl_connect(
 
 struct evpl_bind *
 evpl_bind(
-    struct evpl               *evpl,
-    enum evpl_protocol_id      protocol_id,
-    struct evpl_endpoint      *endpoint,
-    evpl_notify_callback_t     callback,
-    void                      *private_data)
+    struct evpl           *evpl,
+    enum evpl_protocol_id  protocol_id,
+    struct evpl_endpoint  *endpoint,
+    evpl_notify_callback_t callback,
+    void                  *private_data)
 {
-    struct evpl_bind *bind;
+    struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
-    evpl_core_abort_if(!protocol->bind,"Called evpl_bind with connection oriented protocol");
+    evpl_core_abort_if(!protocol->bind,
+                       "Called evpl_bind with connection oriented protocol");
 
     bind               = evpl_bind_alloc(evpl, endpoint);
     bind->protocol     = protocol;
     bind->callback     = callback;
     bind->private_data = private_data;
 
-    evpl_endpoint_resolve(evpl, endpoint);
+    if (!endpoint->resolved) {
+        evpl_endpoint_resolve(evpl, endpoint);
+    }
 
     bind->protocol->bind(evpl, bind);
 
     return bind;
-}
+} /* evpl_bind */
 void
 evpl_destroy(struct evpl *evpl)
 {
@@ -444,6 +448,10 @@ evpl_destroy(struct evpl *evpl)
         evpl_dgram_ring_free(&bind->dgram_send);
         evpl_dgram_ring_free(&bind->dgram_recv);
         evpl_free(bind);
+    }
+
+    while (evpl->endpoints) {
+        evpl_endpoint_close(evpl, evpl->endpoints);
     }
 
     while (evpl->current_buffer) {
@@ -691,9 +699,9 @@ evpl_event_mark_error(
 
 void
 evpl_accept(
-    struct evpl          *evpl,
-    struct evpl_bind     *bind,
-    struct evpl_bind     *new_bind)
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_bind *new_bind)
 {
 
     bind->accept_callback(
@@ -703,7 +711,7 @@ evpl_accept(
         bind->private_data);
 
     new_bind->callback(evpl, new_bind, EVPL_NOTIFY_CONNECTED, 0,
-                   new_bind->private_data);
+                       new_bind->private_data);
 
 } /* evpl_accept */
 
@@ -906,11 +914,11 @@ evpl_send(
 
 void
 evpl_sendto(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
+    struct evpl          *evpl,
+    struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
-    const void       *buffer,
-    unsigned int      length)
+    const void           *buffer,
+    unsigned int          length)
 {
     struct evpl_bvec bvecs[4];
     int              nbvec;
@@ -921,7 +929,7 @@ evpl_sendto(
 
     evpl_sendtov(evpl, bind, endpoint, bvecs, nbvec, length);
 
-}
+} /* evpl_sendto */
 
 void
 evpl_sendv(
@@ -948,33 +956,44 @@ evpl_sendv(
 
 void
 evpl_sendtov(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
+    struct evpl          *evpl,
+    struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
-    struct evpl_bvec *bvecs,
-    int               nbufvecs,
-    int               length)
+    struct evpl_bvec     *bvecs,
+    int                   nbufvecs,
+    int                   length)
 {
-#if 0
-    struct evpl_bvec *first;
-    int i, eom;
+    struct evpl_bvec  *first;
+    struct evpl_dgram *dgram;
+    int                i, eom;
 
     if (unlikely(nbufvecs == 0)) {
         return;
     }
 
-    first = evpl_bvec_ring_head(&conn->bvec_ring);
+    if (!endpoint->resolved) {
+        evpl_endpoint_resolve(evpl, endpoint);
+    }
+
+    first = evpl_bvec_ring_head(&bind->bvec_send);
 
     for (i = 0; i < nbufvecs; ++i) {
         eom = (i + 1 == nbufvecs);
-        evpl_bvec_ring_add(&conn->bvec_send, &bvecs[i], eom);
+        evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i], eom);
     }
 
-    evpl_dgram_ring_add(&conn->dgram_send, first, nbufvecs);
 
-    evpl_defer(evpl, &conn->flush_deferral);
-#endif
-}
+    dgram = evpl_dgram_ring_add(&bind->dgram_send);
+
+    dgram->bvec  = first;
+    dgram->nbvec = nbufvecs;
+
+    memcpy(&dgram->addr, endpoint->ai->ai_addr, endpoint->ai->ai_addrlen);
+    dgram->addrlen = endpoint->ai->ai_addrlen;
+
+
+    evpl_defer(evpl, &bind->flush_deferral);
+} /* evpl_sendtov */
 
 
 void

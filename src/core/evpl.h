@@ -14,7 +14,7 @@ enum evpl_framework_id {
     EVPL_NUM_FRAMEWORK    = 1
 };
 
-enum evpl_protocol_id  {
+enum evpl_protocol_id {
     EVPL_SOCKET_UDP = 0,
     EVPL_SOCKET_TCP = 1,
     EVPL_RDMACM_RC  = 2,
@@ -67,10 +67,10 @@ typedef int (*evpl_notify_callback_t)(
     void             *private_data);
 
 typedef void (*evpl_accept_callback_t)(
-    struct evpl_bind      *bind,
+    struct evpl_bind       *bind,
     evpl_notify_callback_t *callback,
-    void                 **conn_private_data,
-    void                  *private_data);
+    void                  **conn_private_data,
+    void                   *private_data);
 
 struct evpl_endpoint *
 evpl_endpoint_create(
@@ -85,32 +85,32 @@ evpl_endpoint_close(
 
 struct evpl_bind *
 evpl_listen(
-    struct evpl               *evpl,
-    enum evpl_protocol_id      protocol,
-    struct evpl_endpoint      *endpoint,
-    evpl_accept_callback_t     accept_callback,
-    void                      *private_data);
+    struct evpl           *evpl,
+    enum evpl_protocol_id  protocol,
+    struct evpl_endpoint  *endpoint,
+    evpl_accept_callback_t accept_callback,
+    void                  *private_data);
 
 struct evpl_bind *
 evpl_connect(
-    struct evpl               *evpl,
-    enum evpl_protocol_id      protocol_id,
-    struct evpl_endpoint      *endpoint,
-    evpl_notify_callback_t     callback,
-    void                      *private_data);
+    struct evpl           *evpl,
+    enum evpl_protocol_id  protocol_id,
+    struct evpl_endpoint  *endpoint,
+    evpl_notify_callback_t callback,
+    void                  *private_data);
 
 struct evpl_bind *
 evpl_bind(
-    struct evpl               *evpl,
-    enum evpl_protocol_id      protocol,
-    struct evpl_endpoint      *endpoint,
-    evpl_notify_callback_t     callback,
-    void                      *private_data);
+    struct evpl           *evpl,
+    enum evpl_protocol_id  protocol,
+    struct evpl_endpoint  *endpoint,
+    evpl_notify_callback_t callback,
+    void                  *private_data);
 
 void
 evpl_unbind(
-    struct evpl         *evpl,
-    struct evpl_bind    *bind);
+    struct evpl      *evpl,
+    struct evpl_bind *bind);
 
 int
 evpl_bvec_alloc(
@@ -169,20 +169,20 @@ evpl_sendv(
 
 void
 evpl_sendto(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
+    struct evpl          *evpl,
+    struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
-    const void       *buffer,
-    unsigned int      length);
+    const void           *buffer,
+    unsigned int          length);
 
 void
 evpl_sendtov(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
+    struct evpl          *evpl,
+    struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
-    struct evpl_bvec *bvecs,
-    int               nbufvecs,
-    int               length);
+    struct evpl_bvec     *bvecs,
+    int                   nbufvecs,
+    int                   length);
 
 int
 evpl_peek(

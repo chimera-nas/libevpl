@@ -16,6 +16,8 @@ struct evpl_config {
     unsigned int max_poll_fd;
     unsigned int buffer_size;
     unsigned int page_size;
+    unsigned int max_msg_size;
+    unsigned int max_msg_batch;
     unsigned int refcnt;
     unsigned int bvec_ring_size;
     unsigned int dgram_ring_size;
@@ -72,19 +74,17 @@ void evpl_abort(
         evpl_abort(__VA_ARGS__); \
     }
 
-#define evpl_core_debug(...) evpl_debug("core", __VA_ARGS__)
-#define evpl_core_info(...)  evpl_info("core", __VA_ARGS__)
-#define evpl_core_error(...) evpl_error("core", __VA_ARGS__)
-#define evpl_core_fatal(...) evpl_fatal("core", __VA_ARGS__)
-#define evpl_core_abort(...) evpl_abort("core", __VA_ARGS__)
+#define evpl_core_debug(...)            evpl_debug("core", __VA_ARGS__)
+#define evpl_core_info(...)             evpl_info("core", __VA_ARGS__)
+#define evpl_core_error(...)            evpl_error("core", __VA_ARGS__)
+#define evpl_core_fatal(...)            evpl_fatal("core", __VA_ARGS__)
+#define evpl_core_abort(...)            evpl_abort("core", __VA_ARGS__)
 
 #define evpl_core_fatal_if(cond, ...) \
     evpl_fatal_if(cond, "core", __VA_ARGS__)
 
 #define evpl_core_abort_if(cond, ...) \
     evpl_fatal_if(cond, "core", __VA_ARGS__)
-
-
 
 #ifndef unlikely
 #define unlikely(x)                     __builtin_expect(!!(x), 0)

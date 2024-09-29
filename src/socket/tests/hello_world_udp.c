@@ -50,24 +50,23 @@ void *
 client_thread(void *arg)
 {
     struct evpl *evpl;
-    struct evpl_endpoint *ep;
+    struct evpl_endpoint *me, *server;
     struct evpl_bind *bind;
     int run = 1;
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, "127.0.0.1", 8000);
+    me = evpl_endpoint_create(evpl, "127.0.0.1", 8001);
+    server = evpl_endpoint_create(evpl, "127.0.0.1", 8000);
 
-    bind = evpl_bind(evpl, EVPL_SOCKET_UDP, ep, client_callback, &run);
+    bind = evpl_bind(evpl, EVPL_SOCKET_UDP, me, client_callback, &run);
 
-    evpl_send(evpl, bind,  hello, hellolen);
+    evpl_sendto(evpl, bind,  server, hello, hellolen);
 
     while (run) {
     
         evpl_wait(evpl, -1);
     }
-
-    evpl_endpoint_close(evpl, ep);
 
     evpl_destroy(evpl);
 
@@ -82,18 +81,21 @@ int server_callback(
     void *private_data)
 {
     char buffer[hellolen];
+    struct evpl_endpoint *client;
     int length, *run = private_data;
 
     switch (notify_type) {
     case EVPL_NOTIFY_RECEIVED:
-
+    
         length = evpl_recv(evpl, bind, buffer, hellolen);
 
         if (length == hellolen) {
 
+            client = evpl_endpoint_create(evpl, "127.0.0.1", 8001);
+
             evpl_test_info("server received '%s'", buffer);
 
-            evpl_send(evpl, bind, buffer, hellolen);
+            evpl_sendto(evpl, bind, client, buffer, hellolen);
         }
         break;
     case EVPL_NOTIFY_SENT:
@@ -126,8 +128,6 @@ main(int argc, char *argv[])
     }
 
     pthread_join(thr, NULL);
-
-    evpl_endpoint_close(evpl, ep);
 
     evpl_destroy(evpl);
 

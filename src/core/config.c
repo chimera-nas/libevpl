@@ -14,12 +14,14 @@ evpl_config_init(void)
 {
     struct evpl_config *config = evpl_zalloc(sizeof(*config));
 
-    config->max_pending    = 16;
-    config->max_poll_fd    = 16;
-    config->buffer_size    = 2 * 1024 * 1024;
-    config->refcnt         = 1;
-    config->bvec_ring_size = 256;
-    config->dgram_ring_size  = 256;
+    config->max_pending     = 16;
+    config->max_poll_fd     = 16;
+    config->buffer_size     = 2 * 1024 * 1024;
+    config->refcnt          = 1;
+    config->bvec_ring_size  = 256;
+    config->dgram_ring_size = 256;
+    config->max_msg_size    = 65536;
+    config->max_msg_batch   = 16;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 

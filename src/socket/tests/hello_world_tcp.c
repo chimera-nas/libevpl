@@ -25,30 +25,21 @@ client_callback(
     unsigned int notify_code,
     void *private_data)
 {
-    struct evpl_bvec bvec;
-    int nbvecs;
-    int *run = private_data;
+    char buffer[hellolen];
+    int length, *run = private_data;
 
     switch (notify_type) {
-    case EVPL_NOTIFY_CONNECTED:
-        evpl_test_info("client connected");
-        break;
     case EVPL_NOTIFY_RECEIVED:
 
-        nbvecs = evpl_recvv(evpl, bind, &bvec, 1, hellolen);
+        length = evpl_recv(evpl, bind, buffer, hellolen);
 
-        if (nbvecs) {
-
-            evpl_test_info("client received '%s'", bvec.data);
-
-            evpl_bvec_release(evpl, &bvec);
-
+        if (length == hellolen) {
+            evpl_test_info("client received '%s'", buffer);
         }
 
         break;
 
     case EVPL_NOTIFY_DISCONNECTED:
-        evpl_test_info("client disconnected");
         *run = 0;
         break;
     }
@@ -62,7 +53,6 @@ client_thread(void *arg)
     struct evpl *evpl;
     struct evpl_endpoint *ep;
     struct evpl_bind *bind;
-    struct evpl_bvec bvec;
     int run = 1;
 
     evpl = evpl_create();
@@ -71,18 +61,13 @@ client_thread(void *arg)
 
     bind = evpl_connect(evpl, EVPL_SOCKET_TCP, ep, client_callback, &run);
 
-    evpl_bvec_alloc(evpl, hellolen, 0, 1, &bvec);
 
-    memcpy(evpl_bvec_data(&bvec), hello, hellolen);
-
-    evpl_sendv(evpl, bind, &bvec, 1, hellolen);
+    evpl_send(evpl, bind, hello, hellolen);
 
     while (run) {
     
         evpl_wait(evpl, -1);
     }
-
-    evpl_endpoint_close(evpl, ep);
 
     evpl_destroy(evpl);
 
@@ -96,33 +81,22 @@ int server_callback(
     unsigned int notify_code,
     void *private_data)
 {
-    struct evpl_bvec bvec;
-    int nbvecs;
-    int *run = private_data;
+    char buffer[hellolen];
+    int length, *run = private_data;
 
     switch (notify_type) {
-    case EVPL_NOTIFY_CONNECTED:
-        evpl_test_info("server connected");
-        break;
     case EVPL_NOTIFY_DISCONNECTED:
-        evpl_test_info("server disconnected");
         *run = 0;
         break;
     case EVPL_NOTIFY_RECEIVED:
 
-        nbvecs = evpl_recvv(evpl, bind, &bvec, 1, hellolen);
+        length = evpl_recv(evpl, bind, buffer, hellolen);
 
-        if (nbvecs) {
+        if (length == hellolen) {
 
-            evpl_test_info("server received '%s'", bvec.data);
+            evpl_test_info("server received '%s'", buffer);
 
-            evpl_bvec_release(evpl, &bvec);
-
-            evpl_bvec_alloc(evpl, hellolen, 0, 1, &bvec);
-
-            memcpy(evpl_bvec_data(&bvec), hello, hellolen);
-
-            evpl_sendv(evpl, bind, &bvec, 1, hellolen);
+            evpl_send(evpl, bind, hello, hellolen);
 
             evpl_finish(evpl, bind);
         }
@@ -138,15 +112,10 @@ void accept_callback(
     void **conn_private_data,
     void       *private_data)
 {
-    const struct evpl_endpoint *ep = evpl_bind_endpoint(bind);
-
-    evpl_test_info("Received connection from %s:%d",
-        evpl_endpoint_address(ep),
-        evpl_endpoint_port(ep));
-
     *callback = server_callback;
     *conn_private_data = private_data;
 }
+
 int
 main(int argc, char *argv[])
 {
@@ -154,8 +123,6 @@ main(int argc, char *argv[])
     struct evpl *evpl;
     int run = 1;
     struct evpl_endpoint *ep;
-
-    evpl_init(NULL);
 
     evpl = evpl_create();
 
@@ -171,11 +138,7 @@ main(int argc, char *argv[])
 
     pthread_join(thr, NULL);
 
-    evpl_endpoint_close(evpl, ep);
-
     evpl_destroy(evpl);
-
-    evpl_cleanup();
 
     return 0;
 }
