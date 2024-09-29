@@ -177,7 +177,7 @@ evpl_socket_tcp_write(
         evpl_event_mark_unwritable(event);
     }
 
-    if (res) {
+    if (res && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
         notify.notify_type   = EVPL_NOTIFY_SENT;
         notify.notify_status = 0;
         bind->callback(evpl, bind, &notify, bind->private_data);
@@ -203,9 +203,9 @@ evpl_socket_tcp_error(
 
 void
 evpl_socket_tcp_connect(
-    struct evpl      *evpl,
+    struct evpl          *evpl,
     struct evpl_endpoint *ep,
-    struct evpl_bind *bind)
+    struct evpl_bind     *bind)
 {
     struct evpl_socket *s = evpl_bind_private(bind);
     struct addrinfo    *p;
@@ -318,9 +318,9 @@ evpl_accept_tcp(
 
 void
 evpl_socket_tcp_listen(
-    struct evpl      *evpl,
+    struct evpl          *evpl,
     struct evpl_endpoint *ep,
-    struct evpl_bind *listen_bind)
+    struct evpl_bind     *listen_bind)
 {
     struct evpl_socket *s = evpl_bind_private(listen_bind);
     struct addrinfo    *p;

@@ -191,7 +191,7 @@ evpl_socket_udp_write(
         }
     }
 
-    if (res > 0) {
+    if (res > 0 && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
         notify.notify_type   = EVPL_NOTIFY_SENT;
         notify.notify_status = 0;
         bind->callback(evpl, bind, &notify, bind->private_data);
@@ -210,9 +210,9 @@ evpl_socket_udp_error(
 
 void
 evpl_socket_udp_bind(
-    struct evpl      *evpl,
+    struct evpl          *evpl,
     struct evpl_endpoint *ep,
-    struct evpl_bind *evbind)
+    struct evpl_bind     *evbind)
 {
     struct evpl_socket *s = evpl_bind_private(evbind);
     struct addrinfo    *p;

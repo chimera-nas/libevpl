@@ -421,10 +421,12 @@ evpl_rdmacm_poll_cq(
 
                 --rdmacm_id->active_sends;
 
-                notify.notify_type   = EVPL_NOTIFY_SENT;
-                notify.notify_status = 0;
+                if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
+                    notify.notify_type   = EVPL_NOTIFY_SENT;
+                    notify.notify_status = 0;
 
-                bind->callback(evpl, bind, &notify, bind->private_data);
+                    bind->callback(evpl, bind, &notify, bind->private_data);
+                }
 
                 if (rdmacm_id->active_sends == 0 &&
                     evpl_bvec_ring_is_empty(&bind->bvec_send)) {
@@ -683,9 +685,9 @@ evpl_rdmacm_destroy(
 
 void
 evpl_rdmacm_listen(
-    struct evpl      *evpl,
+    struct evpl          *evpl,
     struct evpl_endpoint *ep,
-    struct evpl_bind *bind)
+    struct evpl_bind     *bind)
 {
     struct evpl_rdmacm    *rdmacm;
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
@@ -728,9 +730,9 @@ evpl_rdmacm_listen(
 
 void
 evpl_rdmacm_connect(
-    struct evpl      *evpl,
+    struct evpl          *evpl,
     struct evpl_endpoint *ep,
-    struct evpl_bind *bind)
+    struct evpl_bind     *bind)
 {
     struct evpl_rdmacm    *rdmacm;
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);

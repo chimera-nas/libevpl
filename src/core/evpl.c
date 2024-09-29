@@ -531,8 +531,7 @@ evpl_bind_flush_deferral(
 
 
 struct evpl_bind *
-evpl_bind_alloc(
-    struct evpl          *evpl)
+evpl_bind_alloc(struct evpl *evpl)
 {
     struct evpl_bind *bind;
 
@@ -1301,3 +1300,10 @@ evpl_protocol_lookup(
     return -1;
 } /* evpl_protocol_lookup */
 
+void
+evpl_bind_request_send_notifications(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    bind->flags |= EVPL_BIND_SENT_NOTIFY;
+} /* evpl_bind_request_send_notifications */

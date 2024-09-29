@@ -78,23 +78,23 @@ struct evpl_protocol {
      */
 
     void         (*connect)(
-        struct evpl      *evpl,
+        struct evpl          *evpl,
         struct evpl_endpoint *ep,
-        struct evpl_bind *bind);
+        struct evpl_bind     *bind);
 
     void         (*listen)(
-        struct evpl      *evpl,
+        struct evpl          *evpl,
         struct evpl_endpoint *ep,
-        struct evpl_bind *bind);
+        struct evpl_bind     *bind);
 
     /*
      * Callbacks for non-connection-oriented protocols
      */
 
     void         (*bind)(
-        struct evpl      *evpl,
+        struct evpl          *evpl,
         struct evpl_endpoint *ep,
-        struct evpl_bind *bind);
+        struct evpl_bind     *bind);
 };
 
 void *

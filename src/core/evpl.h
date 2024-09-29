@@ -46,9 +46,9 @@ struct evpl_notify {
     int          notify_status;
     union {
         struct {
-            struct evpl_bvec                 *bvec;
-            unsigned int                      nbvec;
-            const struct evpl_endpoint_stub  *eps;
+            struct evpl_bvec                *bvec;
+            unsigned int                     nbvec;
+            const struct evpl_endpoint_stub *eps;
         } recv_msg;
     };
 };
@@ -127,7 +127,7 @@ evpl_bind(
     void                  *private_data);
 
 void
-evpl_unbind(
+evpl_bind_request_send_notifications(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 
