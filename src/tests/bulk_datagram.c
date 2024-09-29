@@ -66,7 +66,7 @@ client_thread(void *arg)
 
     evpl = evpl_create();
 
-    me = evpl_endpoint_create(evpl, address, port + 1);
+    me     = evpl_endpoint_create(evpl, address, port + 1);
     server = evpl_endpoint_create(evpl, address, port);
 
     bind = evpl_bind(evpl, proto, me, client_callback, state);
@@ -76,7 +76,8 @@ client_thread(void *arg)
         while (state->inflight < state->depth &&
                state->sent < state->niters) {
 
-            evpl_sendto(evpl, bind, server, &state->value, sizeof(state->value));
+            evpl_sendto(evpl, bind, server, &state->value,
+                        sizeof(state->value));
 
             state->value++;
             state->sent++;
@@ -107,7 +108,7 @@ server_callback(
     void                     *private_data)
 {
     struct evpl_endpoint *client = private_data;
-    uint32_t value;
+    uint32_t              value;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_DATAGRAM:
@@ -132,7 +133,7 @@ main(
     struct client_state   state = {
         .run      = 1,
         .inflight = 0,
-        .depth    = 15,
+        .depth    = 16,
         .sent     = 0,
         .recv     = 0,
         .niters   = 10000,
@@ -165,7 +166,7 @@ main(
 
     evpl = evpl_create();
 
-    me = evpl_endpoint_create(evpl, address, port);
+    me     = evpl_endpoint_create(evpl, address, port);
     client = evpl_endpoint_create(evpl, address, port + 1);
 
     evpl_bind(evpl, proto, me, server_callback, client);

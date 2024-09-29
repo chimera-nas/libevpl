@@ -100,7 +100,7 @@ server_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
-    uint32_t              value;
+    uint32_t value;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_DATAGRAM:
@@ -135,11 +135,11 @@ main(
     struct evpl_endpoint *me;
     int                   rc, opt;
     struct client_state   state = {
-        .run      = 1,
-        .sent     = 0,
-        .recv     = 0,
-        .niters   = 100,
-        .value    = 1
+        .run    = 1,
+        .sent   = 0,
+        .recv   = 0,
+        .niters = 100,
+        .value  = 1
     };
 
     while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {

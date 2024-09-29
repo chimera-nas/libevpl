@@ -69,65 +69,56 @@ evpl_socket_tcp_read(
 
     evpl_check_conn(evpl, bind, s);
 
-    while (1) {
-
-        if (s->recv1.length == 0) {
-            if (s->recv2.length) {
-                s->recv1        = s->recv2;
-                s->recv2.length = 0;
-            } else {
-                evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv1);
-            }
-        }
-
-        if (s->recv2.length == 0) {
-            evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv2);
-        }
-
-        iov[0].iov_base = s->recv1.data;
-        iov[0].iov_len  = s->recv1.length;
-        iov[1].iov_base = s->recv2.data;
-        iov[1].iov_len  = s->recv2.length;
-
-        total = iov[0].iov_len + iov[1].iov_len;
-
-        msghdr.msg_name       = NULL;
-        msghdr.msg_namelen    = 0;
-        msghdr.msg_iov        = iov;
-        msghdr.msg_iovlen     = 2;
-        msghdr.msg_control    = NULL;
-        msghdr.msg_controllen = 0;
-        msghdr.msg_flags      = 0;
-
-        res = recvmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
-
-        if (res < 0) {
-            evpl_event_mark_unreadable(event);
-            evpl_defer(evpl, &bind->close_deferral);
-            break;
-        } else if (res == 0) {
-            evpl_event_mark_unreadable(event);
-            evpl_defer(evpl, &bind->close_deferral);
-            break;
-        }
-
-        cb = 1;
-
-        if (s->recv1.length >= res) {
-            evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1,
-                                  res, 0);
+    if (s->recv1.length == 0) {
+        if (s->recv2.length) {
+            s->recv1        = s->recv2;
+            s->recv2.length = 0;
         } else {
-            remain = res - s->recv1.length;
-            evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1,
-                                  s->recv1.length, 0);
-            evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv2,
-                                  remain, 0);
+            evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv1);
         }
+    }
 
-        if (res < total) {
-            evpl_event_mark_unreadable(event);
-            break;
+    if (s->recv2.length == 0) {
+        evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv2);
+    }
+
+    iov[0].iov_base = s->recv1.data;
+    iov[0].iov_len  = s->recv1.length;
+    iov[1].iov_base = s->recv2.data;
+    iov[1].iov_len  = s->recv2.length;
+
+    total = iov[0].iov_len + iov[1].iov_len;
+
+    msghdr.msg_name       = NULL;
+    msghdr.msg_namelen    = 0;
+    msghdr.msg_iov        = iov;
+    msghdr.msg_iovlen     = 2;
+    msghdr.msg_control    = NULL;
+    msghdr.msg_controllen = 0;
+    msghdr.msg_flags      = 0;
+
+    res = recvmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
+
+    if (res < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            evpl_defer(evpl, &bind->close_deferral);
         }
+        goto out;
+    } else if (res == 0) {
+        evpl_event_mark_unreadable(event);
+        evpl_defer(evpl, &bind->close_deferral);
+        goto out;
+    }
+
+    cb = 1;
+
+    if (s->recv1.length >= res) {
+        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1, res, 0);
+    } else {
+        remain = res - s->recv1.length;
+        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1,
+                              s->recv1.length, 0);
+        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv2, remain, 0);
     }
 
     if (cb) {
@@ -135,6 +126,12 @@ evpl_socket_tcp_read(
         notify.notify_status = 0;
         bind->callback(evpl, bind, &notify, bind->private_data);
     }
+
+ out:
+    if (res < total) {
+        evpl_event_mark_unreadable(event);
+    }
+
 } /* evpl_read_tcp */
 
 void
@@ -168,9 +165,13 @@ evpl_socket_tcp_write(
     res = sendmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
 
     if (res < 0) {
-        evpl_event_mark_unwritable(event);
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            evpl_defer(evpl, &bind->close_deferral);
+        }
+        goto out;
+    } else if (res == 0) {
         evpl_defer(evpl, &bind->close_deferral);
-        return;
+        goto out;
     }
 
     evpl_bvec_ring_consume(evpl, &bind->bvec_send, res);
@@ -191,6 +192,12 @@ evpl_socket_tcp_write(
         if (bind->flags & EVPL_BIND_FINISH) {
             evpl_defer(evpl, &bind->close_deferral);
         }
+    }
+
+ out:
+
+    if (res != total) {
+        evpl_event_mark_unwritable(event);
     }
 
 } /* evpl_write_tcp */

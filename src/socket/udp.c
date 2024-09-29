@@ -74,13 +74,13 @@ evpl_socket_udp_read(
     res = recvmmsg(s->fd, msgvecs, nmsg, MSG_NOSIGNAL | MSG_DONTWAIT, NULL);
 
     if (res < 0) {
-        evpl_event_mark_unreadable(event);
-        evpl_defer(evpl, &bind->close_deferral);
-        return;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            evpl_defer(evpl, &bind->close_deferral);
+        }
+        goto out;
     } else if (res == 0) {
-        evpl_event_mark_unreadable(event);
         evpl_defer(evpl, &bind->close_deferral);
-        return;
+        goto out;
     }
 
     for (i = 0; i < res; ++i) {
@@ -106,6 +106,7 @@ evpl_socket_udp_read(
 
     }
 
+ out:
     for (i = 0; i < nmsg; ++i) {
         evpl_socket_datagram_free(evpl, s, datagrams[i]);
     }
@@ -132,6 +133,8 @@ evpl_socket_udp_write(
     struct msghdr      *msghdr;
     struct mmsghdr     *msgvec;
     ssize_t             res, total;
+
+    dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
     msgvec = alloca(sizeof(struct mmsghdr) * maxmsg);
 
@@ -166,7 +169,9 @@ evpl_socket_udp_write(
 
     if (res < 0) {
         evpl_event_mark_unwritable(event);
-        evpl_defer(evpl, &bind->close_deferral);
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            evpl_defer(evpl, &bind->close_deferral);
+        }
         return;
     }
 
