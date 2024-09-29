@@ -155,14 +155,31 @@ evpl_bvec_addref(
 void
 evpl_send(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     const void       *buffer,
     unsigned int      length);
 
 void
 evpl_sendv(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
+    struct evpl_bvec *bvecs,
+    int               nbufvecs,
+    int               length);
+
+void
+evpl_sendto(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_endpoint *endpoint,
+    const void       *buffer,
+    unsigned int      length);
+
+void
+evpl_sendtov(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_endpoint *endpoint,
     struct evpl_bvec *bvecs,
     int               nbufvecs,
     int               length);
@@ -170,21 +187,21 @@ evpl_sendv(
 int
 evpl_peek(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     void             *buffer,
     int               length);
 
 int
 evpl_recv(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     void             *buffer,
     int               length);
 
 int
 evpl_recvv(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     struct evpl_bvec *bvecs,
     int               maxbvecs,
     int               length);
@@ -192,16 +209,16 @@ evpl_recvv(
 void
 evpl_disconnect(
     struct evpl      *evpl,
-    struct evpl_bind *conn);
+    struct evpl_bind *bind);
 
 void
 evpl_finish(
     struct evpl      *evpl,
-    struct evpl_bind *conn);
+    struct evpl_bind *bind);
 
 const struct evpl_endpoint *
 evpl_bind_endpoint(
-    struct evpl_bind *conn);
+    struct evpl_bind *bind);
 
 const char *
 evpl_endpoint_address(

@@ -19,6 +19,7 @@ evpl_config_init(void)
     config->buffer_size    = 2 * 1024 * 1024;
     config->refcnt         = 1;
     config->bvec_ring_size = 256;
+    config->dgram_ring_size  = 256;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 

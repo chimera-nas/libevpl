@@ -20,7 +20,7 @@
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/endpoint.h"
-#include "core/conn.h"
+#include "core/bind.h"
 #include "core/protocol.h"
 
 #include "socket/common.h"
@@ -111,13 +111,13 @@ evpl_socket_tcp_read(
         cb = 1;
 
         if (s->recv1.length >= res) {
-            evpl_bvec_ring_append(evpl, &bind->recv_ring, &s->recv1,
+            evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1,
                                   res, 0);
         } else {
             remain = res - s->recv1.length;
-            evpl_bvec_ring_append(evpl, &bind->recv_ring, &s->recv1,
+            evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1,
                                   s->recv1.length, 0);
-            evpl_bvec_ring_append(evpl, &bind->recv_ring, &s->recv2,
+            evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv2,
                                   remain, 0);
         }
 
@@ -147,9 +147,9 @@ evpl_socket_tcp_write(
 
     evpl_check_conn(evpl, bind, s);
 
-    while (!evpl_bvec_ring_is_empty(&bind->send_ring)) {
+    while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
 
-        niov = evpl_bvec_ring_iov(&total, iov, 8, 0, &bind->send_ring);
+        niov = evpl_bvec_ring_iov(&total, iov, 8, 0, &bind->bvec_send);
 
         msghdr.msg_name       = NULL;
         msghdr.msg_namelen    = 0;
@@ -167,7 +167,7 @@ evpl_socket_tcp_write(
             break;
         }
 
-        evpl_bvec_ring_consume(evpl, &bind->send_ring, res);
+        evpl_bvec_ring_consume(evpl, &bind->bvec_send, res);
 
         if (res != total) {
             evpl_event_mark_unwritable(event);
@@ -175,7 +175,7 @@ evpl_socket_tcp_write(
         }
     }
 
-    if (evpl_bvec_ring_is_empty(&bind->send_ring)) {
+    if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
         evpl_event_write_disinterest(event);
 
         if (bind->flags & EVPL_BIND_FINISH) {

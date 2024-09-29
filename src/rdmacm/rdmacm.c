@@ -13,7 +13,7 @@
 #include "core/evpl.h"
 #include "core/protocol.h"
 #include "core/internal.h"
-#include "core/conn.h"
+#include "core/bind.h"
 #include "core/endpoint.h"
 
 #define evpl_rdmacm_debug(...) evpl_debug("rdmacm", __VA_ARGS__)
@@ -370,7 +370,7 @@ evpl_rdmacm_poll_cq(
 
                 req = (struct evpl_rdmacm_request *) cq->wr_id;
 
-                evpl_bvec_ring_add(&bind->recv_ring, &req->bvec, 1);
+                evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec, 1);
 
                 bind->callback(evpl, bind, EVPL_NOTIFY_RECEIVED, 0, bind->private_data);
 
@@ -393,7 +393,7 @@ evpl_rdmacm_poll_cq(
                 --rdmacm_id->active_sends;
 
                 if (rdmacm_id->active_sends == 0 &&
-                    evpl_bvec_ring_is_empty(&bind->send_ring)) {
+                    evpl_bvec_ring_is_empty(&bind->bvec_send)) {
                     if (bind->flags & EVPL_BIND_FINISH) {
                         evpl_defer(evpl, &bind->close_deferral);
                     }
@@ -765,15 +765,15 @@ evpl_rdmacm_flush(
         return;
     }
 
-    while (!evpl_bvec_ring_is_empty(&bind->send_ring)) {
+    while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
 
         sr = evpl_zalloc(sizeof(*sr));
 
         sr->rdmacm_id = rdmacm_id;
 
-        while (!evpl_bvec_ring_is_empty(&bind->send_ring)) {
+        while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
 
-            cur = evpl_bvec_ring_tail(&bind->send_ring);
+            cur = evpl_bvec_ring_tail(&bind->bvec_send);
 
             mrset = evpl_buffer_private(cur->buffer, EVPL_FRAMEWORK_RDMACM);
 
@@ -789,7 +789,7 @@ evpl_rdmacm_flush(
 
             eom = cur->eom;
 
-            evpl_bvec_ring_remove(&bind->send_ring);
+            evpl_bvec_ring_remove(&bind->bvec_send);
 
             if (eom) {
                 break;
@@ -814,7 +814,7 @@ evpl_rdmacm_flush(
     }
 
     if (rdmacm_id->active_sends == 0 &&
-        evpl_bvec_ring_is_empty(&bind->send_ring)) {
+        evpl_bvec_ring_is_empty(&bind->bvec_send)) {
         if (bind->flags & EVPL_BIND_FINISH) {
             evpl_defer(evpl, &bind->close_deferral);
         }

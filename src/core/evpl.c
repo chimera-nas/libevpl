@@ -14,6 +14,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "utlist.h"
 
@@ -29,7 +31,7 @@
 #include "core/config.h"
 #include "core/event.h"
 #include "core/buffer.h"
-#include "core/conn.h"
+#include "core/bind.h"
 #include "core/endpoint.h"
 #include "core/poll.h"
 
@@ -340,18 +342,28 @@ evpl_endpoint_resolve(
     struct evpl          *evpl,
     struct evpl_endpoint *endpoint)
 {
-    char            port_str[8];
-    struct addrinfo hints;
-    int             rc;
+    char            port_str[8], ipstr[256];
+    struct addrinfo hints, *p;
+    int             rc, cnt=0;
 
     snprintf(port_str, sizeof(port_str), "%d", endpoint->port);
 
     memset(&hints, 0, sizeof hints);
-    hints.ai_family   = AF_UNSPEC;
+    hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags    = 0;//AI_PASSIVE;
 
     rc = getaddrinfo(endpoint->address, port_str, &hints, &endpoint->ai);
+
+    for (p = endpoint->ai; p != NULL; p = p->ai_next) {
+        inet_ntop(p->ai_family, &((struct sockaddr_in*)p->ai_addr)->sin_addr, ipstr, sizeof(ipstr));
+        evpl_core_debug("resolved %s:%s to %s",
+                        endpoint->address, port_str, ipstr);
+        cnt++;
+    }
+
+    evpl_core_debug("resolved %s:%s to %d addrinfos", endpoint->address, port_str, cnt);
+
 
     if (unlikely(rc < 0)) {
         return rc;
@@ -427,8 +439,10 @@ evpl_destroy(struct evpl *evpl)
         bind = evpl->free_binds;
         DL_DELETE(evpl->free_binds, bind);
 
-        evpl_bvec_ring_free(&bind->send_ring);
-        evpl_bvec_ring_free(&bind->recv_ring);
+        evpl_bvec_ring_free(&bind->bvec_send);
+        evpl_bvec_ring_free(&bind->bvec_recv);
+        evpl_dgram_ring_free(&bind->dgram_send);
+        evpl_dgram_ring_free(&bind->dgram_recv);
         evpl_free(bind);
     }
 
@@ -520,12 +534,22 @@ evpl_bind_alloc(
         bind = evpl_zalloc(sizeof(*bind) + EVPL_MAX_PRIVATE);
 
         evpl_bvec_ring_alloc(
-            &bind->send_ring,
+            &bind->bvec_send,
             evpl->config->bvec_ring_size,
             evpl->config->page_size);
 
+        evpl_dgram_ring_alloc(
+            &bind->dgram_recv,
+            evpl->config->dgram_ring_size,
+            evpl->config->page_size);
+
+        evpl_dgram_ring_alloc(
+            &bind->dgram_send,
+            evpl->config->dgram_ring_size,
+            evpl->config->page_size);
+
         evpl_bvec_ring_alloc(
-            &bind->recv_ring,
+            &bind->bvec_recv,
             evpl->config->bvec_ring_size,
             evpl->config->page_size);
 
@@ -865,7 +889,7 @@ evpl_bvec_addref(
 void
 evpl_send(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     const void       *buffer,
     unsigned int      length)
 {
@@ -876,10 +900,28 @@ evpl_send(
 
     evpl_bvec_memcpy(bvecs, buffer, length);
 
-    evpl_sendv(evpl, conn, bvecs, nbvec, length);
+    evpl_sendv(evpl, bind, bvecs, nbvec, length);
 
 } /* evpl_send */
 
+void
+evpl_sendto(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_endpoint *endpoint,
+    const void       *buffer,
+    unsigned int      length)
+{
+    struct evpl_bvec bvecs[4];
+    int              nbvec;
+
+    nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
+
+    evpl_bvec_memcpy(bvecs, buffer, length);
+
+    evpl_sendtov(evpl, bind, endpoint, bvecs, nbvec, length);
+
+}
 
 void
 evpl_sendv(
@@ -897,12 +939,43 @@ evpl_sendv(
 
     for (i = 0; i < nbufvecs; ++i) {
         eom = (i + 1 == nbufvecs);
-        evpl_bvec_ring_add(&conn->send_ring, &bvecs[i], eom);
+        evpl_bvec_ring_add(&conn->bvec_send, &bvecs[i], eom);
     }
 
     evpl_defer(evpl, &conn->flush_deferral);
 
 } /* evpl_sendv */
+
+void
+evpl_sendtov(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_endpoint *endpoint,
+    struct evpl_bvec *bvecs,
+    int               nbufvecs,
+    int               length)
+{
+#if 0
+    struct evpl_bvec *first;
+    int i, eom;
+
+    if (unlikely(nbufvecs == 0)) {
+        return;
+    }
+
+    first = evpl_bvec_ring_head(&conn->bvec_ring);
+
+    for (i = 0; i < nbufvecs; ++i) {
+        eom = (i + 1 == nbufvecs);
+        evpl_bvec_ring_add(&conn->bvec_send, &bvecs[i], eom);
+    }
+
+    evpl_dgram_ring_add(&conn->dgram_send, first, nbufvecs);
+
+    evpl_defer(evpl, &conn->flush_deferral);
+#endif
+}
+
 
 void
 evpl_close(
@@ -920,7 +993,7 @@ evpl_finish(
 
     bind->flags |= EVPL_BIND_FINISH;
 
-    if (evpl_bvec_ring_is_empty(&bind->send_ring)) {
+    if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
         evpl_defer(evpl, &bind->close_deferral);
     }
 
@@ -945,8 +1018,8 @@ evpl_bind_destroy(
 
     bind->protocol->close(evpl, bind);
 
-    evpl_bvec_ring_clear(evpl, &bind->recv_ring);
-    evpl_bvec_ring_clear(evpl, &bind->send_ring);
+    evpl_bvec_ring_clear(evpl, &bind->bvec_recv);
+    evpl_bvec_ring_clear(evpl, &bind->bvec_send);
 
     evpl_endpoint_close(evpl, bind->endpoint);
 
@@ -968,7 +1041,7 @@ evpl_peek(
     struct evpl_bvec *cur;
     void             *ptr = buffer;
 
-    cur = evpl_bvec_ring_tail(&conn->recv_ring);
+    cur = evpl_bvec_ring_tail(&conn->bvec_recv);
 
     while (cur && left) {
 
@@ -982,7 +1055,7 @@ evpl_peek(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&conn->recv_ring, cur);
+        cur = evpl_bvec_ring_next(&conn->bvec_recv, cur);
 
         if (cur == NULL) {
             return length - left;
@@ -1004,7 +1077,7 @@ evpl_recv(
     struct evpl_bvec *cur;
     void             *ptr = buffer;
 
-    cur = evpl_bvec_ring_tail(&conn->recv_ring);
+    cur = evpl_bvec_ring_tail(&conn->bvec_recv);
 
     while (cur && left) {
 
@@ -1018,14 +1091,14 @@ evpl_recv(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&conn->recv_ring, cur);
+        cur = evpl_bvec_ring_next(&conn->bvec_recv, cur);
 
         if (cur == NULL) {
             return -1;
         }
     }
 
-    evpl_bvec_ring_consume(evpl, &conn->recv_ring, length);
+    evpl_bvec_ring_consume(evpl, &conn->bvec_recv, length);
 
     return length;
 
@@ -1042,7 +1115,7 @@ evpl_recvv(
     int               left = length, chunk, nbvecs = 0;
     struct evpl_bvec *cur, *out;
 
-    cur = evpl_bvec_ring_tail(&conn->recv_ring);
+    cur = evpl_bvec_ring_tail(&conn->bvec_recv);
 
     while (cur && left) {
 
@@ -1065,7 +1138,7 @@ evpl_recvv(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&conn->recv_ring, cur);
+        cur = evpl_bvec_ring_next(&conn->bvec_recv, cur);
 
         if (cur == NULL) {
             return -1;
@@ -1073,7 +1146,7 @@ evpl_recvv(
     }
 
 
-    evpl_bvec_ring_consume(evpl, &conn->recv_ring, length);
+    evpl_bvec_ring_consume(evpl, &conn->bvec_recv, length);
 
     return nbvecs;
 } /* evpl_recvv */

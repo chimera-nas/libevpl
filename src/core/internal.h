@@ -18,6 +18,7 @@ struct evpl_config {
     unsigned int page_size;
     unsigned int refcnt;
     unsigned int bvec_ring_size;
+    unsigned int dgram_ring_size;
 };
 
 void * evpl_malloc(

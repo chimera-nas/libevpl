@@ -20,7 +20,7 @@
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/endpoint.h"
-#include "core/conn.h"
+#include "core/bind.h"
 #include "core/protocol.h"
 
 #include "socket/common.h"
@@ -179,16 +179,15 @@ evpl_socket_udp_error(
 void
 evpl_socket_udp_bind(
     struct evpl      *evpl,
-    struct evpl_bind *conn)
+    struct evpl_bind *evbind)
 {
-#if 0
-    struct evpl_socket *s = evpl_conn_private(conn);
+    struct evpl_socket *s = evpl_bind_private(evbind);
     struct addrinfo    *p;
     int                 fd, flags;
 
     s->fd = -1;
 
-    for (p = conn->endpoint->ai; p != NULL; p = p->ai_next) {
+    for (p = evbind->endpoint->ai; p != NULL; p = p->ai_next) {
 
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
@@ -208,9 +207,9 @@ evpl_socket_udp_bind(
         }
 
 
-        if (connect(fd, p->ai_addr, p->ai_addrlen) == -1) {
+        if (bind(fd, p->ai_addr, p->ai_addrlen) == -1) {
             if (errno != EINPROGRESS) {
-                evpl_socket_debug("connect errno: %s", strerror(errno));
+                evpl_socket_debug("bind errno: %s", strerror(errno));
                 continue;
             }
         }
@@ -232,7 +231,6 @@ evpl_socket_udp_bind(
 
     evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
-#endif /* if 0 */
 } /* evpl_socket_udp_bind */
 
 struct evpl_protocol evpl_socket_udp = {
