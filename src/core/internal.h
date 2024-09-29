@@ -14,6 +14,7 @@
 struct evpl_config {
     unsigned int max_pending;
     unsigned int max_poll_fd;
+    unsigned int max_num_bvec;
     unsigned int buffer_size;
     unsigned int page_size;
     unsigned int max_datagram_size;

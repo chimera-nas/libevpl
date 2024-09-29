@@ -34,7 +34,6 @@ evpl_socket_udp_read(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-
     struct evpl_socket           *s = evpl_event_socket(event);
     struct evpl_bind             *bind = evpl_private2bind(s);
     struct evpl_socket_datagram **datagrams, *datagram;
@@ -126,30 +125,38 @@ evpl_socket_udp_write(
     struct evpl_bind   *bind = evpl_private2bind(s);
     struct evpl_dgram  *dgram;
     struct evpl_notify  notify;
-    struct iovec        iov[8];
-    int                 niov, nmsg = 0, nmsgleft;
+    struct iovec       *iov;
+    int                 niov, used_iov = 0, nmsg = 0, nmsgleft;
+    int                 maxmsg = s->config->max_datagram_batch;
+    int                 maxiov = s->config->max_num_bvec;
     struct msghdr      *msghdr;
-    struct mmsghdr      msgvec[8];
+    struct mmsghdr     *msgvec;
     ssize_t             res, total;
+
+    msgvec = alloca(sizeof(struct mmsghdr) * maxmsg);
+
+    iov = alloca(sizeof(struct iovec) * maxmsg * maxiov);
 
     dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
-    while (dgram && nmsg < 8) {
+    while (dgram && nmsg < maxmsg) {
 
         msghdr = &msgvec[nmsg].msg_hdr;
 
-        niov = evpl_bvec_ring_iov(&total, iov, dgram->nbvec, 1,
+        niov = evpl_bvec_ring_iov(&total, &iov[used_iov], dgram->nbvec, 1,
                                   &bind->bvec_send);
 
         msghdr->msg_name       = &dgram->addr;
         msghdr->msg_namelen    = dgram->addrlen;
-        msghdr->msg_iov        = iov;
+        msghdr->msg_iov        = &iov[used_iov];
         msghdr->msg_iovlen     = niov;
         msghdr->msg_control    = NULL;
         msghdr->msg_controllen = 0;
         msghdr->msg_flags      = 0;
 
         dgram = evpl_dgram_ring_next(&bind->dgram_send, dgram);
+
+        used_iov += niov;
 
         nmsg++;
     }

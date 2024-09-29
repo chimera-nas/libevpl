@@ -62,7 +62,7 @@ evpl_socket_tcp_read(
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
     struct evpl_notify  notify;
-    struct iovec        iov[8];
+    struct iovec        iov[2];
     struct msghdr       msghdr;
     ssize_t             res, total, remain;
     int                 cb = 0;
@@ -145,15 +145,17 @@ evpl_socket_tcp_write(
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
     struct evpl_notify  notify;
-    struct iovec        iov[8];
+    struct iovec       *iov;
+    int                 maxiov = s->config->max_num_bvec;
     int                 niov;
     struct msghdr       msghdr;
     ssize_t             res, total;
 
+    iov = alloca(sizeof(struct iovec) * maxiov);
+
     evpl_check_conn(evpl, bind, s);
 
-
-    niov = evpl_bvec_ring_iov(&total, iov, 8, 0, &bind->bvec_send);
+    niov = evpl_bvec_ring_iov(&total, iov, maxiov, 0, &bind->bvec_send);
 
     msghdr.msg_name       = NULL;
     msghdr.msg_namelen    = 0;

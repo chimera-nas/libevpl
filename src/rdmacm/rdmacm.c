@@ -69,6 +69,7 @@ struct evpl_rdmacm_device {
 
 struct evpl_rdmacm {
     struct rdma_event_channel *event_channel;
+    struct evpl_config        *config;
     struct evpl_event          event;
     struct evpl_rdmacm_id     *ids;
     struct evpl_rdmacm_device *devices;
@@ -137,8 +138,8 @@ evpl_rdmacm_create_qp(
     qp_attr.srq              = dev->srq;
     qp_attr.cap.max_send_wr  = 10;
     qp_attr.cap.max_recv_wr  = 10;
-    qp_attr.cap.max_send_sge = 1;
-    qp_attr.cap.max_recv_sge = 1;
+    qp_attr.cap.max_send_sge = rdmacm->config->max_num_bvec;
+    qp_attr.cap.max_recv_sge = rdmacm->config->max_num_bvec;
     qp_attr.sq_sig_all       = 1;
 
     qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND;
@@ -536,6 +537,8 @@ evpl_rdmacm_create(
 
     rdmacm = evpl_zalloc(sizeof(*rdmacm));
 
+    rdmacm->config = evpl_config(evpl);
+
     rdmacm->num_devices = rdmacm_devices->num_devices;
 
     rdmacm->devices = evpl_zalloc(
@@ -813,7 +816,7 @@ evpl_rdmacm_flush_datagram(
     struct evpl_dgram     *dgram;
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
     struct ibv_mr         *mr, **mrset;
-    struct ibv_sge         sge[8];
+    struct ibv_sge        *sge;
     int                    nsge, rc;
 
     if (!qp) {
@@ -829,6 +832,9 @@ evpl_rdmacm_flush_datagram(
         sr->rdmacm_id = rdmacm_id;
 
         nsge = 0;
+
+        sge = alloca(sizeof(struct ibv_sge) * dgram->nbvec);
+
 
         while (nsge < dgram->nbvec) {
 
@@ -888,7 +894,7 @@ evpl_rdmacm_flush_stream(
     struct evpl_bvec      *cur;
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
     struct ibv_mr         *mr, **mrset;
-    struct ibv_sge         sge[8];
+    struct ibv_sge        *sge;
     int                    nsge, eom, rc;
 
     if (!qp) {
@@ -902,6 +908,9 @@ evpl_rdmacm_flush_stream(
         sr->rdmacm_id = rdmacm_id;
 
         nsge = 0;
+
+        sge = alloca(sizeof(struct ibv_sge) *
+                     rdmacm_id->rdmacm->config->max_num_bvec);
 
         while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
 
