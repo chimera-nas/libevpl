@@ -16,4 +16,7 @@ target_link_libraries(ping_pong_connected_datagram evpl)
 add_executable(ping_pong_stream ping_pong_stream.c)
 target_link_libraries(ping_pong_stream evpl)
 
+add_executable(bulk_datagram bulk_datagram.c)
+target_link_libraries(bulk_datagram evpl)
+
 set(TEST_BIN ${CMAKE_CURRENT_BINARY_DIR} PARENT_SCOPE)
