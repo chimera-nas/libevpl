@@ -59,8 +59,8 @@ evpl_socket_udp_read(
 
         msgs[i] = msg;
 
-        msghdr->msg_name       = &msg->addr;
-        msghdr->msg_namelen    = sizeof(msg->addr);
+        msghdr->msg_name       = &msg->eps.addr;
+        msghdr->msg_namelen    = sizeof(msg->eps.addr);
         msghdr->msg_iov        = &msg->iov;
         msghdr->msg_iovlen     = 1;
         msghdr->msg_control    = NULL;
@@ -90,7 +90,7 @@ evpl_socket_udp_read(
         msg    = msgs[i];
         msghdr = &msgvecs[i].msg_hdr;
 
-        evpl_socket_debug("msg %d len %d", i, msgvecs[i].msg_len);
+        msg->eps.addrlen = msghdr->msg_namelen;
 
         notify.notify_type   = EVPL_NOTIFY_RECV_DATAGRAM;
         notify.notify_status = 0;
@@ -99,9 +99,7 @@ evpl_socket_udp_read(
 
         notify.recv_msg.bvec  = &msg->bvec;
         notify.recv_msg.nbvec = 1;
-
-        memcpy(notify.recv_msg.eps.addr, msghdr->msg_name, msghdr->msg_namelen);
-        notify.recv_msg.eps.addrlen = msghdr->msg_namelen;
+        notify.recv_msg.eps   = &msg->eps;
 
         bind->callback(evpl, bind, &notify, bind->private_data);
 

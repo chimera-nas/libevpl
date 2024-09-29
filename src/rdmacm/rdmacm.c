@@ -394,12 +394,7 @@ evpl_rdmacm_poll_cq(
                     notify.notify_status  = 0;
                     notify.recv_msg.bvec  = &req->bvec;
                     notify.recv_msg.nbvec = 1;
-
-#if 0
-                    memcpy(notify.recv_msg.eps.addr, msghdr->msg_name,
-                           msghdr->msg_namelen);
-                    notify.recv_msg.eps.addrlen = msghdr->msg_namelen;
-#endif /* if 0 */
+                    notify.recv_msg.eps   = &bind->remote;
 
                     bind->callback(evpl, bind, &notify, bind->private_data);
 

@@ -16,10 +16,10 @@
     evpl_abort_if(cond, "socket", __VA_ARGS__)
 
 struct evpl_socket_msg {
-    struct sockaddr_storage addr;
-    struct evpl_bvec        bvec;
-    struct iovec            iov;
-    struct evpl_socket_msg *next;
+    struct evpl_endpoint_stub   eps;
+    struct evpl_bvec            bvec;
+    struct iovec                iov;
+    struct evpl_socket_msg     *next;
 };
 
 struct evpl_socket {
