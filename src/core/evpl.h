@@ -235,10 +235,6 @@ evpl_finish(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 
-const struct evpl_endpoint *
-evpl_bind_endpoint(
-    struct evpl_bind *bind);
-
 const char *
 evpl_endpoint_address(
     const struct evpl_endpoint *ep);

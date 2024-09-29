@@ -204,6 +204,7 @@ evpl_socket_tcp_error(
 void
 evpl_socket_tcp_connect(
     struct evpl      *evpl,
+    struct evpl_endpoint *ep,
     struct evpl_bind *bind)
 {
     struct evpl_socket *s = evpl_bind_private(bind);
@@ -212,7 +213,7 @@ evpl_socket_tcp_connect(
 
     s->fd = -1;
 
-    for (p = bind->endpoint->ai; p != NULL; p = p->ai_next) {
+    for (p = ep->ai; p != NULL; p = p->ai_next) {
 
         fd = socket(p->ai_family, SOCK_STREAM, p->ai_protocol);
 
@@ -247,6 +248,11 @@ evpl_socket_tcp_connect(
         return;
     }
 
+    bind->local.addrlen = 0;
+
+    memcpy(&bind->remote.addr, p->ai_addr, p->ai_addrlen);
+    bind->remote.addrlen = p->ai_addrlen;
+
     evpl_socket_init(evpl, s, fd, 0);
 
     s->event.fd             = fd;
@@ -266,18 +272,14 @@ evpl_accept_tcp(
 {
     struct evpl_socket     *ls          = evpl_event_socket(event);
     struct evpl_bind       *listen_bind = evpl_private2bind(ls);
-    struct evpl_endpoint   *endpoint;
     struct evpl_socket     *s;
     struct evpl_bind       *new_bind;
     struct sockaddr_storage client_addr;
     struct sockaddr        *client_addrp;
     socklen_t               client_len = sizeof(client_addr);
-    char                    ip_str[INET6_ADDRSTRLEN];
-    int                     fd, port;
-    void                   *addr;
+    int                     fd;
 
     client_addrp =  (struct sockaddr *) &client_addr;
-
 
     while (1) {
 
@@ -288,25 +290,14 @@ evpl_accept_tcp(
             return;
         }
 
-        if (client_addrp->sa_family == AF_INET) {
-            struct sockaddr_in *ipv4 = (struct sockaddr_in *) client_addrp;
-            addr = &(ipv4->sin_addr);
-            port = ntohs(ipv4->sin_port);
-        } else {
-            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *) client_addrp;
-            addr = &(ipv6->sin6_addr);
-            port = ntohs(ipv6->sin6_port);
-        }
+        new_bind = evpl_bind_alloc(evpl);
 
-        inet_ntop(client_addrp->sa_family, addr, ip_str, sizeof(ip_str));
+        new_bind->local.addrlen = 0;
 
-        endpoint = evpl_endpoint_create(evpl, ip_str, port);
-
-        new_bind = evpl_bind_alloc(evpl, endpoint);
+        memcpy(&new_bind->remote.addr, &client_addr, client_len);
+        new_bind->remote.addrlen = client_len;
 
         new_bind->protocol = listen_bind->protocol;
-
-        evpl_endpoint_close(evpl, endpoint); /* drop our reference */
 
         s = evpl_bind_private(new_bind);
 
@@ -328,6 +319,7 @@ evpl_accept_tcp(
 void
 evpl_socket_tcp_listen(
     struct evpl      *evpl,
+    struct evpl_endpoint *ep,
     struct evpl_bind *listen_bind)
 {
     struct evpl_socket *s = evpl_bind_private(listen_bind);
@@ -337,7 +329,7 @@ evpl_socket_tcp_listen(
 
     s->fd = -1;
 
-    for (p = listen_bind->endpoint->ai; p != NULL; p = p->ai_next) {
+    for (p = ep->ai; p != NULL; p = p->ai_next) {
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
         if (fd == -1) {
@@ -361,6 +353,11 @@ evpl_socket_tcp_listen(
         evpl_socket_debug("Failed to bind to any addr");
         return;
     }
+
+    listen_bind->remote.addrlen = 0;
+
+    memcpy(&listen_bind->local.addr, p->ai_addr, p->ai_addrlen);
+    listen_bind->local.addrlen = p->ai_addrlen;
 
     rc = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 

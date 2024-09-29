@@ -293,7 +293,7 @@ evpl_listen(
 {
     struct evpl_bind *bind;
 
-    bind = evpl_bind_alloc(evpl, endpoint);
+    bind = evpl_bind_alloc(evpl);
 
     bind->protocol = evpl_shared->protocol[protocol_id];
 
@@ -307,7 +307,7 @@ evpl_listen(
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
-    bind->protocol->listen(evpl, bind);
+    bind->protocol->listen(evpl, endpoint, bind);
 
     return bind;
 } /* evpl_listen */
@@ -388,7 +388,7 @@ evpl_connect(
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
-    bind               = evpl_bind_alloc(evpl, endpoint);
+    bind               = evpl_bind_alloc(evpl);
     bind->protocol     = protocol;
     bind->callback     = callback;
     bind->private_data = private_data;
@@ -397,7 +397,7 @@ evpl_connect(
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
-    bind->protocol->connect(evpl, bind);
+    bind->protocol->connect(evpl, endpoint, bind);
 
     return bind;
 } /* evpl_connect */
@@ -416,7 +416,7 @@ evpl_bind(
     evpl_core_abort_if(!protocol->bind,
                        "Called evpl_bind with connection oriented protocol");
 
-    bind               = evpl_bind_alloc(evpl, endpoint);
+    bind               = evpl_bind_alloc(evpl);
     bind->protocol     = protocol;
     bind->callback     = callback;
     bind->private_data = private_data;
@@ -425,7 +425,7 @@ evpl_bind(
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
-    bind->protocol->bind(evpl, bind);
+    bind->protocol->bind(evpl, endpoint, bind);
 
     return bind;
 } /* evpl_bind */
@@ -532,8 +532,7 @@ evpl_bind_flush_deferral(
 
 struct evpl_bind *
 evpl_bind_alloc(
-    struct evpl          *evpl,
-    struct evpl_endpoint *endpoint)
+    struct evpl          *evpl)
 {
     struct evpl_bind *bind;
 
@@ -572,20 +571,10 @@ evpl_bind_alloc(
 
     }
 
-    bind->endpoint = endpoint;
-
-    endpoint->refcnt++;
-
     DL_APPEND(evpl->binds, bind);
 
     return bind;
 } /* evpl_bind_alloc */
-
-const struct evpl_endpoint *
-evpl_bind_endpoint(struct evpl_bind *bind)
-{
-    return bind->endpoint;
-} /* evpl_bind_endpoint */
 
 void
 evpl_event_read_interest(
@@ -1082,8 +1071,6 @@ evpl_bind_destroy(
 
     evpl_bvec_ring_clear(evpl, &bind->bvec_recv);
     evpl_bvec_ring_clear(evpl, &bind->bvec_send);
-
-    evpl_endpoint_close(evpl, bind->endpoint);
 
     DL_DELETE(evpl->binds, bind);
 

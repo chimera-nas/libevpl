@@ -213,6 +213,7 @@ evpl_socket_udp_error(
 void
 evpl_socket_udp_bind(
     struct evpl      *evpl,
+    struct evpl_endpoint *ep,
     struct evpl_bind *evbind)
 {
     struct evpl_socket *s = evpl_bind_private(evbind);
@@ -221,7 +222,7 @@ evpl_socket_udp_bind(
 
     s->fd = -1;
 
-    for (p = evbind->endpoint->ai; p != NULL; p = p->ai_next) {
+    for (p = ep->ai; p != NULL; p = p->ai_next) {
 
         fd = socket(p->ai_family, SOCK_DGRAM, p->ai_protocol);
 
@@ -255,6 +256,10 @@ evpl_socket_udp_bind(
         evpl_socket_debug("failed to connect to any address");
         return;
     }
+
+    evbind->remote.addrlen = 0;
+    memcpy(&evbind->local.addr, p->ai_addr, p->ai_addrlen);
+    evbind->local.addrlen = p->ai_addrlen;
 
     evpl_socket_init(evpl, s, fd, 0);
 

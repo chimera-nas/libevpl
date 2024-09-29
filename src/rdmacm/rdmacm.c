@@ -163,11 +163,10 @@ evpl_rdmacm_event_callback(
 {
     struct evpl_rdmacm    *rdmacm = evpl_event_rdmacm(event);
     struct evpl_rdmacm_id *rdmacm_id, *new_rdmacm_id;
-    struct evpl_endpoint  *endpoint;
     struct evpl_bind      *listen_bind, *bind;
+    struct sockaddr       *src_addr;
     struct rdma_cm_event  *cm_event;
     struct rdma_conn_param conn_param;
-    struct sockaddr_in    *src_addr;
     int                    rc;
 
     if (rdma_get_cm_event(rdmacm->event_channel, &cm_event)) {
@@ -200,14 +199,7 @@ evpl_rdmacm_event_callback(
 
             listen_bind = evpl_private2bind(rdmacm_id);
 
-            src_addr = (struct
-                        sockaddr_in *) &cm_event->id->route.addr.src_addr;
-
-            endpoint = evpl_endpoint_create(evpl,
-                                            inet_ntoa(src_addr->sin_addr),
-                                            src_addr->sin_port);
-
-            bind = evpl_bind_alloc(evpl, endpoint);
+            bind = evpl_bind_alloc(evpl);
 
             bind->protocol = listen_bind->protocol;
 
@@ -218,7 +210,17 @@ evpl_rdmacm_event_callback(
             new_rdmacm_id->id          = cm_event->id;
             new_rdmacm_id->id->context = new_rdmacm_id;
 
-            evpl_endpoint_close(evpl, endpoint); /* drop our reference */
+            bind->local.addrlen = 0;
+
+            src_addr = &cm_event->id->route.addr.src_addr;
+
+            if (src_addr->sa_family == AF_INET) {
+                bind->remote.addrlen = sizeof(struct sockaddr_in);
+            } else {
+                bind->remote.addrlen = sizeof(struct sockaddr_in6);
+            }
+
+            memcpy(&bind->remote.addr, src_addr, bind->remote.addrlen);
 
             evpl_rdmacm_create_qp(evpl, rdmacm, new_rdmacm_id);
 
@@ -687,6 +689,7 @@ evpl_rdmacm_destroy(
 void
 evpl_rdmacm_listen(
     struct evpl      *evpl,
+    struct evpl_endpoint *ep,
     struct evpl_bind *bind)
 {
     struct evpl_rdmacm    *rdmacm;
@@ -705,7 +708,7 @@ evpl_rdmacm_listen(
 
     evpl_rdmacm_abort_if(rc, "rdma_create_id listen error %s", strerror(rc));
 
-    for (p = bind->endpoint->ai; p != NULL; p = p->ai_next) {
+    for (p = ep->ai; p != NULL; p = p->ai_next) {
 
         if (rdma_bind_addr(rdmacm_id->id, p->ai_addr) == -1) {
             continue;
@@ -719,6 +722,11 @@ evpl_rdmacm_listen(
         return;
     }
 
+    bind->remote.addrlen = 0;
+
+    memcpy(&bind->local.addr, p->ai_addr, p->ai_addrlen);
+    bind->local.addrlen = p->ai_addrlen;
+
     rdma_listen(rdmacm_id->id, 64);
 
 } /* evpl_rdmacm_listen */
@@ -726,6 +734,7 @@ evpl_rdmacm_listen(
 void
 evpl_rdmacm_connect(
     struct evpl      *evpl,
+    struct evpl_endpoint *ep,
     struct evpl_bind *bind)
 {
     struct evpl_rdmacm    *rdmacm;
@@ -745,8 +754,13 @@ evpl_rdmacm_connect(
 
     evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
 
-    rc = rdma_resolve_addr(rdmacm_id->id, NULL, bind->endpoint->ai->ai_addr,
+    rc = rdma_resolve_addr(rdmacm_id->id, NULL, ep->ai->ai_addr,
                            5000);
+
+    bind->local.addrlen = 0;
+
+    memcpy(&bind->remote.addr, ep->ai->ai_addr, ep->ai->ai_addrlen);
+    bind->remote.addrlen = ep->ai->ai_addrlen;
 
     evpl_rdmacm_abort_if(rc, "rdma_resolve_addr error %s", strerror(errno));
 } /* evpl_rdmacm_connect */

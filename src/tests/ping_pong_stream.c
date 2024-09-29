@@ -147,12 +147,6 @@ accept_callback(
     void                  **conn_private_data,
     void                   *private_data)
 {
-    const struct evpl_endpoint *ep = evpl_bind_endpoint(bind);
-
-    evpl_test_info("Received connection from %s:%d",
-                   evpl_endpoint_address(ep),
-                   evpl_endpoint_port(ep));
-
     *callback          = server_callback;
     *conn_private_data = private_data;
 } /* accept_callback */
