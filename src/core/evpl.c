@@ -1276,3 +1276,25 @@ evpl_defer(
 
 } /* evpl_defer */
 
+int
+evpl_protocol_lookup(
+    enum evpl_protocol_id *id,
+    const char *name)
+{
+    struct evpl_protocol *proto;
+    int i;
+
+    evpl_init_once();
+
+    for (i = 0; i < EVPL_NUM_PROTO; ++i) {
+        proto = evpl_shared->protocol[i];
+
+        if (strcmp(proto->name, name) == 0) {
+            *id = proto->id;
+            return 0;
+        }
+    }
+
+    return -1;
+}
+

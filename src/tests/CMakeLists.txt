@@ -1,0 +1,10 @@
+add_executable(hello_world_datagram hello_world_datagram.c)
+target_link_libraries(hello_world_datagram evpl)
+
+add_executable(hello_world_connected_datagram hello_world_connected_datagram.c)
+target_link_libraries(hello_world_connected_datagram evpl)
+
+add_executable(hello_world_stream hello_world_stream.c)
+target_link_libraries(hello_world_stream evpl)
+
+set(TEST_BIN ${CMAKE_CURRENT_BINARY_DIR} PARENT_SCOPE)

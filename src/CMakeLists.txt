@@ -12,6 +12,13 @@ macro(unit_test module test_name)
     set_tests_properties(${module}_${test_name} PROPERTIES LABELS ${module})
 endmacro()
 
+macro(unit_test_bin module test_name binary_name)
+
+    add_test(NAME ${module}_${test_name} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
+
+    set_tests_properties(${module}_${test_name} PROPERTIES LABELS ${module})
+endmacro()
+
 macro(unit_test_xdr module test_name xdr_file)
     set(sources ${ARGN})
 
@@ -41,6 +48,7 @@ endmacro()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
+add_subdirectory(tests)
 add_subdirectory(core)
 add_subdirectory(socket)
 add_subdirectory(thread)

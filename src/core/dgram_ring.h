@@ -3,8 +3,8 @@
 struct evpl_dgram {
     struct evpl_bvec       *bvec;
     int                     nbvec;
-    struct sockaddr_storage addr;
     int                     addrlen;
+    struct sockaddr_storage addr;
 };
 
 struct evpl_dgram_ring {

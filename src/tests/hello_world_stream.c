@@ -9,12 +9,18 @@
 #include <string.h>
 #include <pthread.h>
 #include <sys/uio.h>
+#include <unistd.h>
 
 #include "core/evpl.h"
 #include "core/test_log.h"
 
 const char hello[] = "Hello World!";
 const int  hellolen = strlen(hello) + 1;
+
+enum evpl_protocol_id proto = EVPL_STREAM_SOCKET_TCP;
+const char localhost[] = "127.0.0.1";
+const char *address = localhost;
+int port = 8000;
 
 int
 client_callback(
@@ -24,7 +30,7 @@ client_callback(
     void *private_data)
 {
     char buffer[hellolen];
-    int length,*run = private_data;
+    int length, *run = private_data;
 
     switch (notify->notify_type) {
     case EVPL_NOTIFY_RECV_DATA:
@@ -36,6 +42,7 @@ client_callback(
         }
 
         break;
+
     case EVPL_NOTIFY_DISCONNECTED:
         *run = 0;
         break;
@@ -54,13 +61,15 @@ client_thread(void *arg)
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, "10.67.15.105", 8000);
+    ep = evpl_endpoint_create(evpl, address, port);
 
-    bind = evpl_connect(evpl, EVPL_STREAM_RDMACM_RC, ep, client_callback, &run);
+    bind = evpl_connect(evpl, proto, ep, client_callback, &run);
+
 
     evpl_send(evpl, bind, hello, hellolen);
 
     while (run) {
+    
         evpl_wait(evpl, -1);
     }
 
@@ -87,13 +96,13 @@ int server_callback(
         length = evpl_recv(evpl, bind, buffer, hellolen);
 
         if (length == hellolen) {
+
             evpl_test_info("server received '%s'", buffer);
- 
+
             evpl_send(evpl, bind, hello, hellolen);
 
             evpl_finish(evpl, bind);
         }
-
         break;
     }
 
@@ -106,28 +115,45 @@ void accept_callback(
     void **conn_private_data,
     void       *private_data)
 {
-    const struct evpl_endpoint *ep = evpl_bind_endpoint(bind);
-
-    evpl_test_info("Received connection from %s:%d",
-        evpl_endpoint_address(ep),
-        evpl_endpoint_port(ep));
-
     *callback = server_callback;
     *conn_private_data = private_data;
 }
+
 int
 main(int argc, char *argv[])
 {
     pthread_t thr;
     struct evpl *evpl;
-    int run = 1;
+    int run = 1, opt, rc;
     struct evpl_endpoint *ep;
+
+    while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {
+    switch (opt) {
+        case 'a':
+            address = optarg;
+            break;
+        case 'p':
+            port = atoi(optarg);
+            break;
+        case 'r':
+            rc = evpl_protocol_lookup(&proto, optarg);
+            if (rc) {
+                fprintf(stderr,"Invalid protocol '%s'\n", optarg);
+                return 1;
+            }
+            break;
+        default:
+            fprintf(stderr, "Usage: %s [-r protocol] [-a address] [-p port]\n", argv[0]);
+            return 1;
+        }
+    }
+
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, "10.67.15.105", 8000);
+    ep = evpl_endpoint_create(evpl, address, port);
 
-    evpl_listen(evpl, EVPL_STREAM_RDMACM_RC, ep, accept_callback, &run);
+    evpl_listen(evpl, proto, ep, accept_callback, &run);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 
