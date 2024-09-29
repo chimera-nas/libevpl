@@ -135,9 +135,9 @@ evpl_shared_init(struct evpl_config *config)
 #ifdef HAVE_RDMACM
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_RDMACM, &evpl_rdmacm);
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_RDMACM_RC,
-                       &evpl_rdmacm_rc_stream);
-    evpl_protocol_init(evpl_shared, EVPL_STREAM_RDMACM_RC,
                        &evpl_rdmacm_rc_datagram);
+    evpl_protocol_init(evpl_shared, EVPL_STREAM_RDMACM_RC,
+                       &evpl_rdmacm_rc_stream);
 #endif /* ifdef HAVE_RDMACM */
 
 } /* evpl_shared_init */
@@ -940,23 +940,41 @@ evpl_sendto(
 void
 evpl_sendv(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     struct evpl_bvec *bvecs,
     int               nbufvecs,
     int               length)
 {
+    struct evpl_bvec *first;
+    struct evpl_dgram *dgram;
+
     int i, eom;
 
     if (unlikely(nbufvecs == 0)) {
         return;
     }
 
+    first = evpl_bvec_ring_head(&bind->bvec_send);
+
     for (i = 0; i < nbufvecs; ++i) {
         eom = (i + 1 == nbufvecs);
-        evpl_bvec_ring_add(&conn->bvec_send, &bvecs[i], eom);
+        evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i], eom);
     }
 
-    evpl_defer(evpl, &conn->flush_deferral);
+    if (!bind->protocol->stream) {
+        dgram = evpl_dgram_ring_add(&bind->dgram_send);
+
+        dgram->bvec  = first;
+        dgram->nbvec = nbufvecs;
+
+#if 0
+        memcpy(&dgram->addr, endpoint->ai->ai_addr, endpoint->ai->ai_addrlen);
+        dgram->addrlen = endpoint->ai->ai_addrlen;
+#endif
+    }
+
+
+    evpl_defer(evpl, &bind->flush_deferral);
 
 } /* evpl_sendv */
 

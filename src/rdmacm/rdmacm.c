@@ -86,6 +86,7 @@ struct evpl_rdmacm_id {
     struct evpl_rdmacm   *rdmacm;
     struct rdma_cm_id    *id;
     struct ibv_qp_ex     *qp;
+    int                   stream;
     uint32_t              qp_num;
     int                   devindex;
     int                   active_sends;
@@ -213,6 +214,7 @@ evpl_rdmacm_event_callback(
             new_rdmacm_id = evpl_bind_private(bind);
 
             new_rdmacm_id->rdmacm      = rdmacm;
+            new_rdmacm_id->stream      = rdmacm_id->stream;
             new_rdmacm_id->id          = cm_event->id;
             new_rdmacm_id->id->context = new_rdmacm_id;
 
@@ -360,6 +362,7 @@ evpl_rdmacm_poll_cq(
 
         switch (ibv_wc_read_opcode(cq)) {
             case IBV_WC_RECV:
+
                 qp_num = ibv_wc_read_qp_num(cq);
 
                 HASH_FIND(hh, rdmacm->ids, &qp_num, sizeof(qp_num), rdmacm_id);
@@ -371,12 +374,33 @@ evpl_rdmacm_poll_cq(
 
                 req = (struct evpl_rdmacm_request *) cq->wr_id;
 
-                evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec, 1);
+                if (rdmacm_id->stream) {
 
-                notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
-                notify.notify_status = 0;
+                    evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec, 1);
 
-                bind->callback(evpl, bind, &notify, bind->private_data);
+                    notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
+                    notify.notify_status = 0;
+
+                    bind->callback(evpl, bind, &notify, bind->private_data);
+                } else {
+
+                    req->bvec.length =  ibv_wc_read_byte_len(cq);
+
+                    notify.notify_type   = EVPL_NOTIFY_RECV_DATAGRAM;
+                    notify.notify_status = 0;
+                    notify.recv_msg.bvec  = &req->bvec;
+                    notify.recv_msg.nbvec = 1;
+
+#if 0
+                    memcpy(notify.recv_msg.eps.addr, msghdr->msg_name, msghdr->msg_namelen);
+                    notify.recv_msg.eps.addrlen = msghdr->msg_namelen;
+#endif
+
+                    bind->callback(evpl, bind, &notify, bind->private_data);
+
+                    evpl_bvec_release(evpl, &req->bvec);
+
+                }
 
                 --dev->srq_fill;
                 req->used = 0;
@@ -665,6 +689,8 @@ evpl_rdmacm_listen(
     struct addrinfo       *p;
     int                    rc;
 
+    rdmacm_id->stream = bind->protocol->stream;
+
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
     evpl_rdmacm_fill_all_srq(evpl, rdmacm);
@@ -700,6 +726,8 @@ evpl_rdmacm_connect(
     struct evpl_rdmacm    *rdmacm;
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     int                    rc;
+
+    rdmacm_id->stream = bind->protocol->stream;
 
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
@@ -759,7 +787,83 @@ evpl_rdmacm_unregister(
 } /* evpl_rdmacm_unregister */
 
 void
-evpl_rdmacm_flush(
+evpl_rdmacm_flush_datagram(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_rdmacm_sr *sr;
+    struct evpl_bvec      *cur;
+    struct evpl_dgram     *dgram;
+    struct ibv_qp_ex      *qp = rdmacm_id->qp;
+    struct ibv_mr         *mr, **mrset;
+    struct ibv_sge         sge[8];
+    int                    nsge, rc;
+
+    if (!qp) {
+        return;
+    }
+
+    while (!evpl_dgram_ring_is_empty(&bind->dgram_send)) {
+
+        dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+        sr = evpl_zalloc(sizeof(*sr));
+
+        sr->rdmacm_id = rdmacm_id;
+
+        nsge = 0;
+
+        while (nsge < dgram->nbvec) {
+
+            cur = evpl_bvec_ring_tail(&bind->bvec_send);
+
+            mrset = evpl_buffer_private(cur->buffer, EVPL_FRAMEWORK_RDMACM);
+
+            mr = mrset[rdmacm_id->devindex];
+
+            sge[nsge].addr   = (uint64_t) cur->data;
+            sge[nsge].length = cur->length;
+            sge[nsge].lkey   = mr->lkey;
+
+            sr->bufref[nsge] = cur->buffer;
+
+            nsge++;
+
+            evpl_bvec_ring_remove(&bind->bvec_send);
+        }
+
+        sr->nbufref = nsge;
+
+        ibv_wr_start(qp);
+
+        qp->wr_id    = (uint64_t) sr;
+        qp->wr_flags = 0;
+        ibv_wr_send(qp);
+        ibv_wr_set_sge_list(qp, nsge, sge);
+
+        rc = ibv_wr_complete(qp);
+
+        evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(
+                                 errno));
+
+        evpl_dgram_ring_remove(&bind->dgram_send);
+
+
+        ++rdmacm_id->active_sends;
+    }
+
+    if (rdmacm_id->active_sends == 0 &&
+        evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+        if (bind->flags & EVPL_BIND_FINISH) {
+            evpl_defer(evpl, &bind->close_deferral);
+        }
+    }
+
+} /* evpl_rdmacm_datagram */
+
+void
+evpl_rdmacm_flush_stream(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
@@ -830,7 +934,7 @@ evpl_rdmacm_flush(
         }
     }
 
-} /* evpl_rdmacm_flush */
+} /* evpl_rdmacm_flush_strean */
 
 void
 evpl_rdmacm_close(
@@ -862,19 +966,21 @@ struct evpl_framework evpl_rdmacm = {
 struct evpl_protocol  evpl_rdmacm_rc_datagram = {
     .id        = EVPL_DATAGRAM_RDMACM_RC,
     .connected = 1,
+    .stream    = 0,
     .name      = "DATAGRAM_RDMACM_RC",
     .listen    = evpl_rdmacm_listen,
     .connect   = evpl_rdmacm_connect,
     .close     = evpl_rdmacm_close,
-    .flush     = evpl_rdmacm_flush,
+    .flush     = evpl_rdmacm_flush_datagram,
 };
 
 struct evpl_protocol  evpl_rdmacm_rc_stream = {
     .id        = EVPL_STREAM_RDMACM_RC,
     .connected = 1,
+    .stream    = 1,
     .name      = "STREAM_RDMACM_RC",
     .listen    = evpl_rdmacm_listen,
     .connect   = evpl_rdmacm_connect,
     .close     = evpl_rdmacm_close,
-    .flush     = evpl_rdmacm_flush,
+    .flush     = evpl_rdmacm_flush_stream,
 };

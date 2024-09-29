@@ -381,6 +381,7 @@ evpl_socket_tcp_listen(
 struct evpl_protocol evpl_socket_tcp = {
     .id        = EVPL_STREAM_SOCKET_TCP,
     .connected = 1,
+    .stream    = 1,
     .name      = "STREAM_SOCKET_TCP",
     .connect   = evpl_socket_tcp_connect,
     .close     = evpl_socket_close,

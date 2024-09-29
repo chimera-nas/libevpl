@@ -53,6 +53,9 @@ struct evpl_protocol {
     /* 1 iff connection oriented protocol */
     unsigned int connected;
 
+    /* 1 iff stream oriented protocol */
+    unsigned int stream;
+
     /* human readable name for protocol, no spaces */
     const char  *name;
 

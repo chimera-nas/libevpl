@@ -270,6 +270,7 @@ evpl_socket_udp_bind(
 struct evpl_protocol evpl_socket_udp = {
     .id        = EVPL_DATAGRAM_SOCKET_UDP,
     .connected = 0,
+    .stream    = 0,
     .name      = "DATAGRAM_SOCKET_UDP",
     .bind      = evpl_socket_udp_bind,
     .close     = evpl_socket_close,
