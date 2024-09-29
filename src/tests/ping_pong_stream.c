@@ -9,9 +9,16 @@
 #include <string.h>
 #include <pthread.h>
 #include <sys/uio.h>
+#include <unistd.h>
 
 #include "core/evpl.h"
 #include "core/test_log.h"
+
+enum evpl_protocol_id proto = EVPL_STREAM_SOCKET_TCP;
+const char localhost[] = "127.0.0.1";
+const char *address = localhost;
+int port = 8000;
+
 
 struct client_state {
     int run;
@@ -69,9 +76,9 @@ client_thread(void *arg)
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, "127.0.0.1", 8000);
+    ep = evpl_endpoint_create(evpl, address, port);
 
-    bind = evpl_connect(evpl, EVPL_STREAM_SOCKET_TCP, ep, client_callback, state);
+    bind = evpl_connect(evpl, proto, ep, client_callback, state);
 
     while (state->recv != state->niters) {
 
@@ -156,6 +163,7 @@ main(int argc, char *argv[])
     pthread_t thr;
     struct evpl *evpl;
     struct evpl_endpoint *ep;
+    int rc, opt;
     struct client_state state = {
         .run = 1,
         .sent = 0,
@@ -164,13 +172,33 @@ main(int argc, char *argv[])
         .value = 1
     };
 
-    evpl_init(NULL);
+    while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {
+    switch (opt) {
+        case 'a':
+            address = optarg;
+            break;
+        case 'p':
+            port = atoi(optarg);
+            break;
+        case 'r':
+            rc = evpl_protocol_lookup(&proto, optarg);
+            if (rc) {
+                fprintf(stderr,"Invalid protocol '%s'\n", optarg);
+                return 1;
+            }
+            break;
+        default:
+            fprintf(stderr, "Usage: %s [-r protocol] [-a address] [-p port]\n", argv[0]);
+            return 1;
+        }
+    }
+
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, "0.0.0.0", 8000);
+    ep = evpl_endpoint_create(evpl, "0.0.0.0", port);
 
-    evpl_listen(evpl, EVPL_STREAM_SOCKET_TCP, ep, accept_callback, NULL);
+    evpl_listen(evpl, proto, ep, accept_callback, NULL);
 
     pthread_create(&thr, NULL, client_thread, &state);
 
@@ -180,11 +208,7 @@ main(int argc, char *argv[])
 
     pthread_join(thr, NULL);
 
-    evpl_endpoint_close(evpl, ep);
-
     evpl_destroy(evpl);
-
-    evpl_cleanup();
 
     return 0;
 }
