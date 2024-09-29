@@ -251,7 +251,7 @@ evpl_endpoint_port(
 int
 evpl_protocol_lookup(
     enum evpl_protocol_id *id,
-    const char *name);
+    const char            *name);
 
 struct evpl_config *
 evpl_config(

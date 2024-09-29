@@ -97,4 +97,10 @@ void evpl_abort(
 
 #ifndef FORCE_INLINE
 #define FORCE_INLINE __attribute__((always_inline)) inline
+
+void
+evpl_bvec_alloc_whole(
+    struct evpl      *evpl,
+    struct evpl_bvec *r_bvec);
+
 #endif // ifndef FORCE_INLINE

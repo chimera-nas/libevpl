@@ -282,7 +282,7 @@ evpl_rdmacm_fill_srq(
 
         req->used = 1;
 
-        evpl_bvec_alloc(evpl, 2 * 1024 * 1024, 4096, 1, &req->bvec);
+        evpl_bvec_alloc_whole(evpl, &req->bvec);
 
         mrset = evpl_buffer_private(req->bvec.buffer, EVPL_FRAMEWORK_RDMACM);
 
@@ -374,6 +374,8 @@ evpl_rdmacm_poll_cq(
 
                 req = (struct evpl_rdmacm_request *) cq->wr_id;
 
+                req->bvec.length = ibv_wc_read_byte_len(cq);
+
                 if (rdmacm_id->stream) {
 
                     evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec, 1);
@@ -386,15 +388,16 @@ evpl_rdmacm_poll_cq(
 
                     req->bvec.length =  ibv_wc_read_byte_len(cq);
 
-                    notify.notify_type   = EVPL_NOTIFY_RECV_DATAGRAM;
-                    notify.notify_status = 0;
+                    notify.notify_type    = EVPL_NOTIFY_RECV_DATAGRAM;
+                    notify.notify_status  = 0;
                     notify.recv_msg.bvec  = &req->bvec;
                     notify.recv_msg.nbvec = 1;
 
 #if 0
-                    memcpy(notify.recv_msg.eps.addr, msghdr->msg_name, msghdr->msg_namelen);
+                    memcpy(notify.recv_msg.eps.addr, msghdr->msg_name,
+                           msghdr->msg_namelen);
                     notify.recv_msg.eps.addrlen = msghdr->msg_namelen;
-#endif
+#endif /* if 0 */
 
                     bind->callback(evpl, bind, &notify, bind->private_data);
 
@@ -432,6 +435,8 @@ evpl_rdmacm_poll_cq(
                         evpl_defer(evpl, &bind->close_deferral);
                     }
                 }
+
+                evpl_free(sr);
 
                 break;
             default:
@@ -873,7 +878,7 @@ evpl_rdmacm_flush_stream(
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
     struct ibv_mr         *mr, **mrset;
     struct ibv_sge         sge[8];
-    int                    nsge = 0, eom, rc;
+    int                    nsge, eom, rc;
 
     if (!qp) {
         return;
@@ -884,6 +889,8 @@ evpl_rdmacm_flush_stream(
         sr = evpl_zalloc(sizeof(*sr));
 
         sr->rdmacm_id = rdmacm_id;
+
+        nsge = 0;
 
         while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
 

@@ -868,6 +868,22 @@ evpl_bvec_alloc(
 } /* evpl_bvec_alloc */
 
 void
+evpl_bvec_alloc_whole(
+    struct evpl      *evpl,
+    struct evpl_bvec *r_bvec)
+{
+    struct evpl_buffer *buffer;
+
+    buffer = evpl_buffer_alloc(evpl);
+
+    buffer->refcnt = 1;
+
+    r_bvec->data   = buffer->data;
+    r_bvec->length = buffer->size;
+    r_bvec->buffer = buffer;
+} /* evpl_bvec_alloc_whole */
+
+void
 evpl_buffer_release(
     struct evpl        *evpl,
     struct evpl_buffer *buffer)
@@ -945,10 +961,10 @@ evpl_sendv(
     int               nbufvecs,
     int               length)
 {
-    struct evpl_bvec *first;
+    struct evpl_bvec  *first;
     struct evpl_dgram *dgram;
 
-    int i, eom;
+    int                i, eom;
 
     if (unlikely(nbufvecs == 0)) {
         return;
@@ -970,7 +986,7 @@ evpl_sendv(
 #if 0
         memcpy(&dgram->addr, endpoint->ai->ai_addr, endpoint->ai->ai_addrlen);
         dgram->addrlen = endpoint->ai->ai_addrlen;
-#endif
+#endif /* if 0 */
     }
 
 
@@ -1279,10 +1295,10 @@ evpl_defer(
 int
 evpl_protocol_lookup(
     enum evpl_protocol_id *id,
-    const char *name)
+    const char            *name)
 {
     struct evpl_protocol *proto;
-    int i;
+    int                   i;
 
     evpl_init_once();
 
@@ -1296,5 +1312,5 @@ evpl_protocol_lookup(
     }
 
     return -1;
-}
+} /* evpl_protocol_lookup */
 

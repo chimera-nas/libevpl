@@ -20,7 +20,7 @@ evpl_config_init(void)
     config->refcnt          = 1;
     config->bvec_ring_size  = 256;
     config->dgram_ring_size = 256;
-    config->max_msg_size    = 65536;
+    config->max_msg_size    = 4096;
     config->max_msg_batch   = 16;
 
     config->page_size = sysconf(_SC_PAGESIZE);
