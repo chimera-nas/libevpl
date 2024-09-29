@@ -373,7 +373,7 @@ evpl_rdmacm_poll_cq(
 
                 evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec, 1);
 
-                notify.notify_type   = EVPL_NOTIFY_RECEIVED_DATA;
+                notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
                 notify.notify_status = 0;
 
                 bind->callback(evpl, bind, &notify, bind->private_data);
@@ -859,10 +859,20 @@ struct evpl_framework evpl_rdmacm = {
     .unregister_buffer = evpl_rdmacm_unregister,
 };
 
-struct evpl_protocol  evpl_rdmacm_rc = {
-    .id        = EVPL_RDMACM_RC,
+struct evpl_protocol  evpl_rdmacm_rc_datagram = {
+    .id        = EVPL_DATAGRAM_RDMACM_RC,
     .connected = 1,
-    .name      = "RDMACM_RC",
+    .name      = "DATAGRAM_RDMACM_RC",
+    .listen    = evpl_rdmacm_listen,
+    .connect   = evpl_rdmacm_connect,
+    .close     = evpl_rdmacm_close,
+    .flush     = evpl_rdmacm_flush,
+};
+
+struct evpl_protocol  evpl_rdmacm_rc_stream = {
+    .id        = EVPL_STREAM_RDMACM_RC,
+    .connected = 1,
+    .name      = "STREAM_RDMACM_RC",
     .listen    = evpl_rdmacm_listen,
     .connect   = evpl_rdmacm_connect,
     .close     = evpl_rdmacm_close,

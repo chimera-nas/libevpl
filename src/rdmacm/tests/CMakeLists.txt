@@ -2,5 +2,5 @@
 #
 # SPDX-License-Identifier: LGPL
 
-unit_test(evpl hello_world_rdmacm_rc hello_world_rdmacm_rc.c)
+unit_test(evpl hello_world_rdmacm_rc_stream hello_world_rdmacm_rc_stream.c)
 

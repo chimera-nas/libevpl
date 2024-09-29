@@ -92,7 +92,7 @@ evpl_socket_udp_read(
 
         evpl_socket_debug("msg %d len %d", i, msgvecs[i].msg_len);
 
-        notify.notify_type   = EVPL_NOTIFY_RECEIVED_MSG;
+        notify.notify_type   = EVPL_NOTIFY_RECV_DATAGRAM;
         notify.notify_status = 0;
 
         msg->bvec.length =  msgvecs[i].msg_len;
@@ -268,9 +268,9 @@ evpl_socket_udp_bind(
 } /* evpl_socket_udp_bind */
 
 struct evpl_protocol evpl_socket_udp = {
-    .id        = EVPL_SOCKET_UDP,
+    .id        = EVPL_DATAGRAM_SOCKET_UDP,
     .connected = 0,
-    .name      = "SOCKET_UDP",
+    .name      = "DATAGRAM_SOCKET_UDP",
     .bind      = evpl_socket_udp_bind,
     .close     = evpl_socket_close,
     .flush     = evpl_socket_flush,

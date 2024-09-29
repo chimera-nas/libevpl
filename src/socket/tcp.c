@@ -131,7 +131,7 @@ evpl_socket_tcp_read(
     }
 
     if (cb) {
-        notify.notify_type   = EVPL_NOTIFY_RECEIVED_DATA;
+        notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
         notify.notify_status = 0;
         bind->callback(evpl, bind, &notify, bind->private_data);
     }
@@ -379,9 +379,9 @@ evpl_socket_tcp_listen(
 } /* evpl_socket_tcp_listen */
 
 struct evpl_protocol evpl_socket_tcp = {
-    .id        = EVPL_SOCKET_TCP,
+    .id        = EVPL_STREAM_SOCKET_TCP,
     .connected = 1,
-    .name      = "SOCKET_TCP",
+    .name      = "STREAM_SOCKET_TCP",
     .connect   = evpl_socket_tcp_connect,
     .close     = evpl_socket_close,
     .listen    = evpl_socket_tcp_listen,

@@ -28,7 +28,7 @@ client_callback(
     int length, *run = private_data;
 
     switch (notify->notify_type) {
-    case EVPL_NOTIFY_RECEIVED_DATA:
+    case EVPL_NOTIFY_RECV_DATA:
 
         length = evpl_recv(evpl, bind, buffer, hellolen);
 
@@ -58,7 +58,7 @@ client_thread(void *arg)
 
     ep = evpl_endpoint_create(evpl, "127.0.0.1", 8000);
 
-    bind = evpl_connect(evpl, EVPL_SOCKET_TCP, ep, client_callback, &run);
+    bind = evpl_connect(evpl, EVPL_STREAM_SOCKET_TCP, ep, client_callback, &run);
 
 
     evpl_send(evpl, bind, hello, hellolen);
@@ -86,7 +86,7 @@ int server_callback(
     case EVPL_NOTIFY_DISCONNECTED:
         *run = 0;
         break;
-    case EVPL_NOTIFY_RECEIVED_DATA:
+    case EVPL_NOTIFY_RECV_DATA:
 
         length = evpl_recv(evpl, bind, buffer, hellolen);
 
@@ -126,7 +126,7 @@ main(int argc, char *argv[])
 
     ep = evpl_endpoint_create(evpl, "0.0.0.0", 8000);
 
-    evpl_listen(evpl, EVPL_SOCKET_TCP, ep, accept_callback, &run);
+    evpl_listen(evpl, EVPL_STREAM_SOCKET_TCP, ep, accept_callback, &run);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 

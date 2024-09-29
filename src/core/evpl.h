@@ -15,10 +15,11 @@ enum evpl_framework_id {
 };
 
 enum evpl_protocol_id {
-    EVPL_SOCKET_UDP = 0,
-    EVPL_SOCKET_TCP = 1,
-    EVPL_RDMACM_RC  = 2,
-    EVPL_NUM_PROTO  = 3
+    EVPL_DATAGRAM_SOCKET_UDP = 0,
+    EVPL_DATAGRAM_RDMACM_RC  = 1,
+    EVPL_STREAM_SOCKET_TCP   = 2,
+    EVPL_STREAM_RDMACM_RC    = 3,
+    EVPL_NUM_PROTO           = 4
 };
 
 struct evpl;
@@ -73,8 +74,8 @@ void evpl_wait(
 
 #define EVPL_NOTIFY_CONNECTED     1
 #define EVPL_NOTIFY_DISCONNECTED  2
-#define EVPL_NOTIFY_RECEIVED_DATA 3
-#define EVPL_NOTIFY_RECEIVED_MSG  4
+#define EVPL_NOTIFY_RECV_DATA     3
+#define EVPL_NOTIFY_RECV_DATAGRAM 4
 #define EVPL_NOTIFY_SENT          5
 
 

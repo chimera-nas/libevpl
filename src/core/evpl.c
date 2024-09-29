@@ -126,15 +126,18 @@ evpl_shared_init(struct evpl_config *config)
 
     evpl_shared->config = config;
 
-    evpl_protocol_init(evpl_shared, EVPL_SOCKET_UDP,
+    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_SOCKET_UDP,
                        &evpl_socket_udp);
 
-    evpl_protocol_init(evpl_shared, EVPL_SOCKET_TCP,
+    evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TCP,
                        &evpl_socket_tcp);
 
 #ifdef HAVE_RDMACM
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_RDMACM, &evpl_rdmacm);
-    evpl_protocol_init(evpl_shared, EVPL_RDMACM_RC, &evpl_rdmacm_rc);
+    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_RDMACM_RC,
+                       &evpl_rdmacm_rc_stream);
+    evpl_protocol_init(evpl_shared, EVPL_STREAM_RDMACM_RC,
+                       &evpl_rdmacm_rc_datagram);
 #endif /* ifdef HAVE_RDMACM */
 
 } /* evpl_shared_init */

@@ -27,7 +27,7 @@ client_callback(
     int *run = private_data;
 
     switch (notify->notify_type) {
-    case EVPL_NOTIFY_RECEIVED_MSG:
+    case EVPL_NOTIFY_RECV_DATAGRAM:
 
         evpl_test_info("client received '%s'", notify->recv_msg.bvec[0].data);
 
@@ -52,7 +52,7 @@ client_thread(void *arg)
     me = evpl_endpoint_create(evpl, "127.0.0.1", 8001);
     server = evpl_endpoint_create(evpl, "127.0.0.1", 8000);
 
-    bind = evpl_bind(evpl, EVPL_SOCKET_UDP, me, client_callback, &run);
+    bind = evpl_bind(evpl, EVPL_DATAGRAM_SOCKET_UDP, me, client_callback, &run);
 
     evpl_sendto(evpl, bind,  server, hello, hellolen);
 
@@ -76,7 +76,7 @@ int server_callback(
     int *run = private_data;
 
     switch (notify->notify_type) {
-    case EVPL_NOTIFY_RECEIVED_MSG:
+    case EVPL_NOTIFY_RECV_DATAGRAM:
    
         evpl_test_info("server received '%s'", notify->recv_msg.bvec[0].data); 
 
@@ -109,7 +109,7 @@ main(int argc, char *argv[])
 
     ep = evpl_endpoint_create(evpl, "0.0.0.0", 8000);
 
-    evpl_bind(evpl, EVPL_SOCKET_UDP, ep, server_callback, &run);
+    evpl_bind(evpl, EVPL_DATAGRAM_SOCKET_UDP, ep, server_callback, &run);
 
     pthread_create(&thr, NULL, client_thread, NULL);
 
