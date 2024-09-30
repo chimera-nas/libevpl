@@ -146,7 +146,7 @@ evpl_socket_udp_write(
 
         msghdr = &msgvec[nmsg].msg_hdr;
 
-        niov = evpl_bvec_ring_iov(&total, &iov[used_iov], dgram->nbvec, 1,
+        niov = evpl_bvec_ring_iov(&total, &iov[used_iov], dgram->nbvec,
                                   &bind->bvec_send);
 
         msghdr->msg_name       = &dgram->addr;
@@ -187,7 +187,7 @@ evpl_socket_udp_write(
         --nmsgleft;
     }
 
-    if (res != total) {
+    if (res != maxmsg) {
         evpl_event_mark_unwritable(event);
     }
 

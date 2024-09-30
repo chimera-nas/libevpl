@@ -33,7 +33,6 @@ struct evpl_bvec {
     struct evpl_buffer *buffer;
     void               *data;
     unsigned int        length;
-    unsigned int        eom;
 };
 
 struct evpl_endpoint_stub {

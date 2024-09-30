@@ -113,12 +113,12 @@ evpl_socket_tcp_read(
     cb = 1;
 
     if (s->recv1.length >= res) {
-        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1, res, 0);
+        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1, res);
     } else {
         remain = res - s->recv1.length;
         evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1,
-                              s->recv1.length, 0);
-        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv2, remain, 0);
+                              s->recv1.length);
+        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv2, remain);
     }
 
     if (cb) {
@@ -152,7 +152,7 @@ evpl_socket_tcp_write(
 
     evpl_check_conn(evpl, bind, s);
 
-    niov = evpl_bvec_ring_iov(&total, iov, maxiov, 0, &bind->bvec_send);
+    niov = evpl_bvec_ring_iov(&total, iov, maxiov, &bind->bvec_send);
 
     msghdr.msg_name       = NULL;
     msghdr.msg_namelen    = 0;

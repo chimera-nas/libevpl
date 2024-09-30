@@ -385,7 +385,7 @@ evpl_rdmacm_poll_cq(
 
                 if (rdmacm_id->stream) {
 
-                    evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec, 1);
+                    evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec);
 
                     notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
                     notify.notify_status = 0;
@@ -899,7 +899,7 @@ evpl_rdmacm_flush_stream(
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
     struct ibv_mr         *mr, **mrset;
     struct ibv_sge        *sge;
-    int                    nsge, eom, rc;
+    int                    nsge, rc;
 
     if (!qp) {
         return;
@@ -932,13 +932,7 @@ evpl_rdmacm_flush_stream(
 
             nsge++;
 
-            eom = cur->eom;
-
             evpl_bvec_ring_remove(&bind->bvec_send);
-
-            if (eom) {
-                break;
-            }
         }
 
         sr->nbufref = nsge;

@@ -120,8 +120,7 @@ evpl_bvec_ring_next(
 static inline struct evpl_bvec *
 evpl_bvec_ring_add(
     struct evpl_bvec_ring  *ring,
-    const struct evpl_bvec *bvec,
-    int                     eom)
+    const struct evpl_bvec *bvec)
 {
     struct evpl_bvec *res;
 
@@ -131,9 +130,8 @@ evpl_bvec_ring_add(
 
     res = &ring->bvec[ring->head];
 
-    ring->bvec[ring->head]     = *bvec;
-    ring->bvec[ring->head].eom = eom;
-    ring->head                 = (ring->head + 1) & ring->mask;
+    ring->bvec[ring->head] = *bvec;
+    ring->head             = (ring->head + 1) & ring->mask;
 
     return res;
 } // evpl_bvec_ring_add
@@ -167,7 +165,6 @@ evpl_bvec_ring_iov(
     ssize_t               *r_total,
     struct iovec          *iov,
     int                    max_iov,
-    int                    stop_on_eom,
     struct evpl_bvec_ring *ring)
 {
     struct evpl_bvec *bvec;
@@ -182,10 +179,6 @@ evpl_bvec_ring_iov(
         iov[niov].iov_len  = bvec->length;
         niov++;
         total += bvec->length;
-
-        if (stop_on_eom && bvec->eom) {
-            break;
-        }
 
         pos = (pos + 1) & ring->mask;
     }
@@ -245,18 +238,17 @@ evpl_bvec_ring_append(
     struct evpl           *evpl,
     struct evpl_bvec_ring *ring,
     struct evpl_bvec      *append,
-    int                    length,
-    unsigned int           eom)
+    int                    length)
 {
     struct evpl_bvec *head;
 
     head = evpl_bvec_ring_head(ring);
 
-    if (head && !head->eom && head->data + head->length == append->data) {
+    if (head && head->data + head->length == append->data) {
         head->length += length;
     } else {
         evpl_bvec_incref(evpl, append);
-        head         = evpl_bvec_ring_add(ring, append, eom);
+        head         = evpl_bvec_ring_add(ring, append);
         head->length = length;
     }
 
