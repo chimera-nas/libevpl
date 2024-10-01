@@ -6,9 +6,7 @@ set(CORE_SRC
     evpl.c
     evpl.h
     config.c
-    config.h
     internal.c
-    internal.h
 )
 
 if (EVPL_MECH STREQUAL "epoll") 
@@ -26,3 +24,5 @@ target_link_libraries(evpl evpl_socket evpl_thread)
 if (RDMACM_LIB)
     target_link_libraries(evpl evpl_rdmacm)
 endif()
+
+add_subdirectory(tests)

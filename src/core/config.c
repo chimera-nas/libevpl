@@ -5,7 +5,7 @@
  */
 
 #include <unistd.h>
-#include "core/config.h"
+#include "core/evpl.h"
 #include "core/internal.h"
 
 

@@ -52,8 +52,18 @@ struct evpl_notify {
     };
 };
 
+struct evpl_config *
+evpl_config_init(void);
+
+void evpl_config_release(
+    struct evpl_config *config);
+
 void
 evpl_init(
+    struct evpl_config *config);
+
+void
+evpl_init_auto(
     struct evpl_config *config);
 
 void

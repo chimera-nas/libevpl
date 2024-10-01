@@ -28,7 +28,6 @@
 #include "core/evpl.h"
 #include "core/protocol.h"
 #include "core/internal.h"
-#include "core/config.h"
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/bind.h"
@@ -119,9 +118,7 @@ evpl_shared_init(struct evpl_config *config)
 {
     evpl_shared = evpl_zalloc(sizeof(*evpl_shared));
 
-    if (config) {
-        ++config->refcnt;
-    } else {
+    if (!config) {
         config = evpl_config_init();
     }
 
@@ -142,6 +139,13 @@ evpl_shared_init(struct evpl_config *config)
 #endif /* ifdef HAVE_RDMACM */
 
 } /* evpl_shared_init */
+
+void
+evpl_init_auto(struct evpl_config *config)
+{
+    evpl_shared_init(config);
+    atexit(evpl_cleanup);
+} /* evpl_init_auto */
 
 void
 evpl_init(struct evpl_config *config)
