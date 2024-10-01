@@ -345,14 +345,18 @@ evpl_rdmacm_poll_cq(
     struct evpl_notify          notify;
     struct ibv_cq_ex           *cq = (struct ibv_cq_ex *) dev->cq;
     struct ibv_poll_cq_attr     cq_attr = { .comp_mask = 0 };
-    int                         rc, i, n = 0;
+    int                         rc, i, n;
     uint32_t                    qp_num;
+
+ again:
 
     rc = ibv_start_poll(cq, &cq_attr);
 
     if (rc) {
         return;
     }
+
+    n = 0;
 
     do {
 
@@ -450,13 +454,18 @@ evpl_rdmacm_poll_cq(
 
 
 
-    } while (ibv_next_poll(cq) == 0);
+    } while (n < 16 && ibv_next_poll(cq) == 0);
 
     ibv_end_poll(cq);
 
     if (dev->srq_fill < dev->srq_min) {
         evpl_rdmacm_fill_srq(evpl, dev);
     }
+
+    if (n) {
+        goto again;
+    }
+
 } /* evpl_rdmacm_poll_cq */
 
 

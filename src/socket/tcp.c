@@ -74,12 +74,12 @@ evpl_socket_tcp_read(
             s->recv1        = s->recv2;
             s->recv2.length = 0;
         } else {
-            evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv1);
+            evpl_bvec_alloc_whole(evpl, &s->recv1);
         }
     }
 
     if (s->recv2.length == 0) {
-        evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv2);
+        evpl_bvec_alloc_whole(evpl, &s->recv2);
     }
 
     iov[0].iov_base = s->recv1.data;

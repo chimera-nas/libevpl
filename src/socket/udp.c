@@ -61,14 +61,16 @@ evpl_socket_udp_read(
 
         msghdr->msg_name       = &eps[i].addr;
         msghdr->msg_namelen    = sizeof(eps[i].addr);
-        msghdr->msg_iov        = &iov[i];
+        msghdr->msg_iov        = iov;
         msghdr->msg_iovlen     = 1;
         msghdr->msg_control    = NULL;
         msghdr->msg_controllen = 0;
         msghdr->msg_flags      = 0;
 
-        iov[i].iov_base = datagram->bvec.data;
-        iov[i].iov_len  = datagram->bvec.length;
+        iov->iov_base = datagram->bvec.data;
+        iov->iov_len  = datagram->bvec.length;
+
+        iov++;
     }
 
     res = recvmmsg(s->fd, msgvecs, nmsg, MSG_NOSIGNAL | MSG_DONTWAIT, NULL);
@@ -124,42 +126,50 @@ evpl_socket_udp_write(
 {
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
+    struct evpl_bvec   *bvec;
     struct evpl_dgram  *dgram;
     struct evpl_notify  notify;
     struct iovec       *iov;
-    int                 niov, used_iov = 0, nmsg = 0, nmsgleft;
+    int                 nmsg = 0, nmsgleft, i;
     int                 maxmsg = s->config->max_datagram_batch;
     int                 maxiov = s->config->max_num_bvec;
     struct msghdr      *msghdr;
     struct mmsghdr     *msgvec;
-    ssize_t             res, total;
+    ssize_t             res;
 
     dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+    if (!dgram) {
+        res = -1;
+        goto out;
+    }
 
     msgvec = alloca(sizeof(struct mmsghdr) * maxmsg);
 
     iov = alloca(sizeof(struct iovec) * maxmsg * maxiov);
 
-    dgram = evpl_dgram_ring_tail(&bind->dgram_send);
-
     while (dgram && nmsg < maxmsg) {
 
         msghdr = &msgvec[nmsg].msg_hdr;
 
-        niov = evpl_bvec_ring_iov(&total, &iov[used_iov], dgram->nbvec,
-                                  &bind->bvec_send);
-
         msghdr->msg_name       = &dgram->addr;
         msghdr->msg_namelen    = dgram->addrlen;
-        msghdr->msg_iov        = &iov[used_iov];
-        msghdr->msg_iovlen     = niov;
+        msghdr->msg_iov        = iov;
+        msghdr->msg_iovlen     = dgram->nbvec;
         msghdr->msg_control    = NULL;
         msghdr->msg_controllen = 0;
         msghdr->msg_flags      = 0;
 
-        dgram = evpl_dgram_ring_next(&bind->dgram_send, dgram);
+        bvec = dgram->bvec;
 
-        used_iov += niov;
+        for (i = 0; i < dgram->nbvec; ++i) {
+            iov->iov_base = bvec->data;
+            iov->iov_len  = bvec->length;
+            iov++;
+            bvec = evpl_bvec_ring_next(&bind->bvec_send, bvec);
+        }
+
+        dgram = evpl_dgram_ring_next(&bind->dgram_send, dgram);
 
         nmsg++;
     }
@@ -168,11 +178,10 @@ evpl_socket_udp_write(
     res = sendmmsg(s->fd, msgvec, nmsg, MSG_NOSIGNAL | MSG_DONTWAIT);
 
     if (res < 0) {
-        evpl_event_mark_unwritable(event);
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             evpl_defer(evpl, &bind->close_deferral);
         }
-        return;
+        goto out;
     }
 
     nmsgleft = nmsg;
@@ -186,11 +195,6 @@ evpl_socket_udp_write(
 
         --nmsgleft;
     }
-
-    if (res != maxmsg) {
-        evpl_event_mark_unwritable(event);
-    }
-
 
     if (evpl_dgram_ring_is_empty(&bind->dgram_send)) {
         evpl_event_write_disinterest(event);
@@ -206,6 +210,11 @@ evpl_socket_udp_write(
         bind->callback(evpl, bind, &notify, bind->private_data);
     }
 
+ out:
+
+    if (res != maxmsg) {
+        evpl_event_mark_unwritable(event);
+    }
 
 } /* evpl_socket_udp_write */
 

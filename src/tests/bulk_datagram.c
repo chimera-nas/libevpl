@@ -46,9 +46,9 @@ client_callback(
             state->recv++;
             state->inflight--;
 
-            evpl_test_info("client received %u sent %u recv %u",
-                           *(uint32_t *) notify->recv_msg.bvec[0].data,
-                           state->sent, state->recv);
+            evpl_test_info("client sent %u recv %u value %u",
+                           state->sent, state->recv,
+                           *(uint32_t *) notify->recv_msg.bvec[0].data);
 
             break;
     } /* switch */
@@ -79,12 +79,13 @@ client_thread(void *arg)
             evpl_sendto(evpl, bind, server, &state->value,
                         sizeof(state->value));
 
-            state->value++;
             state->sent++;
             state->inflight++;
 
-            evpl_test_debug("client sent sent %u recv %u",
-                            state->sent, state->recv);
+            evpl_test_info("client sent sent %u recv %u value %u",
+                           state->sent, state->recv, state->value);
+
+            state->value++;
 
         }
 
@@ -113,6 +114,8 @@ server_callback(
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_DATAGRAM:
             value = *(uint32_t *) notify->recv_msg.bvec[0].data;
+            evpl_test_info("server received %u, echoing", value);
+
             evpl_sendto(evpl, bind, client, &value, sizeof(value));
 
             break;
@@ -133,7 +136,7 @@ main(
     struct client_state   state = {
         .run      = 1,
         .inflight = 0,
-        .depth    = 16,
+        .depth    = 100,
         .sent     = 0,
         .recv     = 0,
         .niters   = 10000,

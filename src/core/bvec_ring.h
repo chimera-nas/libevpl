@@ -94,6 +94,12 @@ evpl_bvec_ring_head(struct evpl_bvec_ring *ring)
 } // evpl_bvec_ring_head
 
 static inline struct evpl_bvec *
+evpl_bvec_ring_head_abs(struct evpl_bvec_ring *ring)
+{
+    return &ring->bvec[ring->head];
+} // evpl_bvec_ring_head_abs
+
+static inline struct evpl_bvec *
 evpl_bvec_ring_tail(struct evpl_bvec_ring *ring)
 {
     if (ring->head == ring->tail) {

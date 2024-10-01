@@ -805,11 +805,11 @@ evpl_bvec_reserve(
 void
 evpl_bvec_commit(
     struct evpl      *evpl,
+    unsigned int      alignment,
     struct evpl_bvec *bvecs,
     int               nbvecs)
 {
     int                 i;
-    unsigned int        chunk;
     struct evpl_bvec   *bvec;
     struct evpl_buffer *buffer;
 
@@ -821,9 +821,8 @@ evpl_bvec_commit(
 
         ++buffer->refcnt;
 
-        chunk = (bvec->data + bvec->length) - (buffer->data + buffer->used);
-
-        buffer->used += chunk;
+        buffer->used  = (bvec->data + bvec->length) - buffer->data;
+        buffer->used += evpl_buffer_pad(buffer, alignment);
 
         if (buffer->size - buffer->used < 64) {
             LL_DELETE(evpl->current_buffer, buffer);
@@ -849,7 +848,7 @@ evpl_bvec_alloc(
         return nbvecs;
     }
 
-    evpl_bvec_commit(evpl, r_bvec, nbvecs);
+    evpl_bvec_commit(evpl, alignment, r_bvec, nbvecs);
 
     return nbvecs;
 } /* evpl_bvec_alloc */
@@ -984,7 +983,7 @@ evpl_sendv(
         return;
     }
 
-    first = evpl_bvec_ring_head(&bind->bvec_send);
+    first = evpl_bvec_ring_head_abs(&bind->bvec_send);
 
     for (i = 0; i < nbufvecs; ++i) {
         evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
@@ -1024,7 +1023,7 @@ evpl_sendtov(
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
-    first = evpl_bvec_ring_head(&bind->bvec_send);
+    first = evpl_bvec_ring_head_abs(&bind->bvec_send);
 
     for (i = 0; i < nbufvecs; ++i) {
         evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);

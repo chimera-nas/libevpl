@@ -93,7 +93,7 @@ void evpl_abort(
     evpl_fatal_if(cond, "core", __VA_ARGS__)
 
 #define evpl_core_abort_if(cond, ...) \
-    evpl_fatal_if(cond, "core", __VA_ARGS__)
+    evpl_abort_if(cond, "core", __VA_ARGS__)
 
 #ifndef unlikely
 #define unlikely(x)                     __builtin_expect(!!(x), 0)

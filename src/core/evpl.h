@@ -149,6 +149,7 @@ evpl_bvec_reserve(
 void
 evpl_bvec_commit(
     struct evpl      *evpl,
+    unsigned int      alignment,
     struct evpl_bvec *bvecs,
     int               nbvecs);
 
