@@ -14,7 +14,7 @@
 #include "core/evpl.h"
 #include "core/test_log.h"
 
-enum evpl_protocol_id proto       = EVPL_DATAGRAM_SOCKET_UDP;
+enum evpl_protocol_id proto       = EVPL_STREAM_SOCKET_TCP;
 const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
@@ -38,17 +38,24 @@ client_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
+    uint32_t value;
+    int length;
     struct client_state *state = private_data;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_DATA:
 
-            state->recv++;
-            state->inflight--;
+            while (1) {
+                length = evpl_recv(evpl, bind, &value, sizeof(value));
 
-            evpl_test_info("client sent %u recv %u value %u",
-                           state->sent, state->recv,
-                           *(uint32_t *) notify->recv_msg.bvec[0].data);
+                if (length != sizeof(value)) break;
+
+                state->recv++;
+                state->inflight--;
+
+                evpl_test_info("client received sent %u recv %u value %u",
+                               state->sent, state->recv, value);
+            }
 
             break;
     } /* switch */
@@ -77,13 +84,14 @@ client_thread(void *arg)
 
             evpl_send(evpl, bind, &state->value, sizeof(state->value));
 
-            state->inflight++;
             state->sent++;
+            state->inflight++;
 
             evpl_test_debug("client sent sent %u recv %u value %u",
                             state->sent, state->recv, state->value);
 
             state->value++;
+
         }
 
         evpl_wait(evpl, -1);
@@ -105,16 +113,22 @@ server_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
-    uint32_t value;
+    uint32_t              value;
+    int                    length;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_DATA:
 
-            value = *(uint32_t *) notify->recv_msg.bvec[0].data;
+            while (1) {
 
-            evpl_test_info("server received %u, echoing", value);
+                length = evpl_recv(evpl, bind, &value, sizeof(value));
 
-            evpl_send(evpl, bind, &value, sizeof(value));
+                if (length != sizeof(value)) break;
+
+                evpl_test_info("server received %u, echoing", value);
+
+                evpl_send(evpl, bind, &value, sizeof(value));
+            }
 
             break;
     } /* switch */
@@ -178,14 +192,14 @@ main(
 
     evpl = evpl_create();
 
-    me = evpl_endpoint_create(evpl, "0.0.0.0", port);
+    me     = evpl_endpoint_create(evpl, "0.0.0.0", port);
 
     evpl_listen(evpl, proto, me, accept_callback, NULL);
 
     pthread_create(&thr, NULL, client_thread, &state);
 
     while (state.run) {
-        evpl_wait(evpl, -1);
+        evpl_wait(evpl, 1);
     }
 
     pthread_join(thr, NULL);

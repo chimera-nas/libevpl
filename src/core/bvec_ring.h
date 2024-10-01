@@ -19,6 +19,7 @@ struct evpl_bvec_ring {
     int               alignment;
     int               head;
     int               tail;
+    int               bytes;
     uint64_t          length;
 };
 
@@ -35,6 +36,7 @@ evpl_bvec_ring_alloc(
     ring->alignment = alignment;
     ring->head      = 0;
     ring->tail      = 0;
+    ring->length    = 0;
 
 } // evpl_bvec_ring_alloc
 
@@ -82,6 +84,12 @@ evpl_bvec_ring_is_full(const struct evpl_bvec_ring *ring)
 {
     return ((ring->head + 1) & ring->mask) == ring->tail;
 } // evpl_bvec_ring_is_full
+
+static inline uint64_t  
+evpl_bvec_ring_bytes(const struct evpl_bvec_ring *ring)
+{
+    return ring->length;
+}
 
 static inline struct evpl_bvec *
 evpl_bvec_ring_head(struct evpl_bvec_ring *ring)
@@ -139,12 +147,37 @@ evpl_bvec_ring_add(
     ring->bvec[ring->head] = *bvec;
     ring->head             = (ring->head + 1) & ring->mask;
 
+    ring->length += bvec->length;
+ 
     return res;
 } // evpl_bvec_ring_add
+
+static inline struct evpl_bvec *
+evpl_bvec_ring_add_new(
+    struct evpl_bvec_ring  *ring)
+{
+    struct evpl_bvec *res;
+
+    if (evpl_bvec_ring_is_full(ring)) {
+        evpl_bvec_ring_resize(ring);
+    }
+
+    res = &ring->bvec[ring->head];
+
+
+    ring->head             = (ring->head + 1) & ring->mask;
+
+    return res;
+} // evpl_bvec_ring_add
+
 
 static inline void
 evpl_bvec_ring_remove(struct evpl_bvec_ring *ring)
 {
+    struct evpl_bvec *cur = &ring->bvec[ring->tail];
+
+    ring->length -= cur->length;
+
     ring->tail = (ring->tail + 1) & ring->mask;
 } // evpl_bvec_ring_remove
 
@@ -163,6 +196,7 @@ evpl_bvec_ring_clear(
 
     ring->head = 0;
     ring->tail = 0;
+    ring->length = 0;
 } // evpl_bvec_ring_clear
 
 
@@ -202,13 +236,15 @@ evpl_bvec_ring_consume(
 {
     struct evpl_bvec *bvec;
 
+    ring->length -= length;
+
     while (length > 0 && ring->tail != ring->head) {
 
         bvec = &ring->bvec[ring->tail];
 
         if (bvec->length <= length) {
-            evpl_bvec_release(evpl, bvec);
             length    -= bvec->length;
+            evpl_bvec_release(evpl, bvec);
             ring->tail = (ring->tail + 1) & ring->mask;
         } else {
             bvec->data   += length;
@@ -217,6 +253,7 @@ evpl_bvec_ring_consume(
             length = 0;
         }
     }
+
 } // evpl_bvec_ring_consume
 
 static inline void
@@ -230,6 +267,8 @@ evpl_bvec_ring_consumev(
     while (nbvec > 0 && ring->tail != ring->head) {
 
         bvec = &ring->bvec[ring->tail];
+
+        ring->length -= bvec->length;
 
         evpl_bvec_release(evpl, bvec);
         ring->tail = (ring->tail + 1) & ring->mask;
@@ -254,7 +293,9 @@ evpl_bvec_ring_append(
         head->length += length;
     } else {
         evpl_bvec_incref(evpl, append);
-        head         = evpl_bvec_ring_add(ring, append);
+        head         = evpl_bvec_ring_add_new(ring);
+        head->data   = append->data;
+        head->buffer = append->buffer;
         head->length = length;
     }
 
@@ -264,4 +305,6 @@ evpl_bvec_ring_append(
     if (append->length == 0) {
         evpl_bvec_decref(evpl, append);
     }
+
+    ring->length += length;
 } // evpl_bvec_ring_append

@@ -22,4 +22,7 @@ target_link_libraries(bulk_datagram evpl)
 add_executable(bulk_connected_datagram bulk_connected_datagram.c)
 target_link_libraries(bulk_connected_datagram evpl)
 
+add_executable(bulk_stream bulk_stream.c)
+target_link_libraries(bulk_stream evpl)
+
 set(TEST_BIN ${CMAKE_CURRENT_BINARY_DIR} PARENT_SCOPE)

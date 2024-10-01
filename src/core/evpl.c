@@ -1143,6 +1143,9 @@ evpl_recv(
     int               left = length, chunk;
     struct evpl_bvec *cur;
     void             *ptr = buffer;
+    uint64_t          avail = evpl_bvec_ring_bytes(&bind->bvec_recv);
+
+    if (avail < length) return -1;
 
     cur = evpl_bvec_ring_tail(&bind->bvec_recv);
 
@@ -1181,6 +1184,9 @@ evpl_recvv(
 {
     int               left = length, chunk, nbvecs = 0;
     struct evpl_bvec *cur, *out;
+    uint64_t          avail = evpl_bvec_ring_bytes(&bind->bvec_recv);
+
+    if (avail < length) return -1;
 
     cur = evpl_bvec_ring_tail(&bind->bvec_recv);
 
