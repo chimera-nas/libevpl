@@ -44,8 +44,6 @@ dispatch(
     struct thread_state *state = private_data;
     int                  length;
 
-    evpl_test_info("dispatch entry");
-
     if (!state->bind) {
         return;
     }
@@ -110,8 +108,7 @@ client_callback(
 
             state->recv += length;
             evpl_test_info("client recv_length %u sent %lu recv %lu",
-                           notify->recv_msg.length,
-                           state->sent, state->recv);
+                           length, state->sent, state->recv);
 
             break;
     } /* switch */

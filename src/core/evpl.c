@@ -690,28 +690,6 @@ evpl_event_mark_error(
 } /* evpl_event_mark_error */
 
 
-
-void
-evpl_accept(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    struct evpl_bind *new_bind)
-{
-    struct evpl_notify notify;
-
-    bind->accept_callback(
-        bind,
-        &new_bind->callback,
-        &new_bind->private_data,
-        bind->private_data);
-
-    notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-    notify.notify_status = 0;
-
-    new_bind->callback(evpl, new_bind, &notify, new_bind->private_data);
-
-} /* evpl_accept */
-
 static struct evpl_buffer *
 evpl_buffer_alloc(struct evpl *evpl)
 {
