@@ -794,6 +794,7 @@ evpl_bvec_reserve(
 
         if (!buffer->next) {
             buffer->next = evpl_buffer_alloc(evpl);
+            buffer->next->next = NULL;
             buffer->next->refcnt++;
         }
 
@@ -946,6 +947,8 @@ evpl_send(
 
     nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
 
+    evpl_core_abort_if(nbvec < 1, "failed to allocate bounce space");
+
     evpl_bvec_memcpy(bvecs, buffer, length);
 
     evpl_sendv(evpl, bind, bvecs, nbvec, length);
@@ -964,6 +967,8 @@ evpl_sendto(
     int              nbvec;
 
     nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
+
+    evpl_core_abort_if(nbvec < 1, "failed to allocate bounce space");
 
     evpl_bvec_memcpy(bvecs, buffer, length);
 

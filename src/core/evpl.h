@@ -47,6 +47,7 @@ struct evpl_notify {
         struct {
             struct evpl_bvec                *bvec;
             unsigned int                     nbvec;
+            unsigned int                     length;
             const struct evpl_endpoint_stub *eps;
         } recv_msg;
     };
@@ -258,6 +259,16 @@ int
 evpl_protocol_lookup(
     enum evpl_protocol_id *id,
     const char            *name);
+
+typedef void (*evpl_poll_callback_t)(
+    struct evpl *evpl,
+    void        *private_data);
+
+void
+evpl_add_poll(
+    struct evpl         *evpl,
+    evpl_poll_callback_t callback,
+    void                *private_data);
 
 struct evpl_config *
 evpl_config(

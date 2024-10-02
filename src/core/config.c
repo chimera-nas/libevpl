@@ -19,7 +19,7 @@ evpl_config_init(void)
     config->max_num_bvec       = 8;
     config->buffer_size        = 2 * 1024 * 1024;
     config->refcnt             = 1;
-    config->bvec_ring_size     = 256;
+    config->bvec_ring_size     = 1024;
     config->dgram_ring_size    = 256;
     config->max_datagram_size  = 4096;
     config->max_datagram_batch = 16;

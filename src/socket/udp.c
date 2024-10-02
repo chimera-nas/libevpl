@@ -99,6 +99,7 @@ evpl_socket_udp_read(
 
         notify.recv_msg.bvec  = &datagram->bvec;
         notify.recv_msg.nbvec = 1;
+        notify.recv_msg.length = msgvecs[i].msg_len;
         notify.recv_msg.eps   = &eps[i];
 
         bind->callback(evpl, bind, &notify, bind->private_data);
@@ -184,7 +185,7 @@ evpl_socket_udp_write(
         goto out;
     }
 
-    nmsgleft = nmsg;
+    nmsgleft = res;
 
     while (nmsgleft) {
         dgram = evpl_dgram_ring_tail(&bind->dgram_send);
@@ -212,7 +213,7 @@ evpl_socket_udp_write(
 
  out:
 
-    if (res != maxmsg) {
+    if (res != nmsg) {
         evpl_event_mark_unwritable(event);
     }
 
