@@ -28,4 +28,7 @@ target_link_libraries(bulk_stream evpl)
 add_executable(rand_full_duplex_datagram rand_full_duplex_datagram.c)
 target_link_libraries(rand_full_duplex_datagram evpl)
 
+add_executable(rand_full_duplex_stream rand_full_duplex_stream.c)
+target_link_libraries(rand_full_duplex_stream evpl)
+
 set(TEST_BIN ${CMAKE_CURRENT_BINARY_DIR} PARENT_SCOPE)

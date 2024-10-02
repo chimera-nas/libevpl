@@ -223,6 +223,21 @@ evpl_peek(
     int               length);
 
 int
+evpl_read(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *buffer,
+    int               length);
+
+int
+evpl_readv(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_bvec *bvecs,
+    int               maxbvecs,
+    int               length);
+
+int
 evpl_recv(
     struct evpl      *evpl,
     struct evpl_bind *bind,

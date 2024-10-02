@@ -1134,6 +1134,83 @@ evpl_peek(
 } /* evpl_peek */
 
 int
+evpl_read(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *buffer,
+    int               length)
+{
+    int               copied = 0, chunk;
+    struct evpl_bvec *cur;
+
+    while (copied < length) {
+
+        cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+
+        if (!cur) {
+            break;
+        }
+
+        chunk = cur->length;
+
+        if (chunk > length - copied) {
+            chunk = length - copied;
+        }
+
+        memcpy(buffer + copied, cur->data, chunk);
+
+        copied += chunk;
+
+        evpl_bvec_ring_consume(evpl, &bind->bvec_recv, chunk);
+    }
+
+    return copied;
+
+} /* evpl_read */
+
+int
+evpl_readv(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_bvec *bvecs,
+    int               maxbvecs,
+    int               length)
+{
+    int               left = length, chunk, nbvecs = 0;
+    struct evpl_bvec *cur, *out;
+
+    while (left && nbvecs < maxbvecs) {
+
+        cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+
+        if (!cur) {
+            break;
+        }
+
+        chunk = cur->length;
+
+        if (chunk > left) {
+            chunk = left;
+        }
+
+        out = &bvecs[nbvecs++];
+
+        out->data   = cur->data;
+        out->length = chunk;
+        out->buffer = cur->buffer;
+        out->buffer->refcnt++;
+
+        left -= chunk;
+
+        evpl_bvec_ring_consume(evpl, &bind->bvec_recv, chunk);
+    }
+
+    return nbvecs;
+
+} /* evpl_readv */
+
+
+int
 evpl_recv(
     struct evpl      *evpl,
     struct evpl_bind *bind,
