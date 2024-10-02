@@ -38,8 +38,8 @@ client_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
-    uint32_t value;
-    int length;
+    uint32_t             value;
+    int                  length;
     struct client_state *state = private_data;
 
     switch (notify->notify_type) {
@@ -48,7 +48,9 @@ client_callback(
             while (1) {
                 length = evpl_recv(evpl, bind, &value, sizeof(value));
 
-                if (length != sizeof(value)) break;
+                if (length != sizeof(value)) {
+                    break;
+                }
 
                 state->recv++;
                 state->inflight--;
@@ -113,8 +115,8 @@ server_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
-    uint32_t              value;
-    int                    length;
+    uint32_t value;
+    int      length;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_DATA:
@@ -123,7 +125,9 @@ server_callback(
 
                 length = evpl_recv(evpl, bind, &value, sizeof(value));
 
-                if (length != sizeof(value)) break;
+                if (length != sizeof(value)) {
+                    break;
+                }
 
                 evpl_test_info("server received %u, echoing", value);
 
@@ -192,7 +196,7 @@ main(
 
     evpl = evpl_create();
 
-    me     = evpl_endpoint_create(evpl, "0.0.0.0", port);
+    me = evpl_endpoint_create(evpl, "0.0.0.0", port);
 
     evpl_listen(evpl, proto, me, accept_callback, NULL);
 

@@ -97,10 +97,10 @@ evpl_socket_udp_read(
 
         datagram->bvec.length =  msgvecs[i].msg_len;
 
-        notify.recv_msg.bvec  = &datagram->bvec;
-        notify.recv_msg.nbvec = 1;
+        notify.recv_msg.bvec   = &datagram->bvec;
+        notify.recv_msg.nbvec  = 1;
         notify.recv_msg.length = msgvecs[i].msg_len;
-        notify.recv_msg.eps   = &eps[i];
+        notify.recv_msg.eps    = &eps[i];
 
         bind->callback(evpl, bind, &notify, bind->private_data);
 
@@ -149,6 +149,8 @@ evpl_socket_udp_write(
 
     iov = alloca(sizeof(struct iovec) * maxmsg * maxiov);
 
+    bvec = evpl_bvec_ring_tail(&bind->bvec_send);
+
     while (dgram && nmsg < maxmsg) {
 
         msghdr = &msgvec[nmsg].msg_hdr;
@@ -160,8 +162,6 @@ evpl_socket_udp_write(
         msghdr->msg_control    = NULL;
         msghdr->msg_controllen = 0;
         msghdr->msg_flags      = 0;
-
-        bvec = dgram->bvec;
 
         for (i = 0; i < dgram->nbvec; ++i) {
             iov->iov_base = bvec->data;

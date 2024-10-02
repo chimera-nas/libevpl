@@ -54,7 +54,8 @@ struct evpl_notify {
 };
 
 struct evpl_config *
-evpl_config_init(void);
+evpl_config_init(
+    void);
 
 void evpl_config_release(
     struct evpl_config *config);

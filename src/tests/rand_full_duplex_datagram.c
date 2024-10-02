@@ -14,23 +14,23 @@
 #include "core/evpl.h"
 #include "core/test_log.h"
 
-enum evpl_protocol_id proto       = EVPL_DATAGRAM_SOCKET_UDP;
-const char            localhost[] = "127.0.0.1";
-const char           *address     = localhost;
-int                   port        = 8000;
+enum evpl_protocol_id proto        = EVPL_DATAGRAM_SOCKET_UDP;
+const char            localhost[]  = "127.0.0.1";
+const char           *address      = localhost;
+int                   port         = 8000;
 uint64_t              max_delta    = 16;
 uint64_t              max_datagram = 4096;
-uint64_t              total_bytes  = 128*1024*1024;
+uint64_t              total_bytes  = 128 * 1024 * 1024;
 
 
 struct thread_state {
-    int         run;
-    int         index;
-    int64_t     sent;
-    int64_t     recv;
-    int64_t     recv_msg;
-    int64_t     sent_msg;
-    pthread_t   thread;
+    int       run;
+    int       index;
+    int64_t   sent;
+    int64_t   recv;
+    int64_t   recv_msg;
+    int64_t   sent_msg;
+    pthread_t thread;
 };
 
 
@@ -46,7 +46,7 @@ client_callback(
     switch (notify->notify_type) {
         case EVPL_NOTIFY_DISCONNECTED:
             evpl_test_info("disconnected");
-            state->run=0;
+            state->run = 0;
             break;
         case EVPL_NOTIFY_RECV_DATAGRAM:
             state->recv += notify->recv_msg.length;
@@ -71,15 +71,17 @@ client_thread(void *arg)
 
     buffer = malloc(max_datagram);
 
-    me     = evpl_endpoint_create(evpl, address, port + state->index);
-    them   = evpl_endpoint_create(evpl, address, port + !state->index);
+    me   = evpl_endpoint_create(evpl, address, port + state->index);
+    them = evpl_endpoint_create(evpl, address, port + !state->index);
 
     bind = evpl_bind(evpl, proto, me, client_callback, state);
 
     while (state->run) {
 
-        evpl_test_info("client start loop sent %u recv %u sent_bytes %lu recv_bytes %lu total_bytes %lu",
-                       state->sent_msg, state->recv_msg, state->sent, state->recv, total_bytes);
+        evpl_test_info(
+            "client start loop sent %u recv %u sent_bytes %lu recv_bytes %lu total_bytes %lu",
+            state->sent_msg, state->recv_msg, state->sent,
+            state->recv, total_bytes);
 
         if (state->recv == total_bytes &&
             state->sent == total_bytes) {
@@ -119,8 +121,8 @@ main(
     int   argc,
     char *argv[])
 {
-    struct thread_state   state[2];
-    int i, opt, rc;
+    struct thread_state state[2];
+    int                 i, opt, rc;
 
 
     while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {
@@ -150,7 +152,7 @@ main(
 
     for (i = 0; i < 2; ++i) {
         memset(&state[i], 0, sizeof(state[i]));
-        state[i].run = 1;
+        state[i].run   = 1;
         state[i].index = i;
         pthread_create(&state[i].thread, NULL, client_thread, &state[i]);
 

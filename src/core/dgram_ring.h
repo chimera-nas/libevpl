@@ -1,7 +1,6 @@
 #pragma once
 
 struct evpl_dgram {
-    struct evpl_bvec       *bvec;
     int                     nbvec;
     int                     addrlen;
     struct sockaddr_storage addr;

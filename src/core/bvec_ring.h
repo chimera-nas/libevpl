@@ -85,11 +85,11 @@ evpl_bvec_ring_is_full(const struct evpl_bvec_ring *ring)
     return ((ring->head + 1) & ring->mask) == ring->tail;
 } // evpl_bvec_ring_is_full
 
-static inline uint64_t  
+static inline uint64_t
 evpl_bvec_ring_bytes(const struct evpl_bvec_ring *ring)
 {
     return ring->length;
-}
+} // evpl_bvec_ring_bytes
 
 static inline struct evpl_bvec *
 evpl_bvec_ring_head(struct evpl_bvec_ring *ring)
@@ -148,13 +148,12 @@ evpl_bvec_ring_add(
     ring->head             = (ring->head + 1) & ring->mask;
 
     ring->length += bvec->length;
- 
+
     return res;
 } // evpl_bvec_ring_add
 
 static inline struct evpl_bvec *
-evpl_bvec_ring_add_new(
-    struct evpl_bvec_ring  *ring)
+evpl_bvec_ring_add_new(struct evpl_bvec_ring *ring)
 {
     struct evpl_bvec *res;
 
@@ -165,7 +164,7 @@ evpl_bvec_ring_add_new(
     res = &ring->bvec[ring->head];
 
 
-    ring->head             = (ring->head + 1) & ring->mask;
+    ring->head = (ring->head + 1) & ring->mask;
 
     return res;
 } // evpl_bvec_ring_add
@@ -194,8 +193,8 @@ evpl_bvec_ring_clear(
         ring->tail = (ring->tail + 1) & ring->mask;
     }
 
-    ring->head = 0;
-    ring->tail = 0;
+    ring->head   = 0;
+    ring->tail   = 0;
     ring->length = 0;
 } // evpl_bvec_ring_clear
 
@@ -243,7 +242,7 @@ evpl_bvec_ring_consume(
         bvec = &ring->bvec[ring->tail];
 
         if (bvec->length <= length) {
-            length    -= bvec->length;
+            length -= bvec->length;
             evpl_bvec_release(evpl, bvec);
             ring->tail = (ring->tail + 1) & ring->mask;
         } else {
