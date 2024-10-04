@@ -28,7 +28,6 @@
 #include "core/evpl.h"
 #include "core/protocol.h"
 #include "core/internal.h"
-#include "core/config.h"
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/bind.h"
@@ -119,9 +118,7 @@ evpl_shared_init(struct evpl_config *config)
 {
     evpl_shared = evpl_zalloc(sizeof(*evpl_shared));
 
-    if (config) {
-        ++config->refcnt;
-    } else {
+    if (!config) {
         config = evpl_config_init();
     }
 
@@ -142,6 +139,13 @@ evpl_shared_init(struct evpl_config *config)
 #endif /* ifdef HAVE_RDMACM */
 
 } /* evpl_shared_init */
+
+void
+evpl_init_auto(struct evpl_config *config)
+{
+    evpl_shared_init(config);
+    atexit(evpl_cleanup);
+} /* evpl_init_auto */
 
 void
 evpl_init(struct evpl_config *config)
@@ -686,28 +690,6 @@ evpl_event_mark_error(
 } /* evpl_event_mark_error */
 
 
-
-void
-evpl_accept(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    struct evpl_bind *new_bind)
-{
-    struct evpl_notify notify;
-
-    bind->accept_callback(
-        bind,
-        &new_bind->callback,
-        &new_bind->private_data,
-        bind->private_data);
-
-    notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-    notify.notify_status = 0;
-
-    new_bind->callback(evpl, new_bind, &notify, new_bind->private_data);
-
-} /* evpl_accept */
-
 static struct evpl_buffer *
 evpl_buffer_alloc(struct evpl *evpl)
 {
@@ -789,7 +771,8 @@ evpl_bvec_reserve(
         bvec->length = chunk - pad;
 
         if (!buffer->next) {
-            buffer->next = evpl_buffer_alloc(evpl);
+            buffer->next       = evpl_buffer_alloc(evpl);
+            buffer->next->next = NULL;
             buffer->next->refcnt++;
         }
 
@@ -805,11 +788,11 @@ evpl_bvec_reserve(
 void
 evpl_bvec_commit(
     struct evpl      *evpl,
+    unsigned int      alignment,
     struct evpl_bvec *bvecs,
     int               nbvecs)
 {
     int                 i;
-    unsigned int        chunk;
     struct evpl_bvec   *bvec;
     struct evpl_buffer *buffer;
 
@@ -821,9 +804,8 @@ evpl_bvec_commit(
 
         ++buffer->refcnt;
 
-        chunk = (bvec->data + bvec->length) - (buffer->data + buffer->used);
-
-        buffer->used += chunk;
+        buffer->used  = (bvec->data + bvec->length) - buffer->data;
+        buffer->used += evpl_buffer_pad(buffer, alignment);
 
         if (buffer->size - buffer->used < 64) {
             LL_DELETE(evpl->current_buffer, buffer);
@@ -849,7 +831,7 @@ evpl_bvec_alloc(
         return nbvecs;
     }
 
-    evpl_bvec_commit(evpl, r_bvec, nbvecs);
+    evpl_bvec_commit(evpl, alignment, r_bvec, nbvecs);
 
     return nbvecs;
 } /* evpl_bvec_alloc */
@@ -943,6 +925,8 @@ evpl_send(
 
     nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
 
+    evpl_core_abort_if(nbvec < 1, "failed to allocate bounce space");
+
     evpl_bvec_memcpy(bvecs, buffer, length);
 
     evpl_sendv(evpl, bind, bvecs, nbvec, length);
@@ -962,6 +946,8 @@ evpl_sendto(
 
     nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
 
+    evpl_core_abort_if(nbvec < 1, "failed to allocate bounce space");
+
     evpl_bvec_memcpy(bvecs, buffer, length);
 
     evpl_sendtov(evpl, bind, endpoint, bvecs, nbvec, length);
@@ -976,7 +962,6 @@ evpl_sendv(
     int               nbufvecs,
     int               length)
 {
-    struct evpl_bvec  *first;
     struct evpl_dgram *dgram;
     int                i;
 
@@ -984,16 +969,12 @@ evpl_sendv(
         return;
     }
 
-    first = evpl_bvec_ring_head(&bind->bvec_send);
-
     for (i = 0; i < nbufvecs; ++i) {
         evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
     }
 
     if (!bind->protocol->stream) {
-        dgram = evpl_dgram_ring_add(&bind->dgram_send);
-
-        dgram->bvec    = first;
+        dgram          = evpl_dgram_ring_add(&bind->dgram_send);
         dgram->nbvec   = nbufvecs;
         dgram->addrlen = 0;
     }
@@ -1012,7 +993,6 @@ evpl_sendtov(
     int                   nbufvecs,
     int                   length)
 {
-    struct evpl_bvec  *first;
     struct evpl_dgram *dgram;
     int                i;
 
@@ -1024,8 +1004,6 @@ evpl_sendtov(
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
-    first = evpl_bvec_ring_head(&bind->bvec_send);
-
     for (i = 0; i < nbufvecs; ++i) {
         evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
     }
@@ -1033,7 +1011,6 @@ evpl_sendtov(
 
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
-    dgram->bvec  = first;
     dgram->nbvec = nbufvecs;
 
     memcpy(&dgram->addr, endpoint->ai->ai_addr, endpoint->ai->ai_addrlen);
@@ -1135,6 +1112,83 @@ evpl_peek(
 } /* evpl_peek */
 
 int
+evpl_read(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *buffer,
+    int               length)
+{
+    int               copied = 0, chunk;
+    struct evpl_bvec *cur;
+
+    while (copied < length) {
+
+        cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+
+        if (!cur) {
+            break;
+        }
+
+        chunk = cur->length;
+
+        if (chunk > length - copied) {
+            chunk = length - copied;
+        }
+
+        memcpy(buffer + copied, cur->data, chunk);
+
+        copied += chunk;
+
+        evpl_bvec_ring_consume(evpl, &bind->bvec_recv, chunk);
+    }
+
+    return copied;
+
+} /* evpl_read */
+
+int
+evpl_readv(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_bvec *bvecs,
+    int               maxbvecs,
+    int               length)
+{
+    int               left = length, chunk, nbvecs = 0;
+    struct evpl_bvec *cur, *out;
+
+    while (left && nbvecs < maxbvecs) {
+
+        cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+
+        if (!cur) {
+            break;
+        }
+
+        chunk = cur->length;
+
+        if (chunk > left) {
+            chunk = left;
+        }
+
+        out = &bvecs[nbvecs++];
+
+        out->data   = cur->data;
+        out->length = chunk;
+        out->buffer = cur->buffer;
+        out->buffer->refcnt++;
+
+        left -= chunk;
+
+        evpl_bvec_ring_consume(evpl, &bind->bvec_recv, chunk);
+    }
+
+    return nbvecs;
+
+} /* evpl_readv */
+
+
+int
 evpl_recv(
     struct evpl      *evpl,
     struct evpl_bind *bind,
@@ -1143,7 +1197,12 @@ evpl_recv(
 {
     int               left = length, chunk;
     struct evpl_bvec *cur;
-    void             *ptr = buffer;
+    void             *ptr   = buffer;
+    uint64_t          avail = evpl_bvec_ring_bytes(&bind->bvec_recv);
+
+    if (avail < length) {
+        return -1;
+    }
 
     cur = evpl_bvec_ring_tail(&bind->bvec_recv);
 
@@ -1182,6 +1241,11 @@ evpl_recvv(
 {
     int               left = length, chunk, nbvecs = 0;
     struct evpl_bvec *cur, *out;
+    uint64_t          avail = evpl_bvec_ring_bytes(&bind->bvec_recv);
+
+    if (avail < length) {
+        return -1;
+    }
 
     cur = evpl_bvec_ring_tail(&bind->bvec_recv);
 

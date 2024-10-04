@@ -168,6 +168,7 @@ evpl_rdmacm_event_callback(
     struct sockaddr       *src_addr;
     struct rdma_cm_event  *cm_event;
     struct rdma_conn_param conn_param;
+    struct evpl_notify     notify;
     int                    rc;
 
     if (rdma_get_cm_event(rdmacm->event_channel, &cm_event)) {
@@ -240,12 +241,20 @@ evpl_rdmacm_event_callback(
 
             evpl_rdmacm_abort_if(rc, "rdma_accept error %s", strerror(errno));
 
-            evpl_accept(evpl, listen_bind, bind);
+            listen_bind->accept_callback(
+                listen_bind,
+                &bind->callback,
+                &bind->private_data,
+                listen_bind->private_data);
 
             break;
         case RDMA_CM_EVENT_ESTABLISHED:
 
             bind = evpl_private2bind(rdmacm_id);
+
+            notify.notify_type   = EVPL_NOTIFY_CONNECTED;
+            notify.notify_status = 0;
+            bind->callback(evpl, bind, &notify, bind->private_data);
 
             evpl_defer(evpl, &bind->flush_deferral);
             break;
@@ -345,14 +354,18 @@ evpl_rdmacm_poll_cq(
     struct evpl_notify          notify;
     struct ibv_cq_ex           *cq = (struct ibv_cq_ex *) dev->cq;
     struct ibv_poll_cq_attr     cq_attr = { .comp_mask = 0 };
-    int                         rc, i, n = 0;
+    int                         rc, i, n;
     uint32_t                    qp_num;
+
+ again:
 
     rc = ibv_start_poll(cq, &cq_attr);
 
     if (rc) {
         return;
     }
+
+    n = 0;
 
     do {
 
@@ -450,13 +463,18 @@ evpl_rdmacm_poll_cq(
 
 
 
-    } while (ibv_next_poll(cq) == 0);
+    } while (n < 16 && ibv_next_poll(cq) == 0);
 
     ibv_end_poll(cq);
 
     if (dev->srq_fill < dev->srq_min) {
         evpl_rdmacm_fill_srq(evpl, dev);
     }
+
+    if (n) {
+        goto again;
+    }
+
 } /* evpl_rdmacm_poll_cq */
 
 
@@ -894,6 +912,8 @@ evpl_rdmacm_flush_stream(
     struct evpl_bind *bind)
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
+    struct evpl_config    *config    = rdmacm->config;
     struct evpl_rdmacm_sr *sr;
     struct evpl_bvec      *cur;
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
@@ -913,10 +933,10 @@ evpl_rdmacm_flush_stream(
 
         nsge = 0;
 
-        sge = alloca(sizeof(struct ibv_sge) *
-                     rdmacm_id->rdmacm->config->max_num_bvec);
+        sge = alloca(sizeof(struct ibv_sge) * config->max_num_bvec);
 
-        while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+        while (nsge < config->max_num_bvec && !evpl_bvec_ring_is_empty(
+                   &bind->bvec_send)) {
 
             cur = evpl_bvec_ring_tail(&bind->bvec_send);
 

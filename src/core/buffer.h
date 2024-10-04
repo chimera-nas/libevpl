@@ -97,6 +97,10 @@ evpl_buffer_pad(
     struct evpl_buffer *buffer,
     unsigned int        alignment)
 {
+    if (alignment == 0) {
+        return 0;
+    }
+
     return (alignment - (buffer->used & (alignment - 1))) & (alignment - 1);
 } // evpl_buffer_pad
 

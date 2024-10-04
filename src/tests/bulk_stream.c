@@ -14,7 +14,7 @@
 #include "core/evpl.h"
 #include "core/test_log.h"
 
-enum evpl_protocol_id proto       = EVPL_DATAGRAM_RDMACM_RC;
+enum evpl_protocol_id proto       = EVPL_STREAM_SOCKET_TCP;
 const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
@@ -38,17 +38,26 @@ client_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
+    uint32_t             value;
+    int                  length;
     struct client_state *state = private_data;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_DATA:
 
-            state->recv++;
-            state->inflight--;
+            while (1) {
+                length = evpl_recv(evpl, bind, &value, sizeof(value));
 
-            evpl_test_info("client sent %u recv %u value %u",
-                           state->sent, state->recv,
-                           *(uint32_t *) notify->recv_msg.bvec[0].data);
+                if (length != sizeof(value)) {
+                    break;
+                }
+
+                state->recv++;
+                state->inflight--;
+
+                evpl_test_info("client received sent %u recv %u value %u",
+                               state->sent, state->recv, value);
+            }
 
             break;
     } /* switch */
@@ -60,30 +69,28 @@ void *
 client_thread(void *arg)
 {
     struct evpl          *evpl;
-    struct evpl_endpoint *me, *server;
+    struct evpl_endpoint *server;
     struct evpl_bind     *bind;
     struct client_state  *state = arg;
 
     evpl = evpl_create();
 
-    me     = evpl_endpoint_create(evpl, address, port + 1);
     server = evpl_endpoint_create(evpl, address, port);
 
-    bind = evpl_bind(evpl, proto, me, client_callback, state);
+    bind = evpl_connect(evpl, proto, server, client_callback, state);
 
     while (state->recv != state->niters) {
 
         while (state->inflight < state->depth &&
                state->sent < state->niters) {
 
-            evpl_sendto(evpl, bind, server, &state->value,
-                        sizeof(state->value));
+            evpl_send(evpl, bind, &state->value, sizeof(state->value));
 
             state->sent++;
             state->inflight++;
 
-            evpl_test_info("client sent sent %u recv %u value %u",
-                           state->sent, state->recv, state->value);
+            evpl_test_debug("client sent sent %u recv %u value %u",
+                            state->sent, state->recv, state->value);
 
             state->value++;
 
@@ -108,21 +115,41 @@ server_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
-    struct evpl_endpoint *client = private_data;
-    uint32_t              value;
+    uint32_t value;
+    int      length;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
-            value = *(uint32_t *) notify->recv_msg.bvec[0].data;
-            evpl_test_info("server received %u, echoing", value);
+        case EVPL_NOTIFY_RECV_DATA:
 
-            evpl_sendto(evpl, bind, client, &value, sizeof(value));
+            while (1) {
+
+                length = evpl_recv(evpl, bind, &value, sizeof(value));
+
+                if (length != sizeof(value)) {
+                    break;
+                }
+
+                evpl_test_info("server received %u, echoing", value);
+
+                evpl_send(evpl, bind, &value, sizeof(value));
+            }
 
             break;
     } /* switch */
 
     return 0;
 } /* server_callback */
+
+void
+accept_callback(
+    struct evpl_bind       *bind,
+    evpl_notify_callback_t *callback,
+    void                  **conn_private_data,
+    void                   *private_data)
+{
+    *callback          = server_callback;
+    *conn_private_data = private_data;
+} /* accept_callback */
 
 int
 main(
@@ -131,7 +158,7 @@ main(
 {
     pthread_t             thr;
     struct evpl          *evpl;
-    struct evpl_endpoint *me, *client;
+    struct evpl_endpoint *me;
     int                   rc, opt;
     struct client_state   state = {
         .run      = 1,
@@ -169,10 +196,9 @@ main(
 
     evpl = evpl_create();
 
-    me     = evpl_endpoint_create(evpl, address, port);
-    client = evpl_endpoint_create(evpl, address, port + 1);
+    me = evpl_endpoint_create(evpl, "0.0.0.0", port);
 
-    evpl_bind(evpl, proto, me, server_callback, client);
+    evpl_listen(evpl, proto, me, accept_callback, NULL);
 
     pthread_create(&thr, NULL, client_thread, &state);
 

@@ -47,13 +47,25 @@ struct evpl_notify {
         struct {
             struct evpl_bvec                *bvec;
             unsigned int                     nbvec;
+            unsigned int                     length;
             const struct evpl_endpoint_stub *eps;
         } recv_msg;
     };
 };
 
+struct evpl_config *
+evpl_config_init(
+    void);
+
+void evpl_config_release(
+    struct evpl_config *config);
+
 void
 evpl_init(
+    struct evpl_config *config);
+
+void
+evpl_init_auto(
     struct evpl_config *config);
 
 void
@@ -149,6 +161,7 @@ evpl_bvec_reserve(
 void
 evpl_bvec_commit(
     struct evpl      *evpl,
+    unsigned int      alignment,
     struct evpl_bvec *bvecs,
     int               nbvecs);
 
@@ -210,6 +223,21 @@ evpl_peek(
     int               length);
 
 int
+evpl_read(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *buffer,
+    int               length);
+
+int
+evpl_readv(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    struct evpl_bvec *bvecs,
+    int               maxbvecs,
+    int               length);
+
+int
 evpl_recv(
     struct evpl      *evpl,
     struct evpl_bind *bind,
@@ -247,6 +275,16 @@ int
 evpl_protocol_lookup(
     enum evpl_protocol_id *id,
     const char            *name);
+
+typedef void (*evpl_poll_callback_t)(
+    struct evpl *evpl,
+    void        *private_data);
+
+void
+evpl_add_poll(
+    struct evpl         *evpl,
+    evpl_poll_callback_t callback,
+    void                *private_data);
 
 struct evpl_config *
 evpl_config(

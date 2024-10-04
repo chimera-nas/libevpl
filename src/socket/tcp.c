@@ -74,12 +74,12 @@ evpl_socket_tcp_read(
             s->recv1        = s->recv2;
             s->recv2.length = 0;
         } else {
-            evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv1);
+            evpl_bvec_alloc_whole(evpl, &s->recv1);
         }
     }
 
     if (s->recv2.length == 0) {
-        evpl_bvec_alloc(evpl, s->config->buffer_size, 0, 1, &s->recv2);
+        evpl_bvec_alloc_whole(evpl, &s->recv2);
     }
 
     iov[0].iov_base = s->recv1.data;
@@ -283,6 +283,7 @@ evpl_accept_tcp(
     struct evpl_bind       *listen_bind = evpl_private2bind(ls);
     struct evpl_socket     *s;
     struct evpl_bind       *new_bind;
+    struct evpl_notify      notify;
     struct sockaddr_storage client_addr;
     struct sockaddr        *client_addrp;
     socklen_t               client_len = sizeof(client_addr);
@@ -320,7 +321,17 @@ evpl_accept_tcp(
         evpl_add_event(evpl, &s->event);
         evpl_event_read_interest(evpl, &s->event);
 
-        evpl_accept(evpl, listen_bind, new_bind);
+        listen_bind->accept_callback(
+            listen_bind,
+            &new_bind->callback,
+            &new_bind->private_data,
+            listen_bind->private_data);
+
+        notify.notify_type   = EVPL_NOTIFY_CONNECTED;
+        notify.notify_status = 0;
+
+        new_bind->callback(evpl, new_bind, &notify, new_bind->private_data);
+
     }
 
 } /* evpl_accept_tcp */

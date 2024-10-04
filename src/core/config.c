@@ -5,7 +5,7 @@
  */
 
 #include <unistd.h>
-#include "core/config.h"
+#include "core/evpl.h"
 #include "core/internal.h"
 
 
@@ -19,7 +19,7 @@ evpl_config_init(void)
     config->max_num_bvec       = 8;
     config->buffer_size        = 2 * 1024 * 1024;
     config->refcnt             = 1;
-    config->bvec_ring_size     = 256;
+    config->bvec_ring_size     = 1024;
     config->dgram_ring_size    = 256;
     config->max_datagram_size  = 4096;
     config->max_datagram_batch = 16;
@@ -33,10 +33,10 @@ evpl_config_init(void)
 
     config->rdmacm_cq_size         = 256;
     config->rdmacm_sq_size         = 256;
-    config->rdmacm_srq_size        = 32;
-    config->rdmacm_srq_min         = 16;
-    config->rdmacm_retry_count     = 1;
-    config->rdmacm_rnr_retry_count = 1;
+    config->rdmacm_srq_size        = 256;
+    config->rdmacm_srq_min         = 128;
+    config->rdmacm_retry_count     = 0;
+    config->rdmacm_rnr_retry_count = 0;
 
     return config;
 } /* evpl_config_init */
