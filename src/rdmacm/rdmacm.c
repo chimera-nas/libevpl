@@ -475,6 +475,7 @@ evpl_rdmacm_poll_cq(
                     notify.recv_msg.bvec  = &req->bvec;
                     notify.recv_msg.nbvec = 1;
                     notify.recv_msg.addr  = bind->remote;
+                    notify.recv_msg.length = req->bvec.length;
 
                     bind->notify_callback(evpl, bind, &notify,
                                           bind->private_data);
