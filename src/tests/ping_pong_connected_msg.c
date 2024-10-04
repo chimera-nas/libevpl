@@ -22,6 +22,8 @@ int                   port        = 8000;
 
 struct client_state {
     int      run;
+    int      inflight;
+    int      depth;
     int      sent;
     int      recv;
     int      niters;
@@ -51,10 +53,11 @@ client_callback(
         case EVPL_NOTIFY_RECV_MSG:
 
             state->recv++;
+            state->inflight--;
 
-            evpl_test_info("client received %u sent %u recv %u",
-                           *(uint32_t *) notify->recv_msg.bvec[0].data,
-                           state->sent, state->recv);
+            evpl_test_info("client sent %u recv %u value %u",
+                           state->sent, state->recv,
+                           *(uint32_t *) notify->recv_msg.bvec[0].data);
 
             break;
     } /* switch */
@@ -79,16 +82,18 @@ client_thread(void *arg)
 
     while (state->recv != state->niters) {
 
-        if (state->sent == state->recv) {
+        while (state->inflight < state->depth &&
+               state->sent < state->niters) {
 
             evpl_send(evpl, bind, &state->value, sizeof(state->value));
 
-            state->value++;
+            state->inflight++;
             state->sent++;
 
-            evpl_test_debug("client sent sent %u recv %u",
-                            state->sent, state->recv);
+            evpl_test_debug("client sent sent %u recv %u value %u",
+                            state->sent, state->recv, state->value);
 
+            state->value++;
         }
 
         evpl_wait(evpl, -1);
@@ -116,6 +121,9 @@ server_callback(
         case EVPL_NOTIFY_RECV_MSG:
 
             value = *(uint32_t *) notify->recv_msg.bvec[0].data;
+
+            evpl_test_info("server received %u, echoing", value);
+
             evpl_send(evpl, bind, &value, sizeof(value));
 
             break;
@@ -147,11 +155,13 @@ main(
     struct evpl_endpoint *me;
     int                   rc, opt;
     struct client_state   state = {
-        .run    = 1,
-        .sent   = 0,
-        .recv   = 0,
-        .niters = 100,
-        .value  = 1
+        .run      = 1,
+        .inflight = 0,
+        .depth    = 100,
+        .sent     = 0,
+        .recv     = 0,
+        .niters   = 10000,
+        .value    = 1
     };
 
     while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {
@@ -187,7 +197,7 @@ main(
     pthread_create(&thr, NULL, client_thread, &state);
 
     while (state.run) {
-        evpl_wait(evpl, 1);
+        evpl_wait(evpl, -1);
     }
 
     pthread_join(thr, NULL);

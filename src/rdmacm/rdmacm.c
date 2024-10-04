@@ -30,6 +30,13 @@
 
 struct ibv_context **context = NULL;
 
+struct evpl_rdmacm_ah {
+    struct ibv_ah    **ahset;
+    struct ibv_ah_attr ah_attr;
+    uint32_t           qp_num;
+    uint32_t           qkey;
+};
+
 struct evpl_rdmacm_request {
     struct evpl_bvec            bvec;
     struct ibv_sge              sge;
@@ -84,14 +91,20 @@ struct evpl_rdmacm {
 
 
 struct evpl_rdmacm_id {
-    struct evpl_rdmacm   *rdmacm;
-    struct rdma_cm_id    *id;
-    struct ibv_qp_ex     *qp;
-    int                   stream;
-    uint32_t              qp_num;
-    int                   devindex;
-    int                   active_sends;
-    struct UT_hash_handle hh;
+    struct evpl_rdmacm        *rdmacm;
+    struct evpl_rdmacm_device *dev;
+    struct rdma_cm_id         *id;
+    struct rdma_cm_id         *resolve_id;
+    struct ibv_qp_ex          *qp;
+    int                        stream;
+    int                        ud;
+
+    struct evpl_address       *resolve_addr;
+
+    uint32_t                   qp_num;
+    int                        devindex;
+    int                        active_sends;
+    struct UT_hash_handle      hh;
 };
 
 static struct evpl_rdmacm_device *
@@ -127,12 +140,19 @@ evpl_rdmacm_create_qp(
 
     dev = evpl_rdmacm_map_device(rdmacm, rdmacm_id->id->verbs);
 
+    rdmacm_id->dev      = dev;
     rdmacm_id->devindex = dev->index;
 
     memset(&qp_attr, 0, sizeof(qp_attr));
 
-    qp_attr.pd               = dev->pd;
-    qp_attr.qp_type          = IBV_QPT_RC;
+    qp_attr.pd = dev->pd;
+
+    if (rdmacm_id->ud) {
+        qp_attr.qp_type = IBV_QPT_UD;
+    } else {
+        qp_attr.qp_type = IBV_QPT_RC;
+    }
+
     qp_attr.send_cq          = dev->cq;
     qp_attr.recv_cq          = dev->cq;
     qp_attr.srq              = dev->srq;
@@ -165,7 +185,8 @@ evpl_rdmacm_event_callback(
     struct evpl_rdmacm    *rdmacm = evpl_event_rdmacm(event);
     struct evpl_rdmacm_id *rdmacm_id, *new_rdmacm_id;
     struct evpl_bind      *listen_bind, *bind;
-    struct sockaddr       *src_addr;
+    struct evpl_address   *remote_addr;
+    struct evpl_rdmacm_ah *ah;
     struct rdma_cm_event  *cm_event;
     struct rdma_conn_param conn_param;
     struct evpl_notify     notify;
@@ -189,7 +210,9 @@ evpl_rdmacm_event_callback(
             break;
         case RDMA_CM_EVENT_ROUTE_RESOLVED:
 
-            evpl_rdmacm_create_qp(evpl, rdmacm, rdmacm_id);
+            if (cm_event->id != rdmacm_id->resolve_id) {
+                evpl_rdmacm_create_qp(evpl, rdmacm, rdmacm_id);
+            }
 
             memset(&conn_param, 0, sizeof(conn_param));
             conn_param.private_data    = rdmacm_id;
@@ -197,6 +220,7 @@ evpl_rdmacm_event_callback(
             conn_param.rnr_retry_count = rdmacm->config->rdmacm_rnr_retry_count;
 
             rc = rdma_connect(cm_event->id, &conn_param);
+
             evpl_rdmacm_abort_if(rc, "rdma_connect error %s", strerror(errno));
 
             break;
@@ -204,62 +228,93 @@ evpl_rdmacm_event_callback(
 
             listen_bind = evpl_private2bind(rdmacm_id);
 
-            bind = evpl_bind_alloc(evpl);
-
-            bind->protocol = listen_bind->protocol;
-
-            new_rdmacm_id = evpl_bind_private(bind);
-
-            new_rdmacm_id->rdmacm      = rdmacm;
-            new_rdmacm_id->stream      = rdmacm_id->stream;
-            new_rdmacm_id->id          = cm_event->id;
-            new_rdmacm_id->id->context = new_rdmacm_id;
-
-            bind->local.addrlen = 0;
-
-            src_addr = &cm_event->id->route.addr.src_addr;
-
-            if (src_addr->sa_family == AF_INET) {
-                bind->remote.addrlen = sizeof(struct sockaddr_in);
-            } else {
-                bind->remote.addrlen = sizeof(struct sockaddr_in6);
-            }
-
-            memcpy(&bind->remote.addr, src_addr, bind->remote.addrlen);
-
-            evpl_rdmacm_create_qp(evpl, rdmacm, new_rdmacm_id);
-
             memset(&conn_param, 0, sizeof(conn_param));
-            conn_param.private_data    = rdmacm;
-            conn_param.retry_count     = rdmacm->config->rdmacm_retry_count;
-            conn_param.rnr_retry_count =
-                rdmacm->config->rdmacm_rnr_retry_count;
-            conn_param.responder_resources = 0;
-            conn_param.initiator_depth     = 0;
+
+            if (!rdmacm_id->ud) {
+                remote_addr = evpl_address_init(evpl,
+                                                &cm_event->id->route.addr.
+                                                src_addr,
+                                                sizeof(cm_event->id->route.addr.
+                                                       src_addr));
+
+                bind = evpl_bind_alloc(evpl,
+                                       listen_bind->protocol,
+                                       listen_bind->local,
+                                       remote_addr);
+
+                --remote_addr->refcnt;
+
+                new_rdmacm_id = evpl_bind_private(bind);
+
+                new_rdmacm_id->rdmacm      = rdmacm;
+                new_rdmacm_id->stream      = rdmacm_id->stream;
+                new_rdmacm_id->id          = cm_event->id;
+                new_rdmacm_id->id->context = new_rdmacm_id;
+
+                evpl_rdmacm_create_qp(evpl, rdmacm, new_rdmacm_id);
+
+                conn_param.private_data = rdmacm;
+                conn_param.retry_count  =
+                    rdmacm->config->rdmacm_retry_count;
+                conn_param.rnr_retry_count =
+                    rdmacm->config->rdmacm_rnr_retry_count;
+                conn_param.responder_resources = 0;
+                conn_param.initiator_depth     = 0;
+
+                listen_bind->accept_callback(
+                    listen_bind,
+                    &bind->notify_callback,
+                    &bind->segment_callback,
+                    &bind->private_data,
+                    listen_bind->private_data);
+
+            } else {
+                /* XXX why is this necessary? */
+                cm_event->id->qp = (struct ibv_qp *) rdmacm_id->qp;
+            }
 
             rc = rdma_accept(cm_event->id, &conn_param);
 
             evpl_rdmacm_abort_if(rc, "rdma_accept error %s", strerror(errno));
-
-            listen_bind->accept_callback(
-                listen_bind,
-                &bind->notify_callback,
-                &bind->segment_callback,
-                &bind->private_data,
-                listen_bind->private_data);
 
             break;
         case RDMA_CM_EVENT_ESTABLISHED:
 
             bind = evpl_private2bind(rdmacm_id);
 
-            notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-            notify.notify_status = 0;
-            bind->notify_callback(evpl, bind, &notify, bind->private_data);
+            if (cm_event->id == rdmacm_id->resolve_id) {
+
+                ah = evpl_zalloc(sizeof(*ah));
+
+                ah->ahset = evpl_zalloc(sizeof(struct ibv_ah *) *
+                                        rdmacm->num_devices);
+
+                ah->ah_attr = cm_event->param.ud.ah_attr;
+                ah->qp_num  = cm_event->param.ud.qp_num;
+                ah->qkey    = cm_event->param.ud.qkey;
+
+                evpl_address_set_private(rdmacm_id->resolve_addr,
+                                         EVPL_FRAMEWORK_RDMACM, ah);
+
+                evpl_address_release(evpl, rdmacm_id->resolve_addr);
+                rdmacm_id->resolve_addr = NULL;
+
+            } else {
+
+                notify.notify_type   = EVPL_NOTIFY_CONNECTED;
+                notify.notify_status = 0;
+                bind->notify_callback(evpl, bind, &notify, bind->private_data);
+            }
 
             evpl_defer(evpl, &bind->flush_deferral);
             break;
         case RDMA_CM_EVENT_CONNECT_RESPONSE:
+            break;
+        case RDMA_CM_EVENT_CONNECT_ERROR:
+            evpl_rdmacm_debug("connect error");
+            break;
+        case RDMA_CM_EVENT_UNREACHABLE:
+            evpl_rdmacm_debug("unreachable");
             break;
         case RDMA_CM_EVENT_DISCONNECTED:
 
@@ -356,7 +411,7 @@ evpl_rdmacm_poll_cq(
     struct ibv_cq_ex           *cq = (struct ibv_cq_ex *) dev->cq;
     struct ibv_poll_cq_attr     cq_attr = { .comp_mask = 0 };
     int                         rc, i, n;
-    uint32_t                    qp_num;
+    uint32_t                    qp_num, wc_flags;
 
  again:
 
@@ -408,13 +463,18 @@ evpl_rdmacm_poll_cq(
                                           bind->private_data);
                 } else {
 
-                    req->bvec.length =  ibv_wc_read_byte_len(cq);
+                    wc_flags = ibv_wc_read_wc_flags(cq);
+
+                    if (wc_flags & IBV_WC_GRH) {
+                        req->bvec.length -= 40;
+                        req->bvec.data   += 40;
+                    }
 
                     notify.notify_type    = EVPL_NOTIFY_RECV_MSG;
                     notify.notify_status  = 0;
                     notify.recv_msg.bvec  = &req->bvec;
                     notify.recv_msg.nbvec = 1;
-                    notify.recv_msg.eps   = &bind->remote;
+                    notify.recv_msg.addr  = bind->remote;
 
                     bind->notify_callback(evpl, bind, &notify,
                                           bind->private_data);
@@ -714,16 +774,17 @@ evpl_rdmacm_destroy(
 
 void
 evpl_rdmacm_listen(
-    struct evpl          *evpl,
-    struct evpl_endpoint *ep,
-    struct evpl_bind     *bind)
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
 {
     struct evpl_rdmacm    *rdmacm;
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct addrinfo       *p;
     int                    rc;
 
     rdmacm_id->stream = bind->protocol->stream;
+    rdmacm_id->ud     = 0;
+
+    rdmacm_id->resolve_id = NULL;
 
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
@@ -734,24 +795,10 @@ evpl_rdmacm_listen(
 
     evpl_rdmacm_abort_if(rc, "rdma_create_id listen error %s", strerror(rc));
 
-    for (p = ep->ai; p != NULL; p = p->ai_next) {
+    rc = rdma_bind_addr(rdmacm_id->id, bind->local->addr);
 
-        if (rdma_bind_addr(rdmacm_id->id, p->ai_addr) == -1) {
-            continue;
-        }
 
-        break;
-    }
-
-    if (p == NULL) {
-        evpl_rdmacm_debug("Failed to bind to any addr");
-        return;
-    }
-
-    bind->remote.addrlen = 0;
-
-    memcpy(&bind->local.addr, p->ai_addr, p->ai_addrlen);
-    bind->local.addrlen = p->ai_addrlen;
+    evpl_rdmacm_abort_if(rc, "Failed to bind to address: %s", strerror(errno));
 
     rdma_listen(rdmacm_id->id, 64);
 
@@ -759,15 +806,16 @@ evpl_rdmacm_listen(
 
 void
 evpl_rdmacm_connect(
-    struct evpl          *evpl,
-    struct evpl_endpoint *ep,
-    struct evpl_bind     *bind)
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
 {
     struct evpl_rdmacm    *rdmacm;
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     int                    rc;
 
-    rdmacm_id->stream = bind->protocol->stream;
+    rdmacm_id->stream     = bind->protocol->stream;
+    rdmacm_id->ud         = 0;
+    rdmacm_id->resolve_id = NULL;
 
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
@@ -780,13 +828,8 @@ evpl_rdmacm_connect(
 
     evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
 
-    rc = rdma_resolve_addr(rdmacm_id->id, NULL, ep->ai->ai_addr,
+    rc = rdma_resolve_addr(rdmacm_id->id, NULL, bind->remote->addr,
                            rdmacm->config->resolve_timeout_ms);
-
-    bind->local.addrlen = 0;
-
-    memcpy(&bind->remote.addr, ep->ai->ai_addr, ep->ai->ai_addrlen);
-    bind->remote.addrlen = ep->ai->ai_addrlen;
 
     evpl_rdmacm_abort_if(rc, "rdma_resolve_addr error %s", strerror(errno));
 } /* evpl_rdmacm_connect */
@@ -831,6 +874,25 @@ evpl_rdmacm_unregister(
 
 } /* evpl_rdmacm_unregister */
 
+static void
+evpl_rdmacm_ud_resolve(
+    struct evpl           *evpl,
+    struct evpl_rdmacm_id *rdmacm_id,
+    struct evpl_address   *address)
+{
+    int rc;
+
+    rdmacm_id->resolve_addr = address;
+
+    address->refcnt++;
+
+    rc = rdma_resolve_addr(rdmacm_id->resolve_id, NULL, address->addr,
+                           rdmacm_id->rdmacm->config->resolve_timeout_ms);
+
+    evpl_rdmacm_abort_if(rc, "Failed to resolve rdmacm address");
+
+} /* evpl_rdmacm_ud_resolve */
+
 void
 evpl_rdmacm_flush_datagram(
     struct evpl      *evpl,
@@ -843,6 +905,7 @@ evpl_rdmacm_flush_datagram(
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
     struct ibv_mr         *mr, **mrset;
     struct ibv_sge        *sge;
+    struct evpl_rdmacm_ah *ah;
     int                    nsge, rc;
 
     if (!qp) {
@@ -852,6 +915,22 @@ evpl_rdmacm_flush_datagram(
     while (!evpl_dgram_ring_is_empty(&bind->dgram_send)) {
 
         dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+        if (rdmacm_id->ud) {
+            ah = evpl_address_private(dgram->addr, EVPL_FRAMEWORK_RDMACM);
+
+            if (!ah) {
+                if (!rdmacm_id->resolve_addr) {
+                    evpl_rdmacm_ud_resolve(evpl, rdmacm_id, dgram->addr);
+                }
+                break;
+            }
+
+            if (ah->ahset[rdmacm_id->devindex] == NULL) {
+                ah->ahset[rdmacm_id->devindex] = ibv_create_ah(
+                    rdmacm_id->dev->pd, &ah->ah_attr);
+            }
+        }
 
         sr = evpl_zalloc(sizeof(*sr));
 
@@ -887,8 +966,18 @@ evpl_rdmacm_flush_datagram(
 
         qp->wr_id    = (uint64_t) sr;
         qp->wr_flags = 0;
+
         ibv_wr_send(qp);
         ibv_wr_set_sge_list(qp, nsge, sge);
+
+        if (rdmacm_id->ud) {
+            ah = evpl_address_private(dgram->addr, EVPL_FRAMEWORK_RDMACM);
+
+            ibv_wr_set_ud_addr(qp, ah->ahset[rdmacm_id->devindex],
+                               ah->qp_num, ah->qkey);
+
+            evpl_address_release(evpl, dgram->addr);
+        }
 
         rc = ibv_wr_complete(qp);
 
@@ -986,6 +1075,48 @@ evpl_rdmacm_flush_stream(
 } /* evpl_rdmacm_flush_strean */
 
 void
+evpl_rdmacm_bind(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    struct evpl_rdmacm    *rdmacm;
+    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    int                    rc;
+
+    rdmacm_id->stream = 0;
+    rdmacm_id->ud     = 1;
+
+    rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
+
+    rdmacm_id->rdmacm = rdmacm;
+
+    evpl_rdmacm_fill_all_srq(evpl, rdmacm);
+
+    rc = rdma_create_id(rdmacm->event_channel, &rdmacm_id->id, rdmacm_id,
+                        RDMA_PS_UDP);
+
+    evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
+
+    rc = rdma_create_id(rdmacm->event_channel, &rdmacm_id->resolve_id,
+                        rdmacm_id,
+                        RDMA_PS_UDP);
+
+    evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
+
+
+    rc = rdma_bind_addr(rdmacm_id->id, bind->local->addr);
+
+    evpl_rdmacm_abort_if(rc, "rdma_bind_addr error %s", strerror(errno));
+
+    evpl_rdmacm_create_qp(evpl, rdmacm, rdmacm_id);
+
+    rc = rdma_listen(rdmacm_id->id, 64);
+
+    evpl_rdmacm_abort_if(rc, "Failed to listen on rdmacm id");
+
+} /* evpl_rdmacm_bind */
+
+void
 evpl_rdmacm_close(
     struct evpl      *evpl,
     struct evpl_bind *bind)
@@ -997,9 +1128,39 @@ evpl_rdmacm_close(
         HASH_DELETE(hh, rdmacm->ids, rdmacm_id);
     }
 
-    rdma_destroy_id(rdmacm_id->id);
+    if (rdmacm_id->id) {
+        rdma_destroy_id(rdmacm_id->id);
+    }
+
+    if (rdmacm_id->resolve_id) {
+        rdma_destroy_id(rdmacm_id->resolve_id);
+    }
+
+    if (rdmacm_id->resolve_addr) {
+        evpl_address_release(evpl, rdmacm_id->resolve_addr);
+    }
+
 
 } /* evpl_rdmacm_close */
+
+void
+evpl_rdmacm_release_address(
+    void *address_private,
+    void *thread_private)
+{
+    struct evpl_rdmacm_ah      *ah             = address_private;
+    struct evpl_rdmacm_devices *rdmacm_devices = thread_private;
+    int                         i;
+
+    for (i = 0; i < rdmacm_devices->num_devices; ++i) {
+        if (ah->ahset[i]) {
+            ibv_destroy_ah(ah->ahset[i]);
+        }
+    }
+
+    evpl_free(ah->ahset);
+    evpl_free(ah);
+} /* evpl_rdmacm_release_address */
 
 struct evpl_framework evpl_rdmacm = {
     .id                = EVPL_FRAMEWORK_RDMACM,
@@ -1010,6 +1171,7 @@ struct evpl_framework evpl_rdmacm = {
     .destroy           = evpl_rdmacm_destroy,
     .register_buffer   = evpl_rdmacm_register,
     .unregister_buffer = evpl_rdmacm_unregister,
+    .release_address   = evpl_rdmacm_release_address,
 };
 
 struct evpl_protocol  evpl_rdmacm_rc_datagram = {
@@ -1032,4 +1194,14 @@ struct evpl_protocol  evpl_rdmacm_rc_stream = {
     .connect   = evpl_rdmacm_connect,
     .close     = evpl_rdmacm_close,
     .flush     = evpl_rdmacm_flush_stream,
+};
+
+struct evpl_protocol  evpl_rdmacm_ud_datagram = {
+    .id        = EVPL_DATAGRAM_RDMACM_UD,
+    .connected = 0,
+    .stream    = 0,
+    .name      = "DATAGRAM_RDMACM_UD",
+    .bind      = evpl_rdmacm_bind,
+    .close     = evpl_rdmacm_close,
+    .flush     = evpl_rdmacm_flush_datagram,
 };

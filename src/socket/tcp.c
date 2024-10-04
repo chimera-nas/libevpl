@@ -144,7 +144,7 @@ evpl_socket_tcp_read(
                 notify.recv_msg.bvec   = bvec;
                 notify.recv_msg.nbvec  = nbvec;
                 notify.recv_msg.length = length;
-                notify.recv_msg.eps    = &bind->remote;
+                notify.recv_msg.addr   = bind->remote;
 
                 bind->notify_callback(evpl, bind, &notify, bind->private_data);
             }
@@ -242,59 +242,36 @@ evpl_socket_tcp_error(
 
 void
 evpl_socket_tcp_connect(
-    struct evpl          *evpl,
-    struct evpl_endpoint *ep,
-    struct evpl_bind     *bind)
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
 {
     struct evpl_socket *s = evpl_bind_private(bind);
-    struct addrinfo    *p;
-    int                 fd, flags;
+    int                 rc, flags;
 
-    s->fd = -1;
+    s->fd = socket(bind->remote->addr->sa_family, SOCK_STREAM, 0);
 
-    for (p = ep->ai; p != NULL; p = p->ai_next) {
+    evpl_socket_abort_if(s->fd < 0, "Failed to create tcp socket: %s", strerror(
+                             errno));
 
-        fd = socket(p->ai_family, SOCK_STREAM, p->ai_protocol);
+    flags = fcntl(s->fd, F_GETFL, 0);
 
-        if (fd == -1) {
-            continue;
-        }
+    evpl_socket_abort_if(flags < 0, "Failed to get socket flags: %s", strerror(
+                             errno));
 
-        flags = fcntl(fd, F_GETFL, 0);
+    rc = fcntl(s->fd, F_SETFL, flags | O_NONBLOCK);
 
-        if (flags == -1) {
-            close(fd);
-            continue;
-        }
-        if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-            close(fd);
-            continue;
-        }
+    evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
+                             errno));
 
 
-        if (connect(fd, p->ai_addr, p->ai_addrlen) == -1) {
-            if (errno != EINPROGRESS) {
-                evpl_socket_debug("connect errno: %s", strerror(errno));
-                continue;
-            }
-        }
+    rc = connect(s->fd, bind->remote->addr, bind->remote->addrlen);
 
-        break;
-    }
+    evpl_socket_abort_if(rc < 0 && errno != EINPROGRESS,
+                         "Failed to connect tcp socket: %s", strerror(errno));
 
-    if (p == NULL) {
-        evpl_socket_debug("failed to connect to any address");
-        return;
-    }
+    evpl_socket_init(evpl, s, s->fd, 0);
 
-    bind->local.addrlen = 0;
-
-    memcpy(&bind->remote.addr, p->ai_addr, p->ai_addrlen);
-    bind->remote.addrlen = p->ai_addrlen;
-
-    evpl_socket_init(evpl, s, fd, 0);
-
-    s->event.fd             = fd;
+    s->event.fd             = s->fd;
     s->event.read_callback  = evpl_socket_tcp_read;
     s->event.write_callback = evpl_socket_tcp_write;
     s->event.error_callback = evpl_socket_tcp_error;
@@ -309,36 +286,31 @@ evpl_accept_tcp(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    struct evpl_socket     *ls          = evpl_event_socket(event);
-    struct evpl_bind       *listen_bind = evpl_private2bind(ls);
-    struct evpl_socket     *s;
-    struct evpl_bind       *new_bind;
-    struct evpl_notify      notify;
-    struct sockaddr_storage client_addr;
-    struct sockaddr        *client_addrp;
-    socklen_t               client_len = sizeof(client_addr);
-    int                     fd;
-
-    client_addrp =  (struct sockaddr *) &client_addr;
+    struct evpl_socket  *ls          = evpl_event_socket(event);
+    struct evpl_bind    *listen_bind = evpl_private2bind(ls);
+    struct evpl_socket  *s;
+    struct evpl_bind    *new_bind;
+    struct evpl_address *remote_addr;
+    struct evpl_notify   notify;
+    int                  fd;
 
     while (1) {
 
-        fd = accept(ls->fd, client_addrp, &client_len);
+        remote_addr = evpl_address_alloc(evpl);
+
+        fd = accept(ls->fd, remote_addr->addr, &remote_addr->addrlen);
 
         if (fd < 0) {
             evpl_event_mark_unreadable(event);
+            evpl_free(remote_addr);
             return;
         }
 
-        new_bind = evpl_bind_alloc(evpl);
+        new_bind = evpl_bind_alloc(evpl,
+                                   listen_bind->protocol,
+                                   listen_bind->local, remote_addr);
 
-        new_bind->local.addrlen = 0;
-
-        memcpy(&new_bind->remote.addr, &client_addr, client_len);
-        new_bind->remote.addrlen = client_len;
-
-        new_bind->protocol = listen_bind->protocol;
-
+        --remote_addr->refcnt;
         s = evpl_bind_private(new_bind);
 
         evpl_socket_init(evpl, s, fd, 1);
@@ -370,56 +342,38 @@ evpl_accept_tcp(
 
 void
 evpl_socket_tcp_listen(
-    struct evpl          *evpl,
-    struct evpl_endpoint *ep,
-    struct evpl_bind     *listen_bind)
+    struct evpl      *evpl,
+    struct evpl_bind *listen_bind)
 {
     struct evpl_socket *s = evpl_bind_private(listen_bind);
-    struct addrinfo    *p;
-    int                 rc, fd;
+    int                 rc;
     const int           yes = 1;
 
-    s->fd = -1;
+    s->fd = socket(listen_bind->local->addr->sa_family, SOCK_STREAM, 0);
 
-    for (p = ep->ai; p != NULL; p = p->ai_next) {
-        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+    evpl_socket_abort_if(s->fd < 0, "Failed to create tcp listen socket: %s",
+                         strerror(errno));
 
-        if (fd == -1) {
-            continue;
-        }
+    rc = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
 
-        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
-            return;
-        }
+    evpl_socket_abort_if(rc < 0, "Failed to set socket options: %s", strerror(
+                             errno));
 
+    rc = bind(s->fd, listen_bind->local->addr, listen_bind->local->addrlen);
 
-        if (bind(fd, p->ai_addr, p->ai_addrlen) == -1) {
-            close(fd);
-            continue;
-        }
+    evpl_socket_abort_if(rc < 0, "Failed to bind listen socket: %s", strerror(
+                             errno));
 
-        break;
-    }
+    rc = fcntl(s->fd, F_SETFL, fcntl(s->fd, F_GETFL, 0) | O_NONBLOCK);
 
-    if (p == NULL) {
-        evpl_socket_debug("Failed to bind to any addr");
-        return;
-    }
+    evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
+                             errno));
 
-    listen_bind->remote.addrlen = 0;
-
-    memcpy(&listen_bind->local.addr, p->ai_addr, p->ai_addrlen);
-    listen_bind->local.addrlen = p->ai_addrlen;
-
-    rc = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-
-    rc = listen(fd, evpl_config(evpl)->max_pending);
+    rc = listen(s->fd, evpl_config(evpl)->max_pending);
 
     evpl_socket_fatal_if(rc, "Failed to listen on listener fd");
 
-    s->fd = fd;
-
-    s->event.fd            = fd;
+    s->event.fd            = s->fd;
     s->event.read_callback = evpl_accept_tcp;
 
     evpl_add_event(evpl, &s->event);

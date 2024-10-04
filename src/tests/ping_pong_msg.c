@@ -161,7 +161,7 @@ main(
 
     evpl = evpl_create();
 
-    me     = evpl_endpoint_create(evpl, "0.0.0.0", port);
+    me     = evpl_endpoint_create(evpl, address, port);
     client = evpl_endpoint_create(evpl, address, port + 1);
 
     evpl_bind(evpl, proto, me, server_callback, client);

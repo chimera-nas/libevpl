@@ -31,19 +31,22 @@ struct evpl_bind {
     struct evpl_bind         *prev;
     struct evpl_bind         *next;
 
-    struct evpl_bvec_ring     bvec_send;
-    struct evpl_bvec_ring     bvec_recv;
+    struct evpl_bvec_ring  bvec_send;
+    struct evpl_bvec_ring  bvec_recv;
 
-    struct evpl_dgram_ring    dgram_send;
+    struct evpl_dgram_ring dgram_send;
 
-    struct evpl_endpoint_stub local;
-    struct evpl_endpoint_stub remote;
+    struct evpl_address   *local;
+    struct evpl_address   *remote;
     /* protocol specific private data follows */
 };
 
 struct evpl_bind *
 evpl_bind_alloc(
-    struct evpl *evpl);
+    struct evpl          *evpl,
+    struct evpl_protocol *protocol,
+    struct evpl_address  *local,
+    struct evpl_address  *remote);
 
 void
 evpl_bind_destroy(

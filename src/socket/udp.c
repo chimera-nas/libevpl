@@ -40,14 +40,15 @@ evpl_socket_udp_read(
     struct evpl_notify            notify;
     struct msghdr                *msghdr;
     struct mmsghdr               *msgvecs, *msgvec;
-    struct evpl_endpoint_stub    *eps;
+    struct sockaddr_storage      *sockaddrs;
+    struct evpl_address           addr;
     struct iovec                 *iov;
     ssize_t                       res;
     int                           i, nmsg = s->config->max_datagram_batch;
 
     datagrams = alloca(sizeof(struct evpl_socket_datagram * ) * nmsg);
     msgvecs   = alloca(sizeof(struct mmsghdr) * nmsg);
-    eps       = alloca(sizeof(struct evpl_endpoint_stub) * nmsg);
+    sockaddrs = alloca(sizeof(struct sockaddr_storage) * nmsg);
     iov       = alloca(sizeof(struct iovec) * nmsg);
 
     for (i = 0; i < nmsg; ++i) {
@@ -59,8 +60,8 @@ evpl_socket_udp_read(
 
         datagrams[i] = datagram;
 
-        msghdr->msg_name       = &eps[i].addr;
-        msghdr->msg_namelen    = sizeof(eps[i].addr);
+        msghdr->msg_name    = &sockaddrs[i];
+        msghdr->msg_namelen = sizeof(sockaddrs[i]);
         msghdr->msg_iov        = iov;
         msghdr->msg_iovlen     = 1;
         msghdr->msg_control    = NULL;
@@ -90,7 +91,9 @@ evpl_socket_udp_read(
         datagram = datagrams[i];
         msghdr   = &msgvecs[i].msg_hdr;
 
-        eps[i].addrlen = msghdr->msg_namelen;
+        addr.addr    = (struct sockaddr *) &sockaddrs[i];
+        addr.addrlen = msghdr->msg_namelen;
+        addr.refcnt  = 1;
 
         notify.notify_type   = EVPL_NOTIFY_RECV_MSG;
         notify.notify_status = 0;
@@ -100,7 +103,7 @@ evpl_socket_udp_read(
         notify.recv_msg.bvec   = &datagram->bvec;
         notify.recv_msg.nbvec  = 1;
         notify.recv_msg.length = msgvecs[i].msg_len;
-        notify.recv_msg.eps    = &eps[i];
+        notify.recv_msg.addr   = &addr;
 
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
@@ -155,8 +158,8 @@ evpl_socket_udp_write(
 
         msghdr = &msgvec[nmsg].msg_hdr;
 
-        msghdr->msg_name       = &dgram->addr;
-        msghdr->msg_namelen    = dgram->addrlen;
+        msghdr->msg_name       = dgram->addr->addr;
+        msghdr->msg_namelen    = dgram->addr->addrlen;
         msghdr->msg_iov        = iov;
         msghdr->msg_iovlen     = dgram->nbvec;
         msghdr->msg_control    = NULL;
@@ -189,6 +192,8 @@ evpl_socket_udp_write(
 
     while (nmsgleft) {
         dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+        evpl_address_release(evpl, dgram->addr);
 
         evpl_bvec_ring_consumev(evpl, &bind->bvec_send, dgram->nbvec);
 
@@ -229,58 +234,34 @@ evpl_socket_udp_error(
 
 void
 evpl_socket_udp_bind(
-    struct evpl          *evpl,
-    struct evpl_endpoint *ep,
-    struct evpl_bind     *evbind)
+    struct evpl      *evpl,
+    struct evpl_bind *evbind)
 {
     struct evpl_socket *s = evpl_bind_private(evbind);
-    struct addrinfo    *p;
-    int                 fd, flags;
-
-    s->fd = -1;
-
-    for (p = ep->ai; p != NULL; p = p->ai_next) {
-
-        fd = socket(p->ai_family, SOCK_DGRAM, p->ai_protocol);
-
-        if (fd == -1) {
-            continue;
-        }
-
-        flags = fcntl(fd, F_GETFL, 0);
-
-        if (flags == -1) {
-            close(fd);
-            continue;
-        }
-        if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-            close(fd);
-            continue;
-        }
+    int                 flags, rc;
 
 
-        if (bind(fd, p->ai_addr, p->ai_addrlen) == -1) {
-            if (errno != EINPROGRESS) {
-                evpl_socket_debug("bind errno: %s", strerror(errno));
-                continue;
-            }
-        }
+    s->fd = socket(evbind->local->addr->sa_family, SOCK_DGRAM, 0);
 
-        break;
-    }
+    evpl_socket_abort_if(s->fd < 0, "Failed to create socket: %s", strerror(
+                             errno));
 
-    if (p == NULL) {
-        evpl_socket_debug("failed to connect to any address");
-        return;
-    }
+    flags = fcntl(s->fd, F_GETFL, 0);
 
-    evbind->remote.addrlen = 0;
-    memcpy(&evbind->local.addr, p->ai_addr, p->ai_addrlen);
-    evbind->local.addrlen = p->ai_addrlen;
+    evpl_socket_abort_if(flags < 0, "Failed to get socket flags: %s", strerror(
+                             errno));
 
-    evpl_socket_init(evpl, s, fd, 0);
+    rc = fcntl(s->fd, F_SETFL, flags | O_NONBLOCK);
 
-    s->event.fd             = fd;
+    evpl_socket_abort_if(rc, "Failed to set socket flags: %s", strerror(errno));
+
+    rc = bind(s->fd, evbind->local->addr, evbind->local->addrlen);
+
+    evpl_socket_abort_if(rc, "Failed to bind socket: %s", strerror(errno));
+
+    evpl_socket_init(evpl, s, s->fd, 0);
+
+    s->event.fd             = s->fd;
     s->event.read_callback  = evpl_socket_udp_read;
     s->event.write_callback = evpl_socket_udp_write;
     s->event.error_callback = evpl_socket_udp_error;

@@ -19,7 +19,7 @@ const char            localhost[]  = "127.0.0.1";
 const char           *address      = localhost;
 int                   port         = 8000;
 uint64_t              max_delta    = 16;
-uint64_t              max_datagram = 4096;
+uint64_t              max_datagram = 4000;
 uint64_t              total_bytes  = 128 * 1024 * 1024;
 
 
