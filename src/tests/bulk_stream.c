@@ -77,7 +77,7 @@ client_thread(void *arg)
 
     server = evpl_endpoint_create(evpl, address, port);
 
-    bind = evpl_connect(evpl, proto, server, client_callback, state);
+    bind = evpl_connect(evpl, proto, server, client_callback, NULL, state);
 
     while (state->recv != state->niters) {
 
@@ -142,12 +142,13 @@ server_callback(
 
 void
 accept_callback(
-    struct evpl_bind       *bind,
-    evpl_notify_callback_t *callback,
-    void                  **conn_private_data,
-    void                   *private_data)
+    struct evpl_bind        *bind,
+    evpl_notify_callback_t  *notify_callback,
+    evpl_segment_callback_t *segment_callback,
+    void                   **conn_private_data,
+    void                    *private_data)
 {
-    *callback          = server_callback;
+    *notify_callback   = server_callback;
     *conn_private_data = private_data;
 } /* accept_callback */
 

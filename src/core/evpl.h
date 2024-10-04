@@ -83,11 +83,11 @@ void evpl_wait(
     struct evpl *evpl,
     int          max_msecs);
 
-#define EVPL_NOTIFY_CONNECTED     1
-#define EVPL_NOTIFY_DISCONNECTED  2
-#define EVPL_NOTIFY_RECV_DATA     3
-#define EVPL_NOTIFY_RECV_DATAGRAM 4
-#define EVPL_NOTIFY_SENT          5
+#define EVPL_NOTIFY_CONNECTED    1
+#define EVPL_NOTIFY_DISCONNECTED 2
+#define EVPL_NOTIFY_RECV_DATA    3
+#define EVPL_NOTIFY_RECV_MSG     4
+#define EVPL_NOTIFY_SENT         5
 
 
 typedef int (*evpl_notify_callback_t)(
@@ -96,11 +96,17 @@ typedef int (*evpl_notify_callback_t)(
     const struct evpl_notify *notify,
     void                     *private_data);
 
+typedef int (*evpl_segment_callback_t)(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *private_data);
+
 typedef void (*evpl_accept_callback_t)(
-    struct evpl_bind       *bind,
-    evpl_notify_callback_t *callback,
-    void                  **conn_private_data,
-    void                   *private_data);
+    struct evpl_bind        *bind,
+    evpl_notify_callback_t  *notify_callback,
+    evpl_segment_callback_t *segment_callback,
+    void                   **conn_private_data,
+    void                    *private_data);
 
 struct evpl_endpoint *
 evpl_endpoint_create(
@@ -123,11 +129,12 @@ evpl_listen(
 
 struct evpl_bind *
 evpl_connect(
-    struct evpl           *evpl,
-    enum evpl_protocol_id  protocol_id,
-    struct evpl_endpoint  *endpoint,
-    evpl_notify_callback_t callback,
-    void                  *private_data);
+    struct evpl            *evpl,
+    enum evpl_protocol_id   protocol_id,
+    struct evpl_endpoint   *endpoint,
+    evpl_notify_callback_t  notify_callback,
+    evpl_segment_callback_t segment_callback,
+    void                   *private_data);
 
 struct evpl_bind *
 evpl_bind(
@@ -275,6 +282,10 @@ int
 evpl_protocol_lookup(
     enum evpl_protocol_id *id,
     const char            *name);
+
+int
+evpl_protocol_is_stream(
+    enum evpl_protocol_id protocol);
 
 typedef void (*evpl_poll_callback_t)(
     struct evpl *evpl,

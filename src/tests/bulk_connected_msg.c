@@ -30,6 +30,15 @@ struct client_state {
     uint32_t value;
 };
 
+int
+test_segment_callback(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *private_data)
+{
+    return sizeof(uint32_t);
+} /* test_segment_callback */
+
 
 int
 client_callback(
@@ -41,7 +50,7 @@ client_callback(
     struct client_state *state = private_data;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_MSG:
 
             state->recv++;
             state->inflight--;
@@ -68,7 +77,8 @@ client_thread(void *arg)
 
     server = evpl_endpoint_create(evpl, address, port);
 
-    bind = evpl_connect(evpl, proto, server, client_callback, state);
+    bind = evpl_connect(evpl, proto, server, client_callback,
+                        test_segment_callback, state);
 
     while (state->recv != state->niters) {
 
@@ -108,7 +118,7 @@ server_callback(
     uint32_t value;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_MSG:
 
             value = *(uint32_t *) notify->recv_msg.bvec[0].data;
 
@@ -124,12 +134,14 @@ server_callback(
 
 void
 accept_callback(
-    struct evpl_bind       *bind,
-    evpl_notify_callback_t *callback,
-    void                  **conn_private_data,
-    void                   *private_data)
+    struct evpl_bind        *bind,
+    evpl_notify_callback_t  *notify_callback,
+    evpl_segment_callback_t *segment_callback,
+    void                   **conn_private_data,
+    void                    *private_data)
 {
-    *callback          = server_callback;
+    *notify_callback   = server_callback;
+    *segment_callback  = test_segment_callback;
     *conn_private_data = private_data;
 } /* accept_callback */
 

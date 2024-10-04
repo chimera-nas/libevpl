@@ -46,7 +46,7 @@ evpl_check_conn(
         } else {
             notify.notify_type   = EVPL_NOTIFY_CONNECTED;
             notify.notify_status = 0;
-            bind->callback(evpl, bind, &notify, bind->private_data);
+            bind->notify_callback(evpl, bind, &notify, bind->private_data);
         }
 
         s->connected = 1;
@@ -61,11 +61,12 @@ evpl_socket_tcp_read(
 {
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
+    struct evpl_bvec   *bvec;
     struct evpl_notify  notify;
     struct iovec        iov[2];
     struct msghdr       msghdr;
     ssize_t             res, total, remain;
-    int                 cb = 0;
+    int                 length, nbvec;
 
     evpl_check_conn(evpl, bind, s);
 
@@ -105,12 +106,9 @@ evpl_socket_tcp_read(
         }
         goto out;
     } else if (res == 0) {
-        evpl_event_mark_unreadable(event);
         evpl_defer(evpl, &bind->close_deferral);
         goto out;
     }
-
-    cb = 1;
 
     if (s->recv1.length >= res) {
         evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1, res);
@@ -121,10 +119,42 @@ evpl_socket_tcp_read(
         evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv2, remain);
     }
 
-    if (cb) {
+    if (bind->segment_callback) {
+
+        bvec = alloca(sizeof(struct evpl_bvec) * s->config->max_num_bvec);
+
+        do {
+            length = bind->segment_callback(evpl, bind, bind->private_data);
+
+            if (evpl_bvec_ring_bytes(&bind->bvec_recv) < length) {
+                break;
+            }
+
+            if (unlikely(length < 0)) {
+                evpl_defer(evpl, &bind->close_deferral);
+                goto out;
+            }
+
+            if (length) {
+
+                nbvec = evpl_bvec_ring_copyv(evpl, bvec, &bind->bvec_recv,
+                                             length);
+
+                notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+                notify.recv_msg.bvec   = bvec;
+                notify.recv_msg.nbvec  = nbvec;
+                notify.recv_msg.length = length;
+                notify.recv_msg.eps    = &bind->remote;
+
+                bind->notify_callback(evpl, bind, &notify, bind->private_data);
+            }
+
+        } while (length);
+
+    } else {
         notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
         notify.notify_status = 0;
-        bind->callback(evpl, bind, &notify, bind->private_data);
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
  out:
@@ -183,7 +213,7 @@ evpl_socket_tcp_write(
     if (res && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
         notify.notify_type   = EVPL_NOTIFY_SENT;
         notify.notify_status = 0;
-        bind->callback(evpl, bind, &notify, bind->private_data);
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
     if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
@@ -323,14 +353,16 @@ evpl_accept_tcp(
 
         listen_bind->accept_callback(
             listen_bind,
-            &new_bind->callback,
+            &new_bind->notify_callback,
+            &new_bind->segment_callback,
             &new_bind->private_data,
             listen_bind->private_data);
 
         notify.notify_type   = EVPL_NOTIFY_CONNECTED;
         notify.notify_status = 0;
 
-        new_bind->callback(evpl, new_bind, &notify, new_bind->private_data);
+        new_bind->notify_callback(evpl, new_bind, &notify,
+                                  new_bind->private_data);
 
     }
 

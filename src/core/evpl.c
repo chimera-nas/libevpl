@@ -381,11 +381,12 @@ evpl_endpoint_resolve(
 
 struct evpl_bind *
 evpl_connect(
-    struct evpl           *evpl,
-    enum evpl_protocol_id  protocol_id,
-    struct evpl_endpoint  *endpoint,
-    evpl_notify_callback_t callback,
-    void                  *private_data)
+    struct evpl            *evpl,
+    enum evpl_protocol_id   protocol_id,
+    struct evpl_endpoint   *endpoint,
+    evpl_notify_callback_t  notify_callback,
+    evpl_segment_callback_t segment_callback,
+    void                   *private_data)
 {
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
@@ -393,10 +394,11 @@ evpl_connect(
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
-    bind               = evpl_bind_alloc(evpl);
-    bind->protocol     = protocol;
-    bind->callback     = callback;
-    bind->private_data = private_data;
+    bind                   = evpl_bind_alloc(evpl);
+    bind->protocol         = protocol;
+    bind->notify_callback  = notify_callback;
+    bind->segment_callback = segment_callback;
+    bind->private_data     = private_data;
 
     if (!endpoint->resolved) {
         evpl_endpoint_resolve(evpl, endpoint);
@@ -421,10 +423,10 @@ evpl_bind(
     evpl_core_abort_if(!protocol->bind,
                        "Called evpl_bind with connection oriented protocol");
 
-    bind               = evpl_bind_alloc(evpl);
-    bind->protocol     = protocol;
-    bind->callback     = callback;
-    bind->private_data = private_data;
+    bind                  = evpl_bind_alloc(evpl);
+    bind->protocol        = protocol;
+    bind->notify_callback = callback;
+    bind->private_data    = private_data;
 
     if (!endpoint->resolved) {
         evpl_endpoint_resolve(evpl, endpoint);
@@ -574,6 +576,9 @@ evpl_bind_alloc(struct evpl *evpl)
     }
 
     DL_APPEND(evpl->binds, bind);
+    bind->notify_callback  = NULL;
+    bind->segment_callback = NULL;
+    bind->private_data     = NULL;
 
     return bind;
 } /* evpl_bind_alloc */
@@ -1056,11 +1061,11 @@ evpl_bind_destroy(
 {
     struct evpl_notify notify;
 
-    if (bind->callback) {
+    if (bind->notify_callback) {
         notify.notify_type   = EVPL_NOTIFY_DISCONNECTED;
         notify.notify_status = 0;
 
-        bind->callback(evpl, bind, &notify, bind->private_data);
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
     bind->protocol->close(evpl, bind);
@@ -1078,7 +1083,7 @@ evpl_bind_destroy(
 int
 evpl_peek(
     struct evpl      *evpl,
-    struct evpl_bind *conn,
+    struct evpl_bind *bind,
     void             *buffer,
     int               length)
 {
@@ -1086,7 +1091,22 @@ evpl_peek(
     struct evpl_bvec *cur;
     void             *ptr = buffer;
 
-    cur = evpl_bvec_ring_tail(&conn->bvec_recv);
+    if (unlikely(!evpl || !bind || !buffer || length <= 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (unlikely(!bind->protocol->stream)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (unlikely(bind->segment_callback)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    cur = evpl_bvec_ring_tail(&bind->bvec_recv);
 
     while (cur && left) {
 
@@ -1100,7 +1120,7 @@ evpl_peek(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&conn->bvec_recv, cur);
+        cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
 
         if (cur == NULL) {
             return length - left;
@@ -1120,6 +1140,21 @@ evpl_read(
 {
     int               copied = 0, chunk;
     struct evpl_bvec *cur;
+
+    if (unlikely(!evpl || !bind || !buffer || length <= 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (unlikely(!bind->protocol->stream)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (unlikely(bind->segment_callback)) {
+        errno = EINVAL;
+        return -1;
+    }
 
     while (copied < length) {
 
@@ -1156,6 +1191,21 @@ evpl_readv(
 {
     int               left = length, chunk, nbvecs = 0;
     struct evpl_bvec *cur, *out;
+
+    if (unlikely(!evpl || !bind || !bvecs || maxbvecs <= 0 || length <= 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (unlikely(!bind->protocol->stream)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (unlikely(bind->segment_callback)) {
+        errno = EINVAL;
+        return -1;
+    }
 
     while (left && nbvecs < maxbvecs) {
 
@@ -1392,3 +1442,8 @@ evpl_bind_request_send_notifications(
     bind->flags |= EVPL_BIND_SENT_NOTIFY;
 } /* evpl_bind_request_send_notifications */
 
+int
+evpl_protocol_is_stream(enum evpl_protocol_id id)
+{
+    return evpl_shared->protocol[id]->stream;
+} /* evpl_protocol_is_stream */

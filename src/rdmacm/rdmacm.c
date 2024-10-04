@@ -243,7 +243,8 @@ evpl_rdmacm_event_callback(
 
             listen_bind->accept_callback(
                 listen_bind,
-                &bind->callback,
+                &bind->notify_callback,
+                &bind->segment_callback,
                 &bind->private_data,
                 listen_bind->private_data);
 
@@ -254,7 +255,7 @@ evpl_rdmacm_event_callback(
 
             notify.notify_type   = EVPL_NOTIFY_CONNECTED;
             notify.notify_status = 0;
-            bind->callback(evpl, bind, &notify, bind->private_data);
+            bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
             evpl_defer(evpl, &bind->flush_deferral);
             break;
@@ -403,18 +404,20 @@ evpl_rdmacm_poll_cq(
                     notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
                     notify.notify_status = 0;
 
-                    bind->callback(evpl, bind, &notify, bind->private_data);
+                    bind->notify_callback(evpl, bind, &notify,
+                                          bind->private_data);
                 } else {
 
                     req->bvec.length =  ibv_wc_read_byte_len(cq);
 
-                    notify.notify_type    = EVPL_NOTIFY_RECV_DATAGRAM;
+                    notify.notify_type    = EVPL_NOTIFY_RECV_MSG;
                     notify.notify_status  = 0;
                     notify.recv_msg.bvec  = &req->bvec;
                     notify.recv_msg.nbvec = 1;
                     notify.recv_msg.eps   = &bind->remote;
 
-                    bind->callback(evpl, bind, &notify, bind->private_data);
+                    bind->notify_callback(evpl, bind, &notify,
+                                          bind->private_data);
 
                     evpl_bvec_release(evpl, &req->bvec);
 
@@ -443,7 +446,8 @@ evpl_rdmacm_poll_cq(
                     notify.notify_type   = EVPL_NOTIFY_SENT;
                     notify.notify_status = 0;
 
-                    bind->callback(evpl, bind, &notify, bind->private_data);
+                    bind->notify_callback(evpl, bind, &notify,
+                                          bind->private_data);
                 }
 
                 if (rdmacm_id->active_sends == 0 &&

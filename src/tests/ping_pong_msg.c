@@ -14,13 +14,20 @@
 #include "core/evpl.h"
 #include "core/test_log.h"
 
-const char            hello[]  = "Hello World!";
-const int             hellolen = strlen(hello) + 1;
-
-enum evpl_protocol_id proto       = EVPL_DATAGRAM_RDMACM_RC;
+enum evpl_protocol_id proto       = EVPL_DATAGRAM_SOCKET_UDP;
 const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
+
+
+struct client_state {
+    int      run;
+    int      sent;
+    int      recv;
+    int      niters;
+    uint32_t value;
+};
+
 
 int
 client_callback(
@@ -29,17 +36,17 @@ client_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
-    int *run = private_data;
+    struct client_state *state = private_data;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_MSG:
 
-            evpl_test_info("client received '%s'",
-                           notify->recv_msg.bvec[0].data);
-            break;
+            state->recv++;
 
-        case EVPL_NOTIFY_DISCONNECTED:
-            *run = 0;
+            evpl_test_info("client received %u sent %u recv %u",
+                           *(uint32_t *) notify->recv_msg.bvec[0].data,
+                           state->sent, state->recv);
+
             break;
     } /* switch */
 
@@ -50,23 +57,39 @@ void *
 client_thread(void *arg)
 {
     struct evpl          *evpl;
-    struct evpl_endpoint *ep;
+    struct evpl_endpoint *me, *server;
     struct evpl_bind     *bind;
-    int                   run = 1;
+    struct client_state  *state = arg;
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, address, port);
+    me = evpl_endpoint_create(evpl, address, port + 1);
 
-    bind = evpl_connect(evpl, proto, ep, client_callback, &run);
+    server = evpl_endpoint_create(evpl, address, port);
 
-    evpl_send(evpl, bind, hello, hellolen);
+    bind = evpl_bind(evpl, proto, me, client_callback, state);
 
-    while (run) {
+    while (state->recv != state->niters) {
+
+        if (state->sent == state->recv) {
+
+            evpl_sendto(evpl, bind, server, &state->value,
+                        sizeof(state->value));
+
+            state->value++;
+            state->sent++;
+
+            evpl_test_debug("client sent sent %u recv %u",
+                            state->sent, state->recv);
+
+        }
+
         evpl_wait(evpl, -1);
     }
 
-    evpl_endpoint_close(evpl, ep);
+    evpl_test_debug("client completed iterations");
+
+    state->run = 0;
 
     evpl_destroy(evpl);
 
@@ -80,36 +103,21 @@ server_callback(
     const struct evpl_notify *notify,
     void                     *private_data)
 {
-    int *run = private_data;
+    struct evpl_endpoint *client = private_data;
+    uint32_t              value;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_DISCONNECTED:
-            *run = 0;
-            break;
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_MSG:
 
-            evpl_test_info("client received '%s'",
-                           notify->recv_msg.bvec[0].data);
+            value = *(uint32_t *) notify->recv_msg.bvec[0].data;
+            evpl_sendto(evpl, bind, client, &value, sizeof(value));
 
-            evpl_send(evpl, bind, hello, hellolen);
-
-            evpl_finish(evpl, bind);
             break;
     } /* switch */
 
     return 0;
 } /* server_callback */
 
-void
-accept_callback(
-    struct evpl_bind       *bind,
-    evpl_notify_callback_t *callback,
-    void                  **conn_private_data,
-    void                   *private_data)
-{
-    *callback          = server_callback;
-    *conn_private_data = private_data;
-} /* accept_callback */
 int
 main(
     int   argc,
@@ -117,8 +125,15 @@ main(
 {
     pthread_t             thr;
     struct evpl          *evpl;
-    int                   rc, opt, run = 1;
-    struct evpl_endpoint *ep;
+    struct evpl_endpoint *me, *client;
+    int                   rc, opt;
+    struct client_state   state = {
+        .run    = 1,
+        .sent   = 0,
+        .recv   = 0,
+        .niters = 100,
+        .value  = 1
+    };
 
     while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {
         switch (opt) {
@@ -146,19 +161,18 @@ main(
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, address, port);
+    me     = evpl_endpoint_create(evpl, "0.0.0.0", port);
+    client = evpl_endpoint_create(evpl, address, port + 1);
 
-    evpl_listen(evpl, proto, ep, accept_callback, &run);
+    evpl_bind(evpl, proto, me, server_callback, client);
 
-    pthread_create(&thr, NULL, client_thread, NULL);
+    pthread_create(&thr, NULL, client_thread, &state);
 
-    while (run) {
-        evpl_wait(evpl, -1);
+    while (state.run) {
+        evpl_wait(evpl, 1);
     }
 
     pthread_join(thr, NULL);
-
-    evpl_endpoint_close(evpl, ep);
 
     evpl_destroy(evpl);
 

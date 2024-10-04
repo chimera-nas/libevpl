@@ -92,7 +92,7 @@ evpl_socket_udp_read(
 
         eps[i].addrlen = msghdr->msg_namelen;
 
-        notify.notify_type   = EVPL_NOTIFY_RECV_DATAGRAM;
+        notify.notify_type   = EVPL_NOTIFY_RECV_MSG;
         notify.notify_status = 0;
 
         datagram->bvec.length =  msgvecs[i].msg_len;
@@ -102,7 +102,7 @@ evpl_socket_udp_read(
         notify.recv_msg.length = msgvecs[i].msg_len;
         notify.recv_msg.eps    = &eps[i];
 
-        bind->callback(evpl, bind, &notify, bind->private_data);
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
         evpl_bvec_release(evpl, &datagram->bvec);
         evpl_socket_datagram_reload(evpl, s, datagram);
@@ -208,7 +208,7 @@ evpl_socket_udp_write(
     if (res > 0 && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
         notify.notify_type   = EVPL_NOTIFY_SENT;
         notify.notify_status = 0;
-        bind->callback(evpl, bind, &notify, bind->private_data);
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
  out:

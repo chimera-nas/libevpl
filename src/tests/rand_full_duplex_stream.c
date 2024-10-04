@@ -18,8 +18,8 @@ enum evpl_protocol_id proto       = EVPL_STREAM_SOCKET_TCP;
 const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
-uint64_t              max_delta   = 65536;
-uint64_t              max_xfer    = 65536;
+uint64_t              max_delta   = 4 * 1024 * 1024;
+uint64_t              max_xfer    = 64 * 1024;
 uint64_t              total_bytes = 128 * 1024 * 1024;
 
 
@@ -104,11 +104,14 @@ client_callback(
             state->run  = 0;
             break;
         case EVPL_NOTIFY_RECV_DATA:
-            length = evpl_read(evpl, bind, state->buffer, max_xfer);
 
-            state->recv += length;
-            evpl_test_info("client recv_length %u sent %lu recv %lu",
-                           length, state->sent, state->recv);
+            do {
+                length = evpl_read(evpl, bind, state->buffer, max_xfer);
+
+                state->recv += length;
+                evpl_test_info("client recv_length %u sent %lu recv %lu",
+                               length, state->sent, state->recv);
+            } while (length > 0);
 
             break;
     } /* switch */
@@ -119,13 +122,14 @@ client_callback(
 
 void
 accept_callback(
-    struct evpl_bind       *bind,
-    evpl_notify_callback_t *callback,
-    void                  **conn_private_data,
-    void                   *private_data)
+    struct evpl_bind        *bind,
+    evpl_notify_callback_t  *notify_callback,
+    evpl_segment_callback_t *segment_callback,
+    void                   **conn_private_data,
+    void                    *private_data)
 {
     evpl_test_info("accepted connection");
-    *callback          = client_callback;
+    *notify_callback   = client_callback;
     *conn_private_data = private_data;
 } /* accept_callback */
 
@@ -146,7 +150,7 @@ client_thread(void *arg)
     if (state->index == 0) {
         evpl_listen(evpl, proto, ep, accept_callback, state);
     } else {
-        evpl_connect(evpl, proto, ep, client_callback, state);
+        evpl_connect(evpl, proto, ep, client_callback, NULL, state);
     }
 
     pthread_cond_signal(&state->cond);

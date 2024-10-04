@@ -32,7 +32,7 @@ client_callback(
     int *run = private_data;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_MSG:
 
             evpl_test_info("client received '%s'",
                            notify->recv_msg.bvec[0].data);
@@ -83,7 +83,7 @@ server_callback(
     int                  *run = private_data;
 
     switch (notify->notify_type) {
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_MSG:
 
             evpl_test_info("server received '%s'",
                            notify->recv_msg.bvec[0].data);

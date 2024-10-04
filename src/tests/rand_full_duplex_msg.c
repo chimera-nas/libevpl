@@ -48,7 +48,7 @@ client_callback(
             evpl_test_info("disconnected");
             state->run = 0;
             break;
-        case EVPL_NOTIFY_RECV_DATAGRAM:
+        case EVPL_NOTIFY_RECV_MSG:
             state->recv += notify->recv_msg.length;
             state->recv_msg++;
             break;

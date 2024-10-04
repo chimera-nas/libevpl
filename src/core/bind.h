@@ -23,11 +23,10 @@ struct evpl_bind {
     uint64_t                  flags;
     struct evpl_deferral      flush_deferral;
     struct evpl_deferral      close_deferral;
-    evpl_notify_callback_t    callback;
+    evpl_notify_callback_t    notify_callback;
+    evpl_segment_callback_t   segment_callback; /* only for dgram-on-stream */
+    evpl_accept_callback_t    accept_callback; /* only for listeners */
     void                     *private_data;
-
-    /* used only for listeners */
-    evpl_accept_callback_t    accept_callback;
 
     struct evpl_bind         *prev;
     struct evpl_bind         *next;

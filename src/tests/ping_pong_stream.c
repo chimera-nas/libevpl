@@ -46,16 +46,18 @@ client_callback(
             break;
         case EVPL_NOTIFY_RECV_DATA:
 
-            length = evpl_recv(evpl, bind, &value, sizeof(value));
+            do {
+                length = evpl_recv(evpl, bind, &value, sizeof(value));
 
-            if (length == sizeof(value)) {
+                if (length == sizeof(value)) {
 
-                state->recv++;
+                    state->recv++;
 
-                evpl_test_info("client received %u sent %u recv %u", value,
-                               state->sent, state->recv);
+                    evpl_test_info("client received %u sent %u recv %u", value,
+                                   state->sent, state->recv);
 
-            }
+                }
+            } while (length > 0);
 
             break;
 
@@ -79,7 +81,7 @@ client_thread(void *arg)
 
     ep = evpl_endpoint_create(evpl, address, port);
 
-    bind = evpl_connect(evpl, proto, ep, client_callback, state);
+    bind = evpl_connect(evpl, proto, ep, client_callback, NULL, state);
 
     while (state->recv != state->niters) {
 
@@ -142,12 +144,13 @@ server_callback(
 
 void
 accept_callback(
-    struct evpl_bind       *bind,
-    evpl_notify_callback_t *callback,
-    void                  **conn_private_data,
-    void                   *private_data)
+    struct evpl_bind        *bind,
+    evpl_notify_callback_t  *notify_callback,
+    evpl_segment_callback_t *segment_callback,
+    void                   **conn_private_data,
+    void                    *private_data)
 {
-    *callback          = server_callback;
+    *notify_callback   = server_callback;
     *conn_private_data = private_data;
 } /* accept_callback */
 int

@@ -255,6 +255,45 @@ evpl_bvec_ring_consume(
 
 } // evpl_bvec_ring_consume
 
+static inline int
+evpl_bvec_ring_copyv(
+    struct evpl           *evpl,
+    struct evpl_bvec      *out,
+    struct evpl_bvec_ring *ring,
+    int                    length)
+{
+    struct evpl_bvec *bvec;
+    int               left = length, chunk, nbvec = 0;
+
+    while (left) {
+
+        bvec = &ring->bvec[ring->tail];
+
+        chunk = bvec->length;
+
+        if (left < chunk) {
+            chunk = left;
+        }
+
+        out[nbvec].buffer = bvec->buffer;
+        out[nbvec].data   = bvec->data;
+        out[nbvec].length = chunk;
+
+        nbvec++;
+
+        ring->length -= chunk;
+        left         -= chunk;
+
+        if (bvec->length == chunk) {
+            evpl_bvec_release(evpl, bvec);
+            ring->tail = (ring->tail + 1) & ring->mask;
+        }
+    }
+
+    return nbvec;
+} // evpl_bvec_ring_copyv
+
+
 static inline void
 evpl_bvec_ring_consumev(
     struct evpl           *evpl,
