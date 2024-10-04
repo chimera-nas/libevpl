@@ -77,6 +77,7 @@ struct evpl {
     struct evpl_buffer    *datagram_buffer;
     struct evpl_buffer    *free_buffers;
     struct evpl_bind      *free_binds;
+    struct evpl_address   *free_address;
     struct evpl_endpoint  *endpoints;
     struct evpl_config    *config;
     struct evpl_bind      *binds;
@@ -136,6 +137,8 @@ evpl_shared_init(struct evpl_config *config)
                        &evpl_rdmacm_rc_datagram);
     evpl_protocol_init(evpl_shared, EVPL_STREAM_RDMACM_RC,
                        &evpl_rdmacm_rc_stream);
+    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_RDMACM_UD,
+                       &evpl_rdmacm_ud_datagram);
 #endif /* ifdef HAVE_RDMACM */
 
 } /* evpl_shared_init */
@@ -298,9 +301,14 @@ evpl_listen(
 {
     struct evpl_bind *bind;
 
-    bind = evpl_bind_alloc(evpl);
+    if (!endpoint->addr) {
+        evpl_endpoint_resolve(evpl, endpoint);
+    }
 
-    bind->protocol = evpl_shared->protocol[protocol_id];
+    bind = evpl_bind_alloc(evpl,
+                           evpl_shared->protocol[protocol_id],
+                           endpoint->addr,
+                           NULL);
 
     evpl_core_abort_if(!bind->protocol->listen,
                        "evpl_listen called with non-connection oriented protocol");
@@ -308,11 +316,7 @@ evpl_listen(
     bind->accept_callback = accept_callback;
     bind->private_data    = private_data;
 
-    if (!endpoint->resolved) {
-        evpl_endpoint_resolve(evpl, endpoint);
-    }
-
-    bind->protocol->listen(evpl, endpoint, bind);
+    bind->protocol->listen(evpl, bind);
 
     return bind;
 } /* evpl_listen */
@@ -331,6 +335,8 @@ evpl_endpoint_create(
     ep->refcnt = 1;
     strncpy(ep->address, address, sizeof(ep->address) - 1);
 
+    ep->addr = NULL;
+
     DL_APPEND(evpl->endpoints, ep);
 
     return ep;
@@ -342,10 +348,18 @@ evpl_endpoint_close(
     struct evpl          *evpl,
     struct evpl_endpoint *endpoint)
 {
+    struct evpl_address *addr;
+
     --endpoint->refcnt;
 
     if (endpoint->refcnt == 0) {
-        freeaddrinfo(endpoint->ai);
+
+        while (endpoint->addr) {
+            addr = endpoint->addr;
+            LL_DELETE(endpoint->addr, addr);
+            evpl_address_release(evpl, addr);
+        }
+
         DL_DELETE(evpl->endpoints, endpoint);
         evpl_free(endpoint);
     }
@@ -356,9 +370,14 @@ evpl_endpoint_resolve(
     struct evpl          *evpl,
     struct evpl_endpoint *endpoint)
 {
-    char            port_str[8];
-    struct addrinfo hints;
-    int             rc;
+    char                 port_str[8];
+    struct addrinfo      hints, *ai, *p;
+    struct evpl_address *cur, *last = NULL;
+    int                  rc;
+
+    if (endpoint->addr) {
+        return 0;
+    }
 
     snprintf(port_str, sizeof(port_str), "%d", endpoint->port);
 
@@ -367,13 +386,26 @@ evpl_endpoint_resolve(
     hints.ai_socktype = 0;//SOCK_DGRAM;
     hints.ai_flags    = 0;
 
-    rc = getaddrinfo(endpoint->address, port_str, &hints, &endpoint->ai);
+    rc = getaddrinfo(endpoint->address, port_str, &hints, &ai);
 
     if (unlikely(rc < 0)) {
         return rc;
     }
 
-    endpoint->resolved = 1;
+    for (p = ai; p != NULL; p = p->ai_next) {
+
+        cur = evpl_address_init(evpl, p->ai_addr, p->ai_addrlen);
+
+        if (last) {
+            last->next = cur;
+        } else {
+            endpoint->addr = cur;
+        }
+
+        last = cur;
+    }
+
+    freeaddrinfo(ai);
 
     return 0;
 } /* evpl_endpoint_resolve */
@@ -390,19 +422,19 @@ evpl_connect(
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
+    if (!endpoint->addr) {
+        evpl_endpoint_resolve(evpl, endpoint);
+    }
+
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
-    bind               = evpl_bind_alloc(evpl);
+    bind               = evpl_bind_alloc(evpl, protocol, NULL, endpoint->addr);
     bind->protocol     = protocol;
     bind->callback     = callback;
     bind->private_data = private_data;
 
-    if (!endpoint->resolved) {
-        evpl_endpoint_resolve(evpl, endpoint);
-    }
-
-    bind->protocol->connect(evpl, endpoint, bind);
+    bind->protocol->connect(evpl, bind);
 
     return bind;
 } /* evpl_connect */
@@ -418,19 +450,19 @@ evpl_bind(
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
+    if (!endpoint->addr) {
+        evpl_endpoint_resolve(evpl, endpoint);
+    }
+
     evpl_core_abort_if(!protocol->bind,
                        "Called evpl_bind with connection oriented protocol");
 
-    bind               = evpl_bind_alloc(evpl);
+    bind               = evpl_bind_alloc(evpl, protocol, endpoint->addr, NULL);
     bind->protocol     = protocol;
     bind->callback     = callback;
     bind->private_data = private_data;
 
-    if (!endpoint->resolved) {
-        evpl_endpoint_resolve(evpl, endpoint);
-    }
-
-    bind->protocol->bind(evpl, endpoint, bind);
+    bind->protocol->bind(evpl, bind);
 
     return bind;
 } /* evpl_bind */
@@ -440,6 +472,7 @@ evpl_destroy(struct evpl *evpl)
     struct evpl_framework *framework;
     struct evpl_bind      *bind;
     struct evpl_buffer    *buffer;
+    struct evpl_address   *address;
     int                    i;
 
     while (evpl->binds) {
@@ -459,6 +492,12 @@ evpl_destroy(struct evpl *evpl)
 
     while (evpl->endpoints) {
         evpl_endpoint_close(evpl, evpl->endpoints);
+    }
+
+    while (evpl->free_address) {
+        address = evpl->free_address;
+        LL_DELETE(evpl->free_address, address);
+        evpl_free(address);
     }
 
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
@@ -539,7 +578,11 @@ evpl_bind_flush_deferral(
 
 
 struct evpl_bind *
-evpl_bind_alloc(struct evpl *evpl)
+evpl_bind_alloc(
+    struct evpl          *evpl,
+    struct evpl_protocol *protocol,
+    struct evpl_address  *local,
+    struct evpl_address  *remote)
 {
     struct evpl_bind *bind;
 
@@ -574,6 +617,18 @@ evpl_bind_alloc(struct evpl *evpl)
     }
 
     DL_APPEND(evpl->binds, bind);
+    bind->protocol = protocol;
+    bind->local    = local;
+
+    if (local) {
+        local->refcnt++;
+    }
+
+    bind->remote = remote;
+
+    if (remote) {
+        remote->refcnt++;
+    }
 
     return bind;
 } /* evpl_bind_alloc */
@@ -974,9 +1029,9 @@ evpl_sendv(
     }
 
     if (!bind->protocol->stream) {
-        dgram          = evpl_dgram_ring_add(&bind->dgram_send);
-        dgram->nbvec   = nbufvecs;
-        dgram->addrlen = 0;
+        dgram        = evpl_dgram_ring_add(&bind->dgram_send);
+        dgram->nbvec = nbufvecs;
+        dgram->addr  = bind->remote;
     }
 
 
@@ -1000,7 +1055,7 @@ evpl_sendtov(
         return;
     }
 
-    if (!endpoint->resolved) {
+    if (!endpoint->addr) {
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
@@ -1012,9 +1067,8 @@ evpl_sendtov(
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
     dgram->nbvec = nbufvecs;
-
-    memcpy(&dgram->addr, endpoint->ai->ai_addr, endpoint->ai->ai_addrlen);
-    dgram->addrlen = endpoint->ai->ai_addrlen;
+    dgram->addr  = endpoint->addr;
+    dgram->addr->refcnt++;
 
     evpl_defer(evpl, &bind->flush_deferral);
 
@@ -1071,6 +1125,14 @@ evpl_bind_destroy(
     DL_DELETE(evpl->binds, bind);
 
     bind->flags = 0;
+
+    if (bind->local) {
+        evpl_address_release(evpl, bind->local);
+    }
+
+    if (bind->remote) {
+        evpl_address_release(evpl, bind->remote);
+    }
 
     DL_PREPEND(evpl->free_binds, bind);
 } /* evpl_bind_destroy */
@@ -1375,7 +1437,7 @@ evpl_protocol_lookup(
     for (i = 0; i < EVPL_NUM_PROTO; ++i) {
         proto = evpl_shared->protocol[i];
 
-        if (strcmp(proto->name, name) == 0) {
+        if (proto && strcmp(proto->name, name) == 0) {
             *id = proto->id;
             return 0;
         }
@@ -1391,4 +1453,65 @@ evpl_bind_request_send_notifications(
 {
     bind->flags |= EVPL_BIND_SENT_NOTIFY;
 } /* evpl_bind_request_send_notifications */
+
+struct evpl_address *
+evpl_address_alloc(struct evpl *evpl)
+{
+    struct evpl_address *address;
+
+    if (evpl->free_address) {
+        address = evpl->free_address;
+        LL_DELETE(evpl->free_address, address);
+    } else {
+        address = evpl_zalloc(sizeof(*address));
+    }
+
+    address->addr   = (struct sockaddr *) &address->sa;
+    address->refcnt = 1;
+    address->next   = NULL;
+
+    return address;
+} /* evpl_address_alloc */
+
+struct evpl_address *
+evpl_address_init(
+    struct evpl     *evpl,
+    struct sockaddr *addr,
+    socklen_t        addrlen)
+{
+    struct evpl_address *ea = evpl_address_alloc(evpl);
+
+    ea->addrlen = addrlen;
+    memcpy(ea->addr, addr, addrlen);
+
+    return ea;
+
+} /* evpl_address_init */
+
+void
+evpl_address_release(
+    struct evpl         *evpl,
+    struct evpl_address *address)
+{
+    int i;
+
+    address->refcnt--;
+
+    if (address->refcnt) {
+        return;
+    }
+
+    for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
+
+        if (!address->framework_private[i]) {
+            continue;
+        }
+
+        evpl_shared->framework[i]->release_address(
+            address->framework_private[i],
+            evpl_shared->framework_private[i]);
+    }
+
+    LL_PREPEND(evpl->free_address, address);
+} /* evpl_address_release */
 

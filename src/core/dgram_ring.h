@@ -1,9 +1,8 @@
 #pragma once
 
 struct evpl_dgram {
-    int                     nbvec;
-    int                     addrlen;
-    struct sockaddr_storage addr;
+    struct evpl_address *addr;
+    int                  nbvec;
 };
 
 struct evpl_dgram_ring {

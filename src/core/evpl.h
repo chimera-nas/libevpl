@@ -17,14 +17,15 @@ enum evpl_framework_id {
 enum evpl_protocol_id {
     EVPL_DATAGRAM_SOCKET_UDP = 0,
     EVPL_DATAGRAM_RDMACM_RC  = 1,
-    EVPL_STREAM_SOCKET_TCP   = 2,
-    EVPL_STREAM_RDMACM_RC    = 3,
-    EVPL_NUM_PROTO           = 4
+    EVPL_DATAGRAM_RDMACM_UD  = 2,
+    EVPL_STREAM_SOCKET_TCP   = 3,
+    EVPL_STREAM_RDMACM_RC    = 4,
+    EVPL_NUM_PROTO           = 5
 };
 
 struct evpl;
 struct evpl_endpoint;
-struct evpl_endpoint_stub;
+struct evpl_address;
 struct evpl_bind;
 struct evpl_bind;
 struct evpl_buffer;
@@ -45,10 +46,10 @@ struct evpl_notify {
     int          notify_status;
     union {
         struct {
-            struct evpl_bvec                *bvec;
-            unsigned int                     nbvec;
-            unsigned int                     length;
-            const struct evpl_endpoint_stub *eps;
+            struct evpl_bvec          *bvec;
+            unsigned int               nbvec;
+            unsigned int               length;
+            const struct evpl_address *addr;
         } recv_msg;
     };
 };

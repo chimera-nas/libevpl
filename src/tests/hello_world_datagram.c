@@ -34,8 +34,9 @@ client_callback(
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_DATAGRAM:
 
-            evpl_test_info("client received '%s'",
-                           notify->recv_msg.bvec[0].data);
+            evpl_test_info("client received '%s' len %d",
+                           notify->recv_msg.bvec[0].data,
+                           notify->recv_msg.bvec[0].length);
 
             *run = 0;
 
@@ -55,7 +56,7 @@ client_thread(void *arg)
 
     evpl = evpl_create();
 
-    me     = evpl_endpoint_create(evpl, "0.0.0.0", port + 1);
+    me     = evpl_endpoint_create(evpl, address, port + 1);
     server = evpl_endpoint_create(evpl, address, port);
 
     bind = evpl_bind(evpl, proto, me, client_callback, &run);
@@ -141,7 +142,7 @@ main(
 
     evpl = evpl_create();
 
-    ep = evpl_endpoint_create(evpl, "0.0.0.0", port);
+    ep = evpl_endpoint_create(evpl, address, port);
 
     evpl_bind(evpl, proto, ep, server_callback, &run);
 

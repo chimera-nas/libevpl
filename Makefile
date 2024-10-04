@@ -1,7 +1,7 @@
 CMAKE_ARGS := -G Ninja -DCMAKE_C_COMPILER=gcc
 CMAKE_ARGS_RELEASE := -DCMAKE_BUILD_TYPE=Release
 CMAKE_ARGS_DEBUG := -DCMAKE_BUILD_TYPE=Debug
-CTEST_ARGS := --output-on-failure
+CTEST_ARGS := --output-on-failure --timeout 10
 
 default: release
 
