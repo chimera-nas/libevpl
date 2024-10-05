@@ -91,8 +91,6 @@ evpl_socket_tcp_read(
 
     res = readv(s->fd, iov, 2);
 
-    evpl_socket_debug("readv res %ld", res);
-
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             evpl_defer(evpl, &bind->close_deferral);
@@ -182,8 +180,6 @@ evpl_socket_tcp_write(
     }
 
     res = writev(s->fd, iov, niov);
-
-    evpl_socket_debug("writev res %ld", res);
 
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
