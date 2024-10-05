@@ -34,7 +34,7 @@ struct thread_state {
 };
 
 
-int
+void
 client_callback(
     struct evpl              *evpl,
     struct evpl_bind         *bind,
@@ -54,7 +54,6 @@ client_callback(
             break;
     } /* switch */
 
-    return 0;
 } /* client_callback */
 
 void *

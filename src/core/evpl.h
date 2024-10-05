@@ -91,7 +91,7 @@ void evpl_wait(
 #define EVPL_NOTIFY_SENT         5
 
 
-typedef int (*evpl_notify_callback_t)(
+typedef void (*evpl_notify_callback_t)(
     struct evpl              *evpl,
     struct evpl_bind         *bind,
     const struct evpl_notify *notify,

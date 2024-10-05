@@ -22,7 +22,7 @@ const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
 
-int
+void
 client_callback(
     struct evpl              *evpl,
     struct evpl_bind         *bind,
@@ -48,7 +48,6 @@ client_callback(
             break;
     } /* switch */
 
-    return 0;
 } /* client_callback */
 
 void *
@@ -78,7 +77,7 @@ client_thread(void *arg)
     return NULL;
 } /* client_thread */
 
-int
+void
 server_callback(
     struct evpl              *evpl,
     struct evpl_bind         *bind,
@@ -107,7 +106,6 @@ server_callback(
             break;
     } /* switch */
 
-    return 0;
 } /* server_callback */
 
 void
