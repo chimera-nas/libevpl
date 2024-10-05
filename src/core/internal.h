@@ -24,6 +24,7 @@ struct evpl_config {
     unsigned int dgram_ring_size;
     unsigned int resolve_timeout_ms;
 
+    unsigned int rdmacm_enabled;
     unsigned int rdmacm_cq_size;
     unsigned int rdmacm_sq_size;
     unsigned int rdmacm_srq_size;

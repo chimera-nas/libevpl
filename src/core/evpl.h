@@ -51,6 +51,10 @@ struct evpl_notify {
             unsigned int               length;
             const struct evpl_address *addr;
         } recv_msg;
+        struct {
+            unsigned long bytes;
+            unsigned long msgs;
+        } sent;
     };
 };
 

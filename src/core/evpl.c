@@ -102,6 +102,10 @@ evpl_framework_cleanup(
 {
     struct evpl_framework *framework = evpl_shared->framework[id];
 
+    if (!framework) {
+        return;
+    }
+
     framework->cleanup(evpl_shared->framework_private[id]);
 } /* evpl_framework_cleanup */
 
@@ -132,13 +136,15 @@ evpl_shared_init(struct evpl_config *config)
                        &evpl_socket_tcp);
 
 #ifdef HAVE_RDMACM
-    evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_RDMACM, &evpl_rdmacm);
-    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_RDMACM_RC,
-                       &evpl_rdmacm_rc_datagram);
-    evpl_protocol_init(evpl_shared, EVPL_STREAM_RDMACM_RC,
-                       &evpl_rdmacm_rc_stream);
-    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_RDMACM_UD,
-                       &evpl_rdmacm_ud_datagram);
+    if (config->rdmacm_enabled) {
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_RDMACM, &evpl_rdmacm);
+        evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_RDMACM_RC,
+                           &evpl_rdmacm_rc_datagram);
+        evpl_protocol_init(evpl_shared, EVPL_STREAM_RDMACM_RC,
+                           &evpl_rdmacm_rc_stream);
+        evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_RDMACM_UD,
+                           &evpl_rdmacm_ud_datagram);
+    }
 #endif /* ifdef HAVE_RDMACM */
 
 } /* evpl_shared_init */
@@ -215,7 +221,7 @@ evpl_create()
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
         framework = evpl_shared->framework[i];
 
-        if (!framework->create) {
+        if (!framework || !framework->create) {
             continue;
         }
 
@@ -430,10 +436,11 @@ evpl_connect(
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
-    bind               = evpl_bind_alloc(evpl, protocol, NULL, endpoint->addr);
+    bind = evpl_bind_alloc(evpl, protocol, NULL,
+                           endpoint->addr);
     bind->notify_callback  = notify_callback;
     bind->segment_callback = segment_callback;
-    bind->private_data = private_data;
+    bind->private_data     = private_data;
 
     bind->protocol->connect(evpl, bind);
 
@@ -458,10 +465,11 @@ evpl_bind(
     evpl_core_abort_if(!protocol->bind,
                        "Called evpl_bind with connection oriented protocol");
 
-    bind               = evpl_bind_alloc(evpl, protocol, endpoint->addr, NULL);
-    bind->notify_callback = callback;
+    bind = evpl_bind_alloc(evpl, protocol, endpoint->addr,
+                           NULL);
+    bind->notify_callback  = callback;
     bind->segment_callback = NULL;
-    bind->private_data = private_data;
+    bind->private_data     = private_data;
 
     bind->protocol->bind(evpl, bind);
 
@@ -504,7 +512,7 @@ evpl_destroy(struct evpl *evpl)
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
         framework = evpl_shared->framework[i];
 
-        if (!framework->destroy) {
+        if (!framework || !framework->destroy) {
             continue;
         }
 

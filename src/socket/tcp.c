@@ -36,7 +36,7 @@ evpl_check_conn(
     socklen_t          len;
     int                rc, err;
 
-    if (!s->connected) {
+    if (unlikely(!s->connected)) {
         len = sizeof(err);
         rc  = getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len);
         evpl_socket_fatal_if(rc, "Failed to get SO_ERROR from socket");
@@ -64,7 +64,6 @@ evpl_socket_tcp_read(
     struct evpl_bvec   *bvec;
     struct evpl_notify  notify;
     struct iovec        iov[2];
-    struct msghdr       msghdr;
     ssize_t             res, total, remain;
     int                 length, nbvec;
 
@@ -90,15 +89,9 @@ evpl_socket_tcp_read(
 
     total = iov[0].iov_len + iov[1].iov_len;
 
-    msghdr.msg_name       = NULL;
-    msghdr.msg_namelen    = 0;
-    msghdr.msg_iov        = iov;
-    msghdr.msg_iovlen     = 2;
-    msghdr.msg_control    = NULL;
-    msghdr.msg_controllen = 0;
-    msghdr.msg_flags      = 0;
+    res = readv(s->fd, iov, 2);
 
-    res = recvmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
+    evpl_socket_debug("readv res %ld", res);
 
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -175,7 +168,6 @@ evpl_socket_tcp_write(
     struct iovec       *iov;
     int                 maxiov = s->config->max_num_bvec;
     int                 niov;
-    struct msghdr       msghdr;
     ssize_t             res, total;
 
     iov = alloca(sizeof(struct iovec) * maxiov);
@@ -184,15 +176,14 @@ evpl_socket_tcp_write(
 
     niov = evpl_bvec_ring_iov(&total, iov, maxiov, &bind->bvec_send);
 
-    msghdr.msg_name       = NULL;
-    msghdr.msg_namelen    = 0;
-    msghdr.msg_iov        = iov;
-    msghdr.msg_iovlen     = niov;
-    msghdr.msg_control    = NULL;
-    msghdr.msg_controllen = 0;
-    msghdr.msg_flags      = 0;
+    if (!niov) {
+        res = 0;
+        goto out;
+    }
 
-    res = sendmsg(s->fd, &msghdr,  MSG_NOSIGNAL | MSG_DONTWAIT);
+    res = writev(s->fd, iov, niov);
+
+    evpl_socket_debug("writev res %ld", res);
 
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -213,6 +204,8 @@ evpl_socket_tcp_write(
     if (res && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
         notify.notify_type   = EVPL_NOTIFY_SENT;
         notify.notify_status = 0;
+        notify.sent.bytes    = res;
+        notify.sent.msgs     = 0;
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
@@ -225,6 +218,14 @@ evpl_socket_tcp_write(
     }
 
  out:
+
+    if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+        evpl_event_write_disinterest(event);
+
+        if (bind->flags & EVPL_BIND_FINISH) {
+            evpl_defer(evpl, &bind->close_deferral);
+        }
+    }
 
     if (res != total) {
         evpl_event_mark_unwritable(event);
@@ -278,7 +279,7 @@ evpl_socket_tcp_connect(
 
     evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
-    evpl_event_write_interest(evpl, &s->event);
+    //evpl_event_write_interest(evpl, &s->event);
 
 } /* evpl_socket_tcp_connect */
 
@@ -293,7 +294,7 @@ evpl_accept_tcp(
     struct evpl_bind    *new_bind;
     struct evpl_address *remote_addr;
     struct evpl_notify   notify;
-    int                  fd;
+    int                  fd, rc;
 
     while (1) {
 
@@ -306,6 +307,11 @@ evpl_accept_tcp(
             evpl_free(remote_addr);
             return;
         }
+
+        rc = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+
+        evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
+                                 errno));
 
         new_bind = evpl_bind_alloc(evpl,
                                    listen_bind->protocol,

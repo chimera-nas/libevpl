@@ -48,6 +48,7 @@ struct evpl_rdmacm_sr {
     struct evpl_rdmacm_id *rdmacm_id;
     struct evpl_buffer    *bufref[8];
     int                    nbufref;
+    uint64_t               length;
 };
 
 struct evpl_rdmacm_devices {
@@ -439,20 +440,18 @@ evpl_rdmacm_poll_cq(
         switch (ibv_wc_read_opcode(cq)) {
             case IBV_WC_RECV:
 
+                req              = (struct evpl_rdmacm_request *) cq->wr_id;
+                req->bvec.length = ibv_wc_read_byte_len(cq);
+
                 qp_num = ibv_wc_read_qp_num(cq);
 
                 HASH_FIND(hh, rdmacm->ids, &qp_num, sizeof(qp_num), rdmacm_id);
 
-                evpl_rdmacm_abort_if(!rdmacm_id,
-                                     "Failed to map receive qp_num to rdmacm_id");
+                if (unlikely(!rdmacm_id)) {
+                    evpl_bvec_release(evpl, &req->bvec);
+                } else if (rdmacm_id->stream) {
 
-                bind = evpl_private2bind(rdmacm_id);
-
-                req = (struct evpl_rdmacm_request *) cq->wr_id;
-
-                req->bvec.length = ibv_wc_read_byte_len(cq);
-
-                if (rdmacm_id->stream) {
+                    bind = evpl_private2bind(rdmacm_id);
 
                     evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec);
 
@@ -463,6 +462,8 @@ evpl_rdmacm_poll_cq(
                                           bind->private_data);
                 } else {
 
+                    bind = evpl_private2bind(rdmacm_id);
+
                     wc_flags = ibv_wc_read_wc_flags(cq);
 
                     if (wc_flags & IBV_WC_GRH) {
@@ -470,11 +471,11 @@ evpl_rdmacm_poll_cq(
                         req->bvec.data   += 40;
                     }
 
-                    notify.notify_type    = EVPL_NOTIFY_RECV_MSG;
-                    notify.notify_status  = 0;
-                    notify.recv_msg.bvec  = &req->bvec;
-                    notify.recv_msg.nbvec = 1;
-                    notify.recv_msg.addr  = bind->remote;
+                    notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+                    notify.notify_status   = 0;
+                    notify.recv_msg.bvec   = &req->bvec;
+                    notify.recv_msg.nbvec  = 1;
+                    notify.recv_msg.addr   = bind->remote;
                     notify.recv_msg.length = req->bvec.length;
 
                     bind->notify_callback(evpl, bind, &notify,
@@ -506,6 +507,8 @@ evpl_rdmacm_poll_cq(
                 if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
                     notify.notify_type   = EVPL_NOTIFY_SENT;
                     notify.notify_status = 0;
+                    notify.sent.bytes    = sr->length;
+                    notify.sent.msgs     = 1;
 
                     bind->notify_callback(evpl, bind, &notify,
                                           bind->private_data);
@@ -908,6 +911,7 @@ evpl_rdmacm_flush_datagram(
     struct ibv_sge        *sge;
     struct evpl_rdmacm_ah *ah;
     int                    nsge, rc;
+    uint64_t               len = 0;
 
     if (!qp) {
         return;
@@ -942,6 +946,7 @@ evpl_rdmacm_flush_datagram(
         sge = alloca(sizeof(struct ibv_sge) * dgram->nbvec);
 
 
+        len = 0;
         while (nsge < dgram->nbvec) {
 
             cur = evpl_bvec_ring_tail(&bind->bvec_send);
@@ -956,12 +961,15 @@ evpl_rdmacm_flush_datagram(
 
             sr->bufref[nsge] = cur->buffer;
 
+            len += cur->length;
+
             nsge++;
 
             evpl_bvec_ring_remove(&bind->bvec_send);
         }
 
         sr->nbufref = nsge;
+        sr->length  = len;
 
         ibv_wr_start(qp);
 

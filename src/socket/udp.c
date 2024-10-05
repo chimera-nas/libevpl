@@ -60,8 +60,8 @@ evpl_socket_udp_read(
 
         datagrams[i] = datagram;
 
-        msghdr->msg_name    = &sockaddrs[i];
-        msghdr->msg_namelen = sizeof(sockaddrs[i]);
+        msghdr->msg_name       = &sockaddrs[i];
+        msghdr->msg_namelen    = sizeof(sockaddrs[i]);
         msghdr->msg_iov        = iov;
         msghdr->msg_iovlen     = 1;
         msghdr->msg_control    = NULL;
@@ -139,7 +139,7 @@ evpl_socket_udp_write(
     int                 maxiov = s->config->max_num_bvec;
     struct msghdr      *msghdr;
     struct mmsghdr     *msgvec;
-    ssize_t             res;
+    ssize_t             res, total;
 
     dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
@@ -211,8 +211,17 @@ evpl_socket_udp_write(
     }
 
     if (res > 0 && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
+
+        total = 0;
+
+        for (i = 0; i < res; ++i) {
+            total += msgvec[i].msg_len;
+        }
+
         notify.notify_type   = EVPL_NOTIFY_SENT;
         notify.notify_status = 0;
+        notify.sent.bytes    = total;
+        notify.sent.msgs     = res;
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
