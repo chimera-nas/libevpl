@@ -10,10 +10,10 @@
 #define evpl_socket_abort(...) evpl_abort("socket", __VA_ARGS__)
 
 #define evpl_socket_fatal_if(cond, ...) \
-    evpl_fatal_if(cond, "socket", __VA_ARGS__)
+        evpl_fatal_if(cond, "socket", __VA_ARGS__)
 
 #define evpl_socket_abort_if(cond, ...) \
-    evpl_abort_if(cond, "socket", __VA_ARGS__)
+        evpl_abort_if(cond, "socket", __VA_ARGS__)
 
 struct evpl_socket_datagram {
     struct evpl_bvec             bvec;

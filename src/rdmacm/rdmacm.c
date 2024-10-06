@@ -23,10 +23,10 @@
 #define evpl_rdmacm_abort(...) evpl_abort("rdmacm", __VA_ARGS__)
 
 #define evpl_rdmacm_fatal_if(cond, ...) \
-    evpl_fatal_if(cond, "rdmacm", __VA_ARGS__)
+        evpl_fatal_if(cond, "rdmacm", __VA_ARGS__)
 
 #define evpl_rdmacm_abort_if(cond, ...) \
-    evpl_abort_if(cond, "rdmacm", __VA_ARGS__)
+        evpl_abort_if(cond, "rdmacm", __VA_ARGS__)
 
 struct ibv_context **context = NULL;
 
@@ -85,10 +85,10 @@ struct evpl_rdmacm {
 };
 
 #define evpl_event_rdmacm(eventp) \
-    container_of((eventp), struct evpl_rdmacm, event)
+        container_of((eventp), struct evpl_rdmacm, event)
 
 #define evpl_event_rdmacm_device(eventp) \
-    container_of((eventp), struct evpl_rdmacm_device, event)
+        container_of((eventp), struct evpl_rdmacm_device, event)
 
 
 struct evpl_rdmacm_id {
@@ -410,7 +410,7 @@ evpl_rdmacm_poll_cq(
     struct evpl_rdmacm_sr      *sr;
     struct evpl_bind           *bind;
     struct evpl_notify          notify;
-    struct ibv_cq_ex           *cq = (struct ibv_cq_ex *) dev->cq;
+    struct ibv_cq_ex           *cq      = (struct ibv_cq_ex *) dev->cq;
     struct ibv_poll_cq_attr     cq_attr = { .comp_mask = 0 };
     int                         rc, i, n;
     uint32_t                    qp_num, wc_flags;

@@ -1032,14 +1032,22 @@ evpl_sendv(
     int               length)
 {
     struct evpl_dgram *dgram;
-    int                i;
+    struct evpl_bvec  *bvec;
+    int                i, left = length;
 
     if (unlikely(nbufvecs == 0)) {
         return;
     }
 
-    for (i = 0; i < nbufvecs; ++i) {
-        evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
+    for (i = 0; left && i < nbufvecs; ++i) {
+        bvec = evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
+
+        if (bvec->length <= left) {
+            left -= bvec->length;
+        } else {
+            bvec->length = left;
+            left         = 0;
+        }
     }
 
     if (!bind->protocol->stream) {
@@ -1063,7 +1071,8 @@ evpl_sendtov(
     int                   length)
 {
     struct evpl_dgram *dgram;
-    int                i;
+    struct evpl_bvec  *bvec;
+    int                i, left = length;
 
     if (unlikely(nbufvecs == 0)) {
         return;
@@ -1073,8 +1082,15 @@ evpl_sendtov(
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
-    for (i = 0; i < nbufvecs; ++i) {
-        evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
+    for (i = 0; left && i < nbufvecs; ++i) {
+        bvec = evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
+
+        if (bvec->length <= left) {
+            left -= bvec->length;
+        } else {
+            bvec->length = left;
+            left         = 0;
+        }
     }
 
 

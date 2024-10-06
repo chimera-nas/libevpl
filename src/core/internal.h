@@ -75,14 +75,14 @@ void evpl_abort(
     ...);
 
 #define evpl_fatal_if(cond, ...) \
-    if (cond) { \
-        evpl_fatal(__VA_ARGS__); \
-    }
+        if (cond) { \
+            evpl_fatal(__VA_ARGS__); \
+        }
 
 #define evpl_abort_if(cond, ...) \
-    if (cond) { \
-        evpl_abort(__VA_ARGS__); \
-    }
+        if (cond) { \
+            evpl_abort(__VA_ARGS__); \
+        }
 
 #define evpl_core_debug(...)            evpl_debug("core", __VA_ARGS__)
 #define evpl_core_info(...)             evpl_info("core", __VA_ARGS__)
@@ -91,10 +91,10 @@ void evpl_abort(
 #define evpl_core_abort(...)            evpl_abort("core", __VA_ARGS__)
 
 #define evpl_core_fatal_if(cond, ...) \
-    evpl_fatal_if(cond, "core", __VA_ARGS__)
+        evpl_fatal_if(cond, "core", __VA_ARGS__)
 
 #define evpl_core_abort_if(cond, ...) \
-    evpl_abort_if(cond, "core", __VA_ARGS__)
+        evpl_abort_if(cond, "core", __VA_ARGS__)
 
 #ifndef unlikely
 #define unlikely(x)                     __builtin_expect(!!(x), 0)

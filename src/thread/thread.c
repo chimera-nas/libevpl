@@ -14,10 +14,10 @@
 #define evpl_thread_abort(...) evpl_abort("thread", __VA_ARGS__)
 
 #define evpl_thread_fatal_if(cond, ...) \
-    evpl_fatal_if(cond, "thread", __VA_ARGS__)
+        evpl_fatal_if(cond, "thread", __VA_ARGS__)
 
 #define evpl_thread_abort_if(cond, ...) \
-    evpl_abort_if(cond, "thread", __VA_ARGS__)
+        evpl_abort_if(cond, "thread", __VA_ARGS__)
 
 
 struct evpl_thread {

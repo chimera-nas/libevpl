@@ -11,5 +11,5 @@ typedef struct evpl_bvec xdr_iovec;
 #define xdr_iovec_set_len(iov, len)     ((iov)->length = (len))
 
 #define xdr_iovec_copy_private(out, in) { \
-        (out)->buffer = (in)->buffer; \
+            (out)->buffer = (in)->buffer; \
 }

@@ -34,7 +34,7 @@ evpl_socket_udp_read(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    struct evpl_socket           *s = evpl_event_socket(event);
+    struct evpl_socket           *s    = evpl_event_socket(event);
     struct evpl_bind             *bind = evpl_private2bind(s);
     struct evpl_socket_datagram **datagrams, *datagram;
     struct evpl_notify            notify;

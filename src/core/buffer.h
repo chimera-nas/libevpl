@@ -38,7 +38,7 @@ evpl_bvec_memcpy(
     unsigned int      length)
 {
     struct evpl_bvec *bvec = bvecs;
-    const void       *ptr = buffer;
+    const void       *ptr  = buffer;
     unsigned int      left = length, chunk;
 
     while (left) {

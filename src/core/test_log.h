@@ -9,7 +9,7 @@
 #define evpl_test_abort(...) evpl_abort("test", __VA_ARGS__)
 
 #define evpl_test_fatal_if(cond, ...) \
-    evpl_fatal_if(cond, "test", __VA_ARGS__)
+        evpl_fatal_if(cond, "test", __VA_ARGS__)
 
 #define evpl_test_abort_if(cond, ...) \
-    evpl_fatal_if(cond, "test", __VA_ARGS__)
+        evpl_fatal_if(cond, "test", __VA_ARGS__)
