@@ -124,7 +124,8 @@ evpl_rdmacm_map_device(
         }
     }
 
-    evpl_rdmacm_abort("Unable to map RDMA device context");
+    evpl_rdmacm_abort("Unable to map RDMA device context for device %s",
+                      context->device->name);
 
     return NULL;
 } /* evpl_rdmacm_map_device */
@@ -623,7 +624,7 @@ evpl_rdmacm_create(
     struct ibv_cq_init_attr_ex         cq_attr;
     struct ibv_td_init_attr            td_attr;
     struct ibv_parent_domain_init_attr pd_attr;
-    int                                flags, rc, i;
+    int                                flags, rc, i, j;
 
     rdmacm = evpl_zalloc(sizeof(*rdmacm));
 
@@ -712,8 +713,8 @@ evpl_rdmacm_create(
         dev->srq_reqs = evpl_zalloc(sizeof(struct evpl_rdmacm_request) *
                                     dev->srq_max);
 
-        for (i = 0; i < dev->srq_max; ++i) {
-            LL_PREPEND(dev->srq_free_reqs, &dev->srq_reqs[i]);
+        for (j = 0; j < dev->srq_max; ++j) {
+            LL_PREPEND(dev->srq_free_reqs, &dev->srq_reqs[j]);
         }
     }
 
