@@ -40,6 +40,8 @@ evpl_config_init(void)
     config->rdmacm_retry_count     = 0;
     config->rdmacm_rnr_retry_count = 0;
 
+    config->xlio_enabled = 1;
+
     return config;
 } /* evpl_config_init */
 

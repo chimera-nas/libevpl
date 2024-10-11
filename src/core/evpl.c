@@ -38,6 +38,10 @@
 #include "rdmacm/rdmacm.h"
 #endif /* ifdef HAVE_RDMACM */
 
+#ifdef HAVE_XLIO
+#include "xlio/xlio.h"
+#endif
+
 #include "socket/udp.h"
 #include "socket/tcp.h"
 
@@ -150,6 +154,15 @@ evpl_shared_init(struct evpl_config *config)
                            &evpl_rdmacm_ud_datagram);
     }
 #endif /* ifdef HAVE_RDMACM */
+
+#ifdef HAVE_XLIO
+
+    if (config->xlio_enabled) {
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_XLIO, &evpl_xlio);
+        evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_XLIO_UDP, &evpl_xlio_udp);
+    }
+
+#endif
 
 } /* evpl_shared_init */
 

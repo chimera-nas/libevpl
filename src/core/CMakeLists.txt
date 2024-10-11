@@ -21,8 +21,12 @@ add_library(evpl SHARED ${CORE_SRC})
 
 target_link_libraries(evpl evpl_socket evpl_thread)
 
-if (RDMACM_LIB)
+if (HAVE_RDMACM)
     target_link_libraries(evpl evpl_rdmacm)
+endif()
+
+if (HAVE_XLIO)
+    target_link_libraries(evpl evpl_xlio)
 endif()
 
 add_subdirectory(tests)

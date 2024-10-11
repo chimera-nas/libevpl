@@ -1,0 +1,1 @@
+unit_test_bin(evpl hello_world_msg_xlio_udp hello_world_msg -r DATAGRAM_XLIO_UDP)

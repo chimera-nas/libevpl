@@ -53,8 +53,13 @@ add_subdirectory(core)
 add_subdirectory(socket)
 add_subdirectory(thread)
 
-if (RDMACM_LIB)
+if (HAVE_RDMACM)
     add_subdirectory(rdmacm)
 endif()
+
+if (HAVE_XLIO)
+    add_subdirectory(xlio)
+endif()
+
 
 #add_subdirectory(rpc2)

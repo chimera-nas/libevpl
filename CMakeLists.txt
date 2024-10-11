@@ -10,6 +10,8 @@ enable_testing()
 
 message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
 
+set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};/opt/nvidia")
+link_directories("/opt/nvidia/lib")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(EVPL_MECH epoll)
@@ -30,7 +32,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_definitions(-O3)
 endif()
 
-find_library(RDMACM_LIB NAMES rdmacm NAMES mylib)
+find_library(RDMACM_LIB NAMES rdmacm)
 find_path(RDMACM_INCLUDE_DIR NAMES rdma/rdma_cma.h)
 
 if (RDMACM_LIB AND RDMACM_INCLUDE_DIR) 
@@ -38,8 +40,22 @@ if (RDMACM_LIB AND RDMACM_INCLUDE_DIR)
     message(STATUS "RDMACM include ${RDMACM_INCLUDE_DIR}")
     include_directories(${RDMACM_INCLUDE_DIR})
     add_definitions(-DHAVE_RDMACM)
+    set(HAVE_RDMACM 1)
 else()
     message(STATUS "rdmacm library not found.")
+endif()
+
+find_library(XLIO_LIB NAMES xlio)
+find_path(XLIO_INCLUDE_DIR NAMES mellanox/xlio.h)
+
+if (XLIO_LIB AND XLIO_INCLUDE_DIR)
+    message(STATUS "XLIO library ${XLIO_LIB}")
+    message(STATUS "XLIO include ${XLIO_INCLUDE_DIR}")
+    include_directories(${XLIO_INCLUDE_DIR})
+    add_definitions(-DHAVE_XLIO)
+    set(HAVE_XLIO 1)
+else()
+    message(STATUS "xlio library not found.")
 endif()
 
 add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
