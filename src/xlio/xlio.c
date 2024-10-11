@@ -43,6 +43,7 @@ evpl_xlio_init()
     XLIO_DL_FN(xlio, fcntl);
     XLIO_DL_FN(xlio, bind);
     XLIO_DL_FN(xlio, close);
+    XLIO_DL_FN(xlio, recvmmsg);
     XLIO_DL_FN(xlio, sendmmsg);
     XLIO_DL_FN(xlio, epoll_create);
     XLIO_DL_FN(xlio, epoll_ctl);

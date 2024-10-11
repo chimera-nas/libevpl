@@ -28,10 +28,10 @@ evpl_xlio_udp_read(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-#if 0
-    struct evpl_xlio           *s    = evpl_event_socket(event);
+    struct evpl_xlio_shared      *xlio;
+    struct evpl_xlio_socket      *s    = evpl_event_xlio_socket(event);
     struct evpl_bind             *bind = evpl_private2bind(s);
-    struct evpl_xlio_datagram **datagrams, *datagram;
+    struct evpl_socket_datagram **datagrams, *datagram;
     struct evpl_notify            notify;
     struct msghdr                *msghdr;
     struct mmsghdr               *msgvecs, *msgvec;
@@ -40,6 +40,8 @@ evpl_xlio_udp_read(
     struct iovec                 *iov;
     ssize_t                       res;
     int                           i, nmsg = s->config->max_datagram_batch;
+
+    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
     datagrams = alloca(sizeof(struct evpl_xlio_datagram * ) * nmsg);
     msgvecs   = alloca(sizeof(struct mmsghdr) * nmsg);
@@ -51,7 +53,7 @@ evpl_xlio_udp_read(
 
         msghdr = &msgvec->msg_hdr;
 
-        datagram = evpl_xlio_datagram_alloc(evpl, s);
+        datagram = evpl_socket_datagram_alloc(evpl, s);
 
         datagrams[i] = datagram;
 
@@ -69,7 +71,7 @@ evpl_xlio_udp_read(
         iov++;
     }
 
-    res = recvmmsg(s->fd, msgvecs, nmsg, MSG_NOSIGNAL | MSG_DONTWAIT, NULL);
+    res = xlio->recvmmsg(s->fd, msgvecs, nmsg, MSG_NOSIGNAL | MSG_DONTWAIT, NULL);
 
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -104,20 +106,19 @@ evpl_xlio_udp_read(
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
         evpl_bvec_release(evpl, &datagram->bvec);
-        evpl_xlio_datagram_reload(evpl, s, datagram);
+        evpl_socket_datagram_reload(evpl, s, datagram);
         evpl_address_release(evpl, addr);
 
     }
 
  out:
     for (i = 0; i < nmsg; ++i) {
-        evpl_xlio_datagram_free(evpl, s, datagrams[i]);
+        evpl_socket_datagram_free(evpl, s, datagrams[i]);
     }
 
     if (res < nmsg) {
         evpl_event_mark_unreadable(event);
     }
-#endif
 } /* evpl_xlio_udp_read */
 
 void
@@ -289,12 +290,21 @@ evpl_xlio_close(
 {
     struct evpl_xlio_shared *xlio;
     struct evpl_xlio_socket *s = evpl_bind_private(bind);
+    struct evpl_socket_datagram *datagram;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
     if (s->fd >= 0) {
         xlio->close(s->fd);
     }
+
+    while (s->free_datagrams) {
+        datagram = s->free_datagrams;
+        LL_DELETE(s->free_datagrams, datagram);
+        evpl_bvec_release(evpl, &datagram->bvec);
+        evpl_free(datagram);
+    }
+
 
 } /* evpl_tcp_close_conn */
 

@@ -20,7 +20,11 @@
 #include "utlist.h"
 
 #if EVPL_MECH == epoll
+#if HAVE_XLIO
+#include "xlio/epoll.h"
+#else
 #include "core/epoll.h"
+#endif
 #else  /* if EVPL_MECH == epoll */
 #error  No EVPL_MECH
 #endif /* if EVPL_MECH == epoll */
@@ -233,8 +237,8 @@ evpl_create()
     evpl->config = evpl_shared->config;
     evpl->config->refcnt++;
 
-    evpl_core_init(&evpl->core, 64);
-
+    evpl_core_init(&evpl->core, 64, evpl_shared->framework_private);
+ 
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
         framework = evpl_shared->framework[i];
 
