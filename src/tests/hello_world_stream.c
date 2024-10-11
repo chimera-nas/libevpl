@@ -110,7 +110,9 @@ server_callback(
 
 void
 accept_callback(
-    struct evpl_bind        *bind,
+    struct evpl             *evpl,
+    struct evpl_bind        *listen_bind,
+    struct evpl_bind        *accepted_bind,
     evpl_notify_callback_t  *notify_callback,
     evpl_segment_callback_t *segment_callback,
     void                   **conn_private_data,

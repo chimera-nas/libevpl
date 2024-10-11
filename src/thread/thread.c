@@ -70,8 +70,6 @@ evpl_thread_function(void *ptr)
         evpl_wait(evpl, -1);
     }
 
-    close(evpl_thread->eventfd);
-
     evpl_destroy(evpl);
 
     return NULL;
@@ -115,6 +113,8 @@ evpl_thread_destroy(struct evpl_thread *evpl_thread)
                          "Short write to thread eventfd");
 
     pthread_join(evpl_thread->thread, NULL);
+
+    close(evpl_thread->eventfd);
 
     evpl_free(evpl_thread);
 } /* evpl_thread_destroy */

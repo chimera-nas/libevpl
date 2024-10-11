@@ -71,8 +71,8 @@ client_thread(void *arg)
 
         if (state->sent == state->recv) {
 
-            evpl_sendto(evpl, bind, server, &state->value,
-                        sizeof(state->value));
+            evpl_sendtoep(evpl, bind, server, &state->value,
+                          sizeof(state->value));
 
             state->value++;
             state->sent++;
@@ -108,7 +108,7 @@ server_callback(
         case EVPL_NOTIFY_RECV_MSG:
 
             value = *(uint32_t *) notify->recv_msg.bvec[0].data;
-            evpl_sendto(evpl, bind, client, &value, sizeof(value));
+            evpl_sendtoep(evpl, bind, client, &value, sizeof(value));
 
             break;
     } /* switch */

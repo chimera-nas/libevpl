@@ -65,7 +65,7 @@ evpl_socket_tcp_read(
     struct evpl_notify  notify;
     struct iovec        iov[2];
     ssize_t             res, total, remain;
-    int                 length, nbvec;
+    int                 length, nbvec, i;
 
     evpl_check_conn(evpl, bind, s);
 
@@ -114,10 +114,12 @@ evpl_socket_tcp_read(
 
         bvec = alloca(sizeof(struct evpl_bvec) * s->config->max_num_bvec);
 
-        do {
+        while (1) {
+
             length = bind->segment_callback(evpl, bind, bind->private_data);
 
-            if (evpl_bvec_ring_bytes(&bind->bvec_recv) < length) {
+            if (length == 0 ||
+                evpl_bvec_ring_bytes(&bind->bvec_recv) < length) {
                 break;
             }
 
@@ -126,21 +128,21 @@ evpl_socket_tcp_read(
                 goto out;
             }
 
-            if (length) {
+            nbvec = evpl_bvec_ring_copyv(evpl, bvec, &bind->bvec_recv, length);
 
-                nbvec = evpl_bvec_ring_copyv(evpl, bvec, &bind->bvec_recv,
-                                             length);
+            notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+            notify.recv_msg.bvec   = bvec;
+            notify.recv_msg.nbvec  = nbvec;
+            notify.recv_msg.length = length;
+            notify.recv_msg.addr   = bind->remote;
 
-                notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
-                notify.recv_msg.bvec   = bvec;
-                notify.recv_msg.nbvec  = nbvec;
-                notify.recv_msg.length = length;
-                notify.recv_msg.addr   = bind->remote;
+            bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
-                bind->notify_callback(evpl, bind, &notify, bind->private_data);
+            for (i = 0; i < nbvec; ++i) {
+                evpl_bvec_release(evpl, &bvec[i]);
             }
 
-        } while (length);
+        }
 
     } else {
         notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
@@ -149,6 +151,7 @@ evpl_socket_tcp_read(
     }
 
  out:
+
     if (res < total) {
         evpl_event_mark_unreadable(event);
     }
@@ -327,7 +330,9 @@ evpl_accept_tcp(
         evpl_event_read_interest(evpl, &s->event);
 
         listen_bind->accept_callback(
+            evpl,
             listen_bind,
+            new_bind,
             &new_bind->notify_callback,
             &new_bind->segment_callback,
             &new_bind->private_data,

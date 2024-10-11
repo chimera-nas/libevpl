@@ -60,7 +60,7 @@ client_thread(void *arg)
 
     bind = evpl_bind(evpl, proto, me, client_callback, &run);
 
-    evpl_sendto(evpl, bind,  server, hello, hellolen);
+    evpl_sendtoep(evpl, bind,  server, hello, hellolen);
 
     while (run) {
 
@@ -90,7 +90,7 @@ server_callback(
 
             client = evpl_endpoint_create(evpl, address, port + 1);
 
-            evpl_sendto(evpl, bind, client, hello, hellolen);
+            evpl_sendtoep(evpl, bind, client, hello, hellolen);
 
             evpl_finish(evpl, bind);
 

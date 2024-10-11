@@ -41,7 +41,7 @@ evpl_socket_udp_read(
     struct msghdr                *msghdr;
     struct mmsghdr               *msgvecs, *msgvec;
     struct sockaddr_storage      *sockaddrs;
-    struct evpl_address           addr;
+    struct evpl_address          *addr;
     struct iovec                 *iov;
     ssize_t                       res;
     int                           i, nmsg = s->config->max_datagram_batch;
@@ -91,9 +91,10 @@ evpl_socket_udp_read(
         datagram = datagrams[i];
         msghdr   = &msgvecs[i].msg_hdr;
 
-        addr.addr    = (struct sockaddr *) &sockaddrs[i];
-        addr.addrlen = msghdr->msg_namelen;
-        addr.refcnt  = 1;
+        addr = evpl_address_alloc(evpl);
+
+        memcpy(addr->addr, msghdr->msg_name,  msghdr->msg_namelen);
+        addr->addrlen = msghdr->msg_namelen;
 
         notify.notify_type   = EVPL_NOTIFY_RECV_MSG;
         notify.notify_status = 0;
@@ -103,12 +104,13 @@ evpl_socket_udp_read(
         notify.recv_msg.bvec   = &datagram->bvec;
         notify.recv_msg.nbvec  = 1;
         notify.recv_msg.length = msgvecs[i].msg_len;
-        notify.recv_msg.addr   = &addr;
+        notify.recv_msg.addr   = addr;
 
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
         evpl_bvec_release(evpl, &datagram->bvec);
         evpl_socket_datagram_reload(evpl, s, datagram);
+        evpl_address_release(evpl, addr);
 
     }
 

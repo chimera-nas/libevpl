@@ -29,6 +29,7 @@ struct evpl_address;
 struct evpl_bind;
 struct evpl_bind;
 struct evpl_buffer;
+struct evpl_uevent;
 
 struct evpl_bvec {
     struct evpl_buffer *buffer;
@@ -46,10 +47,10 @@ struct evpl_notify {
     int          notify_status;
     union {
         struct {
-            struct evpl_bvec          *bvec;
-            unsigned int               nbvec;
-            unsigned int               length;
-            const struct evpl_address *addr;
+            struct evpl_bvec    *bvec;
+            unsigned int         nbvec;
+            unsigned int         length;
+            struct evpl_address *addr;
         } recv_msg;
         struct {
             unsigned long bytes;
@@ -107,7 +108,9 @@ typedef int (*evpl_segment_callback_t)(
     void             *private_data);
 
 typedef void (*evpl_accept_callback_t)(
-    struct evpl_bind        *bind,
+    struct evpl             *evpl,
+    struct evpl_bind        *listen_bind,
+    struct evpl_bind        *accepted_bind,
     evpl_notify_callback_t  *notify_callback,
     evpl_segment_callback_t *segment_callback,
     void                   **conn_private_data,
@@ -212,6 +215,14 @@ evpl_sendv(
 
 void
 evpl_sendto(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct evpl_address *address,
+    const void          *buffer,
+    unsigned int         length);
+
+void
+evpl_sendtoep(
     struct evpl          *evpl,
     struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
@@ -220,6 +231,15 @@ evpl_sendto(
 
 void
 evpl_sendtov(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct evpl_address *address,
+    struct evpl_bvec    *bvecs,
+    int                  nbufvecs,
+    int                  length);
+
+void
+evpl_sendtoepv(
     struct evpl          *evpl,
     struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
@@ -305,3 +325,25 @@ evpl_add_poll(
 struct evpl_config *
 evpl_config(
     struct evpl *evpl);
+
+typedef void (*evpl_uevent_callback_t)(
+    struct evpl *evpl,
+    void        *private_data);
+
+struct evpl_uevent *
+evpl_add_uevent(
+    struct evpl           *evpl,
+    evpl_uevent_callback_t callback,
+    void                  *private_data);
+
+void
+evpl_arm_uevent(
+    struct evpl        *evpl,
+    struct evpl_uevent *uevent);
+
+void
+evpl_destroy_uevent(
+    struct evpl        *evpl,
+    struct evpl_uevent *uevent);
+
+

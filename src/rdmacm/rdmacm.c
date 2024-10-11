@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <unistd.h>
 
 #include "uthash.h"
 #include "utlist.h"
@@ -159,7 +160,7 @@ evpl_rdmacm_create_qp(
     qp_attr.recv_cq          = dev->cq;
     qp_attr.srq              = dev->srq;
     qp_attr.cap.max_send_wr  = rdmacm->config->rdmacm_sq_size;
-    qp_attr.cap.max_recv_wr  = rdmacm->config->rdmacm_cq_size;
+    qp_attr.cap.max_recv_wr  = rdmacm->config->rdmacm_sq_size;
     qp_attr.cap.max_send_sge = rdmacm->config->max_num_bvec;
     qp_attr.cap.max_recv_sge = rdmacm->config->max_num_bvec;
     qp_attr.sq_sig_all       = 1;
@@ -264,7 +265,9 @@ evpl_rdmacm_event_callback(
                 conn_param.initiator_depth     = 0;
 
                 listen_bind->accept_callback(
+                    evpl,
                     listen_bind,
+                    bind,
                     &bind->notify_callback,
                     &bind->segment_callback,
                     &bind->private_data,
@@ -356,7 +359,7 @@ evpl_rdmacm_fill_srq(
 
         req->used = 1;
 
-        evpl_bvec_alloc_whole(evpl, &req->bvec);
+        evpl_bvec_alloc_datagram(evpl, &req->bvec);
 
         mrset = evpl_buffer_private(req->bvec.buffer, EVPL_FRAMEWORK_RDMACM);
 
@@ -391,10 +394,7 @@ evpl_rdmacm_fill_all_srq(
 
     for (i = 0; i < rdmacm->num_devices; ++i) {
         dev = &rdmacm->devices[i];
-
-        if (dev->srq_fill < dev->srq_min) {
-            evpl_rdmacm_fill_srq(evpl, dev);
-        }
+        evpl_rdmacm_fill_srq(evpl, dev);
     }
 } /* evpl_rdmacm_fill_all_srq */
 
@@ -420,7 +420,7 @@ evpl_rdmacm_poll_cq(
     rc = ibv_start_poll(cq, &cq_attr);
 
     if (rc) {
-        return;
+        goto out;
     }
 
     n = 0;
@@ -430,12 +430,26 @@ evpl_rdmacm_poll_cq(
         n++;
 
         if (unlikely(cq->status)) {
-            evpl_rdmacm_error(
-                "evpl_rdmacm_poll_cq wr_id %lu type %u status %u vendor_err %u",
-                cq->wr_id,
-                ibv_wc_read_opcode(cq),
-                cq->status,
-                ibv_wc_read_vendor_err(cq));
+            switch (ibv_wc_read_opcode(cq)) {
+                case IBV_WC_RECV:
+                    evpl_rdmacm_abort(
+                        "receive completion error wr_id %lu type %u status %u vendor_err %u",
+                        cq->wr_id,
+                        ibv_wc_read_opcode(cq),
+                        cq->status,
+                        ibv_wc_read_vendor_err(cq));
+                    break;
+                case IBV_WC_SEND:
+                    evpl_rdmacm_abort(
+                        "send completion error wr_id %lu type %u status %u vendor_err %u",
+                        cq->wr_id,
+                        ibv_wc_read_opcode(cq),
+                        cq->status,
+                        ibv_wc_read_vendor_err(cq));
+                    break;
+                default:
+                    abort();
+            } /* switch */
         }
 
         switch (ibv_wc_read_opcode(cq)) {
@@ -531,19 +545,17 @@ evpl_rdmacm_poll_cq(
         } /* switch */
 
 
-
     } while (n < 16 && ibv_next_poll(cq) == 0);
 
     ibv_end_poll(cq);
 
-    if (dev->srq_fill < dev->srq_min) {
-        evpl_rdmacm_fill_srq(evpl, dev);
-    }
+    evpl_rdmacm_fill_srq(evpl, dev);
 
     if (n) {
         goto again;
     }
 
+ out:
 } /* evpl_rdmacm_poll_cq */
 
 
@@ -702,7 +714,7 @@ evpl_rdmacm_create(
 
         memset(&srq_init_attr, 0, sizeof(srq_init_attr));
 
-        srq_init_attr.attr.max_wr  = rdmacm->config->rdmacm_sq_size;
+        srq_init_attr.attr.max_wr  = rdmacm->config->rdmacm_srq_size;
         srq_init_attr.attr.max_sge = 1;
 
         dev->srq = ibv_create_srq(dev->pd, &srq_init_attr);
@@ -739,6 +751,10 @@ evpl_rdmacm_create(
     evpl_add_event(evpl, &rdmacm->event);
     evpl_event_read_interest(evpl, &rdmacm->event);
 
+    if (rdmacm->config->rdmacm_srq_prefill) {
+        evpl_rdmacm_fill_all_srq(evpl, rdmacm);
+    }
+
     return rdmacm;
 } /* evpl_rdmacm_create */
 
@@ -750,7 +766,7 @@ evpl_rdmacm_destroy(
     struct evpl_rdmacm         *rdmacm = private_data;
     struct evpl_rdmacm_device  *dev;
     struct evpl_rdmacm_request *req;
-    int                         i;
+    int                         i, j;
 
     rdma_destroy_event_channel(rdmacm->event_channel);
 
@@ -758,8 +774,8 @@ evpl_rdmacm_destroy(
         dev = &rdmacm->devices[i];
         ibv_destroy_srq(dev->srq);
 
-        for (i = 0; i < dev->srq_max; ++i) {
-            req = &dev->srq_reqs[i];
+        for (j = 0; j < dev->srq_max; ++j) {
+            req = &dev->srq_reqs[j];
 
             if (req->used) {
                 evpl_bvec_release(evpl, &req->bvec);
@@ -767,6 +783,7 @@ evpl_rdmacm_destroy(
         }
 
         evpl_free(dev->srq_reqs);
+
         ibv_destroy_cq(dev->cq);
         ibv_dealloc_pd(dev->pd);
         ibv_destroy_comp_channel(dev->comp_channel);
@@ -1038,10 +1055,16 @@ evpl_rdmacm_flush_stream(
 
         sge = alloca(sizeof(struct ibv_sge) * config->max_num_bvec);
 
-        while (nsge < config->max_num_bvec && !evpl_bvec_ring_is_empty(
-                   &bind->bvec_send)) {
+        sr->length = 0;
+
+        while (nsge < config->max_num_bvec &&
+               !evpl_bvec_ring_is_empty(&bind->bvec_send)) {
 
             cur = evpl_bvec_ring_tail(&bind->bvec_send);
+
+            if (sr->length + cur->length > config->max_datagram_size) {
+                break;
+            }
 
             mrset = evpl_buffer_private(cur->buffer, EVPL_FRAMEWORK_RDMACM);
 
@@ -1054,6 +1077,7 @@ evpl_rdmacm_flush_stream(
             sr->bufref[nsge] = cur->buffer;
 
             nsge++;
+            sr->length += cur->length;
 
             evpl_bvec_ring_remove(&bind->bvec_send);
         }

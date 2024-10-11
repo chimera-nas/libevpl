@@ -47,6 +47,31 @@ evpl_bvec_ring_free(struct evpl_bvec_ring *ring)
 } // evpl_bvec_ring_free
 
 static inline void
+evpl_bvec_ring_check(const struct evpl_bvec_ring *ring)
+{
+    struct evpl_bvec *bvec;
+    int               cur   = ring->tail;
+    uint64_t          bytes = 0;
+
+    while (cur != ring->head) {
+        bvec = &ring->bvec[cur];
+
+        bytes += bvec->length;
+
+        evpl_core_abort_if(bvec->length < 1, "zero length bvec in ring");
+        evpl_core_abort_if(bvec->buffer->refcnt < 1,
+                           "bvec in ring with no refcnt!");
+
+        cur = (cur + 1) & ring->mask;
+    }
+
+    evpl_core_abort_if(bytes != ring->length,
+                       "ring length %lu does not match actual length %lu",
+                       ring->length, bytes);
+} // evpl_bvec_ring_check
+
+
+static inline void
 evpl_bvec_ring_resize(struct evpl_bvec_ring *ring)
 {
     int               new_size = ring->size << 1;
@@ -86,6 +111,12 @@ evpl_bvec_ring_is_full(const struct evpl_bvec_ring *ring)
 } // evpl_bvec_ring_is_full
 
 static inline uint64_t
+evpl_bvec_ring_elements(const struct evpl_bvec_ring *ring)
+{
+    return ((ring->head + ring->size) - ring->tail) & ring->mask;
+} // evpl_bvec_ring_elements
+
+static inline uint64_t
 evpl_bvec_ring_bytes(const struct evpl_bvec_ring *ring)
 {
     return ring->length;
@@ -97,15 +128,9 @@ evpl_bvec_ring_head(struct evpl_bvec_ring *ring)
     if (ring->head == ring->tail) {
         return NULL;
     } else {
-        return &ring->bvec[ring->head];
+        return &ring->bvec[(ring->head + ring->size - 1) & ring->mask];
     }
 } // evpl_bvec_ring_head
-
-static inline struct evpl_bvec *
-evpl_bvec_ring_head_abs(struct evpl_bvec_ring *ring)
-{
-    return &ring->bvec[ring->head];
-} // evpl_bvec_ring_head_abs
 
 static inline struct evpl_bvec *
 evpl_bvec_ring_tail(struct evpl_bvec_ring *ring)
@@ -124,7 +149,7 @@ evpl_bvec_ring_next(
 {
     int index = ((cur - ring->bvec) + 1) & ring->mask;
 
-    if (index == ring->tail) {
+    if (index == ring->head) {
         return NULL;
     }
 
@@ -269,10 +294,14 @@ evpl_bvec_ring_copyv(
 
         bvec = &ring->bvec[ring->tail];
 
-        chunk = bvec->length;
-
-        if (left < chunk) {
+        if (left < bvec->length) {
             chunk = left;
+            evpl_bvec_addref(evpl, bvec);
+            bvec->data   += left;
+            bvec->length -= left;
+        } else {
+            chunk      = bvec->length;
+            ring->tail = (ring->tail + 1) & ring->mask;
         }
 
         out[nbvec].buffer = bvec->buffer;
@@ -281,14 +310,10 @@ evpl_bvec_ring_copyv(
 
         nbvec++;
 
-        ring->length -= chunk;
-        left         -= chunk;
-
-        if (bvec->length == chunk) {
-            evpl_bvec_release(evpl, bvec);
-            ring->tail = (ring->tail + 1) & ring->mask;
-        }
+        left -= chunk;
     }
+
+    ring->length -= length;
 
     return nbvec;
 } // evpl_bvec_ring_copyv
@@ -330,11 +355,11 @@ evpl_bvec_ring_append(
     if (head && head->data + head->length == append->data) {
         head->length += length;
     } else {
-        evpl_bvec_incref(evpl, append);
         head         = evpl_bvec_ring_add_new(ring);
         head->data   = append->data;
         head->buffer = append->buffer;
         head->length = length;
+        evpl_bvec_incref(evpl, head);
     }
 
     append->data   += length;
@@ -345,4 +370,5 @@ evpl_bvec_ring_append(
     }
 
     ring->length += length;
+
 } // evpl_bvec_ring_append

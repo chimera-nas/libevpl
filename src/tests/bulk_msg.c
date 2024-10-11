@@ -75,8 +75,8 @@ client_thread(void *arg)
         while (state->inflight < state->depth &&
                state->sent < state->niters) {
 
-            evpl_sendto(evpl, bind, server, &state->value,
-                        sizeof(state->value));
+            evpl_sendtoep(evpl, bind, server, &state->value,
+                          sizeof(state->value));
 
             state->sent++;
             state->inflight++;
@@ -115,7 +115,7 @@ server_callback(
             value = *(uint32_t *) notify->recv_msg.bvec[0].data;
             evpl_test_info("server received %u, echoing", value);
 
-            evpl_sendto(evpl, bind, client, &value, sizeof(value));
+            evpl_sendtoep(evpl, bind, client, &value, sizeof(value));
 
             break;
     } /* switch */

@@ -41,6 +41,10 @@
 #include "socket/udp.h"
 #include "socket/tcp.h"
 
+struct evpl_uevent {
+    struct evpl_deferral deferral;
+};
+
 struct evpl_shared {
     struct evpl_config    *config;
     struct evpl_framework *framework[EVPL_NUM_FRAMEWORK];
@@ -1004,6 +1008,27 @@ evpl_send(
 
 void
 evpl_sendto(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct evpl_address *address,
+    const void          *buffer,
+    unsigned int         length)
+{
+    struct evpl_bvec bvecs[4];
+    int              nbvec;
+
+    nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
+
+    evpl_core_abort_if(nbvec < 1, "failed to allocate bounce space");
+
+    evpl_bvec_memcpy(bvecs, buffer, length);
+
+    evpl_sendtov(evpl, bind, address, bvecs, nbvec, length);
+
+} /* evpl_sendto */
+
+void
+evpl_sendtoep(
     struct evpl          *evpl,
     struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
@@ -1019,7 +1044,7 @@ evpl_sendto(
 
     evpl_bvec_memcpy(bvecs, buffer, length);
 
-    evpl_sendtov(evpl, bind, endpoint, bvecs, nbvec, length);
+    evpl_sendtoepv(evpl, bind, endpoint, bvecs, nbvec, length);
 
 } /* evpl_sendto */
 
@@ -1028,18 +1053,18 @@ evpl_sendv(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     struct evpl_bvec *bvecs,
-    int               nbufvecs,
+    int               nbvecs,
     int               length)
 {
     struct evpl_dgram *dgram;
     struct evpl_bvec  *bvec;
     int                i, left = length;
 
-    if (unlikely(nbufvecs == 0)) {
+    if (unlikely(nbvecs == 0)) {
         return;
     }
 
-    for (i = 0; left && i < nbufvecs; ++i) {
+    for (i = 0; left && i < nbvecs; ++i) {
         bvec = evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
 
         if (bvec->length <= left) {
@@ -1052,37 +1077,38 @@ evpl_sendv(
 
     if (!bind->protocol->stream) {
         dgram        = evpl_dgram_ring_add(&bind->dgram_send);
-        dgram->nbvec = nbufvecs;
+        dgram->nbvec = i;
         dgram->addr  = bind->remote;
     }
 
 
     evpl_defer(evpl, &bind->flush_deferral);
 
+    for ( ; i < nbvecs; ++i) {
+        evpl_bvec_release(evpl, &bvecs[i]);
+    }
+
+
 } /* evpl_sendv */
 
 void
 evpl_sendtov(
-    struct evpl          *evpl,
-    struct evpl_bind     *bind,
-    struct evpl_endpoint *endpoint,
-    struct evpl_bvec     *bvecs,
-    int                   nbufvecs,
-    int                   length)
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct evpl_address *address,
+    struct evpl_bvec    *bvecs,
+    int                  nbvecs,
+    int                  length)
 {
     struct evpl_dgram *dgram;
     struct evpl_bvec  *bvec;
     int                i, left = length;
 
-    if (unlikely(nbufvecs == 0)) {
+    if (unlikely(nbvecs == 0)) {
         return;
     }
 
-    if (!endpoint->addr) {
-        evpl_endpoint_resolve(evpl, endpoint);
-    }
-
-    for (i = 0; left && i < nbufvecs; ++i) {
+    for (i = 0; left && i < nbvecs; ++i) {
         bvec = evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
 
         if (bvec->length <= left) {
@@ -1093,17 +1119,37 @@ evpl_sendtov(
         }
     }
 
-
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
-    dgram->nbvec = nbufvecs;
-    dgram->addr  = endpoint->addr;
+    dgram->nbvec = i;
+    dgram->addr  = address;
     dgram->addr->refcnt++;
 
     evpl_defer(evpl, &bind->flush_deferral);
 
+    for ( ; i < nbvecs; ++i) {
+        evpl_bvec_release(evpl, &bvecs[i]);
+    }
+
 } /* evpl_sendtov */
 
+
+void
+evpl_sendtoepv(
+    struct evpl          *evpl,
+    struct evpl_bind     *bind,
+    struct evpl_endpoint *endpoint,
+    struct evpl_bvec     *bvecs,
+    int                   nbufvecs,
+    int                   length)
+{
+    if (!endpoint->addr) {
+        evpl_endpoint_resolve(evpl, endpoint);
+    }
+
+    evpl_sendtov(evpl, bind, endpoint->addr, bvecs, nbufvecs, length);
+
+} /* evpl_sendtoepv */
 
 void
 evpl_close(
@@ -1356,10 +1402,6 @@ evpl_recv(
         left -= chunk;
 
         cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
-
-        if (cur == NULL) {
-            return -1;
-        }
     }
 
     evpl_bvec_ring_consume(evpl, &bind->bvec_recv, length);
@@ -1408,12 +1450,12 @@ evpl_recvv(
         left -= chunk;
 
         cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
-
-        if (cur == NULL) {
-            return -1;
-        }
     }
 
+
+    if (left) {
+        return -1;
+    }
 
     evpl_bvec_ring_consume(evpl, &bind->bvec_recv, length);
 
@@ -1496,6 +1538,37 @@ evpl_defer(
 
         ++evpl->num_active_deferrals;
     }
+
+} /* evpl_defer */
+
+void
+evpl_remove_deferral(
+    struct evpl          *evpl,
+    struct evpl_deferral *deferral)
+{
+    int i;
+
+    if (!deferral->armed) {
+        return;
+    }
+
+    for (i = 0; i < evpl->num_active_deferrals; ++i) {
+
+        if (evpl->active_deferrals[i] != deferral) {
+            continue;
+        }
+
+        deferral->armed = 0;
+
+        if (i + 1 < evpl->num_active_deferrals) {
+            evpl->active_deferrals[i] = evpl->active_deferrals[evpl->
+                                                               num_active_deferrals
+                                                               - 1];
+        }
+
+        --evpl->num_active_deferrals;
+    }
+
 
 } /* evpl_defer */
 
@@ -1595,3 +1668,34 @@ evpl_address_release(
 
     LL_PREPEND(evpl->free_address, address);
 } /* evpl_address_release */
+
+struct evpl_uevent *
+evpl_add_uevent(
+    struct evpl           *evpl,
+    evpl_uevent_callback_t callback,
+    void                  *private_data)
+{
+    struct evpl_uevent *uevent;
+
+    uevent = evpl_zalloc(sizeof(*uevent));
+
+    evpl_deferral_init(&uevent->deferral, callback, private_data);
+    return uevent;
+} /* evpl_add_uevent */
+
+void
+evpl_arm_uevent(
+    struct evpl        *evpl,
+    struct evpl_uevent *uevent)
+{
+    evpl_defer(evpl, &uevent->deferral);
+} /* evpl_arm_uevent */
+
+void
+evpl_destroy_uevent(
+    struct evpl        *evpl,
+    struct evpl_uevent *uevent)
+{
+    evpl_remove_deferral(evpl, &uevent->deferral);
+    evpl_free(uevent);
+} /* evpl_destroy_uevent */

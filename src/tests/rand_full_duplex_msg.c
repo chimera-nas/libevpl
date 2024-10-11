@@ -92,13 +92,13 @@ client_thread(void *arg)
                 state->recv == total_bytes) &&
                state->sent < total_bytes) {
 
-            length = rand() % max_datagram;
+            length = (rand() % max_datagram) | 1;
 
             if (length > total_bytes - state->sent) {
                 length = total_bytes - state->sent;
             }
 
-            evpl_sendto(evpl, bind, them, buffer, length);
+            evpl_sendtoep(evpl, bind, them, buffer, length);
 
             state->sent += length;
             state->sent_msg++;

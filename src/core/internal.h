@@ -29,6 +29,7 @@ struct evpl_config {
     unsigned int rdmacm_sq_size;
     unsigned int rdmacm_srq_size;
     unsigned int rdmacm_srq_min;
+    unsigned int rdmacm_srq_prefill;
     unsigned int rdmacm_retry_count;
     unsigned int rdmacm_rnr_retry_count;
 };

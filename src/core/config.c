@@ -21,7 +21,7 @@ evpl_config_init(void)
     config->refcnt             = 1;
     config->bvec_ring_size     = 1024;
     config->dgram_ring_size    = 256;
-    config->max_datagram_size  = 4096;
+    config->max_datagram_size  = 65536;
     config->max_datagram_batch = 16;
     config->resolve_timeout_ms = 5000;
 
@@ -32,10 +32,11 @@ evpl_config_init(void)
     }
 
     config->rdmacm_enabled         = 1;
-    config->rdmacm_cq_size         = 256;
+    config->rdmacm_cq_size         = 8192;
     config->rdmacm_sq_size         = 256;
-    config->rdmacm_srq_size        = 256;
-    config->rdmacm_srq_min         = 128;
+    config->rdmacm_srq_size        = 16384;
+    config->rdmacm_srq_min         = 4096;
+    config->rdmacm_srq_prefill     = 0;
     config->rdmacm_retry_count     = 0;
     config->rdmacm_rnr_retry_count = 0;
 
