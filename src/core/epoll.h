@@ -17,7 +17,7 @@ struct evpl_core {
 int evpl_core_init(
     struct evpl_core *evc,
     int               max_events,
-    void             **framework_private);
+    void            **framework_private);
 
 void evpl_core_destroy(
     struct evpl_core *evc);

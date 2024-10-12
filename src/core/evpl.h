@@ -17,12 +17,13 @@ enum evpl_framework_id {
 
 enum evpl_protocol_id {
     EVPL_DATAGRAM_SOCKET_UDP = 0,
-    EVPL_DATAGRAM_RDMACM_RC  = 1,
-    EVPL_DATAGRAM_RDMACM_UD  = 2,
-    EVPL_DATAGRAM_XLIO_UDP   = 3,
+    EVPL_DATAGRAM_XLIO_UDP   = 1,
+    EVPL_DATAGRAM_RDMACM_RC  = 2,
+    EVPL_DATAGRAM_RDMACM_UD  = 3,
     EVPL_STREAM_SOCKET_TCP   = 4,
-    EVPL_STREAM_RDMACM_RC    = 5,
-    EVPL_NUM_PROTO           = 6
+    EVPL_STREAM_XLIO_TCP     = 5,
+    EVPL_STREAM_RDMACM_RC    = 6,
+    EVPL_NUM_PROTO           = 7
 };
 
 struct evpl;
@@ -32,6 +33,7 @@ struct evpl_bind;
 struct evpl_bind;
 struct evpl_buffer;
 struct evpl_uevent;
+struct evpl_poll;
 
 struct evpl_bvec {
     struct evpl_buffer *buffer;
@@ -318,11 +320,16 @@ typedef void (*evpl_poll_callback_t)(
     struct evpl *evpl,
     void        *private_data);
 
-void
+struct evpl_poll *
 evpl_add_poll(
     struct evpl         *evpl,
     evpl_poll_callback_t callback,
     void                *private_data);
+
+void
+evpl_remove_poll(
+    struct evpl      *evpl,
+    struct evpl_poll *poll);
 
 struct evpl_config *
 evpl_config(

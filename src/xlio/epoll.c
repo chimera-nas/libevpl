@@ -24,10 +24,10 @@ evpl_core_init(
     void            **framework_private)
 {
 
-    evc->xlio = framework_private[EVPL_FRAMEWORK_XLIO];
+    evc->api = framework_private[EVPL_FRAMEWORK_XLIO];
 
     /* size is ignored in linux >= 2.6.8 */
-    evc->fd = evc->xlio->epoll_create(255);
+    evc->fd = evc->api->epoll_create(255);
 
     if (evc->fd < 0) {
         return errno;
@@ -44,7 +44,7 @@ void
 evpl_core_destroy(struct evpl_core *evc)
 {
     free(evc->events);
-    evc->xlio->close(evc->fd);
+    evc->api->close(evc->fd);
 } /* evpl_core_destroy */
 
 void
@@ -62,7 +62,7 @@ evpl_core_add(
     ev.events   = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLET;
     ev.data.ptr = event;
 
-    rc = evc->xlio->epoll_ctl(evc->fd, EPOLL_CTL_ADD, event->fd, &ev);
+    rc = evc->api->epoll_ctl(evc->fd, EPOLL_CTL_ADD, event->fd, &ev);
 
     evpl_core_fatal_if(rc, "Failed to add file descriptor to epoll");
 } /* evpl_core_add */
@@ -78,7 +78,7 @@ evpl_core_wait(
     struct epoll_event *ev;
     int                 i, n;
 
-    n = evc->xlio->epoll_wait(evc->fd, evc->events, evc->max_events, max_msecs);
+    n = evc->api->epoll_wait(evc->fd, evc->events, evc->max_events, max_msecs);
 
     for (i = 0; i < n; ++i) {
         ev = &evc->events[i];

@@ -22,9 +22,9 @@
 #if EVPL_MECH == epoll
 #if HAVE_XLIO
 #include "xlio/epoll.h"
-#else
+#else  /* if HAVE_XLIO */
 #include "core/epoll.h"
-#endif
+#endif /* if HAVE_XLIO */
 #else  /* if EVPL_MECH == epoll */
 #error  No EVPL_MECH
 #endif /* if EVPL_MECH == epoll */
@@ -44,7 +44,7 @@
 
 #ifdef HAVE_XLIO
 #include "xlio/xlio.h"
-#endif
+#endif /* ifdef HAVE_XLIO */
 
 #include "socket/udp.h"
 #include "socket/tcp.h"
@@ -162,11 +162,13 @@ evpl_shared_init(struct evpl_config *config)
 #ifdef HAVE_XLIO
 
     if (config->xlio_enabled) {
-        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_XLIO, &evpl_xlio);
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_XLIO, &
+                            evpl_framework_xlio);
         evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_XLIO_UDP, &evpl_xlio_udp);
+        evpl_protocol_init(evpl_shared, EVPL_STREAM_XLIO_TCP, &evpl_xlio_tcp);
     }
 
-#endif
+#endif /* ifdef HAVE_XLIO */
 
 } /* evpl_shared_init */
 
@@ -238,7 +240,7 @@ evpl_create()
     evpl->config->refcnt++;
 
     evpl_core_init(&evpl->core, 64, evpl_shared->framework_private);
- 
+
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
         framework = evpl_shared->framework[i];
 
@@ -263,15 +265,20 @@ evpl_wait(
     struct evpl_deferral *deferral;
     struct evpl_poll     *poll;
     int                   i;
+    int                   msecs = max_msecs;
 
     for (i = 0; i < evpl->num_poll; ++i) {
         poll = &evpl->poll[i];
         poll->callback(evpl, poll->private_data);
     }
 
+    if (evpl->num_poll) {
+        msecs = 1;
+    }
+
     if (!evpl->num_active_events &&
         !evpl->num_active_deferrals) {
-        evpl_core_wait(&evpl->core, max_msecs);
+        evpl_core_wait(&evpl->core, msecs);
     }
 
     while (evpl->num_active_events) {
@@ -1526,7 +1533,7 @@ evpl_add_event(
     evpl_core_add(&evpl->core, event);
 } /* evpl_add_event */
 
-void
+struct evpl_poll *
 evpl_add_poll(
     struct evpl         *evpl,
     evpl_poll_callback_t callback,
@@ -1538,7 +1545,24 @@ evpl_add_poll(
     poll->private_data = private_data;
 
     ++evpl->num_poll;
+
+    return poll;
 } /* evpl_add_poll */
+
+void
+evpl_remove_poll(
+    struct evpl      *evpl,
+    struct evpl_poll *poll)
+{
+    int index = poll - evpl->poll;
+
+    if (index + 1 < evpl->num_poll) {
+        evpl->poll[index] = evpl->poll[evpl->num_poll - 1];
+    }
+
+    evpl->num_poll--;
+
+} /* evpl_remove_poll */
 
 void
 evpl_defer(

@@ -129,5 +129,4 @@ evpl_bvec_alloc_datagram(
     struct evpl      *evpl,
     struct evpl_bvec *r_bvec);
 
-
 #endif // ifndef FORCE_INLINE

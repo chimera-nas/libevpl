@@ -9,10 +9,10 @@
 struct evpl_event;
 
 struct evpl_core {
-    int                 fd;
-    int                 max_events;
-    struct epoll_event *events;
-    struct evpl_xlio_shared *xlio;
+    int                   fd;
+    int                   max_events;
+    struct epoll_event   *events;
+    struct evpl_xlio_api *api;
 };
 
 int evpl_core_init(

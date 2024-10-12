@@ -592,6 +592,7 @@ evpl_rdmacm_init()
     struct evpl_rdmacm_devices *devices;
     int                         i;
 
+
     devices = evpl_zalloc(sizeof(*devices));
 
     devices->context = rdma_get_devices(&devices->num_devices);
@@ -874,6 +875,9 @@ evpl_rdmacm_register(
                               IBV_ACCESS_LOCAL_WRITE |
                               IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE |
                               IBV_ACCESS_RELAXED_ORDERING);
+
+        evpl_rdmacm_abort_if(!mrset[i], "Failed to register RDMA memory region")
+        ;
     }
 
     return mrset;
