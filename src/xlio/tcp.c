@@ -179,7 +179,6 @@ evpl_xlio_tcp_read_packets(
 
         bind->bvec_recv.length += cur->len;
 
-
     }
 
     if (bind->segment_callback) {
@@ -249,9 +248,7 @@ evpl_xlio_tcp_write(
 
     res = xlio->api->writev(s->fd, iov, niov);
 
-    if (res < 0) {
-        goto out;
-    } else if (res == 0) {
+    if (res <= 0) {
         goto out;
     }
 

@@ -390,13 +390,13 @@ evpl_xlio_poll(
     struct evpl_xlio_socket              *s, *ls;
     struct evpl_address                  *src;
     struct evpl_bind                     *bind;
-    struct xlio_socketxtreme_completion_t comps[16], *comp;
-    struct evpl_xlio_socket              *map[16];
-    int                                   i, j, k, n, res;
+    struct xlio_socketxtreme_completion_t comps[32], *comp;
+    struct evpl_xlio_socket              *map[32];
+    int                                   i, j, k, n, res, rc;
 
     for (i = 0; i < xlio->num_ring_fds; ++i) {
 
-        n = xlio->api->extra->socketxtreme_poll(xlio->ring_fds[i].fd, comps, 16,
+        n = xlio->api->extra->socketxtreme_poll(xlio->ring_fds[i].fd, comps, 32,
                                                 SOCKETXTREME_POLL_TX);
 
         for (j = 0; j < n; ++j) {
@@ -438,16 +438,20 @@ evpl_xlio_poll(
             map[j] = s;
 
             if (comp->events & XLIO_SOCKETXTREME_PACKET) {
+
                 s->read_packets_callback(evpl, s, &comp->src,
                                          comp->packet.buff_lst,
                                          comp->packet.num_bufs,
                                          comp->packet.total_len);
 
-                xlio->api->extra->socketxtreme_free_packets(&comp->packet, 1);
+                rc = xlio->api->extra->socketxtreme_free_packets(&comp->packet, 1);
+
+                evpl_xlio_abort_if(rc,"Failed to free socketxtreme packets");
 
             }
 
             if (comp->events & EPOLLIN) {
+                evpl_xlio_debug("closing socket");
                 bind = evpl_private2bind(s);
                 evpl_defer(evpl, &bind->close_deferral);
 
@@ -469,11 +473,11 @@ evpl_xlio_poll(
 
         res = s->write_callback(evpl, s);
 
-        if (res <= 0) {
+        if (res <= 0 && errno != EAGAIN) {
             evpl_defer(evpl, &bind->close_deferral);
         }
 
-        if (evpl_dgram_ring_is_empty(&bind->dgram_send)) {
+        if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
             s->xlio_event.write_interest = 0;
 
             if (bind->flags & EVPL_BIND_FINISH) {

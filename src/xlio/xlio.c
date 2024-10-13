@@ -11,6 +11,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <sys/mman.h>
+#include <linux/memfd.h>
+
 
 
 #include "core/internal.h"
@@ -38,10 +41,32 @@ struct evpl_xlio_alloc_fn {
 #pragma pack( pop )
 
 
+#define XLIO_HUGE_SIZE (2*1024*1024*1024UL)
+void *
+huge_alloc()
+{
+    int fd, rc;
+    void *addr;
+
+    fd = memfd_create("hugepage_fd", MFD_HUGETLB);
+
+    rc = ftruncate(fd, XLIO_HUGE_SIZE);
+
+    evpl_xlio_abort_if(rc < 0, "Failed to set huge page memory size");
+
+    addr = mmap(NULL, XLIO_HUGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_HUGETLB, fd, 0);
+
+    evpl_xlio_abort_if(addr == MAP_FAILED, "Failed to allocate huage pages");
+
+    close(fd);
+    return addr;
+
+}
+
 void *
 evpl_xlio_mem_alloc(size_t size)
 {
-    void *p = malloc(size);
+    void *p = huge_alloc();
 
     evpl_xlio_debug("xlio_mem_alloc size %lu returning %p", size, p);
 
@@ -53,7 +78,7 @@ void
 evpl_xlio_mem_free(void *p)
 {
     evpl_xlio_debug("xlio_mem_free ptr %p", p);
-    free(p);
+    munmap(p, XLIO_HUGE_SIZE);
 
 } /* evpl_xlio_mem_free */
 
