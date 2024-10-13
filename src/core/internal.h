@@ -9,7 +9,21 @@
 #include <stdlib.h>
 #include <stddef.h>
 
+#define EVPL_INTERNAL      1
+
 #include "core/evpl.h"
+
+#define EVPL_BVEC_EXTERNAL 0x01
+
+struct evpl_bvec {
+    void        *data;
+    unsigned int length;
+    unsigned int flags;
+    union {
+        struct evpl_buffer *buffer;
+        void               *external;
+    };
+};
 
 struct evpl_config {
     unsigned int max_pending;

@@ -1,6 +1,6 @@
+#include "core/test_log.h"
 #include "thread/thread.h"
 #include "core/evpl.h"
-#include "core/test_log.h"
 
 
 void

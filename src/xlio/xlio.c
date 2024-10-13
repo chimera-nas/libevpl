@@ -13,10 +13,9 @@
 #include <dlfcn.h>
 
 
-#include "xlio.h"
-
-#include "core/evpl.h"
 #include "core/internal.h"
+#include "xlio.h"
+#include "core/evpl.h"
 #include "core/protocol.h"
 
 #include "common.h"

@@ -10,8 +10,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "core/evpl.h"
 #include "core/internal.h"
+#include "core/evpl.h"
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/endpoint.h"
@@ -169,6 +169,7 @@ evpl_xlio_tcp_read_packets(
     struct evpl_xlio_socket *s,
     struct sockaddr_in      *srcaddr,
     struct xlio_buff_t      *buffs,
+    int                      nbufs,
     uint16_t                 total_length)
 {
 

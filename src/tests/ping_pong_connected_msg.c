@@ -11,8 +11,8 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-#include "core/evpl.h"
 #include "core/test_log.h"
+#include "core/evpl.h"
 
 enum evpl_protocol_id proto       = EVPL_DATAGRAM_SOCKET_UDP;
 const char            localhost[] = "127.0.0.1";
@@ -42,10 +42,10 @@ test_segment_callback(
 
 void
 client_callback(
-    struct evpl              *evpl,
-    struct evpl_bind         *bind,
-    const struct evpl_notify *notify,
-    void                     *private_data)
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
     struct client_state *state = private_data;
 
@@ -109,17 +109,17 @@ client_thread(void *arg)
 
 void
 server_callback(
-    struct evpl              *evpl,
-    struct evpl_bind         *bind,
-    const struct evpl_notify *notify,
-    void                     *private_data)
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
     uint32_t value;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_MSG:
 
-            value = *(uint32_t *) notify->recv_msg.bvec[0].data;
+            value = *(uint32_t *) evpl_bvec_data(notify->recv_msg.bvec);
 
             evpl_test_info("server received %u, echoing", value);
 

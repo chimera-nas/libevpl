@@ -9,8 +9,8 @@
 #include <string.h>
 #include <sys/uio.h>
 
-#include "core/evpl.h"
 #include "core/internal.h"
+#include "core/evpl.h"
 #include "core/buffer.h"
 
 struct evpl_bvec_ring {

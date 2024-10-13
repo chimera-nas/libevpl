@@ -11,8 +11,8 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-#include "core/evpl.h"
 #include "core/test_log.h"
+#include "core/evpl.h"
 
 const char            hello[]  = "Hello World!";
 const int             hellolen = strlen(hello) + 1;
@@ -24,10 +24,10 @@ int                   port        = 8000;
 
 void
 client_callback(
-    struct evpl              *evpl,
-    struct evpl_bind         *bind,
-    const struct evpl_notify *notify,
-    void                     *private_data)
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
     int *run = private_data;
 
@@ -74,10 +74,10 @@ client_thread(void *arg)
 
 void
 server_callback(
-    struct evpl              *evpl,
-    struct evpl_bind         *bind,
-    const struct evpl_notify *notify,
-    void                     *private_data)
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
     struct evpl_endpoint *client;
     int                  *run = private_data;

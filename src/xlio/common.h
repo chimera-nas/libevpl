@@ -6,8 +6,8 @@
 #include <sys/socket.h>
 #include <mellanox/xlio_extra.h>
 
-#include "core/evpl.h"
 #include "core/internal.h"
+#include "core/evpl.h"
 #include "core/protocol.h"
 #include "core/event.h"
 #include "core/bind.h"
@@ -155,6 +155,7 @@ typedef void (*evpl_xlio_read_callback_t)(
     struct evpl_xlio_socket *s,
     struct sockaddr_in      *srcaddr,
     struct xlio_buff_t      *buffs,
+    int                      nbufs,
     uint16_t                 total_length);
 
 typedef int (*evpl_xlio_write_callback_t)(
@@ -335,20 +336,16 @@ evpl_xlio_poll(
             }
 
             if (comp->events & XLIO_SOCKETXTREME_PACKET) {
-                evpl_xlio_debug(
-                    "evpl_xlio_poll new packets available num_bufs %ld total_len %u",
-                    comp->packet.num_bufs, comp->packet.total_len);
+                s->xlio_event.read_callback(evpl, s, &comp->src,
+                                            comp->packet.buff_lst,
+                                            comp->packet.num_bufs,
+                                            comp->packet.total_len);
 
                 xlio->api->extra->socketxtreme_free_packets(&comp->packet, 1);
 
             }
 
-            if (comp->events & EPOLLIN) {
-                evpl_xlio_debug("evpl_xlio_poll readable");
-            }
-
             if (comp->events & EPOLLOUT) {
-                evpl_xlio_debug("evpl_xlio_poll writasble");
                 s->xlio_event.writable = 1;
                 evpl_xlio_socket_check_active(xlio, s);
             }

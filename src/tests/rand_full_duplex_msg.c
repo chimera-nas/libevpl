@@ -11,8 +11,8 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-#include "core/evpl.h"
 #include "core/test_log.h"
+#include "core/evpl.h"
 
 enum evpl_protocol_id proto        = EVPL_DATAGRAM_SOCKET_UDP;
 const char            localhost[]  = "127.0.0.1";
@@ -36,10 +36,10 @@ struct thread_state {
 
 void
 client_callback(
-    struct evpl              *evpl,
-    struct evpl_bind         *bind,
-    const struct evpl_notify *notify,
-    void                     *private_data)
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
     struct thread_state *state = private_data;
 

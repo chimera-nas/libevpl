@@ -5,8 +5,9 @@
  */
 
 #include <unistd.h>
-#include "core/evpl.h"
+
 #include "core/internal.h"
+#include "core/evpl.h"
 
 
 struct evpl_config *

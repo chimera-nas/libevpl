@@ -11,8 +11,8 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-#include "core/evpl.h"
 #include "core/test_log.h"
+#include "core/evpl.h"
 
 enum evpl_protocol_id proto       = EVPL_DATAGRAM_RDMACM_RC;
 const char            localhost[] = "127.0.0.1";
@@ -33,10 +33,10 @@ struct client_state {
 
 void
 client_callback(
-    struct evpl              *evpl,
-    struct evpl_bind         *bind,
-    const struct evpl_notify *notify,
-    void                     *private_data)
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
     struct client_state *state = private_data;
 
@@ -48,7 +48,7 @@ client_callback(
 
             evpl_test_info("client sent %u recv %u value %u",
                            state->sent, state->recv,
-                           *(uint32_t *) notify->recv_msg.bvec[0].data);
+                           *(uint32_t *) evpl_bvec_data(notify->recv_msg.bvec));
 
             break;
     } /* switch */
@@ -102,10 +102,10 @@ client_thread(void *arg)
 
 void
 server_callback(
-    struct evpl              *evpl,
-    struct evpl_bind         *bind,
-    const struct evpl_notify *notify,
-    void                     *private_data)
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
     struct evpl_endpoint *client = private_data;
     uint32_t              value;

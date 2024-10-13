@@ -18,8 +18,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "core/evpl.h"
 #include "core/internal.h"
+#include "core/evpl.h"
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/endpoint.h"

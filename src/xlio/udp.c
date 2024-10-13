@@ -11,8 +11,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "core/evpl.h"
 #include "core/internal.h"
+#include "core/evpl.h"
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/endpoint.h"
@@ -129,30 +129,40 @@ evpl_xlio_udp_read_packets(
     struct evpl_xlio_socket *s,
     struct sockaddr_in      *srcaddr,
     struct xlio_buff_t      *buffs,
+    int                      nbufs,
     uint16_t                 total_length)
 {
-#if 0
+    struct evpl_bind    *bind = evpl_private2bind(s);
     struct evpl_notify   notify;
     struct evpl_address *addr;
-    struct evpl_bvec;
+    struct evpl_bvec    *bvec;
+    struct xlio_buff_t  *cur;
+    int                  i;
 
-    addr = evpl_address_alloc(evpl);
-    memcpy(addr->srcaddr, sizeof(*srcaddr));
+    addr          = evpl_address_alloc(evpl);
+    addr->addr    = (struct sockaddr *) srcaddr;
     addr->addrlen = sizeof(*srcaddr);
 
-    notify.notify_type   = EVPL_NOTIFY_RECV_MSG;
-    notify.notify_status = 0;
+    bvec = alloca(sizeof(struct evpl_bvec) * nbufs);
 
-    datagram->bvec.length =  msgvecs[i].msg_len;
+    cur = buffs;
 
-    notify.recv_msg.bvec   = &datagram->bvec;
-    notify.recv_msg.nbvec  = 1;
-    notify.recv_msg.length = msgvecs[i].msg_len;
+    for (i = 0; i < nbufs ; i++, cur = cur->next) {
+        bvec[i].data     = cur->payload;
+        bvec[i].length   = cur->len;
+        bvec[i].external = cur;
+        bvec[i].flags    = EVPL_BVEC_EXTERNAL;
+    }
+
+    notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+    notify.notify_status   = 0;
+    notify.recv_msg.bvec   = bvec;
+    notify.recv_msg.nbvec  = nbufs;
+    notify.recv_msg.length = total_length;
     notify.recv_msg.addr   = addr;
 
     bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
-#endif /* if 0 */
 } /* evpl_xlio_udp_read_packets */
 
 int
@@ -175,12 +185,10 @@ evpl_xlio_udp_write(
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    evpl_xlio_debug("udp write");
-
     dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
     if (!dgram) {
-        res = -1;
+        res = 0;
         goto out;
     }
 
@@ -255,7 +263,7 @@ evpl_xlio_udp_write(
 
  out:
 
-    if (res != total) {
+    if (nmsg && res != nmsg) {
         return -1;
     }
 

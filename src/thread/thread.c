@@ -2,9 +2,9 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "core/internal.h"
 #include "core/evpl.h"
 #include "core/event.h"
-#include "core/internal.h"
 #include "thread/thread.h"
 
 #define evpl_thread_debug(...) evpl_debug("thread", __VA_ARGS__)

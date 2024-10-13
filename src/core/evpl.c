@@ -19,6 +19,8 @@
 
 #include "utlist.h"
 
+
+#include "core/internal.h"
 #if EVPL_MECH == epoll
 #if HAVE_XLIO
 #include "xlio/epoll.h"
@@ -31,7 +33,6 @@
 
 #include "core/evpl.h"
 #include "core/protocol.h"
-#include "core/internal.h"
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/bind.h"
@@ -273,7 +274,7 @@ evpl_wait(
     }
 
     if (evpl->num_poll) {
-        msecs = 1;
+        msecs = 0;
     }
 
     if (!evpl->num_active_events &&
@@ -1740,3 +1741,16 @@ evpl_destroy_uevent(
     evpl_remove_deferral(evpl, &uevent->deferral);
     evpl_free(uevent);
 } /* evpl_destroy_uevent */
+
+const void *
+evpl_bvec_data(const struct evpl_bvec *bvec)
+{
+    return bvec->data;
+} // evpl_bvec_data
+
+unsigned int
+evpl_bvec_length(const struct evpl_bvec *bvec)
+{
+    return bvec->length;
+} /* evpl_bvec_length */
+

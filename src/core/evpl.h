@@ -35,11 +35,13 @@ struct evpl_buffer;
 struct evpl_uevent;
 struct evpl_poll;
 
+#ifndef EVPL_INTERNAL
 struct evpl_bvec {
-    struct evpl_buffer *buffer;
-    void               *data;
-    unsigned int        length;
+    char opaque[24];
 };
+#else // ifndef EVPL_INTERNAL
+struct evpl_bvec;
+#endif // ifndef EVPL_INTERNAL
 
 struct evpl_endpoint_stub {
     unsigned char addr[128];
@@ -101,10 +103,10 @@ void evpl_wait(
 
 
 typedef void (*evpl_notify_callback_t)(
-    struct evpl              *evpl,
-    struct evpl_bind         *bind,
-    const struct evpl_notify *notify,
-    void                     *private_data);
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data);
 
 typedef int (*evpl_segment_callback_t)(
     struct evpl      *evpl,
@@ -190,11 +192,13 @@ evpl_bvec_release(
     struct evpl      *evpl,
     struct evpl_bvec *bvec);
 
-static inline void *
-evpl_bvec_data(struct evpl_bvec *bvec)
-{
-    return bvec->data;
-} // evpl_bvec_data
+const void *
+evpl_bvec_data(
+    const struct evpl_bvec *bvec);
+
+unsigned int
+evpl_bvec_length(
+    const struct evpl_bvec *bvec);
 
 void
 evpl_bvec_addref(

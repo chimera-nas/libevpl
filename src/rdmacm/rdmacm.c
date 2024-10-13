@@ -11,9 +11,9 @@
 #include "uthash.h"
 #include "utlist.h"
 
+#include "core/internal.h"
 #include "core/evpl.h"
 #include "core/protocol.h"
-#include "core/internal.h"
 #include "core/bind.h"
 #include "core/endpoint.h"
 
