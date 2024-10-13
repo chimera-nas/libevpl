@@ -822,9 +822,10 @@ evpl_buffer_alloc(struct evpl *evpl)
 
     }
 
-    buffer->refcnt = 0;
-    buffer->used   = 0;
-    buffer->next   = NULL;
+    buffer->refcnt   = 0;
+    buffer->used     = 0;
+    buffer->next     = NULL;
+    buffer->external = 0;
 
     return buffer;
 } /* evpl_buffer_alloc */
@@ -989,8 +990,12 @@ evpl_buffer_release(
     --buffer->refcnt;
 
     if (buffer->refcnt == 0) {
-        buffer->used = 0;
-        LL_PREPEND(evpl->free_buffers, buffer);
+        if (buffer->external) {
+            buffer->release(evpl, buffer);
+        } else {
+            buffer->used = 0;
+            LL_PREPEND(evpl->free_buffers, buffer);
+        }
     }
 
 } /* evpl_buffer_release */

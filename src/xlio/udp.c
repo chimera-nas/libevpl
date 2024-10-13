@@ -23,13 +23,12 @@
 #include "core/evpl.h"
 #include "common.h"
 
-void
+int
 evpl_xlio_udp_read(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+    struct evpl             *evpl,
+    struct evpl_xlio_socket *s)
 {
     struct evpl_xlio             *xlio;
-    struct evpl_xlio_socket      *s    = evpl_event_xlio_socket(event);
     struct evpl_bind             *bind = evpl_private2bind(s);
     struct evpl_socket_datagram **datagrams, *datagram;
     struct evpl_notify            notify;
@@ -75,13 +74,7 @@ evpl_xlio_udp_read(
                               NULL
                               );
 
-    if (res < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            evpl_defer(evpl, &bind->close_deferral);
-        }
-        goto out;
-    } else if (res == 0) {
-        evpl_defer(evpl, &bind->close_deferral);
+    if (res <= 0) {
         goto out;
     }
 
@@ -114,13 +107,17 @@ evpl_xlio_udp_read(
     }
 
  out:
+
     for (i = 0; i < nmsg; ++i) {
         evpl_socket_datagram_free(evpl, s, datagrams[i]);
     }
 
-    if (res < nmsg) {
-        evpl_event_mark_unreadable(event);
+    if (res > 0 && res < nmsg) {
+        errno = EAGAIN;
     }
+
+    return res;
+
 } /* evpl_xlio_udp_read */
 
 void
@@ -132,12 +129,15 @@ evpl_xlio_udp_read_packets(
     int                      nbufs,
     uint16_t                 total_length)
 {
+    struct evpl_xlio    *xlio;
     struct evpl_bind    *bind = evpl_private2bind(s);
     struct evpl_notify   notify;
     struct evpl_address *addr;
     struct evpl_bvec    *bvec;
     struct xlio_buff_t  *cur;
     int                  i;
+
+    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
     addr          = evpl_address_alloc(evpl);
     addr->addr    = (struct sockaddr *) srcaddr;
@@ -148,10 +148,9 @@ evpl_xlio_udp_read_packets(
     cur = buffs;
 
     for (i = 0; i < nbufs ; i++, cur = cur->next) {
-        bvec[i].data     = cur->payload;
-        bvec[i].length   = cur->len;
-        bvec[i].external = cur;
-        bvec[i].flags    = EVPL_BVEC_EXTERNAL;
+        bvec[i].buffer = evpl_xlio_buffer_alloc(evpl, xlio, cur);
+        bvec[i].data   = cur->payload;
+        bvec[i].length = cur->len;
     }
 
     notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
@@ -272,39 +271,6 @@ evpl_xlio_udp_write(
 } /* evpl_xlio_udp_write */
 
 void
-evpl_xlio_udp_write_event(
-    struct evpl       *evpl,
-    struct evpl_event *event)
-{
-    struct evpl_xlio_socket *s    = evpl_event_xlio_socket(event);
-    struct evpl_bind        *bind = evpl_private2bind(s);
-    int                      res;
-
-    res = evpl_xlio_udp_write(evpl, s);
-
-    if (res) {
-        evpl_event_mark_unwritable(event);
-    }
-
-    if (evpl_dgram_ring_is_empty(&bind->dgram_send)) {
-        evpl_event_write_disinterest(event);
-
-        if (bind->flags & EVPL_BIND_FINISH) {
-            evpl_defer(evpl, &bind->close_deferral);
-        }
-    }
-
-} /* evpl_xlio_udp_write_event */
-
-void
-evpl_xlio_udp_error(
-    struct evpl       *evpl,
-    struct evpl_event *event)
-{
-    evpl_xlio_debug("udp socket error");
-} /* evpl_error_udp */
-
-void
 evpl_xlio_udp_bind(
     struct evpl      *evpl,
     struct evpl_bind *evbind)
@@ -333,21 +299,11 @@ evpl_xlio_udp_bind(
 
     evpl_xlio_abort_if(rc, "Failed to bind socket: %s", strerror(errno));
 
-    evpl_xlio_socket_init(evpl, xlio, s, s->fd, 0,
+    evpl_xlio_socket_init(evpl, xlio, s, s->fd, 0, 1,
+                          NULL,
+                          evpl_xlio_udp_read,
                           evpl_xlio_udp_read_packets,
                           evpl_xlio_udp_write);
-
-    if (s->offloaded) {
-        s->xlio_event.writable = 1;
-    } else {
-        s->event.fd             = s->fd;
-        s->event.read_callback  = evpl_xlio_udp_read;
-        s->event.write_callback = evpl_xlio_udp_write_event;
-        s->event.error_callback = evpl_xlio_udp_error;
-
-        evpl_add_event(evpl, &s->event);
-        evpl_event_read_interest(evpl, &s->event);
-    }
 
 } /* evpl_xlio_udp_bind */
 

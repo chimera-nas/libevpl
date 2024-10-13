@@ -27,6 +27,62 @@
                                " symbol found in XLIO library"); \
 }
 
+#pragma pack(push, 1)
+struct evpl_xlio_alloc_fn {
+    uint8_t flags;
+    void  * (*alloc_func)(
+        size_t);
+    void    (*free_func)(
+        void *);
+};
+#pragma pack( pop )
+
+
+void *
+evpl_xlio_mem_alloc(size_t size)
+{
+    void *p = malloc(size);
+
+    evpl_xlio_debug("xlio_mem_alloc size %lu returning %p", size, p);
+
+    return p;
+
+} /* evpl_xlio_mem_alloc */
+
+void
+evpl_xlio_mem_free(void *p)
+{
+    evpl_xlio_debug("xlio_mem_free ptr %p", p);
+    free(p);
+
+} /* evpl_xlio_mem_free */
+
+void
+evpl_xlio_register_alloc(struct evpl_xlio_api *api)
+{
+    struct evpl_xlio_alloc_fn alloc_fn;
+    char                      cbuf[CMSG_SPACE(sizeof(alloc_fn))];
+    struct cmsghdr           *cmsg;
+    int                       rc;
+
+    cmsg = (struct cmsghdr *) cbuf;
+
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type  = CMSG_XLIO_IOCTL_USER_ALLOC;
+    cmsg->cmsg_len   = CMSG_LEN(sizeof(alloc_fn));
+
+    alloc_fn.flags      = 0x3; /* magic TX/RX see XLIO docs */
+    alloc_fn.alloc_func = evpl_xlio_mem_alloc;
+    alloc_fn.free_func  = evpl_xlio_mem_free;
+
+    memcpy(CMSG_DATA(cmsg), &alloc_fn, sizeof(alloc_fn));
+
+    rc = api->extra->ioctl(cmsg, cmsg->cmsg_len);
+
+    evpl_xlio_abort_if(rc, "Failed to register XLIO memory handlers");
+
+} /* evpl_xlio_register_alloc */
+
 void *
 evpl_xlio_init()
 {
@@ -48,6 +104,7 @@ evpl_xlio_init()
 
     XLIO_DL_FN(api, xlio_exit);
     XLIO_DL_FN(api, socket);
+    XLIO_DL_FN(api, ioctl);
     XLIO_DL_FN(api, fcntl);
     XLIO_DL_FN(api, bind);
     XLIO_DL_FN(api, close);
@@ -79,6 +136,8 @@ evpl_xlio_init()
 
     evpl_xlio_abort_if((api->extra->cap_mask & needed_caps) != needed_caps,
                        "XLIO is missing socketxtreme capabilities");
+
+    evpl_xlio_register_alloc(api);
 
     return api;
 } /* evpl_xlio_init */

@@ -20,7 +20,6 @@ struct evpl_bvec_ring {
     int               alignment;
     int               head;
     int               tail;
-    int               bytes;
     uint64_t          length;
 };
 

@@ -9,6 +9,7 @@
 #include "core/internal.h"
 #include "core/evpl.h"
 #include "core/protocol.h"
+#include "core/endpoint.h"
 #include "core/event.h"
 #include "core/bind.h"
 
@@ -35,6 +36,11 @@ typedef int (*socket_fptr_t) (
     int __domain,
     int __type,
     int __protocol);
+
+typedef int (*ioctl_fptr_t)(
+    int __fd,
+    int __request,
+    ...);
 
 typedef int (*fcntl_fptr_t)(
     int __fd,
@@ -118,6 +124,7 @@ struct evpl_xlio_api {
 
     xlio_exit_fptr_t    xlio_exit;
     socket_fptr_t       socket;
+    ioctl_fptr_t        ioctl;
     fcntl_fptr_t        fcntl;
     bind_fptr_t         bind;
     close_fptr_t        close;
@@ -150,7 +157,7 @@ struct evpl_socket_datagram {
 
 struct evpl_xlio_socket;
 
-typedef void (*evpl_xlio_read_callback_t)(
+typedef void (*evpl_xlio_read_packets_callback_t)(
     struct evpl             *evpl,
     struct evpl_xlio_socket *s,
     struct sockaddr_in      *srcaddr,
@@ -158,16 +165,25 @@ typedef void (*evpl_xlio_read_callback_t)(
     int                      nbufs,
     uint16_t                 total_length);
 
+typedef int (*evpl_xlio_read_callback_t)(
+    struct evpl             *evpl,
+    struct evpl_xlio_socket *s);
+
+
 typedef int (*evpl_xlio_write_callback_t)(
     struct evpl             *evpl,
     struct evpl_xlio_socket *s);
 
+typedef struct evpl_xlio_socket * (*evpl_xlio_accept_callback_t)(
+    struct evpl             *evpl,
+    struct evpl_xlio_socket *ls,
+    struct evpl_address     *src,
+    int                      fd);
+
 struct evpl_xlio_event {
-    int                        writable;
-    int                        write_interest;
-    int                        active;
-    evpl_xlio_read_callback_t  read_callback;
-    evpl_xlio_write_callback_t write_callback;
+    int writable;
+    int write_interest;
+    int active;
 };
 
 struct evpl_xlio_socket {
@@ -175,13 +191,22 @@ struct evpl_xlio_socket {
         struct evpl_event      event;
         struct evpl_xlio_event xlio_event;
     };
-    int                          fd;
-    int                          connected;
-    int                          offloaded;
-    const struct evpl_config    *config;
-    struct evpl_socket_datagram *free_datagrams;
-    struct evpl_bvec             recv1;
-    struct evpl_bvec             recv2;
+
+    evpl_xlio_accept_callback_t       accept_callback;
+    evpl_xlio_read_callback_t         read_callback;
+    evpl_xlio_read_packets_callback_t read_packets_callback;
+    evpl_xlio_write_callback_t        write_callback;
+
+    int                               fd;
+    int                               listen;
+    int                               connected;
+    int                               offloaded;
+    const struct evpl_config         *config;
+    struct evpl_socket_datagram      *free_datagrams;
+    struct evpl_bvec                  recv1;
+    struct evpl_bvec                  recv2;
+    struct evpl_xlio_socket          *prev;
+    struct evpl_xlio_socket          *next;
 };
 
 struct evpl_xlio {
@@ -189,6 +214,7 @@ struct evpl_xlio {
     struct evpl_poll         *poll;
     struct evpl_xlio_ring_fd *ring_fds;
     struct evpl_xlio_socket **active_sockets;
+    struct evpl_xlio_socket  *listen_sockets;
     int                       num_ring_fds;
     int                       max_ring_fds;
     int                       num_active_sockets;
@@ -200,6 +226,46 @@ struct evpl_xlio {
                                                     evpl_xlio_socket, \
                                                     event)
 
+static inline void
+evpl_xlio_buffer_free(
+    struct evpl        *evpl,
+    struct evpl_buffer *buffer)
+{
+    struct evpl_xlio   *xlio;
+    struct xlio_buff_t *buff;
+
+    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
+
+    buff = (struct xlio_buff_t *) buffer->framework_private[EVPL_FRAMEWORK_XLIO]
+    ;
+
+    xlio->api->extra->socketxtreme_free_buff(buff);
+
+    evpl_free(buffer);
+} // evpl_xlio_buffer_free
+
+static inline struct evpl_buffer *
+evpl_xlio_buffer_alloc(
+    struct evpl        *evpl,
+    struct evpl_xlio   *xlio,
+    struct xlio_buff_t *buff)
+{
+    struct evpl_buffer *buffer;
+
+    buffer = evpl_zalloc(sizeof(*buffer));
+
+    buffer->data                                   = buff->payload;
+    buffer->size                                   = buff->len;
+    buffer->used                                   = buff->len;
+    buffer->external                               = 1;
+    buffer->framework_private[EVPL_FRAMEWORK_XLIO] = buff;
+    buffer->refcnt                                 = 1;
+    buffer->release                                = evpl_xlio_buffer_free;
+
+    xlio->api->extra->socketxtreme_ref_buff(buff);
+
+    return buffer;
+} // evpl_xlio_buffer_alloc
 static inline struct evpl_socket_datagram *
 evpl_socket_datagram_alloc(
     struct evpl             *evpl,
@@ -247,6 +313,10 @@ evpl_xlio_close(
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
+    if (s->listen) {
+        DL_DELETE(xlio->listen_sockets, s);
+    }
+
     if (s->fd >= 0) {
         xlio->api->close(s->fd);
     }
@@ -285,6 +355,7 @@ evpl_xlio_socket_check_active(
         xlio->active_sockets[xlio->num_active_sockets++] = s;
 
         s->xlio_event.active = 1;
+
     }
 
 } // evpl_xlio_socket_check_active
@@ -316,9 +387,12 @@ evpl_xlio_poll(
     void        *private_data)
 {
     struct evpl_xlio                     *xlio = private_data;
-    struct evpl_xlio_socket              *s;
+    struct evpl_xlio_socket              *s, *ls;
+    struct evpl_address                  *src;
+    struct evpl_bind                     *bind;
     struct xlio_socketxtreme_completion_t comps[16], *comp;
-    int                                   i, j, n, res;
+    struct evpl_xlio_socket              *map[16];
+    int                                   i, j, k, n, res;
 
     for (i = 0; i < xlio->num_ring_fds; ++i) {
 
@@ -329,19 +403,53 @@ evpl_xlio_poll(
 
             comp = &comps[j];
 
-            s = (struct evpl_xlio_socket *) comp->user_data;
-
             if (comp->events & XLIO_SOCKETXTREME_NEW_CONNECTION_ACCEPTED) {
-                evpl_xlio_debug("evpl_xlio_poll new conn accepted");
+
+                DL_FOREACH(xlio->listen_sockets, ls)
+                {
+                    if (ls->fd == comp->listen_fd) {
+                        break;
+                    }
+                }
+
+                evpl_xlio_abort_if(!ls, "Failed to find listen socket in list");
+
+                src = evpl_address_alloc(evpl);
+
+                memcpy(src->addr, &comp->src, sizeof(comp->src));
+                src->addrlen = sizeof(comp->src);
+
+                s = ls->accept_callback(evpl, ls, src, comp->user_data);
+
+            } else {
+
+                if (comp->user_data > 100000) {
+                    s = (struct evpl_xlio_socket *) comp->user_data;
+                } else {
+                    for (k = 0; k < j; ++k) {
+                        if (comp[k].user_data == comp->user_data) {
+                            s = map[k];
+                            break;
+                        }
+                    }
+                }
             }
 
+            map[j] = s;
+
             if (comp->events & XLIO_SOCKETXTREME_PACKET) {
-                s->xlio_event.read_callback(evpl, s, &comp->src,
-                                            comp->packet.buff_lst,
-                                            comp->packet.num_bufs,
-                                            comp->packet.total_len);
+                s->read_packets_callback(evpl, s, &comp->src,
+                                         comp->packet.buff_lst,
+                                         comp->packet.num_bufs,
+                                         comp->packet.total_len);
 
                 xlio->api->extra->socketxtreme_free_packets(&comp->packet, 1);
+
+            }
+
+            if (comp->events & EPOLLIN) {
+                bind = evpl_private2bind(s);
+                evpl_defer(evpl, &bind->close_deferral);
 
             }
 
@@ -357,11 +465,30 @@ evpl_xlio_poll(
 
         s = xlio->active_sockets[i];
 
-        res = s->xlio_event.write_callback(evpl, s);
+        bind = evpl_private2bind(s);
 
-        if (res) {
+        res = s->write_callback(evpl, s);
+
+        if (res <= 0) {
+            evpl_defer(evpl, &bind->close_deferral);
+        }
+
+        if (evpl_dgram_ring_is_empty(&bind->dgram_send)) {
+            s->xlio_event.write_interest = 0;
+
+            if (bind->flags & EVPL_BIND_FINISH) {
+                evpl_defer(evpl, &bind->close_deferral);
+            }
+        }
+
+        if (res > 0 && errno == EAGAIN) {
             s->xlio_event.writable = 0;
-            s->xlio_event.active   = 0;
+        }
+
+        if (!s->xlio_event.write_interest ||
+            s->xlio_event.writable) {
+
+            s->xlio_event.active = 0;
 
             if (i + 1 < xlio->num_active_sockets) {
                 xlio->active_sockets[i] = xlio->active_sockets[xlio->
@@ -376,15 +503,112 @@ evpl_xlio_poll(
 
 } // evpl_xlio_poll
 
+static void
+evpl_xlio_error_event(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    evpl_xlio_debug("xlio socket error");
+} /* evpl_error_udp */
+
+static void
+evpl_xlio_accept_event(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    struct evpl_xlio        *xlio;
+    struct evpl_xlio_socket *ls = evpl_event_xlio_socket(event);
+    struct evpl_address     *src;
+    int                      fd;
+
+    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
+
+    while (1) {
+
+        src = evpl_address_alloc(evpl);
+
+        fd = xlio->api->accept(ls->fd, src->addr, &src->addrlen);
+
+        if (fd < 0) {
+            evpl_event_mark_unreadable(event);
+            evpl_free(src);
+            return;
+        }
+
+        ls->accept_callback(evpl, ls, src, fd);
+    }
+
+} /* evpl_xlio_accept_tcp */
+
+
+static void
+evpl_xlio_read_event(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    struct evpl_xlio_socket *s    = evpl_event_xlio_socket(event);
+    struct evpl_bind        *bind = evpl_private2bind(s);
+    int                      res;
+
+    if (s->listen) {
+        evpl_xlio_accept_event(evpl, event);
+    } else {
+        res = s->read_callback(evpl, s);
+
+        if (res <= 0) {
+            evpl_defer(evpl, &bind->close_deferral);
+        }
+
+        if (res >= 0 && errno == EAGAIN) {
+            evpl_event_mark_unreadable(event);
+        }
+    }
+
+} // evpl_xlio_read_event
+
+static void
+evpl_xlio_write_event(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    struct evpl_xlio_socket *s    = evpl_event_xlio_socket(event);
+    struct evpl_bind        *bind = evpl_private2bind(s);
+    int                      res;
+
+    res = s->write_callback(evpl, s);
+
+    if (res < 0) {
+        evpl_defer(evpl, &bind->close_deferral);
+    }
+
+    if (res > 0) {
+        evpl_event_mark_unwritable(event);
+    }
+
+    if (evpl_dgram_ring_is_empty(&bind->dgram_send)) {
+
+        evpl_event_write_disinterest(event);
+
+        if (bind->flags & EVPL_BIND_FINISH) {
+            evpl_defer(evpl, &bind->close_deferral);
+        }
+    }
+
+} /* evpl_xlio_udp_write_event */
+
+
 static inline void
 evpl_xlio_socket_init(
-    struct evpl               *evpl,
-    struct evpl_xlio          *xlio,
-    struct evpl_xlio_socket   *s,
-    int                        fd,
-    int                        connected,
-    evpl_xlio_read_callback_t  read_callback,
-    evpl_xlio_write_callback_t write_callback)
+    struct evpl                      *evpl,
+    struct evpl_xlio                 *xlio,
+    struct evpl_xlio_socket          *s,
+    int                               fd,
+    int                               listen,
+    int                               connected,
+    evpl_xlio_accept_callback_t       accept_callback,
+    evpl_xlio_read_callback_t         read_callback,
+    evpl_xlio_read_packets_callback_t read_packets_callback,
+    evpl_xlio_write_callback_t        write_callback)
 {
     struct evpl_xlio_ring_fd *rfd;
     int                       n, max_fd;
@@ -392,8 +616,14 @@ evpl_xlio_socket_init(
     int                      *fds;
 
     s->fd        = fd;
+    s->listen    = listen;
     s->connected = connected;
     s->config    = evpl_config(evpl);
+
+    s->accept_callback       = accept_callback;
+    s->read_callback         = read_callback;
+    s->read_packets_callback = read_packets_callback;
+    s->write_callback        = write_callback;
 
     max_fd = xlio->api->extra->get_socket_rings_num(fd);
 
@@ -428,8 +658,9 @@ evpl_xlio_socket_init(
             xlio->poll = evpl_add_poll(evpl, evpl_xlio_poll, xlio);
         }
 
-        s->xlio_event.read_callback  = read_callback;
-        s->xlio_event.write_callback = write_callback;
+        s->xlio_event.writable       = connected;
+        s->xlio_event.write_interest = 0;
+        s->xlio_event.active         = 0;
 
         res = xlio->api->setsockopt(s->fd, SOL_SOCKET, SO_XLIO_USER_DATA, &s,
                                     sizeof(s));
@@ -438,9 +669,20 @@ evpl_xlio_socket_init(
 
     } else {
         evpl_xlio_debug("EVPL XLIO socket fd %d not offloaded", fd);
-        s->offloaded                 = 0;
-        s->xlio_event.write_interest = 0;
-        s->xlio_event.active         = 0;
-        s->xlio_event.writable       = 1;
+        s->offloaded = 0;
+
+        s->event.fd             = s->fd;
+        s->event.read_callback  = evpl_xlio_read_event;
+        s->event.write_callback = evpl_xlio_write_event;
+        s->event.error_callback = evpl_xlio_error_event;
+
+        evpl_add_event(evpl, &s->event);
+        evpl_event_read_interest(evpl, &s->event);
+
     }
+
+    if (listen) {
+        DL_APPEND(xlio->listen_sockets, s);
+    }
+
 } /* evpl_socket_init */

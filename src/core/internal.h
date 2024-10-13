@@ -16,13 +16,10 @@
 #define EVPL_BVEC_EXTERNAL 0x01
 
 struct evpl_bvec {
-    void        *data;
-    unsigned int length;
-    unsigned int flags;
-    union {
-        struct evpl_buffer *buffer;
-        void               *external;
-    };
+    struct evpl_buffer *buffer;
+    void               *data;
+    unsigned int        length;
+    unsigned int        pad;
 };
 
 struct evpl_config {
