@@ -11,7 +11,6 @@ enable_testing()
 message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
 
 set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};/opt/nvidia")
-link_directories("/opt/nvidia/lib")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(EVPL_MECH epoll)

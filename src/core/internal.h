@@ -13,6 +13,9 @@
 
 #include "core/evpl.h"
 
+#define NS_PER_S           (1000000000UL)
+
+
 #define EVPL_BVEC_EXTERNAL 0x01
 
 struct evpl_bvec {
@@ -34,6 +37,8 @@ struct evpl_config {
     unsigned int bvec_ring_size;
     unsigned int dgram_ring_size;
     unsigned int resolve_timeout_ms;
+    unsigned int spin_ns;
+    unsigned int wait_ms;
 
     unsigned int rdmacm_enabled;
     unsigned int rdmacm_cq_size;
@@ -139,5 +144,18 @@ void
 evpl_bvec_alloc_datagram(
     struct evpl      *evpl,
     struct evpl_bvec *r_bvec);
+
+static uint64_t
+evpl_ts_interval(
+    const struct timespec *end,
+    const struct timespec *start)
+{
+    return NS_PER_S * (end->tv_sec - start->tv_sec) + (end->tv_nsec - start->
+                                                       tv_nsec);
+} // evpl_ts_interval
+
+void
+evpl_activity(
+    struct evpl *evpl);
 
 #endif // ifndef FORCE_INLINE

@@ -25,6 +25,8 @@ evpl_config_init(void)
     config->max_datagram_size  = 65536;
     config->max_datagram_batch = 16;
     config->resolve_timeout_ms = 5000;
+    config->spin_ns            = 1000000;
+    config->wait_ms            = 1;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 

@@ -22,11 +22,7 @@
 
 #include "core/internal.h"
 #if EVPL_MECH == epoll
-#if HAVE_XLIO
-#include "xlio/epoll.h"
-#else  /* if HAVE_XLIO */
 #include "core/epoll.h"
-#endif /* if HAVE_XLIO */
 #else  /* if EVPL_MECH == epoll */
 #error  No EVPL_MECH
 #endif /* if EVPL_MECH == epoll */
@@ -68,9 +64,9 @@ struct evpl_shared *evpl_shared      = NULL;
 struct evpl {
     struct evpl_core       core; /* must be first */
 
-
-    void                  *protocol_private[EVPL_NUM_PROTO];
-    void                  *framework_private[EVPL_NUM_FRAMEWORK];
+    struct timespec        last_activity_ts;
+    uint64_t               activity;
+    uint64_t               last_activity;
 
     struct evpl_poll      *poll;
     int                    num_poll;
@@ -79,8 +75,7 @@ struct evpl {
     struct evpl_event    **active_events;
     int                    num_active_events;
     int                    max_active_events;
-
-    int                    active_reserve;
+    int                    num_events;
 
     struct evpl_deferral **active_deferrals;
     int                    num_active_deferrals;
@@ -94,6 +89,9 @@ struct evpl {
     struct evpl_endpoint  *endpoints;
     struct evpl_config    *config;
     struct evpl_bind      *binds;
+
+    void                  *protocol_private[EVPL_NUM_PROTO];
+    void                  *framework_private[EVPL_NUM_FRAMEWORK];
 
 };
 
@@ -165,7 +163,6 @@ evpl_shared_init(struct evpl_config *config)
     if (config->xlio_enabled) {
         evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_XLIO, &
                             evpl_framework_xlio);
-        evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_XLIO_UDP, &evpl_xlio_udp);
         evpl_protocol_init(evpl_shared, EVPL_STREAM_XLIO_TCP, &evpl_xlio_tcp);
     }
 
@@ -267,18 +264,35 @@ evpl_wait(
     struct evpl_poll     *poll;
     int                   i;
     int                   msecs = max_msecs;
+    struct timespec       now;
+    uint64_t              elapsed;
 
     for (i = 0; i < evpl->num_poll; ++i) {
         poll = &evpl->poll[i];
         poll->callback(evpl, poll->private_data);
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    if (evpl->activity != evpl->last_activity) {
+        evpl->last_activity    = evpl->activity;
+        evpl->last_activity_ts = now;
+        elapsed                = 0;
+    } else {
+        elapsed = evpl_ts_interval(&now, &evpl->last_activity_ts);
+    }
+
     if (evpl->num_poll) {
-        msecs = 0;
+        if (elapsed > evpl->config->spin_ns) {
+            msecs = evpl->config->wait_ms;
+        } else {
+            msecs = 0;
+        }
     }
 
     if (!evpl->num_active_events &&
-        !evpl->num_active_deferrals) {
+        !evpl->num_active_deferrals &&
+        (msecs || evpl->num_events)) {
         evpl_core_wait(&evpl->core, msecs);
     }
 
@@ -800,7 +814,7 @@ evpl_buffer_alloc(struct evpl *evpl)
         LL_DELETE(evpl->free_buffers, buffer);
         return buffer;
     } else {
-        buffer       = evpl_malloc(sizeof(*buffer));
+        buffer       = evpl_zalloc(sizeof(*buffer));
         buffer->size = evpl->config->buffer_size;
 
         buffer->data = evpl_valloc(
@@ -825,7 +839,7 @@ evpl_buffer_alloc(struct evpl *evpl)
     buffer->refcnt   = 0;
     buffer->used     = 0;
     buffer->next     = NULL;
-    buffer->external = 0;
+    buffer->external = NULL;
 
     return buffer;
 } /* evpl_buffer_alloc */
@@ -1100,10 +1114,15 @@ evpl_sendv(
         if (bvec->length <= left) {
             left -= bvec->length;
         } else {
-            bvec->length = left;
-            left         = 0;
+            bind->bvec_send.length -= bvec->length - left;
+            bvec->length            = left;
+            left                    = 0;
         }
     }
+
+    evpl_core_abort_if(left,
+                       "evpl_send provided iov %d bytes short of covering length of %d",
+                       left, length);
 
     if (!bind->protocol->stream) {
         dgram        = evpl_dgram_ring_add(&bind->dgram_send);
@@ -1144,10 +1163,15 @@ evpl_sendtov(
         if (bvec->length <= left) {
             left -= bvec->length;
         } else {
-            bvec->length = left;
-            left         = 0;
+            bind->bvec_send.length -= bvec->length - left;
+            bvec->length            = left;
+            left                    = 0;
         }
     }
+
+    evpl_core_abort_if(left,
+                       "evpl_send provided iov %d bytes short of covering length of %d",
+                       left, length);
 
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
@@ -1537,7 +1561,17 @@ evpl_add_event(
     struct evpl_event *event)
 {
     evpl_core_add(&evpl->core, event);
+    evpl->num_events++;
 } /* evpl_add_event */
+
+void
+evpl_remove_event(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    evpl_core_remove(&evpl->core, event);
+    evpl->num_events--;
+} /* evpl_remove_event */
 
 struct evpl_poll *
 evpl_add_poll(
@@ -1759,3 +1793,8 @@ evpl_bvec_length(const struct evpl_bvec *bvec)
     return bvec->length;
 } /* evpl_bvec_length */
 
+void
+evpl_activity(struct evpl *evpl)
+{
+    evpl->activity++;
+} /* evpl_activity */

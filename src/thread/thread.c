@@ -70,6 +70,8 @@ evpl_thread_function(void *ptr)
         evpl_wait(evpl, -1);
     }
 
+    evpl_remove_event(evpl, &event);
+
     evpl_destroy(evpl);
 
     return NULL;

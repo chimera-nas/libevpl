@@ -769,10 +769,15 @@ evpl_rdmacm_destroy(
     struct evpl_rdmacm_request *req;
     int                         i, j;
 
+    evpl_remove_event(evpl, &rdmacm->event);
+
     rdma_destroy_event_channel(rdmacm->event_channel);
 
     for (i = 0; i < rdmacm->num_devices; ++i) {
         dev = &rdmacm->devices[i];
+
+        evpl_remove_event(evpl, &dev->event);
+
         ibv_destroy_srq(dev->srq);
 
         for (j = 0; j < dev->srq_max; ++j) {

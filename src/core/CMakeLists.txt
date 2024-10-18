@@ -10,9 +10,7 @@ set(CORE_SRC
 )
 
 if (EVPL_MECH STREQUAL "epoll") 
-    if (NOT HAVE_XLIO) 
-        set(CORE_SRC ${CORE_SRC} epoll.c epoll.h)
-    endif()
+    set(CORE_SRC ${CORE_SRC} epoll.c epoll.h)
 elseif (EVPL_MECH STREQUAL "kqueue")
     set(CORE_SRC ${COER_SRC} kqueue.c kqueue.h)
 else()

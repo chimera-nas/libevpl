@@ -81,6 +81,11 @@ evpl_add_event(
     struct evpl       *evpl,
     struct evpl_event *event);
 
+void
+evpl_remove_event(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+
 /*
  * The evpl_core is always the first member of evpl,
  * so we can cast between them

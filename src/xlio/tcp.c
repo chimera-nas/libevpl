@@ -6,6 +6,9 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <linux/errqueue.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -21,165 +24,56 @@
 #include "common.h"
 
 static inline void
-evpl_check_conn(
-    struct evpl             *evpl,
-    struct evpl_bind        *bind,
-    struct evpl_xlio        *xlio,
-    struct evpl_xlio_socket *s)
+evpl_xlio_prepare_iov(
+    struct evpl_xlio_socket      *s,
+    struct iovec                 *iov,
+    struct xlio_socket_send_attr *send_attr,
+    struct evpl_bvec_ring        *ring)
 {
-    struct evpl_notify notify;
-    socklen_t          len;
-    int                rc, err;
+    struct evpl_buffer *buffer;
+    struct ibv_mr      *mr;
+    struct evpl_bvec   *bvec;
+    int                 pos = ring->tail;
 
-    if (unlikely(!s->connected)) {
-        len = sizeof(err);
-        rc  = xlio->api->getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len);
-        evpl_xlio_fatal_if(rc, "Failed to get SO_ERROR from socket");
+    bvec = &ring->bvec[pos];
 
-        if (err) {
-            evpl_defer(evpl, &bind->close_deferral);
-        } else {
-            notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-            notify.notify_status = 0;
-            bind->notify_callback(evpl, bind, &notify, bind->private_data);
-        }
+    buffer = bvec->buffer;
 
-        s->connected = 1;
+    mr = (struct ibv_mr *) buffer->framework_private[EVPL_FRAMEWORK_XLIO];
+
+    if (unlikely(!mr)) {
+
+        mr = ibv_reg_mr(s->pd, buffer->data, buffer->size,
+                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_RELAXED_ORDERING);
+
+        evpl_xlio_abort_if(!mr, "Failed to create XLIO MR");
+
+        buffer->framework_private[EVPL_FRAMEWORK_XLIO] = mr;
     }
 
-} /* evpl_check_conn */
+    send_attr->mkey = mr->lkey;
 
-int
+    iov->iov_base = bvec->data;
+    iov->iov_len  = bvec->length;
+
+    if (bvec->length <= 64) {
+        send_attr->flags |= XLIO_SOCKET_SEND_FLAG_INLINE;
+    } else {
+        send_attr->flags       = 0;
+        send_attr->userdata_op = bvec->length;
+    }
+
+} /* evpl_xlio_prepare_iov */
+
+void
 evpl_xlio_tcp_read(
     struct evpl             *evpl,
     struct evpl_xlio_socket *s)
 {
-    struct evpl_xlio  *xlio;
     struct evpl_bind  *bind = evpl_private2bind(s);
-    struct evpl_bvec  *bvec;
     struct evpl_notify notify;
-    struct iovec       iov[2];
-    ssize_t            res, total, remain;
-    int                length, nbvec, i;
-
-    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
-
-    evpl_check_conn(evpl, bind, xlio, s);
-
-    if (s->recv1.length == 0) {
-        if (s->recv2.length) {
-            s->recv1        = s->recv2;
-            s->recv2.length = 0;
-        } else {
-            evpl_bvec_alloc_whole(evpl, &s->recv1);
-        }
-    }
-
-    if (s->recv2.length == 0) {
-        evpl_bvec_alloc_whole(evpl, &s->recv2);
-    }
-
-    iov[0].iov_base = s->recv1.data;
-    iov[0].iov_len  = s->recv1.length;
-    iov[1].iov_base = s->recv2.data;
-    iov[1].iov_len  = s->recv2.length;
-
-    total = iov[0].iov_len + iov[1].iov_len;
-
-    res = xlio->api->readv(s->fd, iov, 2);
-
-    if (res <= 0) {
-        goto out;
-    }
-
-    if (s->recv1.length >= res) {
-        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1, res);
-    } else {
-        remain = res - s->recv1.length;
-        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1,
-                              s->recv1.length);
-        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv2, remain);
-    }
-
-    if (bind->segment_callback) {
-
-        bvec = alloca(sizeof(struct evpl_bvec) * s->config->max_num_bvec);
-
-        while (1) {
-
-            length = bind->segment_callback(evpl, bind, bind->private_data);
-
-            if (length == 0 ||
-                evpl_bvec_ring_bytes(&bind->bvec_recv) < length) {
-                break;
-            }
-
-            if (unlikely(length < 0)) {
-                evpl_defer(evpl, &bind->close_deferral);
-                goto out;
-            }
-
-            nbvec = evpl_bvec_ring_copyv(evpl, bvec, &bind->bvec_recv, length);
-
-            notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
-            notify.recv_msg.bvec   = bvec;
-            notify.recv_msg.nbvec  = nbvec;
-            notify.recv_msg.length = length;
-            notify.recv_msg.addr   = bind->remote;
-
-            bind->notify_callback(evpl, bind, &notify, bind->private_data);
-
-            for (i = 0; i < nbvec; ++i) {
-                evpl_bvec_release(evpl, &bvec[i]);
-            }
-
-        }
-
-    } else {
-        notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
-        notify.notify_status = 0;
-        bind->notify_callback(evpl, bind, &notify, bind->private_data);
-    }
-
- out:
-
-    if (res > 0 && res < total) {
-        errno = EAGAIN;
-    }
-
-    return res;
-
-} /* evpl_read_tcp */
-
-void
-evpl_xlio_tcp_read_packets(
-    struct evpl             *evpl,
-    struct evpl_xlio_socket *s,
-    struct sockaddr_in      *srcaddr,
-    struct xlio_buff_t      *buffs,
-    int                      nbufs,
-    uint16_t                 total_length)
-{
-    struct evpl_xlio   *xlio;
-    struct evpl_bind   *bind = evpl_private2bind(s);
-    struct evpl_bvec   *bvec;
-    struct evpl_notify  notify;
-    struct xlio_buff_t *cur = buffs;
-    int                 i, length, nbvec;
-
-    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
-
-    for (i = 0; i < nbufs; ++i, cur = cur->next) {
-
-        bvec = evpl_bvec_ring_add_new(&bind->bvec_recv);
-
-        bvec->buffer = evpl_xlio_buffer_alloc(evpl, xlio, cur);
-        bvec->data   = cur->payload;
-        bvec->length = cur->len;
-
-        bind->bvec_recv.length += cur->len;
-
-    }
+    struct evpl_bvec  *bvec;
+    int                i, length, nbvec;
 
     if (bind->segment_callback) {
 
@@ -221,55 +115,32 @@ evpl_xlio_tcp_read_packets(
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
-} /* evpl_xlio_tcp_read_packets */
+} /* evpl_xlio_tcp_read */
 
 int
 evpl_xlio_tcp_write(
     struct evpl             *evpl,
     struct evpl_xlio_socket *s)
 {
-    struct evpl_xlio  *xlio;
-    struct evpl_bind  *bind = evpl_private2bind(s);
-    struct evpl_notify notify;
-    struct iovec      *iov;
-    int                maxiov = s->config->max_num_bvec;
-    int                niov;
-    ssize_t            res, total;
+    struct evpl_xlio            *xlio;
+    struct evpl_bind            *bind = evpl_private2bind(s);
+    struct iovec                 iov;
+    struct xlio_socket_send_attr send_attr;
+    ssize_t                      res;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    iov = alloca(sizeof(struct iovec) * maxiov);
+    evpl_xlio_prepare_iov(s, &iov, &send_attr, &bind->bvec_send);
 
-    evpl_check_conn(evpl, bind, xlio, s);
+    res = xlio->extra->xlio_socket_sendv(s->socket, &iov, 1, &send_attr);
 
-    niov = evpl_bvec_ring_iov(&total, iov, maxiov, &bind->bvec_send);
-
-    evpl_xlio_abort_if(!niov, "tcp write callback ran with nothing to write");
-
-    res = xlio->api->writev(s->fd, iov, niov);
-
-    if (res <= 0) {
-        goto out;
+    if (res) {
+        return res;
     }
 
-    evpl_bvec_ring_consume(evpl, &bind->bvec_send, res);
+    evpl_bvec_ring_consume(evpl, &bind->bvec_send, iov.iov_len);
 
-    if (res && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
-        notify.notify_type   = EVPL_NOTIFY_SENT;
-        notify.notify_status = 0;
-        notify.sent.bytes    = res;
-        notify.sent.msgs     = 0;
-        bind->notify_callback(evpl, bind, &notify, bind->private_data);
-    }
-
- out:
-
-    if (res > 0 && res < total) {
-        errno = EAGAIN;
-    }
-
-    return res;
-
+    return 0;
 } /* evpl_write_tcp */
 
 void
@@ -279,93 +150,33 @@ evpl_xlio_tcp_connect(
 {
     struct evpl_xlio        *xlio;
     struct evpl_xlio_socket *s = evpl_bind_private(bind);
-    int                      rc, flags;
-
-    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
-
-    s->fd = xlio->api->socket(bind->remote->addr->sa_family, SOCK_STREAM, 0);
-
-    evpl_xlio_abort_if(s->fd < 0, "Failed to create tcp socket: %s", strerror(
-                           errno));
-
-    flags = xlio->api->fcntl(s->fd, F_GETFL, 0);
-
-    evpl_xlio_abort_if(flags < 0, "Failed to get socket flags: %s", strerror(
-                           errno));
-
-    rc = xlio->api->fcntl(s->fd, F_SETFL, flags | O_NONBLOCK);
-
-    evpl_xlio_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
-                           errno));
-
-
-    rc = xlio->api->connect(s->fd, bind->remote->addr, bind->remote->addrlen);
-
-    evpl_xlio_abort_if(rc < 0 && errno != EINPROGRESS,
-                       "Failed to connect tcp socket: %s", strerror(errno));
-
-    evpl_xlio_socket_init(evpl, xlio, s, s->fd, 0, 0,
-                          NULL,
-                          evpl_xlio_tcp_read,
-                          evpl_xlio_tcp_read_packets,
-                          evpl_xlio_tcp_write);
-
-} /* evpl_xlio_tcp_connect */
-
-struct evpl_xlio_socket *
-evpl_xlio_tcp_accept(
-    struct evpl             *evpl,
-    struct evpl_xlio_socket *ls,
-    struct evpl_address     *srcaddr,
-    int                      fd)
-{
-    struct evpl_xlio        *xlio;
-    struct evpl_bind        *listen_bind = evpl_private2bind(ls);
-    struct evpl_xlio_socket *s;
-    struct evpl_bind        *new_bind;
-    struct evpl_notify       notify;
+    struct xlio_socket_attr  sock_attr;
     int                      rc;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    rc = xlio->api->fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    memset(&sock_attr, 0, sizeof(sock_attr));
+
+    sock_attr.domain      = bind->remote->addr->sa_family;
+    sock_attr.group       = xlio->poll_group;
+    sock_attr.userdata_sq = (uintptr_t) s;
+
+    rc = xlio->extra->xlio_socket_create(&sock_attr, &s->socket);
+
+    evpl_xlio_abort_if(rc, "Failed to create XLIO tcp socket: %s", strerror(
+                           errno));
+
+    rc = xlio->extra->xlio_socket_connect(s->socket, bind->remote->addr, bind->
+                                          remote->addrlen);
 
     evpl_xlio_abort_if(rc < 0,
-                       "Failed to set socket flags: %s", strerror(errno));
+                       "Failed to connect tcp socket: %s", strerror(errno));
 
-    new_bind = evpl_bind_alloc(evpl,
-                               listen_bind->protocol,
-                               listen_bind->local, srcaddr);
-
-    --srcaddr->refcnt;
-
-    s = evpl_bind_private(new_bind);
-
-    s->fd = fd;
-
-    evpl_xlio_socket_init(evpl, xlio, s, fd, 0, 1,
-                          NULL,
+    evpl_xlio_socket_init(evpl, xlio, s, 0, 0,
                           evpl_xlio_tcp_read,
-                          evpl_xlio_tcp_read_packets,
                           evpl_xlio_tcp_write);
 
-    listen_bind->accept_callback(
-        evpl,
-        listen_bind,
-        new_bind,
-        &new_bind->notify_callback,
-        &new_bind->segment_callback,
-        &new_bind->private_data,
-        listen_bind->private_data);
-
-    notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-    notify.notify_status = 0;
-
-    new_bind->notify_callback(evpl, new_bind, &notify, new_bind->private_data);
-
-    return s;
-
-} /* evpl_xlio_tcp_accept */
+} /* evpl_xlio_tcp_connect */
 
 void
 evpl_xlio_tcp_listen(
@@ -374,41 +185,42 @@ evpl_xlio_tcp_listen(
 {
     struct evpl_xlio        *xlio;
     struct evpl_xlio_socket *s = evpl_bind_private(listen_bind);
-    int                      rc;
-    const int                yes = 1;
+    struct xlio_socket_attr  sock_attr;
+    int                      rc, yes = 1;
+
+    s->evpl = evpl;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    s->fd = xlio->api->socket(listen_bind->local->addr->sa_family, SOCK_STREAM,
-                              0);
+    memset(&sock_attr, 0, sizeof(sock_attr));
 
-    evpl_xlio_abort_if(s->fd < 0, "Failed to create tcp listen socket: %s",
+    sock_attr.domain      = listen_bind->local->addr->sa_family;
+    sock_attr.group       = xlio->poll_group;
+    sock_attr.userdata_sq = (uintptr_t) s;
+
+    rc = xlio->extra->xlio_socket_create(&sock_attr, &s->socket);
+
+    evpl_xlio_abort_if(rc, "Failed to create tcp listen socket: %s",
                        strerror(errno));
 
-    rc = xlio->api->setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(
-                                   int));
+    rc = xlio->extra->xlio_socket_setsockopt(
+        s->socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
-    evpl_xlio_abort_if(rc < 0, "Failed to set socket options: %s", strerror(
-                           errno));
+    evpl_xlio_abort_if(rc < 0, "Failed to set SO_REUSEADDR");
 
-    rc = xlio->api->bind(s->fd, listen_bind->local->addr, listen_bind->local->
-                         addrlen);
+    rc = xlio->extra->xlio_socket_bind(
+        s->socket, listen_bind->local->addr, listen_bind->local->addrlen);
 
     evpl_xlio_abort_if(rc < 0, "Failed to bind listen socket: %s", strerror(
                            errno));
 
-    rc = xlio->api->fcntl(s->fd, F_SETFL, fcntl(s->fd, F_GETFL, 0) | O_NONBLOCK)
-    ;
+    rc = xlio->extra->xlio_socket_listen(s->socket);
 
-    evpl_xlio_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
-                           errno));
+    evpl_xlio_fatal_if(rc < 0, "Failed to listen on listener fd");
 
-    rc = xlio->api->listen(s->fd, evpl_config(evpl)->max_pending);
-
-    evpl_xlio_fatal_if(rc, "Failed to listen on listener fd");
-
-    evpl_xlio_socket_init(evpl, xlio, s, s->fd, 1, 0,
-                          evpl_xlio_tcp_accept, NULL, NULL, NULL);
+    evpl_xlio_socket_init(evpl, xlio, s, 0, 0,
+                          evpl_xlio_tcp_read,
+                          evpl_xlio_tcp_write);
 
 } /* evpl_xlio_tcp_listen */
 

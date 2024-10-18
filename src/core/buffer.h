@@ -15,13 +15,15 @@
 struct evpl_buffer {
     void               *data;
     int                 refcnt;
-    int                 external;
     unsigned int        used;
     unsigned int        size;
     void               *framework_private[EVPL_NUM_FRAMEWORK];
+
+    void               *external;
     void                (*release)(
         struct evpl *evpl,
         struct evpl_buffer *);
+
     struct evpl_buffer *next;
 };
 

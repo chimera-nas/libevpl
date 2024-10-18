@@ -90,6 +90,8 @@ evpl_socket_close(
     struct evpl_socket          *s = evpl_bind_private(bind);
     struct evpl_socket_datagram *datagram;
 
+    evpl_remove_event(evpl, &s->event);
+
     if (s->fd >= 0) {
         close(s->fd);
     }

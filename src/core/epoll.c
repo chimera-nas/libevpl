@@ -60,6 +60,23 @@ evpl_core_add(
     evpl_core_fatal_if(rc, "Failed to add file descriptor to epoll");
 } /* evpl_core_add */
 
+void
+evpl_core_remove(
+    struct evpl_core  *evc,
+    struct evpl_event *event)
+{
+    int rc;
+
+    if (event->fd <= 0) {
+        abort();
+    }
+
+    rc = epoll_ctl(evc->fd, EPOLL_CTL_DEL, event->fd, NULL);
+
+    evpl_core_fatal_if(rc, "Failed to add file descriptor to epoll");
+} /* evpl_core_add */
+
+
 
 void
 evpl_core_wait(

@@ -17,13 +17,12 @@ enum evpl_framework_id {
 
 enum evpl_protocol_id {
     EVPL_DATAGRAM_SOCKET_UDP = 0,
-    EVPL_DATAGRAM_XLIO_UDP   = 1,
-    EVPL_DATAGRAM_RDMACM_RC  = 2,
-    EVPL_DATAGRAM_RDMACM_UD  = 3,
-    EVPL_STREAM_SOCKET_TCP   = 4,
-    EVPL_STREAM_XLIO_TCP     = 5,
-    EVPL_STREAM_RDMACM_RC    = 6,
-    EVPL_NUM_PROTO           = 7
+    EVPL_DATAGRAM_RDMACM_RC  = 1,
+    EVPL_DATAGRAM_RDMACM_UD  = 2,
+    EVPL_STREAM_SOCKET_TCP   = 3,
+    EVPL_STREAM_XLIO_TCP     = 4,
+    EVPL_STREAM_RDMACM_RC    = 5,
+    EVPL_NUM_PROTO           = 6
 };
 
 struct evpl;
