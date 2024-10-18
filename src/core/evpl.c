@@ -28,6 +28,7 @@
 #endif /* if EVPL_MECH == epoll */
 
 #include "core/evpl.h"
+#include "core/evpl_shared.h"
 #include "core/protocol.h"
 #include "core/event.h"
 #include "core/buffer.h"
@@ -48,14 +49,6 @@
 
 struct evpl_uevent {
     struct evpl_deferral deferral;
-};
-
-struct evpl_shared {
-    struct evpl_config    *config;
-    struct evpl_framework *framework[EVPL_NUM_FRAMEWORK];
-    void                  *framework_private[EVPL_NUM_FRAMEWORK];
-    struct evpl_protocol  *protocol[EVPL_NUM_PROTO];
-    void                  *protocol_private[EVPL_NUM_PROTO];
 };
 
 pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
@@ -103,22 +96,7 @@ evpl_framework_init(
 {
     evpl_shared->framework[id] = framework;
 
-    evpl_shared->framework_private[id] = framework->init();
 } /* evpl_framework_init */
-
-static void
-evpl_framework_cleanup(
-    struct evpl_shared *evpl_shared,
-    unsigned int        id)
-{
-    struct evpl_framework *framework = evpl_shared->framework[id];
-
-    if (!framework) {
-        return;
-    }
-
-    framework->cleanup(evpl_shared->framework_private[id]);
-} /* evpl_framework_cleanup */
 
 static void
 evpl_protocol_init(
@@ -140,6 +118,8 @@ evpl_shared_init(struct evpl_config *config)
 
     evpl_shared->config = config;
 
+    evpl_shared->allocator = evpl_allocator_create();
+
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_SOCKET_UDP,
                        &evpl_socket_udp);
 
@@ -148,7 +128,8 @@ evpl_shared_init(struct evpl_config *config)
 
 #ifdef HAVE_RDMACM
     if (config->rdmacm_enabled) {
-        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_RDMACM, &evpl_rdmacm);
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_RDMACM, &
+                            evpl_framework_rdmacm);
         evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_RDMACM_RC,
                            &evpl_rdmacm_rc_datagram);
         evpl_protocol_init(evpl_shared, EVPL_STREAM_RDMACM_RC,
@@ -203,8 +184,13 @@ evpl_cleanup()
 {
     unsigned int i;
 
+    evpl_allocator_destroy(evpl_shared->allocator);
+
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
-        evpl_framework_cleanup(evpl_shared, i);
+        if (evpl_shared->framework_private[i]) {
+            evpl_shared->framework[i]->cleanup(evpl_shared->framework_private[i]
+                                               );
+        }
     }
 
     evpl_config_release(evpl_shared->config);
@@ -216,9 +202,7 @@ evpl_cleanup()
 struct evpl *
 evpl_create()
 {
-    struct evpl           *evpl;
-    struct evpl_framework *framework;
-    int                    i;
+    struct evpl *evpl;
 
     pthread_once(&evpl_shared_once, evpl_init_once);
 
@@ -237,19 +221,7 @@ evpl_create()
     evpl->config = evpl_shared->config;
     evpl->config->refcnt++;
 
-    evpl_core_init(&evpl->core, 64, evpl_shared->framework_private);
-
-    for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
-        framework = evpl_shared->framework[i];
-
-        if (!framework || !framework->create) {
-            continue;
-        }
-
-        evpl->framework_private[i] = framework->create(evpl,
-                                                       evpl_shared->
-                                                       framework_private[i]);
-    }
+    evpl_core_init(&evpl->core, 64);
 
     return evpl;
 } /* evpl_init */
@@ -354,10 +326,10 @@ evpl_listen(
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
-    bind = evpl_bind_alloc(evpl,
-                           evpl_shared->protocol[protocol_id],
-                           endpoint->addr,
-                           NULL);
+    bind = evpl_bind_prepare(evpl,
+                             evpl_shared->protocol[protocol_id],
+                             endpoint->addr,
+                             NULL);
 
     evpl_core_abort_if(!bind->protocol->listen,
                        "evpl_listen called with non-connection oriented protocol");
@@ -479,8 +451,8 @@ evpl_connect(
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
-    bind = evpl_bind_alloc(evpl, protocol, NULL,
-                           endpoint->addr);
+    bind = evpl_bind_prepare(evpl, protocol, NULL,
+                             endpoint->addr);
     bind->notify_callback  = notify_callback;
     bind->segment_callback = segment_callback;
     bind->private_data     = private_data;
@@ -508,8 +480,8 @@ evpl_bind(
     evpl_core_abort_if(!protocol->bind,
                        "Called evpl_bind with connection oriented protocol");
 
-    bind = evpl_bind_alloc(evpl, protocol, endpoint->addr,
-                           NULL);
+    bind = evpl_bind_prepare(evpl, protocol, endpoint->addr,
+                             NULL);
     bind->notify_callback  = callback;
     bind->segment_callback = NULL;
     bind->private_data     = private_data;
@@ -523,7 +495,6 @@ evpl_destroy(struct evpl *evpl)
 {
     struct evpl_framework *framework;
     struct evpl_bind      *bind;
-    struct evpl_buffer    *buffer;
     struct evpl_address   *address;
     int                    i;
 
@@ -555,47 +526,22 @@ evpl_destroy(struct evpl *evpl)
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
         framework = evpl_shared->framework[i];
 
-        if (!framework || !framework->destroy) {
+        if (!framework || !framework->destroy || !evpl->framework_private[i]) {
             continue;
         }
 
         framework->destroy(evpl, evpl->framework_private[i]);
     }
 
-    while (evpl->current_buffer) {
-        buffer = evpl->current_buffer;
-        LL_DELETE(evpl->current_buffer, buffer);
-
-        evpl_buffer_release(evpl, buffer);
+    if (evpl->current_buffer) {
+        LL_PREPEND(evpl->free_buffers, evpl->current_buffer);
     }
 
     if (evpl->datagram_buffer) {
-        evpl_buffer_release(evpl, evpl->datagram_buffer);
+        LL_PREPEND(evpl->free_buffers, evpl->datagram_buffer);
     }
 
-    while (evpl->free_buffers) {
-        buffer = evpl->free_buffers;
-        LL_DELETE(evpl->free_buffers, buffer);
-
-        evpl_core_fatal_if(buffer->refcnt,
-                           "Buffer %p has refcnt %u at evpl_destroy",
-                           buffer, buffer->refcnt);
-
-        for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
-            framework = evpl_shared->framework[i];
-
-            if (!framework || !framework->unregister_buffer) {
-                continue;
-            }
-
-            framework->unregister_buffer(
-                buffer->framework_private[i],
-                evpl_shared->framework_private[i]);
-        }
-
-        evpl_free(buffer->data);
-        evpl_free(buffer);
-    }
+    evpl_allocator_free(evpl_shared->allocator, evpl->free_buffers);
 
     evpl_core_destroy(&evpl->core);
 
@@ -630,13 +576,32 @@ evpl_bind_flush_deferral(
 
 
 struct evpl_bind *
-evpl_bind_alloc(
+evpl_bind_prepare(
     struct evpl          *evpl,
     struct evpl_protocol *protocol,
     struct evpl_address  *local,
     struct evpl_address  *remote)
 {
-    struct evpl_bind *bind;
+    struct evpl_framework *framework = protocol->framework;
+    struct evpl_bind      *bind;
+
+    if (framework) {
+
+        if (!evpl_shared->framework_private[framework->id]) {
+
+            evpl_shared->framework_private[framework->id] =
+                framework->init();
+
+            evpl_allocator_reregister(evpl_shared->allocator);
+        }
+
+        if (!evpl->framework_private[framework->id]) {
+            evpl->framework_private[framework->id] =
+                framework->create(evpl,
+                                  evpl_shared->framework_private[framework->id])
+            ;
+        }
+    }
 
     if (evpl->free_binds) {
         bind = evpl->free_binds;
@@ -688,7 +653,7 @@ evpl_bind_alloc(
     }
 
     return bind;
-} /* evpl_bind_alloc */
+} /* evpl_bind_prepare */
 
 void
 evpl_event_read_interest(
@@ -805,40 +770,17 @@ evpl_event_mark_error(
 static struct evpl_buffer *
 evpl_buffer_alloc(struct evpl *evpl)
 {
-    struct evpl_framework *framework;
-    struct evpl_buffer    *buffer;
-    int                    i;
+    struct evpl_buffer *buffer;
 
     if (evpl->free_buffers) {
         buffer = evpl->free_buffers;
         LL_DELETE(evpl->free_buffers, buffer);
-        return buffer;
     } else {
-        buffer       = evpl_zalloc(sizeof(*buffer));
-        buffer->size = evpl->config->buffer_size;
-
-        buffer->data = evpl_valloc(
-            buffer->size,
-            evpl->config->page_size);
-
-        for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
-            framework = evpl_shared->framework[i];
-
-            if (!framework || !framework->register_buffer) {
-                continue;
-            }
-
-            buffer->framework_private[i] = framework->register_buffer(
-                buffer->data, buffer->size,
-                evpl_shared->framework_private[i]);
-
-        }
-
+        buffer = evpl_allocator_alloc(evpl_shared->allocator);
     }
 
-    buffer->refcnt   = 0;
+    buffer->refcnt   = 1;
     buffer->used     = 0;
-    buffer->next     = NULL;
     buffer->external = NULL;
 
     return buffer;
@@ -857,13 +799,13 @@ evpl_bvec_reserve(
     int                 nbvecs = 0;
     struct evpl_bvec   *bvec;
 
-    if (buffer == NULL) {
-        buffer = evpl_buffer_alloc(evpl);
-        LL_PREPEND(evpl->current_buffer, buffer);
-        ++buffer->refcnt;
-    }
-
     do {
+
+        if (evpl->current_buffer == NULL) {
+            evpl->current_buffer = evpl_buffer_alloc(evpl);
+        }
+
+        buffer = evpl->current_buffer;
 
         pad = evpl_buffer_pad(buffer, alignment);
 
@@ -883,15 +825,12 @@ evpl_bvec_reserve(
         bvec->data   = buffer->data + buffer->used + pad;
         bvec->length = chunk - pad;
 
-        if (!buffer->next) {
-            buffer->next       = evpl_buffer_alloc(evpl);
-            buffer->next->next = NULL;
-            buffer->next->refcnt++;
-        }
-
-        buffer = buffer->next;
-
         left -= chunk - pad;
+
+        if (left) {
+            evpl_buffer_release(evpl, buffer);
+            evpl->current_buffer = NULL;
+        }
 
     } while (left);
 
@@ -919,13 +858,14 @@ evpl_bvec_commit(
 
         buffer->used  = (bvec->data + bvec->length) - buffer->data;
         buffer->used += evpl_buffer_pad(buffer, alignment);
-
-        if (buffer->size - buffer->used < 64) {
-            LL_DELETE(evpl->current_buffer, buffer);
-            evpl_buffer_release(evpl, buffer);
-        }
     }
 
+    buffer = evpl->current_buffer;
+
+    if (buffer && buffer->size - buffer->used < 64) {
+        evpl_buffer_release(evpl, buffer);
+        evpl->current_buffer = NULL;
+    }
 } /* evpl_bvec_commit */
 
 int
@@ -958,8 +898,6 @@ evpl_bvec_alloc_whole(
 
     buffer = evpl_buffer_alloc(evpl);
 
-    buffer->refcnt = 1;
-
     r_bvec->data   = buffer->data;
     r_bvec->length = buffer->size;
     r_bvec->buffer = buffer;
@@ -974,7 +912,6 @@ evpl_bvec_alloc_datagram(
 
     if (!evpl->datagram_buffer) {
         evpl->datagram_buffer = evpl_buffer_alloc(evpl);
-        evpl->datagram_buffer->refcnt++;
     }
 
     buffer = evpl->datagram_buffer;
@@ -1588,7 +1525,6 @@ evpl_add_poll(
 
     return poll;
 } /* evpl_add_poll */
-
 void
 evpl_remove_poll(
     struct evpl      *evpl,

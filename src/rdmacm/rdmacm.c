@@ -47,7 +47,7 @@ struct evpl_rdmacm_request {
 
 struct evpl_rdmacm_sr {
     struct evpl_rdmacm_id *rdmacm_id;
-    struct evpl_buffer    *bufref[8];
+    struct evpl_buffer    *bufref[32];
     int                    nbufref;
     uint64_t               length;
 };
@@ -240,10 +240,10 @@ evpl_rdmacm_event_callback(
                                                 sizeof(cm_event->id->route.addr.
                                                        src_addr));
 
-                bind = evpl_bind_alloc(evpl,
-                                       listen_bind->protocol,
-                                       listen_bind->local,
-                                       remote_addr);
+                bind = evpl_bind_prepare(evpl,
+                                         listen_bind->protocol,
+                                         listen_bind->local,
+                                         remote_addr);
 
                 --remote_addr->refcnt;
 
@@ -361,7 +361,8 @@ evpl_rdmacm_fill_srq(
 
         evpl_bvec_alloc_datagram(evpl, &req->bvec);
 
-        mrset = evpl_buffer_private(req->bvec.buffer, EVPL_FRAMEWORK_RDMACM);
+        mrset = evpl_buffer_framework_private(req->bvec.buffer,
+                                              EVPL_FRAMEWORK_RDMACM);
 
         mr = mrset[dev->index];
 
@@ -866,15 +867,25 @@ void *
 evpl_rdmacm_register(
     void *buffer,
     int   size,
+    void *buffer_private,
     void *private_data)
 {
     struct evpl_rdmacm_devices *rdmacm_devices = private_data;
     struct ibv_mr             **mrset;
     int                         i;
 
-    mrset = evpl_zalloc(sizeof(struct ibv_mr) * rdmacm_devices->num_devices);
+    if (buffer_private) {
+        mrset = (struct ibv_mr **) buffer_private;
+    } else {
+        mrset = evpl_zalloc(sizeof(struct ibv_mr) * rdmacm_devices->num_devices)
+        ;
+    }
 
     for (i = 0; i < rdmacm_devices->num_devices; ++i) {
+
+        if (mrset[i]) {
+            continue;
+        }
 
         mrset[i] = ibv_reg_mr(rdmacm_devices->pd[i], buffer, size,
                               IBV_ACCESS_LOCAL_WRITE |
@@ -978,7 +989,8 @@ evpl_rdmacm_flush_datagram(
 
             cur = evpl_bvec_ring_tail(&bind->bvec_send);
 
-            mrset = evpl_buffer_private(cur->buffer, EVPL_FRAMEWORK_RDMACM);
+            mrset = evpl_buffer_framework_private(cur->buffer,
+                                                  EVPL_FRAMEWORK_RDMACM);
 
             mr = mrset[rdmacm_id->devindex];
 
@@ -1004,6 +1016,7 @@ evpl_rdmacm_flush_datagram(
         qp->wr_flags = 0;
 
         ibv_wr_send(qp);
+
         ibv_wr_set_sge_list(qp, nsge, sge);
 
         if (rdmacm_id->ud) {
@@ -1054,6 +1067,8 @@ evpl_rdmacm_flush_stream(
         return;
     }
 
+    sge = alloca(sizeof(struct ibv_sge) * config->max_num_bvec);
+
     while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
 
         sr = evpl_zalloc(sizeof(*sr));
@@ -1061,8 +1076,6 @@ evpl_rdmacm_flush_stream(
         sr->rdmacm_id = rdmacm_id;
 
         nsge = 0;
-
-        sge = alloca(sizeof(struct ibv_sge) * config->max_num_bvec);
 
         sr->length = 0;
 
@@ -1075,7 +1088,8 @@ evpl_rdmacm_flush_stream(
                 break;
             }
 
-            mrset = evpl_buffer_private(cur->buffer, EVPL_FRAMEWORK_RDMACM);
+            mrset = evpl_buffer_framework_private(cur->buffer,
+                                                  EVPL_FRAMEWORK_RDMACM);
 
             mr = mrset[rdmacm_id->devindex];
 
@@ -1205,15 +1219,15 @@ evpl_rdmacm_release_address(
     evpl_free(ah);
 } /* evpl_rdmacm_release_address */
 
-struct evpl_framework evpl_rdmacm = {
+struct evpl_framework evpl_framework_rdmacm = {
     .id                = EVPL_FRAMEWORK_RDMACM,
     .name              = "RDMACM",
     .init              = evpl_rdmacm_init,
     .cleanup           = evpl_rdmacm_cleanup,
     .create            = evpl_rdmacm_create,
     .destroy           = evpl_rdmacm_destroy,
-    .register_buffer   = evpl_rdmacm_register,
-    .unregister_buffer = evpl_rdmacm_unregister,
+    .register_memory   = evpl_rdmacm_register,
+    .unregister_memory = evpl_rdmacm_unregister,
     .release_address   = evpl_rdmacm_release_address,
 };
 
@@ -1222,6 +1236,7 @@ struct evpl_protocol  evpl_rdmacm_rc_datagram = {
     .connected = 1,
     .stream    = 0,
     .name      = "DATAGRAM_RDMACM_RC",
+    .framework = &evpl_framework_rdmacm,
     .listen    = evpl_rdmacm_listen,
     .connect   = evpl_rdmacm_connect,
     .close     = evpl_rdmacm_close,
@@ -1233,6 +1248,7 @@ struct evpl_protocol  evpl_rdmacm_rc_stream = {
     .connected = 1,
     .stream    = 1,
     .name      = "STREAM_RDMACM_RC",
+    .framework = &evpl_framework_rdmacm,
     .listen    = evpl_rdmacm_listen,
     .connect   = evpl_rdmacm_connect,
     .close     = evpl_rdmacm_close,
@@ -1244,6 +1260,7 @@ struct evpl_protocol  evpl_rdmacm_ud_datagram = {
     .connected = 0,
     .stream    = 0,
     .name      = "DATAGRAM_RDMACM_UD",
+    .framework = &evpl_framework_rdmacm,
     .bind      = evpl_rdmacm_bind,
     .close     = evpl_rdmacm_close,
     .flush     = evpl_rdmacm_flush_datagram,

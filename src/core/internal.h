@@ -30,6 +30,7 @@ struct evpl_config {
     unsigned int max_poll_fd;
     unsigned int max_num_bvec;
     unsigned int buffer_size;
+    uint64_t     slab_size;
     unsigned int page_size;
     unsigned int max_datagram_size;
     unsigned int max_datagram_batch;

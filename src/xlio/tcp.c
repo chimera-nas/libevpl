@@ -22,16 +22,39 @@
 #include "core/protocol.h"
 
 #include "common.h"
+static void
+evpl_xlio_attach_pd(
+    struct evpl *evpl,
+    struct evpl_xlio *xlio,
+    struct ibv_pd *pd)
+{
+    struct evpl_xlio_api *api = xlio->api;
+    struct ibv_pd **cur_pd;
+
+    pthread_mutex_lock(&api->pd_lock);
+
+    for (cur_pd = api->pd; *cur_pd; cur_pd++) {
+        if (*cur_pd == pd) break;
+    }
+
+    if (!cur_pd) {
+        evpl_xlio_debug("need to add pd %p to pdset");
+    }
+
+    pthread_mutex_unlock(&api->pd_lock);
+}
 
 static inline void
 evpl_xlio_prepare_iov(
+    struct evpl *evpl,
+    struct evpl_xlio *xlio,
     struct evpl_xlio_socket      *s,
     struct iovec                 *iov,
     struct xlio_socket_send_attr *send_attr,
     struct evpl_bvec_ring        *ring)
 {
     struct evpl_buffer *buffer;
-    struct ibv_mr      *mr;
+    struct ibv_mr     **mr, **mrset;
     struct evpl_bvec   *bvec;
     int                 pos = ring->tail;
 
@@ -39,19 +62,21 @@ evpl_xlio_prepare_iov(
 
     buffer = bvec->buffer;
 
-    mr = (struct ibv_mr *) buffer->framework_private[EVPL_FRAMEWORK_XLIO];
+again:
 
-    if (unlikely(!mr)) {
+    mrset = (struct ibv_mr **) evpl_buffer_framework_private(buffer,
+                                                         EVPL_FRAMEWORK_XLIO);
 
-        mr = ibv_reg_mr(s->pd, buffer->data, buffer->size,
-                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_RELAXED_ORDERING);
-
-        evpl_xlio_abort_if(!mr, "Failed to create XLIO MR");
-
-        buffer->framework_private[EVPL_FRAMEWORK_XLIO] = mr;
+    for (mr = mrset; *mr; mr++) {
+        if ((*mr)->pd == s->pd) break;
     }
 
-    send_attr->mkey = mr->lkey;
+    if (unlikely(!mr)) {
+        evpl_xlio_attach_pd(evpl, xlio, s->pd);
+        goto again;
+    }
+
+    send_attr->mkey = (*mr)->lkey;
 
     iov->iov_base = bvec->data;
     iov->iov_len  = bvec->length;
@@ -130,7 +155,7 @@ evpl_xlio_tcp_write(
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    evpl_xlio_prepare_iov(s, &iov, &send_attr, &bind->bvec_send);
+    evpl_xlio_prepare_iov(evpl, xlio, s, &iov, &send_attr, &bind->bvec_send);
 
     res = xlio->extra->xlio_socket_sendv(s->socket, &iov, 1, &send_attr);
 
@@ -224,11 +249,13 @@ evpl_xlio_tcp_listen(
 
 } /* evpl_xlio_tcp_listen */
 
-struct evpl_protocol evpl_xlio_tcp = {
+extern struct evpl_framework evpl_framework_xlio;
+struct evpl_protocol         evpl_xlio_tcp = {
     .id        = EVPL_STREAM_XLIO_TCP,
     .connected = 1,
     .stream    = 1,
     .name      = "STREAM_XLIO_TCP",
+    .framework = &evpl_framework_xlio,
     .connect   = evpl_xlio_tcp_connect,
     .close     = evpl_xlio_close,
     .listen    = evpl_xlio_tcp_listen,

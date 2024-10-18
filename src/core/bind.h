@@ -42,7 +42,7 @@ struct evpl_bind {
 };
 
 struct evpl_bind *
-evpl_bind_alloc(
+evpl_bind_prepare(
     struct evpl          *evpl,
     struct evpl_protocol *protocol,
     struct evpl_address  *local,

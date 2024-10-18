@@ -12,12 +12,20 @@
 #include "core/evpl.h"
 #include "core/internal.h"
 
+struct evpl_slab {
+    void             *data;
+    uint64_t          size;
+    void             *framework_private[EVPL_NUM_FRAMEWORK];
+    struct evpl_slab *next;
+};
+
 struct evpl_buffer {
     void               *data;
     int                 refcnt;
     unsigned int        used;
     unsigned int        size;
-    void               *framework_private[EVPL_NUM_FRAMEWORK];
+
+    struct evpl_slab   *slab;
 
     void               *external;
     void                (*release)(
@@ -27,9 +35,44 @@ struct evpl_buffer {
     struct evpl_buffer *next;
 };
 
+struct evpl_allocator {
+    struct evpl_slab   *slabs;
+    struct evpl_buffer *free_buffers;
+    pthread_mutex_t     lock;
+};
+
 void evpl_buffer_release(
     struct evpl        *evpl,
     struct evpl_buffer *buffer);
+
+struct evpl_allocator *
+evpl_allocator_create();
+
+void
+evpl_allocator_destroy(
+    struct evpl_allocator *allocator);
+
+void
+evpl_allocator_reregister(
+    struct evpl_allocator *allocator);
+
+struct evpl_buffer *
+evpl_allocator_alloc(
+    struct evpl_allocator *allocator);
+
+void
+evpl_allocator_free(
+    struct evpl_allocator *allocator,
+    struct evpl_buffer    *buffers);
+
+static inline void *
+evpl_buffer_framework_private(
+    struct evpl_buffer *buffer,
+    int                 framework_id)
+{
+    return buffer->slab->framework_private[framework_id];
+} // evpl_buffer_framework_private
+
 
 /*
  * Copy 'length' bytes of data from 'buffer' into
@@ -109,12 +152,3 @@ evpl_buffer_pad(
 
     return (alignment - (buffer->used & (alignment - 1))) & (alignment - 1);
 } // evpl_buffer_pad
-
-static inline void *
-evpl_buffer_private(
-    struct evpl_buffer *buffer,
-    int                 id)
-{
-    return buffer->framework_private[id];
-} // evpl_buffer_private
-

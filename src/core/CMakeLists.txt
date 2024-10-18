@@ -5,6 +5,7 @@
 set(CORE_SRC
     evpl.c
     evpl.h
+    buffer.c
     config.c
     internal.c
 )

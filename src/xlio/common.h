@@ -31,8 +31,10 @@
 struct xlio_api_t;
 
 struct evpl_xlio_api {
-    void              *hdl;
-    struct xlio_api_t *extra;
+    void               *hdl;
+    struct xlio_api_t  *extra;
+    struct ibv_pd     **pd;
+    pthread_mutex_t     pd_lock;
 };
 
 struct evpl_xlio_ring_fd {
@@ -84,6 +86,7 @@ struct evpl_xlio_socket {
 
 struct evpl_xlio {
     struct xlio_api_t        *extra;
+    struct evpl_xlio_api     *api;
     struct evpl_poll         *poll;
     xlio_poll_group_t         poll_group;
     struct evpl_xlio_socket **active_sockets;

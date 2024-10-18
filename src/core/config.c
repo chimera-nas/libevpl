@@ -19,10 +19,11 @@ evpl_config_init(void)
     config->max_poll_fd        = 16;
     config->max_num_bvec       = 16;
     config->buffer_size        = 2 * 1024 * 1024;
+    config->slab_size          = 1 * 1024 * 1024 * 1024;
     config->refcnt             = 1;
     config->bvec_ring_size     = 1024;
     config->dgram_ring_size    = 256;
-    config->max_datagram_size  = 65536;
+    config->max_datagram_size  = 4096;
     config->max_datagram_batch = 16;
     config->resolve_timeout_ms = 5000;
     config->spin_ns            = 1000000;

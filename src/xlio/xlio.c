@@ -40,7 +40,11 @@ huge_alloc()
     addr = mmap(NULL, XLIO_HUGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED |
                 MAP_HUGETLB, fd, 0);
 
-    evpl_xlio_abort_if(addr == MAP_FAILED, "Failed to allocate huage pages");
+    if (addr == MAP_FAILED) {
+        evpl_xlio_info(
+            "Failed to allocate huge pages, using anonymous pages instead...");
+        addr = evpl_valloc(XLIO_HUGE_SIZE, 4096);
+    }
 
     close(fd);
     return addr;
@@ -89,6 +93,8 @@ evpl_xlio_init()
     setenv("XLIO_SOCKETXTREME", "1", 1);
     //setenv("XLIO_MEMORY_LIMIT_USER", "1073741824", 1);
     //setenv("XLIO_MEMORY_LIMIT", "2147483648", 1);
+
+    pthread_mutex_init(&api->pd_lock, NULL);
 
     api->hdl = dlopen("/opt/nvidia/lib/libxlio.so", RTLD_LAZY);
 
@@ -224,9 +230,9 @@ evpl_xlio_socket_accept(
     xlio->extra->xlio_socket_getpeername(sock, srcaddr->addr, &srcaddr->addrlen)
     ;
 
-    new_bind = evpl_bind_alloc(evpl,
-                               listen_bind->protocol,
-                               listen_bind->local, srcaddr);
+    new_bind = evpl_bind_prepare(evpl,
+                                 listen_bind->protocol,
+                                 listen_bind->local, srcaddr);
 
     --srcaddr->refcnt;
 
@@ -361,6 +367,7 @@ evpl_xlio_create(
 
     api = private_data;
 
+    xlio->api   = api;
     xlio->extra = api->extra;
 
     memset(&poll_attr, 0, sizeof(poll_attr));
@@ -478,6 +485,23 @@ evpl_xlio_socket_init(
 
 } /* evpl_socket_init */
 
+void *
+evpl_xlio_register(
+    void *buffer,
+    int   size,
+    void *buffer_private,
+    void *private_data)
+{
+    return NULL;
+}
+
+void
+evpl_xlio_unregister(
+    void *buffer_private,
+    void *private_data)
+{
+}
+
 struct evpl_framework evpl_framework_xlio = {
     .id      = EVPL_FRAMEWORK_XLIO,
     .name    = "XLIO",
@@ -485,4 +509,6 @@ struct evpl_framework evpl_framework_xlio = {
     .cleanup = evpl_xlio_cleanup,
     .create  = evpl_xlio_create,
     .destroy = evpl_xlio_destroy,
+    .register_memory   = evpl_xlio_register,
+    .unregister_memory = evpl_xlio_unregister,
 };

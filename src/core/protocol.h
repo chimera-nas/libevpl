@@ -32,12 +32,17 @@ struct evpl_framework {
         struct evpl *evpl,
         void        *private_data);
 
-    /* per-memory-buffer state, can be NULL if not required */
-    void       * (*register_buffer)(
+    /* per-memory-buffer state, can be NULL if not required
+     * if device changes occur, may be called repeatedly on the
+     * same buffer, in which case buffer_private will provide
+     * the previous returned value
+     */
+    void       * (*register_memory)(
         void *buffer,
         int   size,
+        void *buffer_private,
         void *thread_private);
-    void         (*unregister_buffer)(
+    void         (*unregister_memory)(
         void *buffer_private,
         void *thread_private);
 
@@ -53,27 +58,30 @@ struct evpl_framework {
  */
 struct evpl_protocol {
     /* unique ID number for each protocol */
-    unsigned int id;
+    unsigned int           id;
 
     /* 1 iff connection oriented protocol */
-    unsigned int connected;
+    unsigned int           connected;
 
     /* 1 iff stream oriented protocol */
-    unsigned int stream;
+    unsigned int           stream;
 
     /* human readable name for protocol, no spaces */
-    const char  *name;
+    const char            *name;
+
+    /* pointer to associated framework, or NULL if no framework */
+    struct evpl_framework *framework;
 
     /*
      * Callbacks needed for all protocols
      */
 
-    void         (*close)(
+    void                   (*close)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
     /* Called when new data is available to be written */
-    void         (*flush)(
+    void                   (*flush)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
@@ -82,11 +90,11 @@ struct evpl_protocol {
      * Callbacks for connection-oriented protocols
      */
 
-    void         (*connect)(
+    void                   (*connect)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
-    void         (*listen)(
+    void                   (*listen)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
@@ -94,7 +102,7 @@ struct evpl_protocol {
      * Callbacks for non-connection-oriented protocols
      */
 
-    void         (*bind)(
+    void                   (*bind)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 };

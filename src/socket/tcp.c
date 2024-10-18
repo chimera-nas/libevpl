@@ -312,9 +312,9 @@ evpl_accept_tcp(
         evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
                                  errno));
 
-        new_bind = evpl_bind_alloc(evpl,
-                                   listen_bind->protocol,
-                                   listen_bind->local, remote_addr);
+        new_bind = evpl_bind_prepare(evpl,
+                                     listen_bind->protocol,
+                                     listen_bind->local, remote_addr);
 
         --remote_addr->refcnt;
         s = evpl_bind_private(new_bind);

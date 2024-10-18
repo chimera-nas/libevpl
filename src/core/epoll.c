@@ -17,10 +17,9 @@
 int
 evpl_core_init(
     struct evpl_core *evc,
-    int               max_events,
-    void            **framework_private)
+    int               max_events)
 {
-    evc->fd = epoll_create(255);     /* size is ignored in linux >= 2.6.8 */
+    evc->fd = epoll_create(255);      /* size is ignored in linux >= 2.6.8 */
 
     if (evc->fd < 0) {
         return errno;
