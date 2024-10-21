@@ -20,7 +20,7 @@ int main(int argc, char *argv[])
 
     evpl_init(NULL);
 
-    threadpool = evpl_threadpool_create(16, thread_init, &number);
+    threadpool = evpl_threadpool_create(16, thread_init, NULL, &number);
 
     evpl_threadpool_destroy(threadpool);
 

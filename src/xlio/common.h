@@ -28,13 +28,15 @@
 #define evpl_xlio_abort_if(cond, ...) \
         evpl_abort_if(cond, "xlio", __VA_ARGS__)
 
+#define EVPL_XLIO_MAX_PD 16
+
 struct xlio_api_t;
 
 struct evpl_xlio_api {
-    void               *hdl;
-    struct xlio_api_t  *extra;
-    struct ibv_pd     **pd;
-    pthread_mutex_t     pd_lock;
+    void              *hdl;
+    struct xlio_api_t *extra;
+    struct ibv_pd     *pd[EVPL_XLIO_MAX_PD];
+    pthread_mutex_t    pd_lock;
 };
 
 struct evpl_xlio_ring_fd {
@@ -63,6 +65,13 @@ typedef void (*evpl_xlio_error_callback_t)(
     struct evpl_xlio_socket *s);
 
 
+struct evpl_xlio_zc {
+    struct evpl_buffer  *buffer;
+    unsigned int         length;
+    int                  complete;
+    struct evpl_xlio_zc *next;
+};
+
 struct evpl_xlio_socket {
     struct evpl               *evpl;
 
@@ -70,12 +79,15 @@ struct evpl_xlio_socket {
     evpl_xlio_write_callback_t write_callback;
 
     struct ibv_pd             *pd;
+    int                        pd_index;
 
     int                        readable;
     int                        writable;
     int                        write_interest;
     int                        active;
+    int                        closed;
 
+    uint64_t                   zc_pending;
 
     xlio_socket_t              socket;
 
@@ -91,6 +103,7 @@ struct evpl_xlio {
     xlio_poll_group_t         poll_group;
     struct evpl_xlio_socket **active_sockets;
     struct evpl_buffer       *free_xlio_buffers;
+    struct evpl_xlio_zc      *free_zc;
     int                       num_active_sockets;
     int                       max_active_sockets;
 };
@@ -111,6 +124,28 @@ evpl_xlio_buffer_free(
 
     LL_PREPEND(xlio->free_xlio_buffers, buffer);
 } // evpl_xlio_buffer_free
+
+static inline struct evpl_xlio_zc *
+evpl_xlio_alloc_zc(struct evpl_xlio *xlio)
+{
+    struct evpl_xlio_zc *zc;
+
+    if (xlio->free_zc) {
+        zc = xlio->free_zc;
+        LL_DELETE(xlio->free_zc, zc);
+    } else {
+        zc = evpl_zalloc(sizeof(*zc));
+    }
+    return zc;
+} // evpl_xlio_alloc_zc
+
+static inline void
+evpl_xlio_free_zc(
+    struct evpl_xlio    *xlio,
+    struct evpl_xlio_zc *zc)
+{
+    LL_PREPEND(xlio->free_zc, zc);
+} // evpl_xlio_free_zc
 
 static inline struct evpl_buffer *
 evpl_xlio_buffer_alloc(
@@ -152,7 +187,24 @@ evpl_xlio_close(
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
     if (s->socket) {
+
+        /* XXX libxlio seems not to handle case where we tear down a socket
+         * that has actie zero-copy sends
+         */
+        while (s->zc_pending) {
+            xlio->extra->xlio_poll_group_poll(xlio->poll_group);
+        }
+
         xlio->extra->xlio_socket_destroy(s->socket);
+
+#if 0
+        while (!s->closed) {
+            evpl_xlio_debug("Waiting for socket to close");
+            xlio->extra->xlio_poll_group_poll(xlio->poll_group);
+        }
+#endif // if 0
+
+        s->socket = 0;
     }
 
 } /* evpl_tcp_close_conn */

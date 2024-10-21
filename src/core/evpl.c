@@ -552,14 +552,25 @@ evpl_destroy(struct evpl *evpl)
     evpl_free(evpl);
 } /* evpl_destroy */
 
+void
+evpl_bind_close(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    if (!(bind->flags & EVPL_BIND_CLOSED)) {
+        bind->flags |= EVPL_BIND_CLOSED;
+        bind->protocol->close(evpl, bind);
+    }
+} /* evpl_bind_close */
+
 static void
 evpl_bind_close_deferral(
     struct evpl *evpl,
     void        *private_data)
 {
-    struct evpl_bind *conn = private_data;
+    struct evpl_bind *bind = private_data;
 
-    evpl_bind_destroy(evpl, conn);
+    evpl_bind_close(evpl, bind);
 } /* evpl_bind_close_deferral */
 
 static void
@@ -638,6 +649,7 @@ evpl_bind_prepare(
     bind->notify_callback  = NULL;
     bind->segment_callback = NULL;
     bind->private_data     = NULL;
+    bind->flags            = 0;
 
     bind->protocol = protocol;
     bind->local    = local;
@@ -651,6 +663,8 @@ evpl_bind_prepare(
     if (remote) {
         remote->refcnt++;
     }
+
+    memset(bind + 1, 0, EVPL_MAX_PRIVATE);
 
     return bind;
 } /* evpl_bind_prepare */
@@ -1143,7 +1157,7 @@ evpl_sendtoepv(
 } /* evpl_sendtoepv */
 
 void
-evpl_close(
+evpl_disconnect(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
@@ -1177,6 +1191,8 @@ evpl_bind_destroy(
 {
     struct evpl_notify notify;
 
+    evpl_bind_close(evpl, bind);
+
     if (bind->notify_callback) {
         notify.notify_type   = EVPL_NOTIFY_DISCONNECTED;
         notify.notify_status = 0;
@@ -1184,10 +1200,9 @@ evpl_bind_destroy(
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
-    bind->protocol->close(evpl, bind);
-
     evpl_bvec_ring_clear(evpl, &bind->bvec_recv);
     evpl_bvec_ring_clear(evpl, &bind->bvec_send);
+    evpl_dgram_ring_clear(evpl, &bind->dgram_send);
 
     DL_DELETE(evpl->binds, bind);
 

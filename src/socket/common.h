@@ -1,5 +1,8 @@
 #pragma once
 
+#include <netinet/tcp.h> // For TCP_NODELAY
+
+
 #include "utlist.h"
 #include "core/evpl.h"
 
@@ -76,9 +79,31 @@ evpl_socket_init(
     int                 fd,
     int                 connected)
 {
+    int flags, rc;
+    int res, yes = 1;
+
     s->fd        = fd;
     s->connected = connected;
     s->config    = evpl_config(evpl);
+
+
+    flags = fcntl(s->fd, F_GETFL, 0);
+
+    evpl_socket_abort_if(flags < 0, "Failed to get socket flags: %s", strerror(
+                             errno));
+
+    rc = fcntl(s->fd, F_SETFL, flags | O_NONBLOCK);
+
+    evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
+                             errno));
+
+
+    res = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, (char *) &yes, sizeof(yes)
+                     );
+
+    evpl_socket_abort_if(res, "Failed to set TCP_QUICKACK on socket");
+
+
 } /* evpl_socket_init */
 
 
@@ -113,6 +138,7 @@ evpl_socket_close(
         evpl_free(datagram);
     }
 
+    evpl_bind_destroy(evpl, bind);
 } /* evpl_tcp_close_conn */
 
 static inline void

@@ -22,7 +22,9 @@
 
 struct evpl_thread {
     pthread_t                   thread;
+    struct evpl_event           event;
     evpl_thread_init_callback_t init_callback;
+    evpl_thread_wake_callback_t wake_callback;
     void                       *private_data;
     int                         run;
     int                         eventfd;
@@ -38,8 +40,9 @@ evpl_thread_event(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    uint64_t word;
-    ssize_t  rc;
+    struct evpl_thread *evpl_thread;
+    uint64_t            word;
+    ssize_t             rc;
 
     rc = read(event->fd, &word, sizeof(word));
 
@@ -47,6 +50,14 @@ evpl_thread_event(
                          "Short read from thread eventfd");
 
     evpl_event_mark_unreadable(event);
+
+    evpl_thread = container_of(event, struct evpl_thread, event);
+
+    if (evpl_thread->wake_callback) {
+        evpl_thread->wake_callback(evpl, evpl_thread->private_data);
+    }
+
+
 } /* evpl_thread_event */
 
 void *
@@ -54,15 +65,14 @@ evpl_thread_function(void *ptr)
 {
     struct evpl_thread *evpl_thread = ptr;
     struct evpl        *evpl;
-    struct evpl_event   event;
 
     evpl = evpl_create();
 
-    event.fd            = evpl_thread->eventfd;
-    event.read_callback = evpl_thread_event;
+    evpl_thread->event.fd            = evpl_thread->eventfd;
+    evpl_thread->event.read_callback = evpl_thread_event;
 
-    evpl_add_event(evpl, &event);
-    evpl_event_read_interest(evpl, &event);
+    evpl_add_event(evpl, &evpl_thread->event);
+    evpl_event_read_interest(evpl, &evpl_thread->event);
 
     evpl_thread->init_callback(evpl, evpl_thread->private_data);
 
@@ -70,7 +80,7 @@ evpl_thread_function(void *ptr)
         evpl_wait(evpl, -1);
     }
 
-    evpl_remove_event(evpl, &event);
+    evpl_remove_event(evpl, &evpl_thread->event);
 
     evpl_destroy(evpl);
 
@@ -80,6 +90,7 @@ evpl_thread_function(void *ptr)
 struct evpl_thread *
 evpl_thread_create(
     evpl_thread_init_callback_t init_function,
+    evpl_thread_wake_callback_t wake_function,
     void                       *private_data)
 {
     struct evpl_thread *evpl_thread;
@@ -87,6 +98,7 @@ evpl_thread_create(
     evpl_thread = evpl_zalloc(sizeof(*evpl_thread));
 
     evpl_thread->init_callback = init_function;
+    evpl_thread->wake_callback = wake_function;
     evpl_thread->private_data  = private_data;
     evpl_thread->run           = 1;
 
@@ -121,11 +133,24 @@ evpl_thread_destroy(struct evpl_thread *evpl_thread)
     evpl_free(evpl_thread);
 } /* evpl_thread_destroy */
 
+void
+evpl_thread_wake(struct evpl_thread *evpl_thread)
+{
+    uint64_t word = 1;
+    ssize_t  rc;
+
+    rc = write(evpl_thread->eventfd, &word, sizeof(word));
+
+    evpl_thread_abort_if(rc != sizeof(word),
+                         "Short write to thread eventfd");
+
+} /* evpl_thread_wake */
 
 struct evpl_threadpool *
 evpl_threadpool_create(
     int                         nthreads,
     evpl_thread_init_callback_t init_function,
+    evpl_thread_wake_callback_t wake_function,
     void                       *private_data)
 {
     struct evpl_threadpool *threadpool;
@@ -138,6 +163,7 @@ evpl_threadpool_create(
 
     for (i = 0; i < nthreads; ++i) {
         threadpool->threads[i] = evpl_thread_create(init_function,
+                                                    wake_function,
                                                     private_data);
     }
 

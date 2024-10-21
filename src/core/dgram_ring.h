@@ -12,7 +12,6 @@ struct evpl_dgram_ring {
     int                alignment;
     int                head;
     int                tail;
-    uint64_t           length;
 };
 
 
@@ -132,3 +131,12 @@ evpl_dgram_ring_remove(struct evpl_dgram_ring *ring)
 {
     ring->tail = (ring->tail + 1) & ring->mask;
 } // evpl_dgram_ring_remove
+
+static inline void
+evpl_dgram_ring_clear(
+    struct evpl            *evpl,
+    struct evpl_dgram_ring *ring)
+{
+    ring->head = 0;
+    ring->tail = 0;
+} // evpl_dgram_ring_clear

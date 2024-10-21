@@ -21,51 +21,28 @@
 #include "xlio.h"
 #include "core/evpl.h"
 #include "core/protocol.h"
+#include "core/evpl_shared.h"
+
+extern struct evpl_shared *evpl_shared;
 
 #include "common.h"
-
-#define XLIO_HUGE_SIZE (2 * 1024 * 1024 * 1024UL)
-void *
-huge_alloc()
-{
-    int   fd, rc;
-    void *addr;
-
-    fd = memfd_create("hugepage_fd", MFD_HUGETLB);
-
-    rc = ftruncate(fd, XLIO_HUGE_SIZE);
-
-    evpl_xlio_abort_if(rc < 0, "Failed to set huge page memory size");
-
-    addr = mmap(NULL, XLIO_HUGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED |
-                MAP_HUGETLB, fd, 0);
-
-    if (addr == MAP_FAILED) {
-        evpl_xlio_info(
-            "Failed to allocate huge pages, using anonymous pages instead...");
-        addr = evpl_valloc(XLIO_HUGE_SIZE, 4096);
-    }
-
-    close(fd);
-    return addr;
-
-} /* huge_alloc */
 
 void *
 evpl_xlio_mem_alloc(size_t size)
 {
-    void *p = huge_alloc();
 
-    return p;
+    evpl_xlio_abort_if(size != evpl_shared->config->slab_size,
+                       "XLIO requested allocation of %ld bytes which is not the slab size of %lu bytes",
+                       size, evpl_shared->config->slab_size);
+
+    return evpl_allocator_alloc_slab(evpl_shared->allocator);
 
 } /* evpl_xlio_mem_alloc */
 
 void
 evpl_xlio_mem_free(void *p)
 {
-    //evpl_xlio_debug("xlio_mem_free ptr %p", p);
-    munmap(p, XLIO_HUGE_SIZE);
-
+    /* No action needed */
 } /* evpl_xlio_mem_free */
 
 typedef int (*getsockopt_fptr_t)(
@@ -84,6 +61,7 @@ evpl_xlio_init()
     socklen_t             len;
     unsigned int          needed_caps;
     getsockopt_fptr_t     xlio_getsockopt;
+    char                  tmp[80];
 
     api = evpl_zalloc(sizeof(*api));
 
@@ -91,8 +69,9 @@ evpl_xlio_init()
     setenv("XLIO_FORK", "0", 0);
     setenv("XLIO_MEM_ALLOC_TYPE", "ANON", 0);
     setenv("XLIO_SOCKETXTREME", "1", 1);
-    //setenv("XLIO_MEMORY_LIMIT_USER", "1073741824", 1);
-    //setenv("XLIO_MEMORY_LIMIT", "2147483648", 1);
+
+    snprintf(tmp, sizeof(tmp), "%lu", evpl_shared->config->slab_size);
+    setenv("XLIO_MEMORY_LIMIT", tmp, 1);
 
     pthread_mutex_init(&api->pd_lock, NULL);
 
@@ -136,11 +115,12 @@ void
 evpl_xlio_cleanup(void *private_data)
 {
     struct evpl_xlio_api *api = private_data;
-    xlio_exit_fptr_t      exit_fn;
 
-    exit_fn = (xlio_exit_fptr_t) dlsym(api->hdl, "xlio_exit");
+    //xlio_exit_fptr_t      exit_fn;
 
-    exit_fn();
+    //exit_fn = (xlio_exit_fptr_t) dlsym(api->hdl, "xlio_exit");
+
+    //exit_fn();
 
     evpl_free(api);
 } /* evpl_xlio_cleanup */
@@ -154,14 +134,20 @@ evpl_xlio_socket_event(
 {
     struct evpl_xlio_socket *s    = (struct evpl_xlio_socket *) userdata_sq;
     struct evpl_bind        *bind = evpl_private2bind(s);
-    struct evpl             *evpl = s->evpl;
+    struct evpl             *evpl;
     struct evpl_xlio        *xlio;
     struct evpl_notify       notify;
 
+    if (!userdata_sq) {
+        return;
+    }
+
+    evpl = s->evpl;
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
     switch (event) {
         case XLIO_SOCKET_EVENT_ESTABLISHED:
+            evpl_xlio_debug("socket %p established", s);
             notify.notify_type   = EVPL_NOTIFY_CONNECTED;
             notify.notify_status = 0;
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
@@ -169,16 +155,20 @@ evpl_xlio_socket_event(
             evpl_xlio_socket_check_active(xlio, s);
             break;
         case XLIO_SOCKET_EVENT_TERMINATED:
-            notify.notify_type   = EVPL_NOTIFY_DISCONNECTED;
-            notify.notify_status = 0;
-            bind->notify_callback(evpl, bind, &notify, bind->private_data);
+            evpl_xlio_debug("socket %p terminated", s);
             s->writable = 0;
             s->readable = 0;
+            s->closed   = 1;
             evpl_xlio_socket_check_active(xlio, s);
+            evpl_bind_destroy(evpl, bind);
             break;
         case XLIO_SOCKET_EVENT_CLOSED:
+            evpl_xlio_debug("socket %p closed", s);
+            evpl_defer(evpl, &bind->close_deferral);
             break;
         case XLIO_SOCKET_EVENT_ERROR:
+            evpl_xlio_debug("socket %p errored", s);
+            evpl_defer(evpl, &bind->close_deferral);
             break;
     } /* switch */
 } /* evpl_xlio_socket_event */
@@ -191,16 +181,26 @@ evpl_xlio_socket_completion(
 {
     struct evpl_xlio_socket *s    = (struct evpl_xlio_socket *) userdata_sq;
     struct evpl             *evpl = s->evpl;
+    struct evpl_xlio        *xlio;
     struct evpl_bind        *bind = evpl_private2bind(s);
+    struct evpl_xlio_zc     *zc   = (struct evpl_xlio_zc *) userdata_op;
     struct evpl_notify       notify;
+
+    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
     if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
         notify.notify_type   = EVPL_NOTIFY_SENT;
         notify.notify_status = 0;
-        notify.sent.bytes    = (uint64_t) userdata_op;
+        notify.sent.bytes    = zc->length;
         notify.sent.msgs     = 0;
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
+
+    evpl_buffer_release(evpl, zc->buffer);
+
+    --s->zc_pending;
+
+    evpl_xlio_free_zc(xlio, zc);
 } /* evpl_xlio_socket_completion */
 
 static void
@@ -318,6 +318,7 @@ evpl_xlio_poll(
             res = s->write_callback(evpl, s);
 
             if (res) {
+                s->closed = 1;
                 evpl_defer(evpl, &bind->close_deferral);
             }
 
@@ -335,7 +336,8 @@ evpl_xlio_poll(
             s->read_callback(evpl, s);
         }
 
-        if (!(s->readable || (s->writable && s->write_interest))) {
+        if (s->closed ||  !(s->readable || (s->writable && s->write_interest)))
+        {
 
             s->active = 0;
 
@@ -410,6 +412,37 @@ evpl_xlio_destroy(
     evpl_free(xlio);
 } /* evpl_xlio_destroy */
 
+static int
+evpl_xlio_attach_pd(
+    struct evpl      *evpl,
+    struct evpl_xlio *xlio,
+    struct ibv_pd    *pd)
+{
+    struct evpl_xlio_api *api = xlio->api;
+    struct ibv_pd       **cur_pd;
+    int                   i;
+
+    evpl_xlio_debug("attaching xlio pd %p", pd);
+
+    pthread_mutex_lock(&api->pd_lock);
+
+    for (i = 0, cur_pd = api->pd; *cur_pd; i++, cur_pd++) {
+        if (*cur_pd == pd) {
+            break;
+        }
+    }
+
+    if (*cur_pd != pd) {
+        *cur_pd = pd;
+        evpl_xlio_debug("pd %p is new, reregistering\n", pd);
+        evpl_allocator_reregister(evpl_shared->allocator);
+    }
+
+    pthread_mutex_unlock(&api->pd_lock);
+
+    return i;
+} /* evpl_xlio_attach_pd */
+
 void
 evpl_xlio_socket_init(
     struct evpl               *evpl,
@@ -421,7 +454,7 @@ evpl_xlio_socket_init(
     evpl_xlio_write_callback_t write_callback)
 {
     int res, yes = 1;
-    int sndbuf = 16 * 1024 * 1024, rcvbuf = 16 * 1024 * 1024;
+    int sndbuf = 2 * 1024 * 1024, rcvbuf = 2 * 1024 * 1024;
 
     s->evpl      = evpl;
     s->listen    = listen;
@@ -466,7 +499,8 @@ evpl_xlio_socket_init(
     if (listen) {
         s->pd = NULL;
     } else {
-        s->pd = xlio->extra->xlio_socket_get_pd(s->socket);
+        s->pd       = xlio->extra->xlio_socket_get_pd(s->socket);
+        s->pd_index = evpl_xlio_attach_pd(evpl, xlio, s->pd);
     }
 
     if (!xlio->poll) {
@@ -477,6 +511,8 @@ evpl_xlio_socket_init(
     s->writable       = connected;
     s->write_interest = 0;
     s->active         = 0;
+    s->closed         = 0;
+    s->zc_pending     = 0;
 
     res = xlio->extra->xlio_socket_setsockopt(
         s->socket, SOL_SOCKET, SO_XLIO_USER_DATA, &s, sizeof(s));
@@ -492,23 +528,70 @@ evpl_xlio_register(
     void *buffer_private,
     void *private_data)
 {
-    return NULL;
-}
+    struct evpl_xlio_api *api = private_data;
+    struct ibv_mr       **mrset;
+    struct ibv_pd       **pd;
+    int                   i;
+
+    evpl_xlio_debug("evpl_xlio_register buffer %p size %d entry", buffer, size);
+
+    if (buffer_private) {
+        evpl_xlio_debug("using existing buffer_private");
+        mrset = (struct ibv_mr **) buffer_private;
+    } else {
+        mrset = evpl_zalloc(sizeof(struct ibv_mr *) * EVPL_XLIO_MAX_PD);
+    }
+
+    for (i = 0, pd = api->pd; *pd; i++, pd++) {
+
+        if (mrset[i]) {
+            continue;
+        }
+
+        evpl_xlio_debug("creating mr for %p length %d on pd %p",
+                        buffer, size, *pd);
+
+        mrset[i] = ibv_reg_mr(*pd, buffer, size,
+                              //0);
+                              IBV_ACCESS_LOCAL_WRITE |
+                              IBV_ACCESS_RELAXED_ORDERING);
+
+        evpl_xlio_abort_if(!mrset[i], "Failed to register XLIO memory region");
+    }
+
+    return mrset;
+} /* evpl_xlio_register */
 
 void
 evpl_xlio_unregister(
     void *buffer_private,
     void *private_data)
 {
-}
+    struct evpl_xlio_api *api   = private_data;
+    struct ibv_mr       **mrset = buffer_private;
+    struct ibv_pd       **pd;
+    int                   i;
+
+    if (!mrset) {
+        return;
+    }
+
+    for (i = 0, pd = api->pd; *pd; ++i, pd++) {
+        ibv_dereg_mr(mrset[i]);
+    }
+
+    evpl_free(mrset);
+
+
+} /* evpl_xlio_unregister */
 
 struct evpl_framework evpl_framework_xlio = {
-    .id      = EVPL_FRAMEWORK_XLIO,
-    .name    = "XLIO",
-    .init    = evpl_xlio_init,
-    .cleanup = evpl_xlio_cleanup,
-    .create  = evpl_xlio_create,
-    .destroy = evpl_xlio_destroy,
+    .id                = EVPL_FRAMEWORK_XLIO,
+    .name              = "XLIO",
+    .init              = evpl_xlio_init,
+    .cleanup           = evpl_xlio_cleanup,
+    .create            = evpl_xlio_create,
+    .destroy           = evpl_xlio_destroy,
     .register_memory   = evpl_xlio_register,
     .unregister_memory = evpl_xlio_unregister,
 };

@@ -21,7 +21,7 @@ int main(int argc, char *argv[])
 
     evpl_init(NULL);
 
-    thread = evpl_thread_create(thread_init, &number);
+    thread = evpl_thread_create(thread_init, NULL, &number);
 
     evpl_thread_destroy(thread);
 

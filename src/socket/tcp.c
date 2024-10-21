@@ -246,23 +246,12 @@ evpl_socket_tcp_connect(
     struct evpl_bind *bind)
 {
     struct evpl_socket *s = evpl_bind_private(bind);
-    int                 rc, flags;
+    int                 rc;
 
     s->fd = socket(bind->remote->addr->sa_family, SOCK_STREAM, 0);
 
     evpl_socket_abort_if(s->fd < 0, "Failed to create tcp socket: %s", strerror(
                              errno));
-
-    flags = fcntl(s->fd, F_GETFL, 0);
-
-    evpl_socket_abort_if(flags < 0, "Failed to get socket flags: %s", strerror(
-                             errno));
-
-    rc = fcntl(s->fd, F_SETFL, flags | O_NONBLOCK);
-
-    evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
-                             errno));
-
 
     rc = connect(s->fd, bind->remote->addr, bind->remote->addrlen);
 
@@ -293,7 +282,7 @@ evpl_accept_tcp(
     struct evpl_bind    *new_bind;
     struct evpl_address *remote_addr;
     struct evpl_notify   notify;
-    int                  fd, rc;
+    int                  fd;
 
     while (1) {
 
@@ -306,11 +295,6 @@ evpl_accept_tcp(
             evpl_free(remote_addr);
             return;
         }
-
-        rc = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-
-        evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
-                                 errno));
 
         new_bind = evpl_bind_prepare(evpl,
                                      listen_bind->protocol,

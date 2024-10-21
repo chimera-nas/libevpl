@@ -22,61 +22,30 @@
 #include "core/protocol.h"
 
 #include "common.h"
-static void
-evpl_xlio_attach_pd(
-    struct evpl *evpl,
-    struct evpl_xlio *xlio,
-    struct ibv_pd *pd)
-{
-    struct evpl_xlio_api *api = xlio->api;
-    struct ibv_pd **cur_pd;
-
-    pthread_mutex_lock(&api->pd_lock);
-
-    for (cur_pd = api->pd; *cur_pd; cur_pd++) {
-        if (*cur_pd == pd) break;
-    }
-
-    if (!cur_pd) {
-        evpl_xlio_debug("need to add pd %p to pdset");
-    }
-
-    pthread_mutex_unlock(&api->pd_lock);
-}
 
 static inline void
 evpl_xlio_prepare_iov(
-    struct evpl *evpl,
-    struct evpl_xlio *xlio,
+    struct evpl                  *evpl,
+    struct evpl_xlio             *xlio,
     struct evpl_xlio_socket      *s,
     struct iovec                 *iov,
     struct xlio_socket_send_attr *send_attr,
     struct evpl_bvec_ring        *ring)
 {
-    struct evpl_buffer *buffer;
-    struct ibv_mr     **mr, **mrset;
-    struct evpl_bvec   *bvec;
-    int                 pos = ring->tail;
+    struct evpl_buffer  *buffer;
+    struct ibv_mr      **mrset;
+    struct evpl_bvec    *bvec;
+    struct evpl_xlio_zc *zc;
+    int                  pos = ring->tail;
 
     bvec = &ring->bvec[pos];
 
     buffer = bvec->buffer;
 
-again:
-
     mrset = (struct ibv_mr **) evpl_buffer_framework_private(buffer,
-                                                         EVPL_FRAMEWORK_XLIO);
+                                                             EVPL_FRAMEWORK_XLIO);
 
-    for (mr = mrset; *mr; mr++) {
-        if ((*mr)->pd == s->pd) break;
-    }
-
-    if (unlikely(!mr)) {
-        evpl_xlio_attach_pd(evpl, xlio, s->pd);
-        goto again;
-    }
-
-    send_attr->mkey = (*mr)->lkey;
+    send_attr->mkey = mrset[s->pd_index]->lkey;
 
     iov->iov_base = bvec->data;
     iov->iov_len  = bvec->length;
@@ -84,8 +53,17 @@ again:
     if (bvec->length <= 64) {
         send_attr->flags |= XLIO_SOCKET_SEND_FLAG_INLINE;
     } else {
-        send_attr->flags       = 0;
-        send_attr->userdata_op = bvec->length;
+        send_attr->flags = 0;
+
+        zc = evpl_xlio_alloc_zc(xlio);
+
+        zc->buffer = bvec->buffer;
+        zc->length = bvec->length;
+        zc->buffer->refcnt++;
+
+        s->zc_pending++;
+
+        send_attr->userdata_op = (uintptr_t) zc;
     }
 
 } /* evpl_xlio_prepare_iov */
@@ -243,7 +221,7 @@ evpl_xlio_tcp_listen(
 
     evpl_xlio_fatal_if(rc < 0, "Failed to listen on listener fd");
 
-    evpl_xlio_socket_init(evpl, xlio, s, 0, 0,
+    evpl_xlio_socket_init(evpl, xlio, s, 1, 0,
                           evpl_xlio_tcp_read,
                           evpl_xlio_tcp_write);
 

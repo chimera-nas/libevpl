@@ -1,4 +1,8 @@
+#define _GNU_SOURCE
 #include <pthread.h>
+#include <sys/mman.h>
+#include <linux/memfd.h>
+#include <unistd.h>
 
 #include "utlist.h"
 
@@ -55,7 +59,8 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
 
         }
 
-        evpl_free(slab->data);
+        munmap(slab->data, evpl_shared->config->slab_size);
+        //evpl_free(slab->data);
         evpl_free(slab);
     }
 
@@ -63,41 +68,63 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
     evpl_free(allocator);
 } /* evpl_allocator_destroy */
 
+static struct evpl_slab *
+evpl_allocator_create_slab(struct evpl_allocator *allocator)
+{
+    struct evpl_slab      *slab;
+    struct evpl_framework *framework;
+    int                    i;
+
+    slab       = evpl_zalloc(sizeof(*slab));
+    slab->size = evpl_shared->config->slab_size;
+
+    slab->data = mmap(NULL, evpl_shared->config->slab_size,
+                      PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                      -1, 0);
+
+    if (slab->data == MAP_FAILED) {
+        evpl_core_fatal("Failed to allocate huge pages");
+    }
+
+    *(uint64_t *) slab->data = 1;
+
+    //slab->data = evpl_valloc(slab->size, config->page_size);
+
+    for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
+
+        framework = evpl_shared->framework[i];
+
+        if (!framework || !framework->register_memory ||
+            !evpl_shared->framework_private[i]) {
+            continue;
+        }
+
+        slab->framework_private[i] = framework->register_memory(
+            slab->data, slab->size,
+            slab->framework_private[i],
+            evpl_shared->framework_private[i]);
+
+    }
+
+    LL_PREPEND(allocator->slabs, slab);
+
+    return slab;
+} /* evpl_allocator_create_slab */
+
 struct evpl_buffer *
 evpl_allocator_alloc(struct evpl_allocator *allocator)
 {
-    struct evpl_config    *config = evpl_shared->config;
-    struct evpl_slab      *slab;
-    struct evpl_buffer    *buffer;
-    struct evpl_framework *framework;
-    int                    i;
-    void                  *ptr;
+    struct evpl_config *config = evpl_shared->config;
+    struct evpl_slab   *slab;
+    struct evpl_buffer *buffer;
+    void               *ptr;
 
     pthread_mutex_lock(&allocator->lock);
 
     if (!allocator->free_buffers) {
 
-        slab       = evpl_zalloc(sizeof(*slab));
-        slab->size = config->slab_size;
-        slab->data = evpl_valloc(slab->size, config->page_size);
-
-        for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
-
-            framework = evpl_shared->framework[i];
-
-            if (!framework || !framework->register_memory ||
-                !evpl_shared->framework_private[i]) {
-                continue;
-            }
-
-            slab->framework_private[i] = framework->register_memory(
-                slab->data, slab->size,
-                slab->framework_private[i],
-                evpl_shared->framework_private[i]);
-
-        }
-
-        LL_PREPEND(allocator->slabs, slab);
+        slab = evpl_allocator_create_slab(allocator);
 
         ptr = slab->data;
 
@@ -166,3 +193,14 @@ evpl_allocator_free(
     LL_CONCAT(allocator->free_buffers, buffers);
     pthread_mutex_unlock(&allocator->lock);
 } /* evpl_allocator_free */
+
+void *
+evpl_allocator_alloc_slab(struct evpl_allocator *allocator)
+{
+    struct evpl_slab *slab;
+
+    slab = evpl_allocator_create_slab(allocator);
+
+    return slab->data;
+
+} /* evpl_allocator_alloc_slab */

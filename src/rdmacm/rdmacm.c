@@ -461,6 +461,8 @@ evpl_rdmacm_poll_cq(
 
                 qp_num = ibv_wc_read_qp_num(cq);
 
+
+
                 HASH_FIND(hh, rdmacm->ids, &qp_num, sizeof(qp_num), rdmacm_id);
 
                 if (unlikely(!rdmacm_id)) {
@@ -877,7 +879,8 @@ evpl_rdmacm_register(
     if (buffer_private) {
         mrset = (struct ibv_mr **) buffer_private;
     } else {
-        mrset = evpl_zalloc(sizeof(struct ibv_mr) * rdmacm_devices->num_devices)
+        mrset = evpl_zalloc(sizeof(struct ibv_mr *) * rdmacm_devices->
+                            num_devices)
         ;
     }
 
@@ -1197,6 +1200,7 @@ evpl_rdmacm_close(
         evpl_address_release(evpl, rdmacm_id->resolve_addr);
     }
 
+    evpl_bind_destroy(evpl, bind);
 
 } /* evpl_rdmacm_close */
 

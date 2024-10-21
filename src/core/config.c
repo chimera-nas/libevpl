@@ -23,7 +23,7 @@ evpl_config_init(void)
     config->refcnt             = 1;
     config->bvec_ring_size     = 1024;
     config->dgram_ring_size    = 256;
-    config->max_datagram_size  = 4096;
+    config->max_datagram_size  = 65536;
     config->max_datagram_batch = 16;
     config->resolve_timeout_ms = 5000;
     config->spin_ns            = 1000000;

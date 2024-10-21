@@ -60,6 +60,10 @@ struct evpl_buffer *
 evpl_allocator_alloc(
     struct evpl_allocator *allocator);
 
+void *
+evpl_allocator_alloc_slab(
+    struct evpl_allocator *allocator);
+
 void
 evpl_allocator_free(
     struct evpl_allocator *allocator,

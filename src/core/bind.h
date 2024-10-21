@@ -15,8 +15,9 @@
 
 #define EVPL_MAX_PRIVATE      4096
 
-#define EVPL_BIND_FINISH      0x01
-#define EVPL_BIND_SENT_NOTIFY 0x02
+#define EVPL_BIND_CLOSED      0x01
+#define EVPL_BIND_FINISH      0x02
+#define EVPL_BIND_SENT_NOTIFY 0x04
 
 struct evpl_bind {
     struct evpl_protocol   *protocol;
