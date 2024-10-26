@@ -80,7 +80,6 @@ evpl_socket_init(
     int                 connected)
 {
     int flags, rc;
-    int res, yes = 1;
 
     s->fd        = fd;
     s->connected = connected;
@@ -96,13 +95,6 @@ evpl_socket_init(
 
     evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
                              errno));
-
-
-    res = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, (char *) &yes, sizeof(yes)
-                     );
-
-    evpl_socket_abort_if(res, "Failed to set TCP_QUICKACK on socket");
-
 
 } /* evpl_socket_init */
 

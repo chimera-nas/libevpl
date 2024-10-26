@@ -246,7 +246,7 @@ evpl_socket_tcp_connect(
     struct evpl_bind *bind)
 {
     struct evpl_socket *s = evpl_bind_private(bind);
-    int                 rc;
+    int                 rc, yes = 1;
 
     s->fd = socket(bind->remote->addr->sa_family, SOCK_STREAM, 0);
 
@@ -259,6 +259,10 @@ evpl_socket_tcp_connect(
                          "Failed to connect tcp socket: %s", strerror(errno));
 
     evpl_socket_init(evpl, s, s->fd, 0);
+
+    rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+    evpl_socket_abort_if(rc, "Failed to set TCP_QUICKACK on socket");
 
     s->event.fd             = s->fd;
     s->event.read_callback  = evpl_socket_tcp_read;
@@ -282,7 +286,7 @@ evpl_accept_tcp(
     struct evpl_bind    *new_bind;
     struct evpl_address *remote_addr;
     struct evpl_notify   notify;
-    int                  fd;
+    int                  fd, rc, yes = 1;
 
     while (1) {
 
@@ -304,6 +308,10 @@ evpl_accept_tcp(
         s = evpl_bind_private(new_bind);
 
         evpl_socket_init(evpl, s, fd, 1);
+
+        rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+        evpl_socket_abort_if(rc, "Failed to set TCP_QUICKACK on socket");
 
         s->event.fd             = fd;
         s->event.read_callback  = evpl_socket_tcp_read;

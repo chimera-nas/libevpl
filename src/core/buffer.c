@@ -22,6 +22,8 @@ evpl_allocator_create()
 
     pthread_mutex_init(&allocator->lock, NULL);
 
+    allocator->hugepages = 1;
+
     return allocator;
 
 } /* evpl_allocator_create */
@@ -59,8 +61,11 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
 
         }
 
-        munmap(slab->data, evpl_shared->config->slab_size);
-        //evpl_free(slab->data);
+        if (slab->hugepages) {
+            munmap(slab->data, evpl_shared->config->slab_size);
+        } else {
+            evpl_free(slab->data);
+        }
         evpl_free(slab);
     }
 
@@ -78,18 +83,30 @@ evpl_allocator_create_slab(struct evpl_allocator *allocator)
     slab       = evpl_zalloc(sizeof(*slab));
     slab->size = evpl_shared->config->slab_size;
 
-    slab->data = mmap(NULL, evpl_shared->config->slab_size,
-                      PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-                      -1, 0);
+ again:
 
-    if (slab->data == MAP_FAILED) {
-        evpl_core_fatal("Failed to allocate huge pages");
+    if (allocator->hugepages) {
+
+        slab->data = mmap(NULL, evpl_shared->config->slab_size,
+                          PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                          -1, 0);
+
+        if (slab->data == MAP_FAILED) {
+            evpl_core_info("Could not allocate huge pages, disabling...");
+            allocator->hugepages = 0;
+            goto again;
+        }
+
+        *(uint64_t *) slab->data = 0;
+
+        slab->hugepages = 1;
+    } else {
+
+        slab->data = evpl_valloc(evpl_shared->config->slab_size,
+                                 evpl_shared->config->page_size);
+
     }
-
-    *(uint64_t *) slab->data = 1;
-
-    //slab->data = evpl_valloc(slab->size, config->page_size);
 
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
 

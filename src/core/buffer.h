@@ -14,7 +14,8 @@
 
 struct evpl_slab {
     void             *data;
-    uint64_t          size;
+    uint64_t          size      : 63;
+    uint64_t          hugepages : 1;
     void             *framework_private[EVPL_NUM_FRAMEWORK];
     struct evpl_slab *next;
 };
@@ -38,6 +39,7 @@ struct evpl_buffer {
 struct evpl_allocator {
     struct evpl_slab   *slabs;
     struct evpl_buffer *free_buffers;
+    int                 hugepages;
     pthread_mutex_t     lock;
 };
 
