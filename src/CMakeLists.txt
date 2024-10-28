@@ -52,7 +52,7 @@ add_subdirectory(tests)
 add_subdirectory(core)
 add_subdirectory(socket)
 add_subdirectory(thread)
-
+add_subdirectory(rpc2)
 if (HAVE_RDMACM)
     add_subdirectory(rdmacm)
 endif()

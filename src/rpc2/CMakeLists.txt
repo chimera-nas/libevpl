@@ -21,6 +21,6 @@ add_library(evpl_rpc2 SHARED rpc2.c ${RPC2_XDR_C} ${RPC2_XDR_H})
 
 add_dependencies(evpl_rpc2 xdrzcc)
 
-target_link_libraries(evpl_rpc2 evpl_core)
+target_link_libraries(evpl_rpc2 evpl)
 
 add_subdirectory(tests)
