@@ -35,8 +35,8 @@ client_callback(
         case EVPL_NOTIFY_RECV_MSG:
 
             evpl_test_info("client received '%s' len %d",
-                           notify->recv_msg.bvec[0].data,
-                           notify->recv_msg.bvec[0].length);
+                           notify->recv_msg.iovec[0].data,
+                           notify->recv_msg.iovec[0].length);
 
             *run = 0;
 
@@ -86,7 +86,7 @@ server_callback(
         case EVPL_NOTIFY_RECV_MSG:
 
             evpl_test_info("server received '%s'",
-                           notify->recv_msg.bvec[0].data);
+                           notify->recv_msg.iovec[0].data);
 
             client = evpl_endpoint_create(evpl, address, port + 1);
 

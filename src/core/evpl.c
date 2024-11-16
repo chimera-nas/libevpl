@@ -516,8 +516,8 @@ evpl_destroy(struct evpl *evpl)
         bind = evpl->free_binds;
         DL_DELETE(evpl->free_binds, bind);
 
-        evpl_bvec_ring_free(&bind->bvec_send);
-        evpl_bvec_ring_free(&bind->bvec_recv);
+        evpl_iovec_ring_free(&bind->iovec_send);
+        evpl_iovec_ring_free(&bind->iovec_recv);
         evpl_dgram_ring_free(&bind->dgram_send);
         evpl_free(bind);
     }
@@ -618,9 +618,9 @@ evpl_bind_prepare(
 
         bind = evpl_zalloc(sizeof(*bind) + EVPL_MAX_PRIVATE);
 
-        evpl_bvec_ring_alloc(
-            &bind->bvec_send,
-            evpl->config->bvec_ring_size,
+        evpl_iovec_ring_alloc(
+            &bind->iovec_send,
+            evpl->config->iovec_ring_size,
             evpl->config->page_size);
 
         evpl_dgram_ring_alloc(
@@ -628,9 +628,9 @@ evpl_bind_prepare(
             evpl->config->dgram_ring_size,
             evpl->config->page_size);
 
-        evpl_bvec_ring_alloc(
-            &bind->bvec_recv,
-            evpl->config->bvec_ring_size,
+        evpl_iovec_ring_alloc(
+            &bind->iovec_recv,
+            evpl->config->iovec_ring_size,
             evpl->config->page_size);
 
         evpl_deferral_init(&bind->close_deferral,
@@ -795,17 +795,17 @@ evpl_buffer_alloc(struct evpl *evpl)
 } /* evpl_buffer_alloc */
 
 int
-evpl_bvec_reserve(
-    struct evpl      *evpl,
-    unsigned int      length,
-    unsigned int      alignment,
-    unsigned int      max_bvecs,
-    struct evpl_bvec *r_bvec)
+evpl_iovec_reserve(
+    struct evpl       *evpl,
+    unsigned int       length,
+    unsigned int       alignment,
+    unsigned int       max_iovecs,
+    struct evpl_iovec *r_iovec)
 {
     struct evpl_buffer *buffer = evpl->current_buffer;
     int                 pad, left = length, chunk;
-    int                 nbvecs = 0;
-    struct evpl_bvec   *bvec;
+    int                 niovs = 0;
+    struct evpl_iovec  *iovec;
 
     do{
 
@@ -823,15 +823,15 @@ evpl_bvec_reserve(
             chunk = pad + left;
         }
 
-        if (unlikely(nbvecs + 1 > max_bvecs)) {
+        if (unlikely(niovs + 1 > max_iovecs)) {
             return -1;
         }
 
-        bvec = &r_bvec[nbvecs++];
+        iovec = &r_iovec[niovs++];
 
-        bvec->buffer = buffer;
-        bvec->data   = buffer->data + buffer->used + pad;
-        bvec->length = chunk - pad;
+        iovec->buffer = buffer;
+        iovec->data   = buffer->data + buffer->used + pad;
+        iovec->length = chunk - pad;
 
         left -= chunk - pad;
 
@@ -842,29 +842,29 @@ evpl_bvec_reserve(
 
     } while (left);
 
-    return nbvecs;
-} /* evpl_bvec_reserve */
+    return niovs;
+} /* evpl_iovec_reserve */
 
 void
-evpl_bvec_commit(
-    struct evpl      *evpl,
-    unsigned int      alignment,
-    struct evpl_bvec *bvecs,
-    int               nbvecs)
+evpl_iovec_commit(
+    struct evpl       *evpl,
+    unsigned int       alignment,
+    struct evpl_iovec *iovecs,
+    int                niovs)
 {
     int                 i;
-    struct evpl_bvec   *bvec;
+    struct evpl_iovec  *iovec;
     struct evpl_buffer *buffer;
 
-    for (i = 0; i < nbvecs; ++i) {
+    for (i = 0; i < niovs; ++i) {
 
-        bvec = &bvecs[i];
+        iovec = &iovecs[i];
 
-        buffer = bvec->buffer;
+        buffer = iovec->buffer;
 
         ++buffer->refcnt;
 
-        buffer->used  = (bvec->data + bvec->length) - buffer->data;
+        buffer->used  = (iovec->data + iovec->length) - buffer->data;
         buffer->used += evpl_buffer_pad(buffer, alignment);
     }
 
@@ -874,47 +874,47 @@ evpl_bvec_commit(
         evpl_buffer_release(evpl, buffer);
         evpl->current_buffer = NULL;
     }
-} /* evpl_bvec_commit */
+} /* evpl_iovec_commit */
 
 int
-evpl_bvec_alloc(
-    struct evpl      *evpl,
-    unsigned int      length,
-    unsigned int      alignment,
-    unsigned int      max_bvecs,
-    struct evpl_bvec *r_bvec)
+evpl_iovec_alloc(
+    struct evpl       *evpl,
+    unsigned int       length,
+    unsigned int       alignment,
+    unsigned int       max_iovecs,
+    struct evpl_iovec *r_iovec)
 {
-    int nbvecs;
+    int niovs;
 
-    nbvecs = evpl_bvec_reserve(evpl, length, alignment, max_bvecs, r_bvec);
+    niovs = evpl_iovec_reserve(evpl, length, alignment, max_iovecs, r_iovec);
 
-    if (unlikely(nbvecs < 0)) {
-        return nbvecs;
+    if (unlikely(niovs < 0)) {
+        return niovs;
     }
 
-    evpl_bvec_commit(evpl, alignment, r_bvec, nbvecs);
+    evpl_iovec_commit(evpl, alignment, r_iovec, niovs);
 
-    return nbvecs;
-} /* evpl_bvec_alloc */
+    return niovs;
+} /* evpl_iovec_alloc */
 
 void
-evpl_bvec_alloc_whole(
-    struct evpl      *evpl,
-    struct evpl_bvec *r_bvec)
+evpl_iovec_alloc_whole(
+    struct evpl       *evpl,
+    struct evpl_iovec *r_iovec)
 {
     struct evpl_buffer *buffer;
 
     buffer = evpl_buffer_alloc(evpl);
 
-    r_bvec->data   = buffer->data;
-    r_bvec->length = buffer->size;
-    r_bvec->buffer = buffer;
-} /* evpl_bvec_alloc_whole */
+    r_iovec->data   = buffer->data;
+    r_iovec->length = buffer->size;
+    r_iovec->buffer = buffer;
+} /* evpl_iovec_alloc_whole */
 
 void
-evpl_bvec_alloc_datagram(
-    struct evpl      *evpl,
-    struct evpl_bvec *r_bvec)
+evpl_iovec_alloc_datagram(
+    struct evpl       *evpl,
+    struct evpl_iovec *r_iovec)
 {
     struct evpl_buffer *buffer;
 
@@ -924,9 +924,9 @@ evpl_bvec_alloc_datagram(
 
     buffer = evpl->datagram_buffer;
 
-    r_bvec->data   = buffer->data + buffer->used;
-    r_bvec->length = evpl->config->max_datagram_size;
-    r_bvec->buffer = buffer;
+    r_iovec->data   = buffer->data + buffer->used;
+    r_iovec->length = evpl->config->max_datagram_size;
+    r_iovec->buffer = buffer;
 
     buffer->used += evpl->config->max_datagram_size;
     buffer->refcnt++;
@@ -936,7 +936,7 @@ evpl_bvec_alloc_datagram(
         evpl->datagram_buffer = NULL;
     }
 
-} /* evpl_bvec_alloc_datagram */
+} /* evpl_iovec_alloc_datagram */
 
 void
 evpl_buffer_release(
@@ -960,20 +960,20 @@ evpl_buffer_release(
 } /* evpl_buffer_release */
 
 void
-evpl_bvec_release(
-    struct evpl      *evpl,
-    struct evpl_bvec *bvec)
+evpl_iovec_release(
+    struct evpl       *evpl,
+    struct evpl_iovec *iovec)
 {
-    evpl_bvec_decref(evpl, bvec);
-} /* evpl_bvec_release */
+    evpl_iovec_decref(evpl, iovec);
+} /* evpl_iovec_release */
 
 void
-evpl_bvec_addref(
-    struct evpl      *evpl,
-    struct evpl_bvec *bvec)
+evpl_iovec_addref(
+    struct evpl       *evpl,
+    struct evpl_iovec *iovec)
 {
-    evpl_bvec_incref(evpl, bvec);
-} /* evpl_bvec_addref */
+    evpl_iovec_incref(evpl, iovec);
+} /* evpl_iovec_addref */
 
 void
 evpl_send(
@@ -982,16 +982,16 @@ evpl_send(
     const void       *buffer,
     unsigned int      length)
 {
-    struct evpl_bvec bvecs[4];
-    int              nbvec;
+    struct evpl_iovec iovecs[4];
+    int               niov;
 
-    nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
+    niov = evpl_iovec_alloc(evpl, length, 0, 4, iovecs);
 
-    evpl_core_abort_if(nbvec < 1, "failed to allocate bounce space");
+    evpl_core_abort_if(niov < 1, "failed to allocate bounce space");
 
-    evpl_bvec_memcpy(bvecs, buffer, length);
+    evpl_iovec_memcpy(iovecs, buffer, length);
 
-    evpl_sendv(evpl, bind, bvecs, nbvec, length);
+    evpl_sendv(evpl, bind, iovecs, niov, length);
 
 } /* evpl_send */
 
@@ -1003,16 +1003,16 @@ evpl_sendto(
     const void          *buffer,
     unsigned int         length)
 {
-    struct evpl_bvec bvecs[4];
-    int              nbvec;
+    struct evpl_iovec iovecs[4];
+    int               niov;
 
-    nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
+    niov = evpl_iovec_alloc(evpl, length, 0, 4, iovecs);
 
-    evpl_core_abort_if(nbvec < 1, "failed to allocate bounce space");
+    evpl_core_abort_if(niov < 1, "failed to allocate bounce space");
 
-    evpl_bvec_memcpy(bvecs, buffer, length);
+    evpl_iovec_memcpy(iovecs, buffer, length);
 
-    evpl_sendtov(evpl, bind, address, bvecs, nbvec, length);
+    evpl_sendtov(evpl, bind, address, iovecs, niov, length);
 
 } /* evpl_sendto */
 
@@ -1024,44 +1024,44 @@ evpl_sendtoep(
     const void           *buffer,
     unsigned int          length)
 {
-    struct evpl_bvec bvecs[4];
-    int              nbvec;
+    struct evpl_iovec iovecs[4];
+    int               niov;
 
-    nbvec = evpl_bvec_alloc(evpl, length, 0, 4, bvecs);
+    niov = evpl_iovec_alloc(evpl, length, 0, 4, iovecs);
 
-    evpl_core_abort_if(nbvec < 1, "failed to allocate bounce space");
+    evpl_core_abort_if(niov < 1, "failed to allocate bounce space");
 
-    evpl_bvec_memcpy(bvecs, buffer, length);
+    evpl_iovec_memcpy(iovecs, buffer, length);
 
-    evpl_sendtoepv(evpl, bind, endpoint, bvecs, nbvec, length);
+    evpl_sendtoepv(evpl, bind, endpoint, iovecs, niov, length);
 
 } /* evpl_sendto */
 
 void
 evpl_sendv(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    struct evpl_bvec *bvecs,
-    int               nbvecs,
-    int               length)
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovecs,
+    int                niovs,
+    int                length)
 {
     struct evpl_dgram *dgram;
-    struct evpl_bvec  *bvec;
+    struct evpl_iovec *iovec;
     int                i, left = length;
 
-    if (unlikely(nbvecs == 0)) {
+    if (unlikely(niovs == 0)) {
         return;
     }
 
-    for (i = 0; left && i < nbvecs; ++i) {
-        bvec = evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
+    for (i = 0; left && i < niovs; ++i) {
+        iovec = evpl_iovec_ring_add(&bind->iovec_send, &iovecs[i]);
 
-        if (bvec->length <= left) {
-            left -= bvec->length;
+        if (iovec->length <= left) {
+            left -= iovec->length;
         } else {
-            bind->bvec_send.length -= bvec->length - left;
-            bvec->length            = left;
-            left                    = 0;
+            bind->iovec_send.length -= iovec->length - left;
+            iovec->length            = left;
+            left                     = 0;
         }
     }
 
@@ -1070,15 +1070,15 @@ evpl_sendv(
                        left, length);
 
     if (!bind->protocol->stream) {
-        dgram        = evpl_dgram_ring_add(&bind->dgram_send);
-        dgram->nbvec = i;
-        dgram->addr  = bind->remote;
+        dgram       = evpl_dgram_ring_add(&bind->dgram_send);
+        dgram->niov = i;
+        dgram->addr = bind->remote;
     }
 
     evpl_defer(evpl, &bind->flush_deferral);
 
-    for (; i < nbvecs; ++i) {
-        evpl_bvec_release(evpl, &bvecs[i]);
+    for (; i < niovs; ++i) {
+        evpl_iovec_release(evpl, &iovecs[i]);
     }
 
 } /* evpl_sendv */
@@ -1088,27 +1088,27 @@ evpl_sendtov(
     struct evpl         *evpl,
     struct evpl_bind    *bind,
     struct evpl_address *address,
-    struct evpl_bvec    *bvecs,
-    int                  nbvecs,
+    struct evpl_iovec   *iovecs,
+    int                  niovs,
     int                  length)
 {
     struct evpl_dgram *dgram;
-    struct evpl_bvec  *bvec;
+    struct evpl_iovec *iovec;
     int                i, left = length;
 
-    if (unlikely(nbvecs == 0)) {
+    if (unlikely(niovs == 0)) {
         return;
     }
 
-    for (i = 0; left && i < nbvecs; ++i) {
-        bvec = evpl_bvec_ring_add(&bind->bvec_send, &bvecs[i]);
+    for (i = 0; left && i < niovs; ++i) {
+        iovec = evpl_iovec_ring_add(&bind->iovec_send, &iovecs[i]);
 
-        if (bvec->length <= left) {
-            left -= bvec->length;
+        if (iovec->length <= left) {
+            left -= iovec->length;
         } else {
-            bind->bvec_send.length -= bvec->length - left;
-            bvec->length            = left;
-            left                    = 0;
+            bind->iovec_send.length -= iovec->length - left;
+            iovec->length            = left;
+            left                     = 0;
         }
     }
 
@@ -1118,14 +1118,14 @@ evpl_sendtov(
 
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
-    dgram->nbvec = i;
-    dgram->addr  = address;
+    dgram->niov = i;
+    dgram->addr = address;
     dgram->addr->refcnt++;
 
     evpl_defer(evpl, &bind->flush_deferral);
 
-    for (; i < nbvecs; ++i) {
-        evpl_bvec_release(evpl, &bvecs[i]);
+    for (; i < niovs; ++i) {
+        evpl_iovec_release(evpl, &iovecs[i]);
     }
 
 } /* evpl_sendtov */
@@ -1135,7 +1135,7 @@ evpl_sendtoepv(
     struct evpl          *evpl,
     struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
-    struct evpl_bvec     *bvecs,
+    struct evpl_iovec    *iovecs,
     int                   nbufvecs,
     int                   length)
 {
@@ -1143,7 +1143,7 @@ evpl_sendtoepv(
         evpl_endpoint_resolve(evpl, endpoint);
     }
 
-    evpl_sendtov(evpl, bind, endpoint->addr, bvecs, nbufvecs, length);
+    evpl_sendtov(evpl, bind, endpoint->addr, iovecs, nbufvecs, length);
 
 } /* evpl_sendtoepv */
 
@@ -1163,7 +1163,7 @@ evpl_finish(
 
     bind->flags |= EVPL_BIND_FINISH;
 
-    if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+    if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
         evpl_defer(evpl, &bind->close_deferral);
     }
 
@@ -1189,8 +1189,8 @@ evpl_bind_destroy(
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
-    evpl_bvec_ring_clear(evpl, &bind->bvec_recv);
-    evpl_bvec_ring_clear(evpl, &bind->bvec_send);
+    evpl_iovec_ring_clear(evpl, &bind->iovec_recv);
+    evpl_iovec_ring_clear(evpl, &bind->iovec_send);
     evpl_dgram_ring_clear(evpl, &bind->dgram_send);
 
     DL_DELETE(evpl->binds, bind);
@@ -1215,9 +1215,9 @@ evpl_peek(
     void             *buffer,
     int               length)
 {
-    int               left = length, chunk;
-    struct evpl_bvec *cur;
-    void             *ptr = buffer;
+    int                left = length, chunk;
+    struct evpl_iovec *cur;
+    void              *ptr = buffer;
 
     if (unlikely(!evpl || !bind || !buffer || length <= 0)) {
         errno = EINVAL;
@@ -1229,7 +1229,7 @@ evpl_peek(
         return -1;
     }
 
-    cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+    cur = evpl_iovec_ring_tail(&bind->iovec_recv);
 
     while (cur && left) {
 
@@ -1243,7 +1243,7 @@ evpl_peek(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
+        cur = evpl_iovec_ring_next(&bind->iovec_recv, cur);
 
         if (cur == NULL) {
             return length - left;
@@ -1261,8 +1261,8 @@ evpl_read(
     void             *buffer,
     int               length)
 {
-    int               copied = 0, chunk;
-    struct evpl_bvec *cur;
+    int                copied = 0, chunk;
+    struct evpl_iovec *cur;
 
     if (unlikely(!evpl || !bind || !buffer || length <= 0)) {
         errno = EINVAL;
@@ -1281,7 +1281,7 @@ evpl_read(
 
     while (copied < length) {
 
-        cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+        cur = evpl_iovec_ring_tail(&bind->iovec_recv);
 
         if (!cur) {
             break;
@@ -1297,7 +1297,7 @@ evpl_read(
 
         copied += chunk;
 
-        evpl_bvec_ring_consume(evpl, &bind->bvec_recv, chunk);
+        evpl_iovec_ring_consume(evpl, &bind->iovec_recv, chunk);
     }
 
     return copied;
@@ -1306,16 +1306,16 @@ evpl_read(
 
 int
 evpl_readv(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    struct evpl_bvec *bvecs,
-    int               maxbvecs,
-    int               length)
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovecs,
+    int                maxiovecs,
+    int                length)
 {
-    int               left = length, chunk, nbvecs = 0;
-    struct evpl_bvec *cur, *out;
+    int                left = length, chunk, niovs = 0;
+    struct evpl_iovec *cur, *out;
 
-    if (unlikely(!evpl || !bind || !bvecs || maxbvecs <= 0 || length <= 0)) {
+    if (unlikely(!evpl || !bind || !iovecs || maxiovecs <= 0 || length <= 0)) {
         errno = EINVAL;
         return -1;
     }
@@ -1330,9 +1330,9 @@ evpl_readv(
         return -1;
     }
 
-    while (left && nbvecs < maxbvecs) {
+    while (left && niovs < maxiovecs) {
 
-        cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+        cur = evpl_iovec_ring_tail(&bind->iovec_recv);
 
         if (!cur) {
             break;
@@ -1344,7 +1344,7 @@ evpl_readv(
             chunk = left;
         }
 
-        out = &bvecs[nbvecs++];
+        out = &iovecs[niovs++];
 
         out->data   = cur->data;
         out->length = chunk;
@@ -1353,10 +1353,10 @@ evpl_readv(
 
         left -= chunk;
 
-        evpl_bvec_ring_consume(evpl, &bind->bvec_recv, chunk);
+        evpl_iovec_ring_consume(evpl, &bind->iovec_recv, chunk);
     }
 
-    return nbvecs;
+    return niovs;
 
 } /* evpl_readv */
 
@@ -1367,16 +1367,16 @@ evpl_recv(
     void             *buffer,
     int               length)
 {
-    int               left = length, chunk;
-    struct evpl_bvec *cur;
-    void             *ptr   = buffer;
-    uint64_t          avail = evpl_bvec_ring_bytes(&bind->bvec_recv);
+    int                left = length, chunk;
+    struct evpl_iovec *cur;
+    void              *ptr   = buffer;
+    uint64_t           avail = evpl_iovec_ring_bytes(&bind->iovec_recv);
 
     if (avail < length) {
         return -1;
     }
 
-    cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+    cur = evpl_iovec_ring_tail(&bind->iovec_recv);
 
     while (cur && left) {
 
@@ -1390,10 +1390,10 @@ evpl_recv(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
+        cur = evpl_iovec_ring_next(&bind->iovec_recv, cur);
     }
 
-    evpl_bvec_ring_consume(evpl, &bind->bvec_recv, length);
+    evpl_iovec_ring_consume(evpl, &bind->iovec_recv, length);
 
     return length;
 
@@ -1401,21 +1401,21 @@ evpl_recv(
 
 int
 evpl_recvv(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    struct evpl_bvec *bvecs,
-    int               maxbvecs,
-    int               length)
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovecs,
+    int                maxiovecs,
+    int                length)
 {
-    int               left = length, chunk, nbvecs = 0;
-    struct evpl_bvec *cur, *out;
-    uint64_t          avail = evpl_bvec_ring_bytes(&bind->bvec_recv);
+    int                left = length, chunk, niovs = 0;
+    struct evpl_iovec *cur, *out;
+    uint64_t           avail = evpl_iovec_ring_bytes(&bind->iovec_recv);
 
     if (avail < length) {
         return -1;
     }
 
-    cur = evpl_bvec_ring_tail(&bind->bvec_recv);
+    cur = evpl_iovec_ring_tail(&bind->iovec_recv);
 
     while (cur && left) {
 
@@ -1425,11 +1425,11 @@ evpl_recvv(
             chunk = left;
         }
 
-        if (nbvecs == maxbvecs) {
+        if (niovs == maxiovecs) {
             return -1;
         }
 
-        out = &bvecs[nbvecs++];
+        out = &iovecs[niovs++];
 
         out->data   = cur->data;
         out->length = chunk;
@@ -1438,35 +1438,35 @@ evpl_recvv(
 
         left -= chunk;
 
-        cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
+        cur = evpl_iovec_ring_next(&bind->iovec_recv, cur);
     }
 
     if (left) {
         return -1;
     }
 
-    evpl_bvec_ring_consume(evpl, &bind->bvec_recv, length);
+    evpl_iovec_ring_consume(evpl, &bind->iovec_recv, length);
 
-    return nbvecs;
+    return niovs;
 } /* evpl_recvv */
 
 int
-evpl_recv_peek_bvec(
-    struct evpl      *evpl,
-    struct evpl_bind *conn,
-    struct evpl_bvec *bvecs,
-    int               nbufvecs,
-    int               length)
+evpl_recv_peek_iovec(
+    struct evpl       *evpl,
+    struct evpl_bind  *conn,
+    struct evpl_iovec *iovecs,
+    int                nbufvecs,
+    int                length)
 {
-    int nbvecs = 0, left = length;
+    int niovs = 0, left = length;
 
     do{
 
     } while (left);
 
-    return nbvecs;
+    return niovs;
 
-} /* evpl_recv_peek_bvec */
+} /* evpl_recv_peek_iovec */
 
 const char *
 evpl_endpoint_address(const struct evpl_endpoint *ep)
@@ -1713,16 +1713,16 @@ evpl_destroy_uevent(
 } /* evpl_destroy_uevent */
 
 const void *
-evpl_bvec_data(const struct evpl_bvec *bvec)
+evpl_iovec_data(const struct evpl_iovec *iovec)
 {
-    return bvec->data;
-} // evpl_bvec_data
+    return iovec->data;
+} // evpl_iovec_data
 
 unsigned int
-evpl_bvec_length(const struct evpl_bvec *bvec)
+evpl_iovec_length(const struct evpl_iovec *iovec)
 {
-    return bvec->length;
-} /* evpl_bvec_length */
+    return iovec->length;
+} /* evpl_iovec_length */
 
 void
 evpl_activity(struct evpl *evpl)

@@ -19,7 +19,7 @@
         evpl_abort_if(cond, "socket", __VA_ARGS__)
 
 struct evpl_socket_datagram {
-    struct evpl_bvec             bvec;
+    struct evpl_iovec            iovec;
     struct evpl_socket_datagram *next;
 };
 
@@ -29,8 +29,8 @@ struct evpl_socket {
     int                          connected;
     const struct evpl_config    *config;
     struct evpl_socket_datagram *free_datagrams;
-    struct evpl_bvec             recv1;
-    struct evpl_bvec             recv2;
+    struct evpl_iovec            recv1;
+    struct evpl_iovec            recv2;
 };
 
 #define evpl_event_socket(eventp) container_of((eventp), struct evpl_socket, \
@@ -48,7 +48,7 @@ evpl_socket_datagram_alloc(
         LL_DELETE(s->free_datagrams, datagram);
     } else {
         datagram = evpl_zalloc(sizeof(*datagram));
-        evpl_bvec_alloc_datagram(evpl, &datagram->bvec);
+        evpl_iovec_alloc_datagram(evpl, &datagram->iovec);
     }
 
     return datagram;
@@ -69,7 +69,7 @@ evpl_socket_datagram_reload(
     struct evpl_socket          *s,
     struct evpl_socket_datagram *datagram)
 {
-    evpl_bvec_alloc_datagram(evpl, &datagram->bvec);
+    evpl_iovec_alloc_datagram(evpl, &datagram->iovec);
 } // evpl_socket_msg_reload
 
 static inline void
@@ -114,19 +114,19 @@ evpl_socket_close(
     }
 
     if (s->recv1.length) {
-        evpl_bvec_release(evpl, &s->recv1);
+        evpl_iovec_release(evpl, &s->recv1);
         s->recv1.length = 0;
     }
 
     if (s->recv2.length) {
-        evpl_bvec_release(evpl, &s->recv2);
+        evpl_iovec_release(evpl, &s->recv2);
         s->recv2.length = 0;
     }
 
     while (s->free_datagrams) {
         datagram = s->free_datagrams;
         LL_DELETE(s->free_datagrams, datagram);
-        evpl_bvec_release(evpl, &datagram->bvec);
+        evpl_iovec_release(evpl, &datagram->iovec);
         evpl_free(datagram);
     }
 

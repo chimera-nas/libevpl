@@ -2,7 +2,7 @@
 
 #include "core/evpl.h"
 
-typedef struct evpl_bvec xdr_iovec;
+typedef struct evpl_iovec xdr_iovec;
 
 #define xdr_iovec_data(iov)          ((iov)->data)
 #define xdr_iovec_len(iov)           ((iov)->length)

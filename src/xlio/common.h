@@ -45,7 +45,7 @@ struct evpl_xlio_ring_fd {
 };
 
 struct evpl_socket_datagram {
-    struct evpl_bvec             bvec;
+    struct evpl_iovec            iovec;
     struct evpl_socket_datagram *next;
 };
 

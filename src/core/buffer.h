@@ -82,62 +82,62 @@ evpl_buffer_framework_private(
 
 /*
  * Copy 'length' bytes of data from 'buffer' into
- * an array of byte vectors 'bvecs'.
+ * an array of byte vectors 'iovecs'.
  * Sufficient vectors or space is not checked.
  */
 
 static inline void
-evpl_bvec_memcpy(
-    struct evpl_bvec *bvecs,
-    const void       *buffer,
-    unsigned int      length)
+evpl_iovec_memcpy(
+    struct evpl_iovec *iovecs,
+    const void        *buffer,
+    unsigned int       length)
 {
-    struct evpl_bvec *bvec = bvecs;
-    const void       *ptr  = buffer;
-    unsigned int      left = length, chunk;
+    struct evpl_iovec *iovec = iovecs;
+    const void        *ptr   = buffer;
+    unsigned int       left = length, chunk;
 
     while (left) {
 
         chunk = left;
 
-        if (bvec->length < chunk) {
-            chunk = bvec->length;
+        if (iovec->length < chunk) {
+            chunk = iovec->length;
         }
 
-        memcpy(bvec->data, ptr, chunk);
+        memcpy(iovec->data, ptr, chunk);
 
         ptr  += chunk;
         left -= chunk;
-        bvec++;
+        iovec++;
     }
 
-} // evpl_bvec_memcpy
+} // evpl_iovec_memcpy
 
 static inline void
-evpl_bvec_decref(
-    struct evpl      *evpl,
-    struct evpl_bvec *bvec)
+evpl_iovec_decref(
+    struct evpl       *evpl,
+    struct evpl_iovec *iovec)
 {
-    struct evpl_buffer *buffer = bvec->buffer;
+    struct evpl_buffer *buffer = iovec->buffer;
 
     evpl_core_abort_if(buffer->refcnt == 0,
-                       "Released bvec %p with zero refcnt", bvec);
+                       "Released iovec %p with zero refcnt", iovec);
 
 
     evpl_buffer_release(evpl, buffer);
 
-} // evpl_bvec_decref
+} // evpl_iovec_decref
 
 static inline void
-evpl_bvec_incref(
-    struct evpl      *evpl,
-    struct evpl_bvec *bvec)
+evpl_iovec_incref(
+    struct evpl       *evpl,
+    struct evpl_iovec *iovec)
 {
-    struct evpl_buffer *buffer = bvec->buffer;
+    struct evpl_buffer *buffer = iovec->buffer;
 
     ++buffer->refcnt;
 
-} // evpl_bvec_incref
+} // evpl_iovec_incref
 
 
 

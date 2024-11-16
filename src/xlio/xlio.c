@@ -274,19 +274,19 @@ evpl_xlio_socket_rx(
     struct evpl             *evpl = s->evpl;
     struct evpl_xlio        *xlio;
     struct evpl_bind        *bind = evpl_private2bind(s);
-    struct evpl_bvec        *bvec;
+    struct evpl_iovec       *iovec;
     struct evpl_buffer      *buffer;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
     buffer = evpl_xlio_buffer_alloc(evpl, xlio, data, len, buf);
 
-    bvec = evpl_bvec_ring_add_new(&bind->bvec_recv);
+    iovec = evpl_iovec_ring_add_new(&bind->iovec_recv);
 
-    bvec->data              = data;
-    bvec->length            = len;
-    bvec->buffer            = buffer;
-    bind->bvec_recv.length += len;
+    iovec->data              = data;
+    iovec->length            = len;
+    iovec->buffer            = buffer;
+    bind->iovec_recv.length += len;
 
     s->readable = 1;
     evpl_xlio_socket_check_active(xlio, s);
@@ -322,7 +322,7 @@ evpl_xlio_poll(
                 evpl_defer(evpl, &bind->close_deferral);
             }
 
-            if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+            if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
                 s->write_interest = 0;
 
                 if (bind->flags & EVPL_BIND_FINISH) {

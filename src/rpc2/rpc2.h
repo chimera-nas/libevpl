@@ -7,16 +7,16 @@ struct evpl;
 struct evpl_rpc2_agent;
 struct evpl_rpc2_request;
 struct evpl_endpoint;
-struct evpl_bvec;
+struct evpl_iovec;
 
 struct evpl_rpc2_program {
     uint32_t program;
     uint32_t version;
     int      (*call_dispatch)(
-        uint32_t          xid,
-        uint32_t          proc,
-        struct evpl_bvec *iov,
-        int               niov);
+        uint32_t           xid,
+        uint32_t           proc,
+        struct evpl_iovec *iov,
+        int                niov);
 };
 
 struct evpl_rpc2_agent *

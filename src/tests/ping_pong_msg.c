@@ -43,7 +43,7 @@ client_callback(
             state->recv++;
 
             evpl_test_info("client received %u sent %u recv %u",
-                           *(uint32_t *) notify->recv_msg.bvec[0].data,
+                           *(uint32_t *) notify->recv_msg.iovec[0].data,
                            state->sent, state->recv);
 
             break;
@@ -107,7 +107,7 @@ server_callback(
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_MSG:
 
-            value = *(uint32_t *) notify->recv_msg.bvec[0].data;
+            value = *(uint32_t *) notify->recv_msg.iovec[0].data;
             evpl_sendtoep(evpl, bind, client, &value, sizeof(value));
 
             break;

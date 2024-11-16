@@ -39,7 +39,7 @@ struct evpl_rdmacm_ah {
 };
 
 struct evpl_rdmacm_request {
-    struct evpl_bvec            bvec;
+    struct evpl_iovec           iovec;
     struct ibv_sge              sge;
     int                         used;
     struct evpl_rdmacm_request *next;
@@ -161,8 +161,8 @@ evpl_rdmacm_create_qp(
     qp_attr.srq              = dev->srq;
     qp_attr.cap.max_send_wr  = rdmacm->config->rdmacm_sq_size;
     qp_attr.cap.max_recv_wr  = rdmacm->config->rdmacm_sq_size;
-    qp_attr.cap.max_send_sge = rdmacm->config->max_num_bvec;
-    qp_attr.cap.max_recv_sge = rdmacm->config->max_num_bvec;
+    qp_attr.cap.max_send_sge = rdmacm->config->max_num_iovec;
+    qp_attr.cap.max_recv_sge = rdmacm->config->max_num_iovec;
     qp_attr.sq_sig_all       = 1;
 
     qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND;
@@ -359,15 +359,15 @@ evpl_rdmacm_fill_srq(
 
         req->used = 1;
 
-        evpl_bvec_alloc_datagram(evpl, &req->bvec);
+        evpl_iovec_alloc_datagram(evpl, &req->iovec);
 
-        mrset = evpl_buffer_framework_private(req->bvec.buffer,
+        mrset = evpl_buffer_framework_private(req->iovec.buffer,
                                               EVPL_FRAMEWORK_RDMACM);
 
         mr = mrset[dev->index];
 
-        req->sge.addr   = (uint64_t) req->bvec.data;
-        req->sge.length = req->bvec.length;
+        req->sge.addr   = (uint64_t) req->iovec.data;
+        req->sge.length = req->iovec.length;
         req->sge.lkey   = mr->lkey;
 
         wr.wr_id = (uint64_t) req;
@@ -456,8 +456,8 @@ evpl_rdmacm_poll_cq(
         switch (ibv_wc_read_opcode(cq)) {
             case IBV_WC_RECV:
 
-                req              = (struct evpl_rdmacm_request *) cq->wr_id;
-                req->bvec.length = ibv_wc_read_byte_len(cq);
+                req               = (struct evpl_rdmacm_request *) cq->wr_id;
+                req->iovec.length = ibv_wc_read_byte_len(cq);
 
                 qp_num = ibv_wc_read_qp_num(cq);
 
@@ -466,12 +466,12 @@ evpl_rdmacm_poll_cq(
                 HASH_FIND(hh, rdmacm->ids, &qp_num, sizeof(qp_num), rdmacm_id);
 
                 if (unlikely(!rdmacm_id)) {
-                    evpl_bvec_release(evpl, &req->bvec);
+                    evpl_iovec_release(evpl, &req->iovec);
                 } else if (rdmacm_id->stream) {
 
                     bind = evpl_private2bind(rdmacm_id);
 
-                    evpl_bvec_ring_add(&bind->bvec_recv, &req->bvec);
+                    evpl_iovec_ring_add(&bind->iovec_recv, &req->iovec);
 
                     notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
                     notify.notify_status = 0;
@@ -485,21 +485,21 @@ evpl_rdmacm_poll_cq(
                     wc_flags = ibv_wc_read_wc_flags(cq);
 
                     if (wc_flags & IBV_WC_GRH) {
-                        req->bvec.length -= 40;
-                        req->bvec.data   += 40;
+                        req->iovec.length -= 40;
+                        req->iovec.data   += 40;
                     }
 
                     notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
                     notify.notify_status   = 0;
-                    notify.recv_msg.bvec   = &req->bvec;
-                    notify.recv_msg.nbvec  = 1;
+                    notify.recv_msg.iovec  = &req->iovec;
+                    notify.recv_msg.niov   = 1;
                     notify.recv_msg.addr   = bind->remote;
-                    notify.recv_msg.length = req->bvec.length;
+                    notify.recv_msg.length = req->iovec.length;
 
                     bind->notify_callback(evpl, bind, &notify,
                                           bind->private_data);
 
-                    evpl_bvec_release(evpl, &req->bvec);
+                    evpl_iovec_release(evpl, &req->iovec);
 
                 }
 
@@ -533,7 +533,7 @@ evpl_rdmacm_poll_cq(
                 }
 
                 if (rdmacm_id->active_sends == 0 &&
-                    evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+                    evpl_iovec_ring_is_empty(&bind->iovec_send)) {
                     if (bind->flags & EVPL_BIND_FINISH) {
                         evpl_defer(evpl, &bind->close_deferral);
                     }
@@ -787,7 +787,7 @@ evpl_rdmacm_destroy(
             req = &dev->srq_reqs[j];
 
             if (req->used) {
-                evpl_bvec_release(evpl, &req->bvec);
+                evpl_iovec_release(evpl, &req->iovec);
             }
         }
 
@@ -945,7 +945,7 @@ evpl_rdmacm_flush_datagram(
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     struct evpl_rdmacm_sr *sr;
-    struct evpl_bvec      *cur;
+    struct evpl_iovec     *cur;
     struct evpl_dgram     *dgram;
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
     struct ibv_mr         *mr, **mrset;
@@ -984,13 +984,13 @@ evpl_rdmacm_flush_datagram(
 
         nsge = 0;
 
-        sge = alloca(sizeof(struct ibv_sge) * dgram->nbvec);
+        sge = alloca(sizeof(struct ibv_sge) * dgram->niov);
 
 
         len = 0;
-        while (nsge < dgram->nbvec) {
+        while (nsge < dgram->niov) {
 
-            cur = evpl_bvec_ring_tail(&bind->bvec_send);
+            cur = evpl_iovec_ring_tail(&bind->iovec_send);
 
             mrset = evpl_buffer_framework_private(cur->buffer,
                                                   EVPL_FRAMEWORK_RDMACM);
@@ -1007,7 +1007,7 @@ evpl_rdmacm_flush_datagram(
 
             nsge++;
 
-            evpl_bvec_ring_remove(&bind->bvec_send);
+            evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
         sr->nbufref = nsge;
@@ -1043,7 +1043,7 @@ evpl_rdmacm_flush_datagram(
     }
 
     if (rdmacm_id->active_sends == 0 &&
-        evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+        evpl_iovec_ring_is_empty(&bind->iovec_send)) {
         if (bind->flags & EVPL_BIND_FINISH) {
             evpl_defer(evpl, &bind->close_deferral);
         }
@@ -1060,7 +1060,7 @@ evpl_rdmacm_flush_stream(
     struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
     struct evpl_config    *config    = rdmacm->config;
     struct evpl_rdmacm_sr *sr;
-    struct evpl_bvec      *cur;
+    struct evpl_iovec     *cur;
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
     struct ibv_mr         *mr, **mrset;
     struct ibv_sge        *sge;
@@ -1070,9 +1070,9 @@ evpl_rdmacm_flush_stream(
         return;
     }
 
-    sge = alloca(sizeof(struct ibv_sge) * config->max_num_bvec);
+    sge = alloca(sizeof(struct ibv_sge) * config->max_num_iovec);
 
-    while (!evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+    while (!evpl_iovec_ring_is_empty(&bind->iovec_send)) {
 
         sr = evpl_zalloc(sizeof(*sr));
 
@@ -1082,10 +1082,10 @@ evpl_rdmacm_flush_stream(
 
         sr->length = 0;
 
-        while (nsge < config->max_num_bvec &&
-               !evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+        while (nsge < config->max_num_iovec &&
+               !evpl_iovec_ring_is_empty(&bind->iovec_send)) {
 
-            cur = evpl_bvec_ring_tail(&bind->bvec_send);
+            cur = evpl_iovec_ring_tail(&bind->iovec_send);
 
             if (sr->length + cur->length > config->max_datagram_size) {
                 break;
@@ -1105,7 +1105,7 @@ evpl_rdmacm_flush_stream(
             nsge++;
             sr->length += cur->length;
 
-            evpl_bvec_ring_remove(&bind->bvec_send);
+            evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
         sr->nbufref = nsge;
@@ -1126,7 +1126,7 @@ evpl_rdmacm_flush_stream(
     }
 
     if (rdmacm_id->active_sends == 0 &&
-        evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+        evpl_iovec_ring_is_empty(&bind->iovec_send)) {
         if (bind->flags & EVPL_BIND_FINISH) {
             evpl_defer(evpl, &bind->close_deferral);
         }

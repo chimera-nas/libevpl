@@ -35,14 +35,14 @@ struct evpl_uevent;
 struct evpl_poll;
 
 #ifndef EVPL_INTERNAL
-struct evpl_bvec {
+struct evpl_iovec {
     void        *data;
     unsigned int length;
     unsigned int pad;
     void *private; /* for internal use by libevpl */
 };
 #else  // ifndef EVPL_INTERNAL
-struct evpl_bvec;
+struct evpl_iovec;
 #endif // ifndef EVPL_INTERNAL
 
 struct evpl_endpoint_stub {
@@ -55,8 +55,8 @@ struct evpl_notify {
     int          notify_status;
     union {
         struct {
-            struct evpl_bvec    *bvec;
-            unsigned int         nbvec;
+            struct evpl_iovec   *iovec;
+            unsigned int         niov;
             unsigned int         length;
             struct evpl_address *addr;
         } recv_msg;
@@ -158,41 +158,41 @@ void evpl_bind_request_send_notifications(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 
-int evpl_bvec_alloc(
-    struct evpl      *evpl,
-    unsigned int      length,
-    unsigned int      alignment,
-    unsigned int      max_bvecs,
-    struct evpl_bvec *r_bvec);
+int evpl_iovec_alloc(
+    struct evpl       *evpl,
+    unsigned int       length,
+    unsigned int       alignment,
+    unsigned int       max_iovecs,
+    struct evpl_iovec *r_iovec);
 
-int evpl_bvec_reserve(
-    struct evpl      *evpl,
-    unsigned int      length,
-    unsigned int      alignment,
-    unsigned int      max_vec,
-    struct evpl_bvec *r_bvec);
+int evpl_iovec_reserve(
+    struct evpl       *evpl,
+    unsigned int       length,
+    unsigned int       alignment,
+    unsigned int       max_vec,
+    struct evpl_iovec *r_iovec);
 
-void evpl_bvec_commit(
-    struct evpl      *evpl,
-    unsigned int      alignment,
-    struct evpl_bvec *bvecs,
-    int               nbvecs);
+void evpl_iovec_commit(
+    struct evpl       *evpl,
+    unsigned int       alignment,
+    struct evpl_iovec *iovecs,
+    int                niovs);
 
-void evpl_bvec_release(
-    struct evpl      *evpl,
-    struct evpl_bvec *bvec);
+void evpl_iovec_release(
+    struct evpl       *evpl,
+    struct evpl_iovec *iovec);
 
 const void *
-evpl_bvec_data(
-    const struct evpl_bvec *bvec);
+evpl_iovec_data(
+    const struct evpl_iovec *iovec);
 
 unsigned int
-evpl_bvec_length(
-    const struct evpl_bvec *bvec);
+evpl_iovec_length(
+    const struct evpl_iovec *iovec);
 
-void evpl_bvec_addref(
-    struct evpl      *evpl,
-    struct evpl_bvec *bvec);
+void evpl_iovec_addref(
+    struct evpl       *evpl,
+    struct evpl_iovec *iovec);
 
 void evpl_send(
     struct evpl      *evpl,
@@ -201,11 +201,11 @@ void evpl_send(
     unsigned int      length);
 
 void evpl_sendv(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    struct evpl_bvec *bvecs,
-    int               nbufvecs,
-    int               length);
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovecs,
+    int                nbufvecs,
+    int                length);
 
 void evpl_sendto(
     struct evpl         *evpl,
@@ -225,7 +225,7 @@ void evpl_sendtov(
     struct evpl         *evpl,
     struct evpl_bind    *bind,
     struct evpl_address *address,
-    struct evpl_bvec    *bvecs,
+    struct evpl_iovec   *iovecs,
     int                  nbufvecs,
     int                  length);
 
@@ -233,7 +233,7 @@ void evpl_sendtoepv(
     struct evpl          *evpl,
     struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
-    struct evpl_bvec     *bvecs,
+    struct evpl_iovec    *iovecs,
     int                   nbufvecs,
     int                   length);
 
@@ -250,11 +250,11 @@ int evpl_read(
     int               length);
 
 int evpl_readv(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    struct evpl_bvec *bvecs,
-    int               maxbvecs,
-    int               length);
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovecs,
+    int                maxiovecs,
+    int                length);
 
 int evpl_recv(
     struct evpl      *evpl,
@@ -263,11 +263,11 @@ int evpl_recv(
     int               length);
 
 int evpl_recvv(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    struct evpl_bvec *bvecs,
-    int               maxbvecs,
-    int               length);
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovecs,
+    int                maxiovecs,
+    int                length);
 
 void evpl_disconnect(
     struct evpl      *evpl,

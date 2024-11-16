@@ -94,7 +94,7 @@ evpl_core_wait(
 
         event = ev->data.ptr;
 
-        if (ev->events & (EPOLLIN|EPOLLERR|EPOLLRDHUP)) {
+        if (ev->events & (EPOLLIN | EPOLLERR | EPOLLRDHUP)) {
             evpl_event_mark_readable(evpl, event);
         }
 
@@ -102,7 +102,7 @@ evpl_core_wait(
             evpl_event_mark_writable(evpl, event);
         }
 
-        if (ev->events & (EPOLLERR|EPOLLHUP|EPOLLRDHUP)) {
+        if (ev->events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
             evpl_event_mark_error(evpl, event);
         }
 

@@ -17,7 +17,7 @@
 
 #define EVPL_BVEC_EXTERNAL 0x01
 
-struct evpl_bvec {
+struct evpl_iovec {
     void               *data;
     unsigned int        length;
     unsigned int        pad;
@@ -27,14 +27,14 @@ struct evpl_bvec {
 struct evpl_config {
     unsigned int max_pending;
     unsigned int max_poll_fd;
-    unsigned int max_num_bvec;
+    unsigned int max_num_iovec;
     unsigned int buffer_size;
     uint64_t     slab_size;
     unsigned int page_size;
     unsigned int max_datagram_size;
     unsigned int max_datagram_batch;
     unsigned int refcnt;
-    unsigned int bvec_ring_size;
+    unsigned int iovec_ring_size;
     unsigned int dgram_ring_size;
     unsigned int resolve_timeout_ms;
     unsigned int spin_ns;
@@ -127,21 +127,21 @@ void evpl_abort(
 #ifndef FORCE_INLINE
 #define FORCE_INLINE __attribute__((always_inline)) inline
 
-/* Allocate a bvec representing an entire evpl_buffer
+/* Allocate a iovec representing an entire evpl_buffer
  * guaranteed to be contiguous
  */
 
-void evpl_bvec_alloc_whole(
-    struct evpl      *evpl,
-    struct evpl_bvec *r_bvec);
+void evpl_iovec_alloc_whole(
+    struct evpl       *evpl,
+    struct evpl_iovec *r_iovec);
 
 /*
- * Allocate a bvec to hold one datagram of maximal size
+ * Allocate a iovec to hold one datagram of maximal size
  * guaranteed to be contiguous
  */
-void evpl_bvec_alloc_datagram(
-    struct evpl      *evpl,
-    struct evpl_bvec *r_bvec);
+void evpl_iovec_alloc_datagram(
+    struct evpl       *evpl,
+    struct evpl_iovec *r_iovec);
 
 static uint64_t
 evpl_ts_interval(

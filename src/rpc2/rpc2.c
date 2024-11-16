@@ -11,8 +11,8 @@
 
 struct evpl_rpc2_msg {
     uint32_t              hdr;
-    int                   nbvec;
-    struct evpl_bvec      bvec[RPC2_MAX_BVEC];
+    int                   niov;
+    struct evpl_iovec     iovec[RPC2_MAX_BVEC];
     struct rpc_msg        msg;
     xdr_dbuf             *dbuf;
     struct evpl_rpc2_msg *prev;
@@ -112,16 +112,16 @@ evpl_rpc2_destroy(struct evpl_rpc2_agent *agent)
 } /* evpl_rpc2_agent_destroy */
 
 static inline void
-evpl_rpc2_bvec_skip(
-    struct evpl_bvec **out_iov,
-    int               *out_niov,
-    struct evpl_bvec  *in_iov,
-    int                in_niov,
-    int                offset)
+evpl_rpc2_iovec_skip(
+    struct evpl_iovec **out_iov,
+    int                *out_niov,
+    struct evpl_iovec  *in_iov,
+    int                 in_niov,
+    int                 offset)
 {
-    struct evpl_bvec *cur  = in_iov;
-    int               left = offset;
-    int               niov = in_niov;
+    struct evpl_iovec *cur  = in_iov;
+    int                left = offset;
+    int                niov = in_niov;
 
     while (left) {
         if (cur->length > left) {
@@ -136,7 +136,7 @@ evpl_rpc2_bvec_skip(
 
     *out_iov  = cur;
     *out_niov = niov;
-} /* evpl_rpc2_bvec_skip */
+} /* evpl_rpc2_iovec_skip */
 static void
 evpl_rpc2_handle_msg(
     struct evpl_rpc2_agent *agent,
@@ -169,7 +169,7 @@ evpl_rpc2_event(
     struct evpl_rpc2_conn  *rpc2_conn = private_data;
     struct evpl_rpc2_agent *agent     = rpc2_conn->agent;
     struct evpl_rpc2_msg   *msg;
-    struct evpl_bvec       *msg_iov;
+    struct evpl_iovec      *msg_iov;
     int                     msg_niov;
     int                     rc;
 
@@ -186,8 +186,8 @@ evpl_rpc2_event(
 
             msg = evpl_rpc2_msg_alloc(agent);
 
-            evpl_rpc2_bvec_skip(&msg_iov, &msg_niov, notify->recv_msg.bvec,
-                                notify->recv_msg.nbvec, sizeof(uint32_t));
+            evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, notify->recv_msg.iovec,
+                                 notify->recv_msg.niov, sizeof(uint32_t));
 
             rc = unmarshall_rpc_msg(&msg->msg, 1,
                                     msg_iov, msg_niov,
@@ -273,7 +273,7 @@ evpl_rpc2_call(
 {
     struct evpl_rpc2_conn *rpc2_conn = conn->private_data;
     struct evpl_rpc2_msg  *msg;
-    struct evpl_bvec       space[RPC2_MAX_BVEC];
+    struct evpl_iovec      space[RPC2_MAX_BVEC];
     int                    nspace, rc;
 
     msg = evpl_zalloc(sizeof(*msg));
@@ -291,27 +291,27 @@ evpl_rpc2_call(
     msg->msg.body.cbody.verf.flavor      = AUTH_NONE;
     msg->msg.body.cbody.verf.body.length = 0;
 
-    nspace = evpl_bvec_reserve(agent->evpl, 2 * 1024 * 1024, 8, RPC2_MAX_BVEC,
-                               space);
+    nspace = evpl_iovec_reserve(agent->evpl, 2 * 1024 * 1024, 8, RPC2_MAX_BVEC,
+                                space);
 
     if (unlikely(nspace < 0)) {
         evpl_fatal("Failed to reserve space for RPC2 call");
     }
 
-    msg->nbvec = RPC2_MAX_BVEC;
+    msg->niov = RPC2_MAX_BVEC;
 
-    rc = marshall_rpc_msg(&msg->msg, 1, space, nspace, msg->bvec, &msg->nbvec,
+    rc = marshall_rpc_msg(&msg->msg, 1, space, nspace, msg->iovec, &msg->niov,
                           sizeof(uint32_t));
 
     if (unlikely(rc < 0)) {
         evpl_fatal("Failed to marshall RPC2 call headeR");
     }
 
-    evpl_bvec_commit(agent->evpl, msg->bvec, msg->nbvec);
+    evpl_iovec_commit(agent->evpl, msg->iovec, msg->niov);
 
-    *(uint32_t *) msg->bvec[0].data = rpc2_hton32(rc);
+    *(uint32_t *) msg->iovec[0].data = rpc2_hton32(rc);
 
-    evpl_send(agent->evpl, conn, msg->bvec, msg->nbvec);
+    evpl_send(agent->evpl, conn, msg->iovec, msg->niov);
 
 } /* evpl_rpc2_call */
 #endif /* if 0 */

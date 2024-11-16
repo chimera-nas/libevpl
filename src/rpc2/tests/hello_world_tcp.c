@@ -104,7 +104,7 @@ int server_callback(
     unsigned int event_code,
     void *private_data)
 {
-    //struct evpl_bvec bvec, *bvecp;
+    //struct evpl_iovec iovec, *iovecp;
     //const char hello[] = "Hello World!";
     //int slen = strlen(hello);
     int *run = private_data;
@@ -118,13 +118,13 @@ int server_callback(
     case EVPL_EVENT_RECEIVED:
 
 /*
-        evpl_bvec_alloc(evpl, slen, 0, &bvec);
+        evpl_iovec_alloc(evpl, slen, 0, &iovec);
 
-        memcpy(evpl_bvec_data(&bvec), hello, slen);
+        memcpy(evpl_iovec_data(&iovec), hello, slen);
 
-        bvecp = &bvec;
+        iovecp = &iovec;
 
-        evpl_send(evpl, conn, &bvecp, 1);
+        evpl_send(evpl, conn, &iovecp, 1);
 
         evpl_finish(evpl, conn);
 */

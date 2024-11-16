@@ -61,11 +61,11 @@ evpl_socket_tcp_read(
 {
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
-    struct evpl_bvec   *bvec;
+    struct evpl_iovec  *iovec;
     struct evpl_notify  notify;
     struct iovec        iov[2];
     ssize_t             res, total, remain;
-    int                 length, nbvec, i;
+    int                 length, niov, i;
 
     evpl_check_conn(evpl, bind, s);
 
@@ -74,12 +74,12 @@ evpl_socket_tcp_read(
             s->recv1        = s->recv2;
             s->recv2.length = 0;
         } else {
-            evpl_bvec_alloc_whole(evpl, &s->recv1);
+            evpl_iovec_alloc_whole(evpl, &s->recv1);
         }
     }
 
     if (s->recv2.length == 0) {
-        evpl_bvec_alloc_whole(evpl, &s->recv2);
+        evpl_iovec_alloc_whole(evpl, &s->recv2);
     }
 
     iov[0].iov_base = s->recv1.data;
@@ -102,24 +102,24 @@ evpl_socket_tcp_read(
     }
 
     if (s->recv1.length >= res) {
-        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1, res);
+        evpl_iovec_ring_append(evpl, &bind->iovec_recv, &s->recv1, res);
     } else {
         remain = res - s->recv1.length;
-        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv1,
-                              s->recv1.length);
-        evpl_bvec_ring_append(evpl, &bind->bvec_recv, &s->recv2, remain);
+        evpl_iovec_ring_append(evpl, &bind->iovec_recv, &s->recv1,
+                               s->recv1.length);
+        evpl_iovec_ring_append(evpl, &bind->iovec_recv, &s->recv2, remain);
     }
 
     if (bind->segment_callback) {
 
-        bvec = alloca(sizeof(struct evpl_bvec) * s->config->max_num_bvec);
+        iovec = alloca(sizeof(struct evpl_iovec) * s->config->max_num_iovec);
 
         while (1) {
 
             length = bind->segment_callback(evpl, bind, bind->private_data);
 
             if (length == 0 ||
-                evpl_bvec_ring_bytes(&bind->bvec_recv) < length) {
+                evpl_iovec_ring_bytes(&bind->iovec_recv) < length) {
                 break;
             }
 
@@ -128,18 +128,19 @@ evpl_socket_tcp_read(
                 goto out;
             }
 
-            nbvec = evpl_bvec_ring_copyv(evpl, bvec, &bind->bvec_recv, length);
+            niov = evpl_iovec_ring_copyv(evpl, iovec, &bind->iovec_recv,
+                                         length);
 
             notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
-            notify.recv_msg.bvec   = bvec;
-            notify.recv_msg.nbvec  = nbvec;
+            notify.recv_msg.iovec  = iovec;
+            notify.recv_msg.niov   = niov;
             notify.recv_msg.length = length;
             notify.recv_msg.addr   = bind->remote;
 
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
-            for (i = 0; i < nbvec; ++i) {
-                evpl_bvec_release(evpl, &bvec[i]);
+            for (i = 0; i < niov; ++i) {
+                evpl_iovec_release(evpl, &iovec[i]);
             }
 
         }
@@ -167,7 +168,7 @@ evpl_socket_tcp_write(
     struct evpl_bind   *bind = evpl_private2bind(s);
     struct evpl_notify  notify;
     struct iovec       *iov;
-    int                 maxiov = s->config->max_num_bvec;
+    int                 maxiov = s->config->max_num_iovec;
     int                 niov;
     ssize_t             res, total;
 
@@ -175,7 +176,7 @@ evpl_socket_tcp_write(
 
     evpl_check_conn(evpl, bind, s);
 
-    niov = evpl_bvec_ring_iov(&total, iov, maxiov, &bind->bvec_send);
+    niov = evpl_iovec_ring_iov(&total, iov, maxiov, &bind->iovec_send);
 
     if (!niov) {
         res = 0;
@@ -194,7 +195,7 @@ evpl_socket_tcp_write(
         goto out;
     }
 
-    evpl_bvec_ring_consume(evpl, &bind->bvec_send, res);
+    evpl_iovec_ring_consume(evpl, &bind->iovec_send, res);
 
     if (res != total) {
         evpl_event_mark_unwritable(event);
@@ -210,7 +211,7 @@ evpl_socket_tcp_write(
 
  out:
 
-    if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
+    if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
         evpl_event_write_disinterest(event);
 
         if (bind->flags & EVPL_BIND_FINISH) {

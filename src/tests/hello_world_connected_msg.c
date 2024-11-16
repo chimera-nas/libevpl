@@ -45,7 +45,7 @@ client_callback(
         case EVPL_NOTIFY_RECV_MSG:
 
             evpl_test_info("client received '%s'",
-                           notify->recv_msg.bvec[0].data);
+                           notify->recv_msg.iovec[0].data);
             break;
 
         case EVPL_NOTIFY_DISCONNECTED:
@@ -99,7 +99,7 @@ server_callback(
         case EVPL_NOTIFY_RECV_MSG:
 
             evpl_test_info("client received '%s'",
-                           notify->recv_msg.bvec[0].data);
+                           notify->recv_msg.iovec[0].data);
 
             evpl_send(evpl, bind, hello, hellolen);
 

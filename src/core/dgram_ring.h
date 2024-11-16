@@ -1,7 +1,7 @@
 #pragma once
 
 struct evpl_dgram {
-    int                  nbvec;
+    int                  niov;
     struct evpl_address *addr;
 };
 

@@ -68,8 +68,8 @@ evpl_socket_udp_read(
         msghdr->msg_controllen = 0;
         msghdr->msg_flags      = 0;
 
-        iov->iov_base = datagram->bvec.data;
-        iov->iov_len  = datagram->bvec.length;
+        iov->iov_base = datagram->iovec.data;
+        iov->iov_len  = datagram->iovec.length;
 
         iov++;
     }
@@ -99,16 +99,16 @@ evpl_socket_udp_read(
         notify.notify_type   = EVPL_NOTIFY_RECV_MSG;
         notify.notify_status = 0;
 
-        datagram->bvec.length =  msgvecs[i].msg_len;
+        datagram->iovec.length =  msgvecs[i].msg_len;
 
-        notify.recv_msg.bvec   = &datagram->bvec;
-        notify.recv_msg.nbvec  = 1;
+        notify.recv_msg.iovec  = &datagram->iovec;
+        notify.recv_msg.niov   = 1;
         notify.recv_msg.length = msgvecs[i].msg_len;
         notify.recv_msg.addr   = addr;
 
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
-        evpl_bvec_release(evpl, &datagram->bvec);
+        evpl_iovec_release(evpl, &datagram->iovec);
         evpl_socket_datagram_reload(evpl, s, datagram);
         evpl_address_release(evpl, addr);
 
@@ -132,13 +132,13 @@ evpl_socket_udp_write(
 {
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
-    struct evpl_bvec   *bvec;
+    struct evpl_iovec  *iovec;
     struct evpl_dgram  *dgram;
     struct evpl_notify  notify;
     struct iovec       *iov;
     int                 nmsg = 0, nmsgleft, i;
     int                 maxmsg = s->config->max_datagram_batch;
-    int                 maxiov = s->config->max_num_bvec;
+    int                 maxiov = s->config->max_num_iovec;
     struct msghdr      *msghdr;
     struct mmsghdr     *msgvec;
     ssize_t             res, total;
@@ -154,7 +154,7 @@ evpl_socket_udp_write(
 
     iov = alloca(sizeof(struct iovec) * maxmsg * maxiov);
 
-    bvec = evpl_bvec_ring_tail(&bind->bvec_send);
+    iovec = evpl_iovec_ring_tail(&bind->iovec_send);
 
     while (dgram && nmsg < maxmsg) {
 
@@ -163,16 +163,16 @@ evpl_socket_udp_write(
         msghdr->msg_name       = dgram->addr->addr;
         msghdr->msg_namelen    = dgram->addr->addrlen;
         msghdr->msg_iov        = iov;
-        msghdr->msg_iovlen     = dgram->nbvec;
+        msghdr->msg_iovlen     = dgram->niov;
         msghdr->msg_control    = NULL;
         msghdr->msg_controllen = 0;
         msghdr->msg_flags      = 0;
 
-        for (i = 0; i < dgram->nbvec; ++i) {
-            iov->iov_base = bvec->data;
-            iov->iov_len  = bvec->length;
+        for (i = 0; i < dgram->niov; ++i) {
+            iov->iov_base = iovec->data;
+            iov->iov_len  = iovec->length;
             iov++;
-            bvec = evpl_bvec_ring_next(&bind->bvec_send, bvec);
+            iovec = evpl_iovec_ring_next(&bind->iovec_send, iovec);
         }
 
         dgram = evpl_dgram_ring_next(&bind->dgram_send, dgram);
@@ -197,7 +197,7 @@ evpl_socket_udp_write(
 
         evpl_address_release(evpl, dgram->addr);
 
-        evpl_bvec_ring_consumev(evpl, &bind->bvec_send, dgram->nbvec);
+        evpl_iovec_ring_consumev(evpl, &bind->iovec_send, dgram->niov);
 
         evpl_dgram_ring_remove(&bind->dgram_send);
 
@@ -248,12 +248,13 @@ evpl_socket_udp_bind(
     struct evpl      *evpl,
     struct evpl_bind *evbind)
 {
-    struct evpl_socket *s = evpl_bind_private(evbind);
-    int                 flags, rc;
+    struct evpl_socket     *s = evpl_bind_private(evbind);
+    int                     flags, rc;
+
 #if 0
     struct sockaddr_storage addr;
-    socklen_t addrlen = sizeof(addr);
-#endif
+    socklen_t               addrlen = sizeof(addr);
+#endif /* if 0 */
 
 
     s->fd = socket(evbind->local->addr->sa_family, SOCK_DGRAM, 0);
@@ -275,16 +276,16 @@ evpl_socket_udp_bind(
     evpl_socket_abort_if(rc, "Failed to bind socket: %s", strerror(errno));
 
 #if 0
-    rc = getsockname(s->fd, (struct sockaddr *)&addr, &addrlen);
+    rc = getsockname(s->fd, (struct sockaddr *) &addr, &addrlen);
 
     evpl_socket_abort_if(rc, "Failed to get socket name: %s", strerror(errno));
-        
+
     if (addr.ss_family == AF_INET) {
-        port = ntohs(((struct sockaddr_in *)&addr)->sin_port);
+        port = ntohs(((struct sockaddr_in *) &addr)->sin_port);
     } else if (addr.ss_family == AF_INET6) {
-        port = ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+        port = ntohs(((struct sockaddr_in6 *) &addr)->sin6_port);
     }
-#endif
+#endif /* if 0 */
 
     evpl_socket_init(evpl, s, s->fd, 0);
 

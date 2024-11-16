@@ -30,35 +30,35 @@ evpl_xlio_prepare_iov(
     struct evpl_xlio_socket      *s,
     struct iovec                 *iov,
     struct xlio_socket_send_attr *send_attr,
-    struct evpl_bvec_ring        *ring)
+    struct evpl_iovec_ring       *ring)
 {
     struct evpl_buffer  *buffer;
     struct ibv_mr      **mrset;
-    struct evpl_bvec    *bvec;
+    struct evpl_iovec   *iovec;
     struct evpl_xlio_zc *zc;
     int                  pos = ring->tail;
 
-    bvec = &ring->bvec[pos];
+    iovec = &ring->iovec[pos];
 
-    buffer = bvec->buffer;
+    buffer = iovec->buffer;
 
     mrset = (struct ibv_mr **) evpl_buffer_framework_private(buffer,
                                                              EVPL_FRAMEWORK_XLIO);
 
     send_attr->mkey = mrset[s->pd_index]->lkey;
 
-    iov->iov_base = bvec->data;
-    iov->iov_len  = bvec->length;
+    iov->iov_base = iovec->data;
+    iov->iov_len  = iovec->length;
 
-    if (bvec->length <= 64) {
+    if (iovec->length <= 64) {
         send_attr->flags |= XLIO_SOCKET_SEND_FLAG_INLINE;
     } else {
         send_attr->flags = 0;
 
         zc = evpl_xlio_alloc_zc(xlio);
 
-        zc->buffer = bvec->buffer;
-        zc->length = bvec->length;
+        zc->buffer = iovec->buffer;
+        zc->length = iovec->length;
         zc->buffer->refcnt++;
 
         s->zc_pending++;
@@ -75,19 +75,19 @@ evpl_xlio_tcp_read(
 {
     struct evpl_bind  *bind = evpl_private2bind(s);
     struct evpl_notify notify;
-    struct evpl_bvec  *bvec;
-    int                i, length, nbvec;
+    struct evpl_iovec *iovec;
+    int                i, length, niov;
 
     if (bind->segment_callback) {
 
-        bvec = alloca(sizeof(struct evpl_bvec) * s->config->max_num_bvec);
+        iovec = alloca(sizeof(struct evpl_iovec) * s->config->max_num_iovec);
 
         while (1) {
 
             length = bind->segment_callback(evpl, bind, bind->private_data);
 
             if (length == 0 ||
-                evpl_bvec_ring_bytes(&bind->bvec_recv) < length) {
+                evpl_iovec_ring_bytes(&bind->iovec_recv) < length) {
                 break;
             }
 
@@ -96,18 +96,19 @@ evpl_xlio_tcp_read(
                 return;
             }
 
-            nbvec = evpl_bvec_ring_copyv(evpl, bvec, &bind->bvec_recv, length);
+            niov = evpl_iovec_ring_copyv(evpl, iovec, &bind->iovec_recv,
+                                         length);
 
             notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
-            notify.recv_msg.bvec   = bvec;
-            notify.recv_msg.nbvec  = nbvec;
+            notify.recv_msg.iovec  = iovec;
+            notify.recv_msg.niov   = niov;
             notify.recv_msg.length = length;
             notify.recv_msg.addr   = bind->remote;
 
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
-            for (i = 0; i < nbvec; ++i) {
-                evpl_bvec_release(evpl, &bvec[i]);
+            for (i = 0; i < niov; ++i) {
+                evpl_iovec_release(evpl, &iovec[i]);
             }
 
         }
@@ -133,7 +134,7 @@ evpl_xlio_tcp_write(
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    evpl_xlio_prepare_iov(evpl, xlio, s, &iov, &send_attr, &bind->bvec_send);
+    evpl_xlio_prepare_iov(evpl, xlio, s, &iov, &send_attr, &bind->iovec_send);
 
     res = xlio->extra->xlio_socket_sendv(s->socket, &iov, 1, &send_attr);
 
@@ -141,7 +142,7 @@ evpl_xlio_tcp_write(
         return res;
     }
 
-    evpl_bvec_ring_consume(evpl, &bind->bvec_send, iov.iov_len);
+    evpl_iovec_ring_consume(evpl, &bind->iovec_send, iov.iov_len);
 
     return 0;
 } /* evpl_write_tcp */

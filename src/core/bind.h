@@ -8,7 +8,7 @@
 
 #include "core/internal.h"
 #include "core/buffer.h"
-#include "core/bvec_ring.h"
+#include "core/iovec_ring.h"
 #include "core/dgram_ring.h"
 #include "core/event.h"
 #include "core/deferral.h"
@@ -32,8 +32,8 @@ struct evpl_bind {
     struct evpl_bind       *prev;
     struct evpl_bind       *next;
 
-    struct evpl_bvec_ring   bvec_send;
-    struct evpl_bvec_ring   bvec_recv;
+    struct evpl_iovec_ring  iovec_send;
+    struct evpl_iovec_ring  iovec_recv;
 
     struct evpl_dgram_ring  dgram_send;
 
