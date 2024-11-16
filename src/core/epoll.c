@@ -51,7 +51,7 @@ evpl_core_add(
         abort();
     }
 
-    ev.events   = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLET;
+    ev.events   = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLET | EPOLLRDHUP;
     ev.data.ptr = event;
 
     rc = epoll_ctl(evc->fd, EPOLL_CTL_ADD, event->fd, &ev);
@@ -94,7 +94,7 @@ evpl_core_wait(
 
         event = ev->data.ptr;
 
-        if (ev->events & EPOLLIN) {
+        if (ev->events & (EPOLLIN|EPOLLERR|EPOLLRDHUP)) {
             evpl_event_mark_readable(evpl, event);
         }
 
@@ -102,7 +102,7 @@ evpl_core_wait(
             evpl_event_mark_writable(evpl, event);
         }
 
-        if (ev->events & EPOLLERR) {
+        if (ev->events & (EPOLLERR|EPOLLHUP|EPOLLRDHUP)) {
             evpl_event_mark_error(evpl, event);
         }
 

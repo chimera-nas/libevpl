@@ -19,12 +19,11 @@
 
 #include "utlist.h"
 
-
 #include "core/internal.h"
 #if EVPL_MECH == epoll
 #include "core/epoll.h"
-#else  /* if EVPL_MECH == epoll */
-#error  No EVPL_MECH
+#else /* if EVPL_MECH == epoll */
+#error No EVPL_MECH
 #endif /* if EVPL_MECH == epoll */
 
 #include "core/evpl.h"
@@ -85,7 +84,6 @@ struct evpl {
 
     void                  *protocol_private[EVPL_NUM_PROTO];
     void                  *framework_private[EVPL_NUM_FRAMEWORK];
-
 };
 
 static void
@@ -177,7 +175,6 @@ evpl_init_once(void)
         atexit(evpl_cleanup);
     }
 } /* evpl_init_once */
-
 
 void
 evpl_cleanup()
@@ -281,7 +278,11 @@ evpl_wait(
                 event->write_callback(evpl, event);
             }
 
-            if ((event->flags & EVPL_READ_READY)  != EVPL_READ_READY &&
+            if ((event->flags & EVPL_ERROR) == EVPL_ERROR) {
+                event->error_callback(evpl, event);
+            }
+
+            if ((event->flags & EVPL_READ_READY) != EVPL_READ_READY &&
                 (event->flags & EVPL_WRITE_READY) != EVPL_WRITE_READY) {
 
                 event->flags &= ~EVPL_ACTIVE;
@@ -295,7 +296,6 @@ evpl_wait(
         }
     }
 
-
     while (evpl->num_active_deferrals) {
         deferral = evpl->active_deferrals[0];
         --evpl->num_active_deferrals;
@@ -307,7 +307,6 @@ evpl_wait(
         deferral->armed = 0;
 
         deferral->callback(evpl, deferral->private_data);
-
     }
 
 } /* evpl_wait */
@@ -363,7 +362,6 @@ evpl_endpoint_create(
     return ep;
 } /* evpl_endpoint_create */
 
-
 void
 evpl_endpoint_close(
     struct evpl          *evpl,
@@ -404,7 +402,7 @@ evpl_endpoint_resolve(
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family   = AF_INET;
-    hints.ai_socktype = 0;//SOCK_DGRAM;
+    hints.ai_socktype = 0; // SOCK_DGRAM;
     hints.ai_flags    = 0;
 
     rc = getaddrinfo(endpoint->address, port_str, &hints, &ai);
@@ -430,7 +428,6 @@ evpl_endpoint_resolve(
 
     return 0;
 } /* evpl_endpoint_resolve */
-
 
 struct evpl_bind *
 evpl_connect(
@@ -490,6 +487,18 @@ evpl_bind(
 
     return bind;
 } /* evpl_bind */
+
+void
+evpl_bind_close(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    if (!(bind->flags & EVPL_BIND_CLOSED)) {
+        bind->flags |= EVPL_BIND_CLOSED;
+        bind->protocol->close(evpl, bind);
+    }
+} /* evpl_bind_close */
+
 void
 evpl_destroy(struct evpl *evpl)
 {
@@ -500,7 +509,7 @@ evpl_destroy(struct evpl *evpl)
 
     while (evpl->binds) {
         bind = evpl->binds;
-        evpl_bind_destroy(evpl, bind);
+        evpl_bind_close(evpl, bind);
     }
 
     while (evpl->free_binds) {
@@ -552,17 +561,6 @@ evpl_destroy(struct evpl *evpl)
     evpl_free(evpl);
 } /* evpl_destroy */
 
-void
-evpl_bind_close(
-    struct evpl      *evpl,
-    struct evpl_bind *bind)
-{
-    if (!(bind->flags & EVPL_BIND_CLOSED)) {
-        bind->flags |= EVPL_BIND_CLOSED;
-        bind->protocol->close(evpl, bind);
-    }
-} /* evpl_bind_close */
-
 static void
 evpl_bind_close_deferral(
     struct evpl *evpl,
@@ -584,7 +582,6 @@ evpl_bind_flush_deferral(
         conn->protocol->flush(evpl, conn);
     }
 } /* evpl_bind_flush_deferral */
-
 
 struct evpl_bind *
 evpl_bind_prepare(
@@ -641,7 +638,6 @@ evpl_bind_prepare(
 
         evpl_deferral_init(&bind->flush_deferral,
                            evpl_bind_flush_deferral, bind);
-
     }
 
     DL_APPEND(evpl->binds, bind);
@@ -719,7 +715,6 @@ evpl_event_write_disinterest(struct evpl_event *event)
 
 } /* evpl_event_write_disinterest */
 
-
 void
 evpl_event_mark_readable(
     struct evpl       *evpl,
@@ -780,7 +775,6 @@ evpl_event_mark_error(
 
 } /* evpl_event_mark_error */
 
-
 static struct evpl_buffer *
 evpl_buffer_alloc(struct evpl *evpl)
 {
@@ -813,7 +807,7 @@ evpl_bvec_reserve(
     int                 nbvecs = 0;
     struct evpl_bvec   *bvec;
 
-    do {
+    do{
 
         if (evpl->current_buffer == NULL) {
             evpl->current_buffer = evpl_buffer_alloc(evpl);
@@ -1081,13 +1075,11 @@ evpl_sendv(
         dgram->addr  = bind->remote;
     }
 
-
     evpl_defer(evpl, &bind->flush_deferral);
 
-    for ( ; i < nbvecs; ++i) {
+    for (; i < nbvecs; ++i) {
         evpl_bvec_release(evpl, &bvecs[i]);
     }
-
 
 } /* evpl_sendv */
 
@@ -1132,12 +1124,11 @@ evpl_sendtov(
 
     evpl_defer(evpl, &bind->flush_deferral);
 
-    for ( ; i < nbvecs; ++i) {
+    for (; i < nbvecs; ++i) {
         evpl_bvec_release(evpl, &bvecs[i]);
     }
 
 } /* evpl_sendtov */
-
 
 void
 evpl_sendtoepv(
@@ -1191,8 +1182,6 @@ evpl_bind_destroy(
 {
     struct evpl_notify notify;
 
-    evpl_bind_close(evpl, bind);
-
     if (bind->notify_callback) {
         notify.notify_type   = EVPL_NOTIFY_DISCONNECTED;
         notify.notify_status = 0;
@@ -1236,11 +1225,6 @@ evpl_peek(
     }
 
     if (unlikely(!bind->protocol->stream)) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (unlikely(bind->segment_callback)) {
         errno = EINVAL;
         return -1;
     }
@@ -1376,7 +1360,6 @@ evpl_readv(
 
 } /* evpl_readv */
 
-
 int
 evpl_recv(
     struct evpl      *evpl,
@@ -1458,7 +1441,6 @@ evpl_recvv(
         cur = evpl_bvec_ring_next(&bind->bvec_recv, cur);
     }
 
-
     if (left) {
         return -1;
     }
@@ -1478,7 +1460,7 @@ evpl_recv_peek_bvec(
 {
     int nbvecs = 0, left = length;
 
-    do {
+    do{
 
     } while (left);
 
@@ -1491,7 +1473,6 @@ evpl_endpoint_address(const struct evpl_endpoint *ep)
 {
     return ep->address;
 } /* evpl_endpoint_address */
-
 
 int
 evpl_endpoint_port(const struct evpl_endpoint *ep)
@@ -1600,7 +1581,6 @@ evpl_remove_deferral(
 
         --evpl->num_active_deferrals;
     }
-
 
 } /* evpl_defer */
 

@@ -44,6 +44,7 @@ client_callback(
             break;
 
         case EVPL_NOTIFY_DISCONNECTED:
+            evpl_test_info("client disconnected");
             *run = 0;
             break;
     } /* switch */
@@ -89,6 +90,7 @@ server_callback(
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_DISCONNECTED:
+            evpl_test_info("server disconnected");
             *run = 0;
             break;
         case EVPL_NOTIFY_RECV_DATA:

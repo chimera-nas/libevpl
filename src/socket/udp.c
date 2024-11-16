@@ -250,6 +250,10 @@ evpl_socket_udp_bind(
 {
     struct evpl_socket *s = evpl_bind_private(evbind);
     int                 flags, rc;
+#if 0
+    struct sockaddr_storage addr;
+    socklen_t addrlen = sizeof(addr);
+#endif
 
 
     s->fd = socket(evbind->local->addr->sa_family, SOCK_DGRAM, 0);
@@ -269,6 +273,18 @@ evpl_socket_udp_bind(
     rc = bind(s->fd, evbind->local->addr, evbind->local->addrlen);
 
     evpl_socket_abort_if(rc, "Failed to bind socket: %s", strerror(errno));
+
+#if 0
+    rc = getsockname(s->fd, (struct sockaddr *)&addr, &addrlen);
+
+    evpl_socket_abort_if(rc, "Failed to get socket name: %s", strerror(errno));
+        
+    if (addr.ss_family == AF_INET) {
+        port = ntohs(((struct sockaddr_in *)&addr)->sin_port);
+    } else if (addr.ss_family == AF_INET6) {
+        port = ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+    }
+#endif
 
     evpl_socket_init(evpl, s, s->fd, 0);
 

@@ -208,14 +208,6 @@ evpl_socket_tcp_write(
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
-    if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
-        evpl_event_write_disinterest(event);
-
-        if (bind->flags & EVPL_BIND_FINISH) {
-            evpl_defer(evpl, &bind->close_deferral);
-        }
-    }
-
  out:
 
     if (evpl_bvec_ring_is_empty(&bind->bvec_send)) {
@@ -237,7 +229,10 @@ evpl_socket_tcp_error(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    evpl_socket_debug("tcp socket error");
+    struct evpl_socket *s    = evpl_event_socket(event);
+    struct evpl_bind   *bind = evpl_private2bind(s);
+
+    evpl_defer(evpl, &bind->close_deferral);
 } /* evpl_error_tcp */
 
 void

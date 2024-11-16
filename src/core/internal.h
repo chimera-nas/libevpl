@@ -9,29 +9,27 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-#define EVPL_INTERNAL 1
+#define EVPL_INTERNAL      1
 
 #include "core/evpl.h"
 
-#define NS_PER_S (1000000000UL)
+#define NS_PER_S           (1000000000UL)
 
 #define EVPL_BVEC_EXTERNAL 0x01
 
-struct evpl_bvec
-{
-    void *data;
-    unsigned int length;
-    unsigned int pad;
+struct evpl_bvec {
+    void               *data;
+    unsigned int        length;
+    unsigned int        pad;
     struct evpl_buffer *buffer;
 };
 
-struct evpl_config
-{
+struct evpl_config {
     unsigned int max_pending;
     unsigned int max_poll_fd;
     unsigned int max_num_bvec;
     unsigned int buffer_size;
-    uint64_t slab_size;
+    uint64_t     slab_size;
     unsigned int page_size;
     unsigned int max_datagram_size;
     unsigned int max_datagram_batch;
@@ -54,22 +52,22 @@ struct evpl_config
     unsigned int xlio_enabled;
 };
 
-void *evpl_malloc(
+void * evpl_malloc(
     unsigned int size);
-void *evpl_zalloc(
+void * evpl_zalloc(
     unsigned int size);
-void *evpl_calloc(
+void * evpl_calloc(
     unsigned int n,
     unsigned int size);
-void *evpl_valloc(
+void * evpl_valloc(
     unsigned int size,
     unsigned int alignment);
 void evpl_free(
     void *p);
 
-#define EVPL_LOG_NONE 0
+#define EVPL_LOG_NONE  0
 #define EVPL_LOG_DEBUG 1
-#define EVPL_LOG_INFO 2
+#define EVPL_LOG_INFO  2
 #define EVPL_LOG_ERROR 3
 #define EVPL_LOG_FATAL 4
 
@@ -95,31 +93,31 @@ void evpl_abort(
     ...);
 
 #define evpl_fatal_if(cond, ...) \
-    if (cond)                    \
-    {                            \
-        evpl_fatal(__VA_ARGS__); \
-    }
+        if (cond)                    \
+        {                            \
+            evpl_fatal(__VA_ARGS__); \
+        }
 
 #define evpl_abort_if(cond, ...) \
-    if (cond)                    \
-    {                            \
-        evpl_abort(__VA_ARGS__); \
-    }
+        if (cond)                    \
+        {                            \
+            evpl_abort(__VA_ARGS__); \
+        }
 
-#define evpl_core_debug(...) evpl_debug("core", __VA_ARGS__)
-#define evpl_core_info(...) evpl_info("core", __VA_ARGS__)
-#define evpl_core_error(...) evpl_error("core", __VA_ARGS__)
-#define evpl_core_fatal(...) evpl_fatal("core", __VA_ARGS__)
-#define evpl_core_abort(...) evpl_abort("core", __VA_ARGS__)
+#define evpl_core_debug(...)            evpl_debug("core", __VA_ARGS__)
+#define evpl_core_info(...)             evpl_info("core", __VA_ARGS__)
+#define evpl_core_error(...)            evpl_error("core", __VA_ARGS__)
+#define evpl_core_fatal(...)            evpl_fatal("core", __VA_ARGS__)
+#define evpl_core_abort(...)            evpl_abort("core", __VA_ARGS__)
 
 #define evpl_core_fatal_if(cond, ...) \
-    evpl_fatal_if(cond, "core", __VA_ARGS__)
+        evpl_fatal_if(cond, "core", __VA_ARGS__)
 
 #define evpl_core_abort_if(cond, ...) \
-    evpl_abort_if(cond, "core", __VA_ARGS__)
+        evpl_abort_if(cond, "core", __VA_ARGS__)
 
 #ifndef unlikely
-#define unlikely(x) __builtin_expect(!!(x), 0)
+#define unlikely(x)                     __builtin_expect(!!(x), 0)
 #endif // ifndef unlikely
 
 #define container_of(ptr, type, member) ({            \
@@ -134,7 +132,7 @@ void evpl_abort(
  */
 
 void evpl_bvec_alloc_whole(
-    struct evpl *evpl,
+    struct evpl      *evpl,
     struct evpl_bvec *r_bvec);
 
 /*
@@ -142,7 +140,7 @@ void evpl_bvec_alloc_whole(
  * guaranteed to be contiguous
  */
 void evpl_bvec_alloc_datagram(
-    struct evpl *evpl,
+    struct evpl      *evpl,
     struct evpl_bvec *r_bvec);
 
 static uint64_t
@@ -150,7 +148,8 @@ evpl_ts_interval(
     const struct timespec *end,
     const struct timespec *start)
 {
-    return NS_PER_S * (end->tv_sec - start->tv_sec) + (end->tv_nsec - start->tv_nsec);
+    return NS_PER_S * (end->tv_sec - start->tv_sec) + (end->tv_nsec - start->
+                                                       tv_nsec);
 } // evpl_ts_interval
 
 void evpl_activity(

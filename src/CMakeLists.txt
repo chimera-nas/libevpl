@@ -4,19 +4,19 @@ macro(unit_test module test_name)
 
     add_executable(${module}_${test_name} ${sources})
 
-    target_link_libraries(${module}_${test_name} ${module} pthread)
+    target_link_libraries(${module}_${test_name} evpl pthread)
 
     # Add the test
-    add_test(NAME ${module}_${test_name} COMMAND ${module}_${test_name})
+    add_test(NAME libevpl/${module}/${test_name} COMMAND ${module}_${test_name})
 
-    set_tests_properties(${module}_${test_name} PROPERTIES LABELS ${module})
+    add_dependencies(${module}_${test_name} xdrzcc)
+    
 endmacro()
 
 macro(unit_test_bin module test_name binary_name)
 
-    add_test(NAME ${module}_${test_name} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
+    add_test(NAME libevpl/${module}/${test_name} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
 
-    set_tests_properties(${module}_${test_name} PROPERTIES LABELS ${module})
 endmacro()
 
 macro(unit_test_xdr module test_name xdr_file)
@@ -41,8 +41,6 @@ macro(unit_test_xdr module test_name xdr_file)
     include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
     unit_test(${module} ${test_name} ${sources} ${XDR_C} ${XDR_H})
-
-    add_dependencies(${module}_${test_name} xdrzcc)
 
 endmacro()
 
