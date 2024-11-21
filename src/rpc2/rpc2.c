@@ -41,6 +41,7 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
         msg             = evpl_zalloc(sizeof(*msg));
         msg->dbuf       = xdr_dbuf_alloc();
         msg->msg_buffer = evpl_zalloc(4096);
+        msg->agent      = agent;
     }
 
     xdr_dbuf_reset(msg->dbuf);
@@ -154,16 +155,14 @@ evpl_rpc2_handle_msg(
     int                       i;
     int                       error;
 
-    evpl_rpc2_debug("rpc2 received xid %u mtype %u", rpc_msg->xid,
-                    rpc_msg->body.mtype);
-
     msg->xid  = rpc_msg->xid;
     msg->proc = rpc_msg->body.cbody.proc;
 
     switch (rpc_msg->body.mtype) {
         case CALL:
             evpl_rpc2_debug(
-                "rpc2 received call rpcvers %u prog %u vers %u proc %u",
+                "rpc2 received call xid %u rpcvers %u prog %u vers %u proc %u",
+                rpc_msg->xid,
                 rpc_msg->body.cbody.rpcvers,
                 rpc_msg->body.cbody.prog,
                 rpc_msg->body.cbody.vers,
@@ -190,10 +189,12 @@ evpl_rpc2_handle_msg(
             }
 
 
-            error = program->call_dispatch(evpl, msg, iov, niov, server->
-                                           private_data);
+            error = program->call_dispatch(evpl, conn, msg, iov, niov,
+                                           server->private_data);
 
-            evpl_rpc2_debug("rpc2 call dispatch returned %d", error);
+            if (unlikely(error)) {
+                abort();
+            }
 
             break;
         case REPLY:
@@ -219,15 +220,10 @@ evpl_rpc2_event(
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
-            evpl_rpc2_info("rpc2 conn connected");
             break;
         case EVPL_NOTIFY_DISCONNECTED:
-            evpl_rpc2_info("rpc2 conn disconnected");
             break;
         case EVPL_NOTIFY_RECV_MSG:
-            evpl_rpc2_info("rpc2 received msg length %d", notify->recv_msg.
-                           length);
-
             msg = evpl_rpc2_msg_alloc(agent);
 
             msg->bind = bind;
@@ -238,16 +234,14 @@ evpl_rpc2_event(
                                     hdr_iov, hdr_niov,
                                     msg->dbuf);
 
-            evpl_rpc2_debug("unmarshalled rpc msg len %d of %d", rc, notify->
-                            recv_msg.length);
-
             evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
 
             evpl_rpc2_handle_msg(evpl, rpc2_conn, msg, &rpc_msg, msg_iov,
                                  msg_niov);
             break;
         default:
-            evpl_rpc2_info("rpc2 unhandled event");
+            evpl_rpc2_error("rpc2 unhandled event");
+            abort();
     } /* switch */
 
 } /* evpl_rpc2_event */
@@ -289,18 +283,14 @@ evpl_rpc2_send_reply(
     uint32_t          hdr;
     struct rpc_msg    rpc_reply;
 
-    evpl_rpc2_debug("rpc2 send reply xid %u proc %u", msg->xid, msg->proc);
-
     niov = evpl_iovec_reserve(evpl, 4096, 0, 8, iov);
 
-    evpl_rpc2_debug("reserved space into %d iovs", niov);
-
-    rpc_reply.xid                                         = msg->xid;
-    rpc_reply.body.mtype                                  = REPLY;
-    rpc_reply.body.rbody.stat                             = 0;
-    rpc_reply.body.rbody.areply.verf.flavor               = AUTH_NONE;
-    rpc_reply.body.rbody.areply.reply_data.stat           = AUTH_OK;
-    rpc_reply.body.rbody.areply.reply_data.results.length = 0;
+    rpc_reply.xid                                      = msg->xid;
+    rpc_reply.body.mtype                               = REPLY;
+    rpc_reply.body.rbody.stat                          = 0;
+    rpc_reply.body.rbody.areply.verf.flavor            = AUTH_NONE;
+    rpc_reply.body.rbody.areply.reply_data.stat        = AUTH_OK;
+    rpc_reply.body.rbody.areply.reply_data.results.len = 0;
 
     reply_len = marshall_rpc_msg(&rpc_reply, 1, iov, niov, reply_iov, &
                                  reply_niov, 4);
@@ -311,12 +301,13 @@ evpl_rpc2_send_reply(
 
     evpl_iovec_commit(evpl, 0, reply_iov, reply_niov);
 
-    evpl_rpc2_debug("marshalled reply rc %d into %d iovs", reply_len, reply_niov
-                    );
+    evpl_rpc2_debug("rpc2 send reply xid %u proc %u into %d bytes", msg->xid,
+                    msg->proc, reply_len);
 
     evpl_sendv(evpl, msg->bind, reply_iov, reply_niov, reply_len);
     evpl_sendv(evpl, msg->bind, msg_iov, msg_niov, length);
 
+    evpl_rpc2_msg_free(msg->agent, msg);
     return 0;
 } /* evpl_rpc2_send_reply */
 
