@@ -12,7 +12,6 @@ struct evpl_rpc2_msg {
     struct evpl_bind         *bind;
     struct evpl_rpc2_agent   *agent;
     struct evpl_rpc2_program *program;
-    struct evpl_rpc2_msg     *prev;
     struct evpl_rpc2_msg     *next;
 };
 

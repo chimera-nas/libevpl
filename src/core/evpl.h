@@ -39,7 +39,7 @@ struct evpl_iovec {
     void        *data;
     unsigned int length;
     unsigned int pad;
-    void *private; /* for internal use by libevpl */
+    void        *private; /* for internal use by libevpl */
 };
 #else  // ifndef EVPL_INTERNAL
 struct evpl_iovec;
@@ -269,7 +269,7 @@ int evpl_recvv(
     int                maxiovecs,
     int                length);
 
-void evpl_disconnect(
+void evpl_close(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 

@@ -1148,7 +1148,7 @@ evpl_sendtoepv(
 } /* evpl_sendtoepv */
 
 void
-evpl_disconnect(
+evpl_close(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {

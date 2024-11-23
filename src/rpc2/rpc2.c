@@ -35,8 +35,8 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
     struct evpl_rpc2_msg *msg;
 
     if (agent->free_msg) {
-        msg             = agent->free_msg;
-        agent->free_msg = msg->next;
+        msg = agent->free_msg;
+        LL_DELETE(agent->free_msg, msg);
     } else {
         msg             = evpl_zalloc(sizeof(*msg));
         msg->dbuf       = xdr_dbuf_alloc();
@@ -54,7 +54,7 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_agent *agent,
     struct evpl_rpc2_msg   *msg)
 {
-    DL_PREPEND(agent->free_msg, msg);
+    LL_PREPEND(agent->free_msg, msg);
 } /* evpl_rpc2_msg_free */
 
 static FORCE_INLINE uint32_t
@@ -112,6 +112,15 @@ evpl_rpc2_init(struct evpl *evpl)
 void
 evpl_rpc2_destroy(struct evpl_rpc2_agent *agent)
 {
+    struct evpl_rpc2_msg *msg;
+
+    while (agent->free_msg) {
+        msg = agent->free_msg;
+        LL_DELETE(agent->free_msg, msg);
+        xdr_dbuf_free(msg->dbuf);
+        evpl_free(msg->msg_buffer);
+        evpl_free(msg);
+    }
     evpl_free(agent);
 } /* evpl_rpc2_agent_destroy */
 
@@ -222,6 +231,7 @@ evpl_rpc2_event(
         case EVPL_NOTIFY_CONNECTED:
             break;
         case EVPL_NOTIFY_DISCONNECTED:
+            free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:
             msg = evpl_rpc2_msg_alloc(agent);
@@ -289,7 +299,7 @@ evpl_rpc2_send_reply(
     rpc_reply.body.mtype                               = REPLY;
     rpc_reply.body.rbody.stat                          = 0;
     rpc_reply.body.rbody.areply.verf.flavor            = AUTH_NONE;
-    rpc_reply.body.rbody.areply.reply_data.stat        = AUTH_OK;
+    rpc_reply.body.rbody.areply.reply_data.stat        = SUCCESS;
     rpc_reply.body.rbody.areply.reply_data.results.len = 0;
 
     reply_len = marshall_rpc_msg(&rpc_reply, 1, iov, niov, reply_iov, &
@@ -343,6 +353,16 @@ evpl_rpc2_listen(
 
     return server;
 } /* evpl_rpc2_listen */
+
+void
+evpl_rpc2_server_destroy(
+    struct evpl_rpc2_agent  *agent,
+    struct evpl_rpc2_server *server)
+{
+    evpl_close(agent->evpl, server->bind);
+    evpl_free(server->programs);
+    evpl_free(server);
+} /* evpl_rpc2_server_destroy */
 
 struct evpl_bind *
 evpl_rpc2_connect(

@@ -35,6 +35,11 @@ evpl_rpc2_listen(
     int                        nprograms,
     void                      *private_data);
 
+void
+evpl_rpc2_server_destroy(
+    struct evpl_rpc2_agent  *agent,
+    struct evpl_rpc2_server *server);
+
 struct evpl_bind *
 evpl_rpc2_connect(
     struct evpl_rpc2_agent       *agent,
@@ -42,10 +47,3 @@ evpl_rpc2_connect(
     struct evpl_endpoint         *endpoint,
     evpl_rpc2_dispatch_callback_t dispatch_callback,
     void                         *private_data);
-
-void evpl_rpc2_call(
-    struct evpl_rpc2_agent *agent,
-    struct evpl_bind       *bind,
-    unsigned int            program,
-    unsigned int            version,
-    unsigned int            opcode);
