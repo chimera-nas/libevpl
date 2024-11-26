@@ -14,6 +14,15 @@ struct evpl_iovec;
 struct evpl_rpc2_server;
 struct evpl_rpc2_program;
 
+struct evpl_rpc2_conn {
+    int                      is_server;
+    struct evpl_rpc2_server *server;
+    struct evpl_rpc2_agent  *agent;
+    struct evpl_rpc2_msg    *recv_msg;
+    uint32_t                 next_xid;
+    void                    *private_data;
+};
+
 struct evpl_rpc2_agent *
 evpl_rpc2_init(
     struct evpl *evpl);

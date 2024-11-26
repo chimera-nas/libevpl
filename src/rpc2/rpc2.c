@@ -8,14 +8,6 @@
 #include "rpc2/rpc2_program.h"
 #include "core/evpl.h"
 
-struct evpl_rpc2_conn {
-    int                      is_server;
-    struct evpl_rpc2_server *server;
-    struct evpl_rpc2_agent  *agent;
-    struct evpl_rpc2_msg    *recv_msg;
-    uint32_t                 next_xid;
-};
-
 struct evpl_rpc2_server {
     struct evpl_rpc2_agent    *agent;
     struct evpl_bind          *bind;
