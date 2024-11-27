@@ -161,6 +161,8 @@ evpl_rpc2_handle_msg(
 
     switch (rpc_msg->body.mtype) {
         case CALL:
+
+#if 0
             evpl_rpc2_debug(
                 "rpc2 received call xid %u rpcvers %u prog %u vers %u proc %u",
                 rpc_msg->xid,
@@ -168,7 +170,7 @@ evpl_rpc2_handle_msg(
                 rpc_msg->body.cbody.prog,
                 rpc_msg->body.cbody.vers,
                 rpc_msg->body.cbody.proc);
-
+#endif /* if 0 */
             msg->program = NULL;
 
             for (i  = 0; i < server->nprograms; i++) {
@@ -235,6 +237,8 @@ evpl_rpc2_event(
             rc = unmarshall_rpc_msg(&rpc_msg, 1,
                                     hdr_iov, hdr_niov,
                                     msg->dbuf);
+
+            dump_rpc_msg("rpc_msg", &rpc_msg);
 
             evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
 
@@ -303,13 +307,11 @@ evpl_rpc2_send_reply(
 
     evpl_iovec_commit(evpl, 0, reply_iov, reply_niov);
 
-    evpl_rpc2_debug("rpc2 send reply xid %u proc %u into %d bytes", msg->xid,
-                    msg->proc, reply_len);
-
     evpl_sendv(evpl, msg->bind, reply_iov, reply_niov, reply_len);
     evpl_sendv(evpl, msg->bind, msg_iov, msg_niov, length);
 
     evpl_rpc2_msg_free(msg->agent, msg);
+
     return 0;
 } /* evpl_rpc2_send_reply */
 

@@ -91,7 +91,7 @@ union rejected_reply switch (reject_stat stat) {
 case RPC_MISMATCH:
     mismatch_info info;
 case AUTH_ERROR:
-    auth_stat auth_stat;
+    auth_stat auth;
 };
 
 union reply_body switch (reply_stat stat) {
