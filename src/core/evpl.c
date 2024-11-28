@@ -215,6 +215,11 @@ void
 evpl_config_release(struct evpl_config *config)
 {
 
+    if (!evpl_shared) {
+        evpl_free(config);
+        return;
+    }
+
     pthread_mutex_lock(&evpl_shared->lock);
 
     evpl_core_abort_if(config->refcnt == 0,
