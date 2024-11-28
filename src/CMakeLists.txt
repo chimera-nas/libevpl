@@ -10,19 +10,22 @@ macro(unit_test module test_name)
     add_test(NAME libevpl/${module}/${test_name} COMMAND ${module}_${test_name})
 
     add_dependencies(${module}_${test_name} xdrzcc)
-   
-    # Get the first source file from the sources list
+
+    # Set TEST_FILE environment variable to point to the test source
     list(GET sources 0 first_source)
-    
-    # Set TEST_FILE environment variable for this test
-    set_tests_properties(libevpl/${module}/${test_name}
-        PROPERTIES ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source}")
+    set_tests_properties(libevpl/${module}/${test_name} PROPERTIES
+        ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source}")
+
 endmacro()
 
 macro(unit_test_bin module test_name binary_name)
 
     add_test(NAME libevpl/${module}/${test_name} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
 
+
+    get_target_property(test_file ${binary_name} TEST_FILE)
+    set_tests_properties(libevpl/${module}/${test_name} PROPERTIES
+        ENVIRONMENT "TEST_FILE=${test_file}")
 endmacro()
 
 macro(unit_test_xdr module test_name xdr_file)
