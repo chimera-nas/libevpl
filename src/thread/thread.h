@@ -13,8 +13,7 @@ typedef void (*evpl_thread_wake_callback_t)(
     void        *private_data);
 
 typedef void (*evpl_thread_destroy_callback_t)(
-    struct evpl *evpl,
-    void        *private_data);
+    void *private_data);
 
 struct evpl_thread *
 evpl_thread_create(

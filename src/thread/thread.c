@@ -82,9 +82,10 @@ evpl_thread_function(void *ptr)
 
     evpl_remove_event(evpl, &evpl_thread->event);
 
-    evpl_thread->destroy_callback(evpl, evpl_thread->private_data);
-
     evpl_destroy(evpl);
+
+
+    evpl_thread->destroy_callback(evpl_thread->private_data);
 
     return NULL;
 } /* evpl_thread_function */

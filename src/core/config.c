@@ -48,13 +48,3 @@ evpl_config_init(void)
 
     return config;
 } /* evpl_config_init */
-
-void
-evpl_config_release(struct evpl_config *config)
-{
-    --config->refcnt;
-
-    if (config->refcnt == 0) {
-        evpl_free(config);
-    }
-} /* evpl_config_release */

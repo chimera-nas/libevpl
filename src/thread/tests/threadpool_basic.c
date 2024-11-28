@@ -2,7 +2,10 @@
 #include "thread/thread.h"
 #include "core/evpl.h"
 
-void *thread_init(struct evpl *evpl, void *private_data)
+void *
+thread_init(
+    struct evpl *evpl,
+    void        *private_data)
 {
     int *number = private_data;
 
@@ -12,24 +15,30 @@ void *thread_init(struct evpl *evpl, void *private_data)
                        "got wrong argument in thread init function");
 
     return private_data;
-}
+} /* thread_init */
 
-void thread_destroy(struct evpl *evpl, void *private_data)
+void
+thread_destroy(void *private_data)
 {
     int *number = private_data;
-    evpl_test_info("thread_destroy ran with number=%d", *number);
-}
 
-int main(int argc, char *argv[])
+    evpl_test_info("thread_destroy ran with number=%d", *number);
+} /* thread_destroy */
+
+int
+main(
+    int   argc,
+    char *argv[])
 {
     struct evpl_threadpool *threadpool;
-    int number = 42;
+    int                     number = 42;
 
     evpl_init(NULL);
 
-    threadpool = evpl_threadpool_create(16, thread_init, NULL, thread_destroy, &number);
+    threadpool = evpl_threadpool_create(16, thread_init, NULL, thread_destroy, &
+                                        number);
 
     evpl_threadpool_destroy(threadpool);
 
     evpl_cleanup();
-}
+} /* main */

@@ -110,6 +110,8 @@ evpl_shared_init(struct evpl_config *config)
 {
     evpl_shared = evpl_zalloc(sizeof(*evpl_shared));
 
+    pthread_mutex_init(&evpl_shared->lock, NULL);
+
     if (!config) {
         config = evpl_config_init();
     }
@@ -196,6 +198,37 @@ evpl_cleanup()
     evpl_shared = NULL;
 } /* evpl_cleanup */
 
+static inline struct evpl_config *
+evpl_get_config(void)
+{
+    struct evpl_config *config;
+
+    pthread_mutex_lock(&evpl_shared->lock);
+    evpl_shared->config->refcnt++;
+    config = evpl_shared->config;
+    pthread_mutex_unlock(&evpl_shared->lock);
+
+    return config;
+} /* evpl_get_config */
+
+void
+evpl_config_release(struct evpl_config *config)
+{
+
+    pthread_mutex_lock(&evpl_shared->lock);
+
+    evpl_core_abort_if(config->refcnt == 0,
+                       "config refcnt %d", config->refcnt);
+
+    config->refcnt--;
+
+    if (config->refcnt == 0) {
+        evpl_free(config);
+    }
+
+    pthread_mutex_unlock(&evpl_shared->lock);
+} /* evpl_release_config */
+
 struct evpl *
 evpl_create()
 {
@@ -215,8 +248,7 @@ evpl_create()
                                                      evpl_deferral *));
     evpl->max_active_deferrals = 256;
 
-    evpl->config = evpl_shared->config;
-    evpl->config->refcnt++;
+    evpl->config = evpl_get_config();
 
     evpl_core_init(&evpl->core, 64);
 
@@ -1230,6 +1262,10 @@ evpl_peek(
     }
 
     cur = evpl_iovec_ring_tail(&bind->iovec_recv);
+
+    if (cur == NULL) {
+        return 0;
+    }
 
     while (cur && left) {
 

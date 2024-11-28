@@ -27,6 +27,7 @@ struct evpl_rpc2_program {
         struct evpl_rpc2_msg  *msg,
         xdr_iovec             *iov,
         int                    niov,
+        int                    length,
         void                  *private_data);
 
     int      (*reply_dispatch)(

@@ -149,7 +149,8 @@ evpl_rpc2_handle_msg(
     struct evpl_rpc2_msg  *msg,
     struct rpc_msg        *rpc_msg,
     struct evpl_iovec     *iov,
-    int                    niov)
+    int                    niov,
+    int                    length)
 {
     struct evpl_rpc2_server  *server = conn->server;
     struct evpl_rpc2_program *program;
@@ -192,7 +193,7 @@ evpl_rpc2_handle_msg(
             }
 
 
-            error = program->call_dispatch(evpl, conn, msg, iov, niov,
+            error = program->call_dispatch(evpl, conn, msg, iov, niov, length,
                                            server->private_data);
 
             if (unlikely(error)) {
@@ -219,7 +220,7 @@ evpl_rpc2_event(
     struct evpl_rpc2_msg    *msg;
     struct evpl_iovec       *hdr_iov, *msg_iov;
     int                      hdr_niov, msg_niov;
-    int                      rc;
+    int                      rc, msglen;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -228,6 +229,7 @@ evpl_rpc2_event(
             free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:
+
             msg = evpl_rpc2_msg_alloc(agent);
 
             msg->bind = bind;
@@ -242,8 +244,11 @@ evpl_rpc2_event(
 
             evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
 
+            msglen = notify->recv_msg.length - (rc + 4);
+
             evpl_rpc2_handle_msg(evpl, rpc2_conn, msg, &rpc_msg, msg_iov,
-                                 msg_niov);
+                                 msg_niov, msglen);
+
             break;
         default:
             evpl_rpc2_error("rpc2 unhandled event");
@@ -353,7 +358,7 @@ evpl_rpc2_server_destroy(
     struct evpl_rpc2_agent  *agent,
     struct evpl_rpc2_server *server)
 {
-    evpl_close(agent->evpl, server->bind);
+
     evpl_free(server->programs);
     evpl_free(server);
 } /* evpl_rpc2_server_destroy */

@@ -3,6 +3,7 @@
 struct evpl_allocator;
 
 struct evpl_shared {
+    pthread_mutex_t        lock;
     struct evpl_config    *config;
     struct evpl_allocator *allocator;
     struct evpl_framework *framework[EVPL_NUM_FRAMEWORK];
