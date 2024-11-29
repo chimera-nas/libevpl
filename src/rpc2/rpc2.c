@@ -240,7 +240,7 @@ evpl_rpc2_event(
                                     hdr_iov, hdr_niov,
                                     msg->dbuf);
 
-            dump_rpc_msg("rpc_msg", &rpc_msg);
+            //dump_rpc_msg("rpc_msg", &rpc_msg);
 
             evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
 
