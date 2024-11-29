@@ -206,9 +206,11 @@ evpl_allocator_free(
     struct evpl_allocator *allocator,
     struct evpl_buffer    *buffers)
 {
-    pthread_mutex_lock(&allocator->lock);
-    LL_CONCAT(allocator->free_buffers, buffers);
-    pthread_mutex_unlock(&allocator->lock);
+    if (buffers) {
+        pthread_mutex_lock(&allocator->lock);
+        LL_CONCAT(allocator->free_buffers, buffers);
+        pthread_mutex_unlock(&allocator->lock);
+    }
 } /* evpl_allocator_free */
 
 void *
@@ -216,7 +218,9 @@ evpl_allocator_alloc_slab(struct evpl_allocator *allocator)
 {
     struct evpl_slab *slab;
 
+    pthread_mutex_lock(&allocator->lock);
     slab = evpl_allocator_create_slab(allocator);
+    pthread_mutex_unlock(&allocator->lock);
 
     return slab->data;
 

@@ -14,3 +14,8 @@ typedef struct evpl_iovec xdr_iovec;
     {                                   \
         (out)->private = (in)->private; \
     }
+
+#define xdr_iovec_set_private_null(out) \
+    { \
+    (out)->private = NULL; \
+    }

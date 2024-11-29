@@ -120,6 +120,10 @@ evpl_iovec_decref(
 {
     struct evpl_buffer *buffer = iovec->buffer;
 
+    if (!buffer) {
+        return;
+    }
+
     evpl_core_abort_if(buffer->refcnt == 0,
                        "Released iovec %p with zero refcnt", iovec);
 
