@@ -30,4 +30,8 @@ if (HAVE_XLIO)
     target_link_libraries(evpl evpl_xlio)
 endif()
 
-add_subdirectory(tests)
+install(TARGETS evpl DESTINATION lib)
+
+if (NOT DISABLE_TESTS)
+    add_subdirectory(tests)
+endif()

@@ -24,4 +24,8 @@ add_dependencies(evpl_rpc2 xdrzcc)
 
 target_link_libraries(evpl_rpc2 evpl)
 
-add_subdirectory(tests)
+install(TARGETS evpl_rpc2 DESTINATION lib)
+
+if (NOT DISABLE_TESTS)
+    add_subdirectory(tests)
+endif()

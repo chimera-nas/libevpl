@@ -55,7 +55,10 @@ endmacro()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-add_subdirectory(tests)
+if (NOT DISABLE_TESTS)
+    add_subdirectory(tests)
+endif()
+
 add_subdirectory(core)
 add_subdirectory(socket)
 add_subdirectory(thread)
