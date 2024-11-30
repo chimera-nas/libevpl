@@ -300,6 +300,7 @@ evpl_rpc2_send_reply(
     rpc_reply.body.mtype                               = REPLY;
     rpc_reply.body.rbody.stat                          = 0;
     rpc_reply.body.rbody.areply.verf.flavor            = AUTH_NONE;
+    rpc_reply.body.rbody.areply.verf.body.len          = 0;
     rpc_reply.body.rbody.areply.reply_data.stat        = SUCCESS;
     rpc_reply.body.rbody.areply.reply_data.results.len = 0;
 
