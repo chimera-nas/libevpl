@@ -142,6 +142,42 @@ evpl_rpc2_iovec_skip(
     *out_iov  = cur;
     *out_niov = niov;
 } /* evpl_rpc2_iovec_skip */
+
+static int
+evpl_rpc2_send_reply_error(
+    struct evpl          *evpl,
+    struct evpl_rpc2_msg *msg)
+{
+    struct evpl_iovec iov[8], reply_iov[8];
+    int               reply_len, niov, reply_niov;
+    uint32_t          hdr;
+    struct rpc_msg    rpc_reply;
+
+    niov = evpl_iovec_reserve(evpl, 4096, 0, 8, iov);
+
+    rpc_reply.xid                                      = msg->xid;
+    rpc_reply.body.mtype                               = REPLY;
+    rpc_reply.body.rbody.stat                          = 0;
+    rpc_reply.body.rbody.areply.verf.flavor            = AUTH_NONE;
+    rpc_reply.body.rbody.areply.verf.body.len          = 0;
+    rpc_reply.body.rbody.areply.reply_data.stat        = PROG_MISMATCH;
+    rpc_reply.body.rbody.areply.reply_data.results.len = 0;
+
+    reply_len = marshall_rpc_msg(&rpc_reply, 1, iov, niov, reply_iov, &
+                                 reply_niov, 4);
+
+    hdr = rpc2_hton32((reply_len - 4) | 0x80000000);
+
+    memcpy(reply_iov[0].data, &hdr, sizeof(hdr));
+
+    evpl_iovec_commit(evpl, 0, reply_iov, reply_niov);
+
+    evpl_sendv(evpl, msg->bind, reply_iov, reply_niov, reply_len);
+
+    evpl_rpc2_msg_free(msg->agent, msg);
+
+    return 0;
+} /* evpl_rpc2_send_reply */
 static void
 evpl_rpc2_handle_msg(
     struct evpl           *evpl,
@@ -190,6 +226,9 @@ evpl_rpc2_handle_msg(
                     "rpc2 received call for unknown program %u vers %u",
                     rpc_msg->body.cbody.prog,
                     rpc_msg->body.cbody.vers);
+
+                evpl_rpc2_send_reply_error(evpl, msg);
+                return;
             }
 
 
