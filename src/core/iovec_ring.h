@@ -214,7 +214,7 @@ evpl_iovec_ring_clear(
 
     while (ring->tail != ring->head) {
         iovec = &ring->iovec[ring->tail];
-        evpl_iovec_release(evpl, iovec);
+        evpl_iovec_release(iovec);
         ring->tail = (ring->tail + 1) & ring->mask;
     }
 
@@ -268,7 +268,7 @@ evpl_iovec_ring_consume(
 
         if (iovec->length <= length) {
             length -= iovec->length;
-            evpl_iovec_release(evpl, iovec);
+            evpl_iovec_release(iovec);
             ring->tail = (ring->tail + 1) & ring->mask;
         } else {
             iovec->data   += length;
@@ -296,7 +296,7 @@ evpl_iovec_ring_copyv(
 
         if (left < iovec->length) {
             chunk = left;
-            evpl_iovec_addref(evpl, iovec);
+            evpl_iovec_incref(iovec);
             iovec->data   += left;
             iovec->length -= left;
         } else {
@@ -333,7 +333,7 @@ evpl_iovec_ring_consumev(
 
         ring->length -= iovec->length;
 
-        evpl_iovec_release(evpl, iovec);
+        evpl_iovec_release(iovec);
         ring->tail = (ring->tail + 1) & ring->mask;
 
         niov--;
@@ -359,14 +359,14 @@ evpl_iovec_ring_append(
         head->data   = append->data;
         head->buffer = append->buffer;
         head->length = length;
-        evpl_iovec_incref(evpl, head);
+        evpl_iovec_incref(head);
     }
 
     append->data   += length;
     append->length -= length;
 
     if (append->length == 0) {
-        evpl_iovec_decref(evpl, append);
+        evpl_iovec_decref(append);
     }
 
     ring->length += length;

@@ -179,7 +179,6 @@ void evpl_iovec_commit(
     int                niovs);
 
 void evpl_iovec_release(
-    struct evpl       *evpl,
     struct evpl_iovec *iovec);
 
 const void *
@@ -191,7 +190,6 @@ evpl_iovec_length(
     const struct evpl_iovec *iovec);
 
 void evpl_iovec_addref(
-    struct evpl       *evpl,
     struct evpl_iovec *iovec);
 
 void evpl_send(

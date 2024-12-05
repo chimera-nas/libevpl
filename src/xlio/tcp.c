@@ -59,7 +59,7 @@ evpl_xlio_prepare_iov(
 
         zc->buffer = iovec->buffer;
         zc->length = iovec->length;
-        zc->buffer->refcnt++;
+        atomic_fetch_add_explicit(&zc->buffer->refcnt, 1, memory_order_relaxed);
 
         s->zc_pending++;
 

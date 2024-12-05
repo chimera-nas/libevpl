@@ -109,16 +109,18 @@ struct evpl_xlio {
 };
 
 static inline void
-evpl_xlio_buffer_free(
-    struct evpl        *evpl,
-    struct evpl_buffer *buffer)
+evpl_xlio_buffer_free(struct evpl_buffer *buffer)
 {
     struct evpl_xlio *xlio;
     struct xlio_buf  *buf;
 
-    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
+    /* XXX this is a bit sketch because it assumes a single thread,
+     * but XLIO socket API has threading concerns anyhow that will need
+     * to be tackled later
+     */
 
-    buf = (struct xlio_buf *) buffer->external;
+    xlio = (struct evpl_xlio *) buffer->external1;
+    buf  = (struct xlio_buf *) buffer->external2;
 
     xlio->extra->xlio_poll_group_buf_free(xlio->poll_group, buf);
 
@@ -167,11 +169,13 @@ evpl_xlio_buffer_alloc(
         buffer->release = evpl_xlio_buffer_free;
     }
 
-    buffer->data     = data;
-    buffer->size     = len;
-    buffer->used     = len;
-    buffer->refcnt   = 1;
-    buffer->external = buff;
+    buffer->data = data;
+    buffer->size = len;
+    buffer->used = len;
+    atomic_store(&buffer->refcnt, 1);
+
+    buffer->external1 = xlio;
+    buffer->external2 = buff;
 
     return buffer;
 } // evpl_xlio_buffer_alloc

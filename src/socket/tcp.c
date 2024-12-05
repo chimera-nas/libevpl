@@ -140,7 +140,7 @@ evpl_socket_tcp_read(
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
             for (i = 0; i < niov; ++i) {
-                evpl_iovec_release(evpl, &iovec[i]);
+                evpl_iovec_release(&iovec[i]);
             }
 
         }

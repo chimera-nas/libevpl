@@ -8,29 +8,32 @@
 
 #include <string.h>
 #include <sys/uio.h>
+#include <stdatomic.h>
 
 #include "core/evpl.h"
 #include "core/internal.h"
 
 struct evpl_slab {
-    void             *data;
-    uint64_t          size      : 63;
-    uint64_t          hugepages : 1;
-    void             *framework_private[EVPL_NUM_FRAMEWORK];
-    struct evpl_slab *next;
+    void                  *data;
+    struct evpl_allocator *allocator;
+    uint64_t               refcnt;
+    uint64_t               size      : 63;
+    uint64_t               hugepages : 1;
+    void                  *framework_private[EVPL_NUM_FRAMEWORK];
+    struct evpl_slab      *next;
 };
 
 struct evpl_buffer {
     void               *data;
-    int                 refcnt;
+    atomic_int          refcnt;
     unsigned int        used;
     unsigned int        size;
 
     struct evpl_slab   *slab;
 
-    void               *external;
+    void               *external1;
+    void               *external2;
     void                (*release)(
-        struct evpl *evpl,
         struct evpl_buffer *);
 
     struct evpl_buffer *next;
@@ -44,7 +47,6 @@ struct evpl_allocator {
 };
 
 void evpl_buffer_release(
-    struct evpl        *evpl,
     struct evpl_buffer *buffer);
 
 struct evpl_allocator *
@@ -69,7 +71,7 @@ evpl_allocator_alloc_slab(
 void
 evpl_allocator_free(
     struct evpl_allocator *allocator,
-    struct evpl_buffer    *buffers);
+    struct evpl_buffer    *buffer);
 
 static inline void *
 evpl_buffer_framework_private(
@@ -114,9 +116,7 @@ evpl_iovec_memcpy(
 } // evpl_iovec_memcpy
 
 static inline void
-evpl_iovec_decref(
-    struct evpl       *evpl,
-    struct evpl_iovec *iovec)
+evpl_iovec_decref(struct evpl_iovec *iovec)
 {
     struct evpl_buffer *buffer = iovec->buffer;
 
@@ -124,22 +124,16 @@ evpl_iovec_decref(
         return;
     }
 
-    evpl_core_abort_if(buffer->refcnt == 0,
-                       "Released iovec %p with zero refcnt", iovec);
-
-
-    evpl_buffer_release(evpl, buffer);
+    evpl_buffer_release(buffer);
 
 } // evpl_iovec_decref
 
 static inline void
-evpl_iovec_incref(
-    struct evpl       *evpl,
-    struct evpl_iovec *iovec)
+evpl_iovec_incref(struct evpl_iovec *iovec)
 {
     struct evpl_buffer *buffer = iovec->buffer;
 
-    ++buffer->refcnt;
+    atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 
 } // evpl_iovec_incref
 

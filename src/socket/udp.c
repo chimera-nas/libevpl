@@ -108,7 +108,7 @@ evpl_socket_udp_read(
 
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
-        evpl_iovec_release(evpl, &datagram->iovec);
+        evpl_iovec_release(&datagram->iovec);
         evpl_socket_datagram_reload(evpl, s, datagram);
         evpl_address_release(evpl, addr);
 

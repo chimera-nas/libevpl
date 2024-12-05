@@ -75,7 +75,6 @@ struct evpl {
 
     struct evpl_buffer    *current_buffer;
     struct evpl_buffer    *datagram_buffer;
-    struct evpl_buffer    *free_buffers;
     struct evpl_bind      *free_binds;
     struct evpl_address   *free_address;
     struct evpl_endpoint  *endpoints;
@@ -580,14 +579,12 @@ evpl_destroy(struct evpl *evpl)
     }
 
     if (evpl->current_buffer) {
-        LL_PREPEND(evpl->free_buffers, evpl->current_buffer);
+        evpl_buffer_release(evpl->current_buffer);
     }
 
     if (evpl->datagram_buffer) {
-        LL_PREPEND(evpl->free_buffers, evpl->datagram_buffer);
+        evpl_buffer_release(evpl->datagram_buffer);
     }
-
-    evpl_allocator_free(evpl_shared->allocator, evpl->free_buffers);
 
     evpl_core_destroy(&evpl->core);
 
@@ -817,16 +814,12 @@ evpl_buffer_alloc(struct evpl *evpl)
 {
     struct evpl_buffer *buffer;
 
-    if (evpl->free_buffers) {
-        buffer = evpl->free_buffers;
-        LL_DELETE(evpl->free_buffers, buffer);
-    } else {
-        buffer = evpl_allocator_alloc(evpl_shared->allocator);
-    }
+    buffer = evpl_allocator_alloc(evpl_shared->allocator);
 
-    buffer->refcnt   = 1;
-    buffer->used     = 0;
-    buffer->external = NULL;
+    atomic_store(&buffer->refcnt, 1);
+    buffer->used      = 0;
+    buffer->external1 = NULL;
+    buffer->external2 = NULL;
 
     return buffer;
 } /* evpl_buffer_alloc */
@@ -873,7 +866,7 @@ evpl_iovec_reserve(
         left -= chunk - pad;
 
         if (left) {
-            evpl_buffer_release(evpl, buffer);
+            evpl_buffer_release(buffer);
             evpl->current_buffer = NULL;
         }
 
@@ -899,7 +892,7 @@ evpl_iovec_commit(
 
         buffer = iovec->buffer;
 
-        ++buffer->refcnt;
+        atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 
         buffer->used  = (iovec->data + iovec->length) - buffer->data;
         buffer->used += evpl_buffer_pad(buffer, alignment);
@@ -908,7 +901,7 @@ evpl_iovec_commit(
     buffer = evpl->current_buffer;
 
     if (buffer && buffer->size - buffer->used < 64) {
-        evpl_buffer_release(evpl, buffer);
+        evpl_buffer_release(buffer);
         evpl->current_buffer = NULL;
     }
 } /* evpl_iovec_commit */
@@ -966,50 +959,48 @@ evpl_iovec_alloc_datagram(
     r_iovec->buffer = buffer;
 
     buffer->used += evpl->config->max_datagram_size;
-    buffer->refcnt++;
+    atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 
     if (buffer->size - buffer->used < evpl->config->max_datagram_size) {
-        evpl_buffer_release(evpl, evpl->datagram_buffer);
+        evpl_buffer_release(evpl->datagram_buffer);
         evpl->datagram_buffer = NULL;
     }
 
 } /* evpl_iovec_alloc_datagram */
 
 void
-evpl_buffer_release(
-    struct evpl        *evpl,
-    struct evpl_buffer *buffer)
+evpl_buffer_release(struct evpl_buffer *buffer)
 {
-    evpl_core_abort_if(buffer->refcnt == 0,
+    int refset;
+
+    evpl_core_abort_if(atomic_load_explicit(&buffer->refcnt,
+                                            memory_order_relaxed) == 0,
                        "Released buffer %p with zero refcnt", buffer);
 
-    --buffer->refcnt;
+    refset = atomic_fetch_sub_explicit(&buffer->refcnt, 1, memory_order_relaxed)
+    ;
 
-    if (buffer->refcnt == 0) {
-        if (buffer->external) {
-            buffer->release(evpl, buffer);
+    if (refset == 1) {
+        if (buffer->external1) {
+            buffer->release(buffer);
         } else {
             buffer->used = 0;
-            LL_PREPEND(evpl->free_buffers, buffer);
+            evpl_allocator_free(buffer->slab->allocator, buffer);
         }
     }
 
 } /* evpl_buffer_release */
 
 void
-evpl_iovec_release(
-    struct evpl       *evpl,
-    struct evpl_iovec *iovec)
+evpl_iovec_release(struct evpl_iovec *iovec)
 {
-    evpl_iovec_decref(evpl, iovec);
+    evpl_iovec_decref(iovec);
 } /* evpl_iovec_release */
 
 void
-evpl_iovec_addref(
-    struct evpl       *evpl,
-    struct evpl_iovec *iovec)
+evpl_iovec_addref(struct evpl_iovec *iovec)
 {
-    evpl_iovec_incref(evpl, iovec);
+    evpl_iovec_incref(iovec);
 } /* evpl_iovec_addref */
 
 void
@@ -1115,7 +1106,7 @@ evpl_sendv(
     evpl_defer(evpl, &bind->flush_deferral);
 
     for (; i < niovs; ++i) {
-        evpl_iovec_release(evpl, &iovecs[i]);
+        evpl_iovec_release(&iovecs[i]);
     }
 
 } /* evpl_sendv */
@@ -1162,7 +1153,7 @@ evpl_sendtov(
     evpl_defer(evpl, &bind->flush_deferral);
 
     for (; i < niovs; ++i) {
-        evpl_iovec_release(evpl, &iovecs[i]);
+        evpl_iovec_release(&iovecs[i]);
     }
 
 } /* evpl_sendtov */
@@ -1390,7 +1381,8 @@ evpl_readv(
         out->data   = cur->data;
         out->length = chunk;
         out->buffer = cur->buffer;
-        out->buffer->refcnt++;
+        atomic_fetch_add_explicit(&out->buffer->refcnt, 1, memory_order_relaxed)
+        ;
 
         left -= chunk;
 
@@ -1475,7 +1467,8 @@ evpl_recvv(
         out->data   = cur->data;
         out->length = chunk;
         out->buffer = cur->buffer;
-        out->buffer->refcnt++;
+        atomic_fetch_add_explicit(&out->buffer->refcnt, 1, memory_order_relaxed)
+        ;
 
         left -= chunk;
 
