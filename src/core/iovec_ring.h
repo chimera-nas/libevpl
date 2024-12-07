@@ -294,6 +294,9 @@ evpl_iovec_ring_copyv(
 
         iovec = &ring->iovec[ring->tail];
 
+        out[niov].buffer = iovec->buffer;
+        out[niov].data   = iovec->data;
+
         if (left < iovec->length) {
             chunk = left;
             evpl_iovec_incref(iovec);
@@ -304,8 +307,6 @@ evpl_iovec_ring_copyv(
             ring->tail = (ring->tail + 1) & ring->mask;
         }
 
-        out[niov].buffer = iovec->buffer;
-        out[niov].data   = iovec->data;
         out[niov].length = chunk;
 
         niov++;

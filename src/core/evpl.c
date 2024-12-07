@@ -892,6 +892,9 @@ evpl_iovec_commit(
 
         buffer = iovec->buffer;
 
+        if (buffer) {
+
+        }
         atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 
         buffer->used  = (iovec->data + iovec->length) - buffer->data;

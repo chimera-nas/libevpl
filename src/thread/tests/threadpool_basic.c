@@ -35,8 +35,8 @@ main(
 
     evpl_init(NULL);
 
-    threadpool = evpl_threadpool_create(16, thread_init, NULL, thread_destroy, &
-                                        number);
+    threadpool = evpl_threadpool_create(16, thread_init, NULL, NULL,
+                                        thread_destroy, -1, &number);
 
     evpl_threadpool_destroy(threadpool);
 

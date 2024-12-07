@@ -20,14 +20,16 @@
         evpl_abort_if(cond, "thread", __VA_ARGS__)
 
 struct evpl_thread {
-    pthread_t                      thread;
-    struct evpl_event              event;
-    evpl_thread_init_callback_t    init_callback;
-    evpl_thread_wake_callback_t    wake_callback;
-    evpl_thread_destroy_callback_t destroy_callback;
-    void                          *private_data;
-    int                            run;
-    int                            eventfd;
+    pthread_t                       thread;
+    struct evpl_event               event;
+    evpl_thread_init_callback_t     init_callback;
+    evpl_thread_wake_callback_t     wake_callback;
+    evpl_thread_shutdown_callback_t shutdown_callback;
+    evpl_thread_destroy_callback_t  destroy_callback;
+    int                             wake_interval_ms;
+    void                           *private_data;
+    int                             run;
+    int                             eventfd;
 };
 
 struct evpl_threadpool {
@@ -40,9 +42,8 @@ evpl_thread_event(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    struct evpl_thread *evpl_thread;
-    uint64_t            word;
-    ssize_t             rc;
+    uint64_t word;
+    ssize_t  rc;
 
     rc = read(event->fd, &word, sizeof(word));
 
@@ -50,12 +51,6 @@ evpl_thread_event(
                          "Short read from thread eventfd");
 
     evpl_event_mark_unreadable(event);
-
-    evpl_thread = container_of(event, struct evpl_thread, event);
-
-    if (evpl_thread->wake_callback) {
-        evpl_thread->wake_callback(evpl, evpl_thread->private_data);
-    }
 
 } /* evpl_thread_event */
 
@@ -73,39 +68,56 @@ evpl_thread_function(void *ptr)
     evpl_add_event(evpl, &evpl_thread->event);
     evpl_event_read_interest(evpl, &evpl_thread->event);
 
-    evpl_thread->private_data = evpl_thread->init_callback(evpl, evpl_thread->
-                                                           private_data);
+    if (evpl_thread->init_callback) {
+        evpl_thread->private_data = evpl_thread->init_callback(
+            evpl,
+            evpl_thread->private_data);
+    }
 
     while (evpl_thread->run) {
-        evpl_wait(evpl, -1);
+
+        if (evpl_thread->wake_callback) {
+            evpl_thread->wake_callback(evpl, evpl_thread->private_data);
+        }
+
+        evpl_wait(evpl, evpl_thread->wake_interval_ms);
+    }
+
+    if (evpl_thread->shutdown_callback) {
+        evpl_thread->shutdown_callback(evpl_thread->private_data);
     }
 
     evpl_remove_event(evpl, &evpl_thread->event);
 
     evpl_destroy(evpl);
 
-
-    evpl_thread->destroy_callback(evpl_thread->private_data);
+    if (evpl_thread->destroy_callback) {
+        evpl_thread->destroy_callback(evpl_thread->private_data);
+    }
 
     return NULL;
 } /* evpl_thread_function */
 
 struct evpl_thread *
 evpl_thread_create(
-    evpl_thread_init_callback_t    init_function,
-    evpl_thread_wake_callback_t    wake_function,
-    evpl_thread_destroy_callback_t destroy_function,
-    void                          *private_data)
+    evpl_thread_init_callback_t     init_function,
+    evpl_thread_wake_callback_t     wake_function,
+    evpl_thread_shutdown_callback_t shutdown_function,
+    evpl_thread_destroy_callback_t  destroy_function,
+    int                             wake_interval_ms,
+    void                           *private_data)
 {
     struct evpl_thread *evpl_thread;
 
     evpl_thread = evpl_zalloc(sizeof(*evpl_thread));
 
-    evpl_thread->init_callback    = init_function;
-    evpl_thread->wake_callback    = wake_function;
-    evpl_thread->destroy_callback = destroy_function;
-    evpl_thread->private_data     = private_data;
-    evpl_thread->run              = 1;
+    evpl_thread->init_callback     = init_function;
+    evpl_thread->wake_callback     = wake_function;
+    evpl_thread->shutdown_callback = shutdown_function;
+    evpl_thread->destroy_callback  = destroy_function;
+    evpl_thread->wake_interval_ms  = wake_interval_ms;
+    evpl_thread->private_data      = private_data;
+    evpl_thread->run               = 1;
 
     evpl_thread->eventfd = eventfd(0, 0);
 
@@ -153,11 +165,13 @@ evpl_thread_wake(struct evpl_thread *evpl_thread)
 
 struct evpl_threadpool *
 evpl_threadpool_create(
-    int                            nthreads,
-    evpl_thread_init_callback_t    init_function,
-    evpl_thread_wake_callback_t    wake_function,
-    evpl_thread_destroy_callback_t destroy_function,
-    void                          *private_data)
+    int                             nthreads,
+    evpl_thread_init_callback_t     init_function,
+    evpl_thread_wake_callback_t     wake_function,
+    evpl_thread_shutdown_callback_t shutdown_function,
+    evpl_thread_destroy_callback_t  destroy_function,
+    int                             wake_interval_ms,
+    void                           *private_data)
 {
     struct evpl_threadpool *threadpool;
     int                     i;
@@ -170,7 +184,9 @@ evpl_threadpool_create(
     for (i = 0; i < nthreads; ++i) {
         threadpool->threads[i] = evpl_thread_create(init_function,
                                                     wake_function,
+                                                    shutdown_function,
                                                     destroy_function,
+                                                    wake_interval_ms,
                                                     private_data);
     }
 

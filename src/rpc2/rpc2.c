@@ -86,6 +86,12 @@ rpc2_segment_callback(
 
     hdr = rpc2_ntoh32(hdr);
 
+    if (unlikely(!(hdr & 0x80000000))) {
+        evpl_rpc2_error(
+            "Fragmented RPC messages are not yet supported, disconnecting...");
+        return -1;
+    }
+
     return (hdr & 0x7FFFFFFF) + 4;
 } /* rpc2_segment_callback */
 
@@ -129,14 +135,15 @@ evpl_rpc2_iovec_skip(
     int                niov = in_niov;
 
     while (left) {
-        if (cur->length > left) {
+        if (cur->length <= left) {
+            left -= cur->length;
+            cur++;
+            --niov;
+        } else {
             cur->data   += left;
             cur->length -= left;
-            --niov;
-            break;
+            left         = 0;
         }
-        left -= cur->length;
-        cur++;
     }
 
     *out_iov  = cur;
@@ -231,7 +238,6 @@ evpl_rpc2_handle_msg(
                 return;
             }
 
-
             error = program->call_dispatch(evpl, conn, msg, iov, niov, length,
                                            server->private_data);
 
@@ -257,6 +263,7 @@ evpl_rpc2_event(
     struct evpl_rpc2_agent  *agent     = server->agent;
     struct rpc_msg           rpc_msg;
     struct evpl_rpc2_msg    *msg;
+    uint32_t                 hdr;
     struct evpl_iovec       *hdr_iov, *msg_iov;
     int                      hdr_niov, msg_niov;
     int                      rc, msglen;
@@ -272,6 +279,15 @@ evpl_rpc2_event(
             msg = evpl_rpc2_msg_alloc(agent);
 
             msg->bind = bind;
+
+            hdr = *(uint32_t *) notify->recv_msg.iovec->data;
+            hdr = rpc2_ntoh32(hdr);
+
+            evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != notify->recv_msg.length
+                               ,
+                               "RPC message length mismatch %d != %d",
+                               (hdr & 0x7FFFFFFF) + 4, notify->recv_msg.length);
+
             evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
                                  notify->recv_msg.niov, sizeof(uint32_t));
 

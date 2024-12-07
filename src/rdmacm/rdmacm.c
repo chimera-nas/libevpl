@@ -466,7 +466,7 @@ evpl_rdmacm_poll_cq(
                 HASH_FIND(hh, rdmacm->ids, &qp_num, sizeof(qp_num), rdmacm_id);
 
                 if (unlikely(!rdmacm_id)) {
-                    evpl_iovec_release(evpl, &req->iovec);
+                    evpl_iovec_release(&req->iovec);
                 } else if (rdmacm_id->stream) {
 
                     bind = evpl_private2bind(rdmacm_id);
@@ -499,7 +499,7 @@ evpl_rdmacm_poll_cq(
                     bind->notify_callback(evpl, bind, &notify,
                                           bind->private_data);
 
-                    evpl_iovec_release(evpl, &req->iovec);
+                    evpl_iovec_release(&req->iovec);
 
                 }
 
@@ -513,7 +513,7 @@ evpl_rdmacm_poll_cq(
                 sr = (struct evpl_rdmacm_sr *) cq->wr_id;
 
                 for (i = 0; i < sr->nbufref; ++i) {
-                    evpl_buffer_release(evpl, sr->bufref[i]);
+                    evpl_buffer_release(sr->bufref[i]);
                 }
 
                 rdmacm_id = sr->rdmacm_id;
@@ -787,7 +787,7 @@ evpl_rdmacm_destroy(
             req = &dev->srq_reqs[j];
 
             if (req->used) {
-                evpl_iovec_release(evpl, &req->iovec);
+                evpl_iovec_release(&req->iovec);
             }
         }
 

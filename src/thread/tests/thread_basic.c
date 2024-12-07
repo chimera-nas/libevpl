@@ -35,7 +35,8 @@ main(
 
     evpl_init(NULL);
 
-    thread = evpl_thread_create(thread_init, NULL, thread_destroy, &number);
+    thread = evpl_thread_create(thread_init, NULL, NULL, thread_destroy, -1,
+                                &number);
 
     evpl_thread_destroy(thread);
 
