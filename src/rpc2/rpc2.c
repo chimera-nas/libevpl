@@ -1,3 +1,5 @@
+#include <time.h>
+
 #include "rpc2/rpc2.h"
 #include "core/internal.h"
 
@@ -8,10 +10,18 @@
 #include "rpc2/rpc2_program.h"
 #include "core/evpl.h"
 
+struct evpl_rpc2_metric {
+    uint64_t min_latency;
+    uint64_t max_latency;
+    uint64_t total_latency;
+    uint64_t total_calls;
+};
+
 struct evpl_rpc2_server {
     struct evpl_rpc2_agent    *agent;
     struct evpl_bind          *bind;
     struct evpl_rpc2_program **programs;
+    struct evpl_rpc2_metric  **metrics;
     int                        nprograms;
     void                      *private_data;
 };
@@ -185,6 +195,7 @@ evpl_rpc2_send_reply_error(
 
     return 0;
 } /* evpl_rpc2_send_reply */
+
 static void
 evpl_rpc2_handle_msg(
     struct evpl           *evpl,
@@ -224,6 +235,7 @@ evpl_rpc2_handle_msg(
                     program->version == rpc_msg->body.cbody.vers) {
 
                     msg->program = program;
+                    msg->metric  = &server->metrics[i][msg->proc];
                     break;
                 }
             }
@@ -277,6 +289,8 @@ evpl_rpc2_event(
         case EVPL_NOTIFY_RECV_MSG:
 
             msg = evpl_rpc2_msg_alloc(agent);
+
+            clock_gettime(CLOCK_MONOTONIC, &msg->timestamp);
 
             msg->bind = bind;
 
@@ -344,10 +358,13 @@ evpl_rpc2_send_reply(
     int                   msg_niov,
     int                   length)
 {
-    struct evpl_iovec iov[8], reply_iov[8];
-    int               reply_len, niov, reply_niov;
-    uint32_t          hdr;
-    struct rpc_msg    rpc_reply;
+    struct evpl_rpc2_metric *metric = msg->metric;
+    struct evpl_iovec        iov[8], reply_iov[8];
+    int                      reply_len, niov, reply_niov;
+    uint32_t                 hdr;
+    struct rpc_msg           rpc_reply;
+    struct timespec          now;
+    uint64_t                 elapsed;
 
     niov = evpl_iovec_reserve(evpl, 4096, 0, 8, iov);
 
@@ -368,7 +385,27 @@ evpl_rpc2_send_reply(
 
     evpl_iovec_commit(evpl, 0, reply_iov, reply_niov);
 
-    evpl_sendv(evpl, msg->bind, reply_iov, reply_niov, reply_len);
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    elapsed = evpl_ts_interval(&now, &msg->timestamp);
+
+    metric->total_latency += elapsed;
+    metric->total_calls++;
+
+    if (elapsed < metric->min_latency || metric->min_latency == 0) {
+        metric->min_latency = elapsed;
+    }
+
+    if (elapsed > metric->max_latency) {
+        metric->max_latency = elapsed;
+    }
+
+    evpl_sendv(
+        evpl,
+        msg->bind,
+        reply_iov,
+        reply_niov,
+        reply_len);
     evpl_sendv(evpl, msg->bind, msg_iov, msg_niov, length);
 
     evpl_rpc2_msg_free(msg->agent, msg);
@@ -395,8 +432,21 @@ evpl_rpc2_listen(
     server->nprograms    = nprograms;
     memcpy(server->programs, programs, nprograms * sizeof(*programs));
 
+    server->metrics = evpl_zalloc(nprograms * sizeof(*server->metrics));
+
+    evpl_rpc2_debug("nprograms %d", nprograms);
     for (int i = 0; i < nprograms; i++) {
         server->programs[i]->reply_dispatch = evpl_rpc2_send_reply;
+
+        evpl_rpc2_debug("program %d progid %u verid %u maxprocs %u",
+                        i,
+                        server->programs[i]->program,
+                        server->programs[i]->version,
+                        server->programs[i]->maxproc);
+
+        server->metrics[i] = evpl_zalloc(
+            (server->programs[i]->maxproc + 1) * sizeof(struct evpl_rpc2_metric)
+            );
     }
 
     server->bind = evpl_listen(
@@ -414,7 +464,37 @@ evpl_rpc2_server_destroy(
     struct evpl_rpc2_agent  *agent,
     struct evpl_rpc2_server *server)
 {
+    int                       i, j;
+    struct evpl_rpc2_program *program;
+    struct evpl_rpc2_metric  *metric;
 
+    for (i = 0; i < server->nprograms; i++) {
+
+        program = server->programs[i];
+
+        for (j = 0; j < program->maxproc; j++) {
+
+            metric = &server->metrics[i][j];
+
+            if (metric->total_calls == 0) {
+                continue;
+            }
+
+            evpl_rpc2_info(
+                "RPC2 metrics for %18s: %8d requests, %8lldns avg latency, %8lldns min latency, %8lldns max latency",
+                program->procs[j],
+                metric->total_calls,
+                metric->total_latency / metric->total_calls,
+                metric->min_latency,
+                metric->max_latency);
+        }
+    }
+
+    for (i = 0; i < server->nprograms; i++) {
+        evpl_free(server->metrics[i]);
+    }
+
+    evpl_free(server->metrics);
     evpl_free(server->programs);
     evpl_free(server);
 } /* evpl_rpc2_server_destroy */
