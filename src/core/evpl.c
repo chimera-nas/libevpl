@@ -849,6 +849,12 @@ evpl_iovec_reserve(
 
         chunk = (buffer->size - buffer->used);
 
+        if (chunk < pad + left && niovs + 1 < max_iovecs) {
+            evpl_buffer_release(buffer);
+            evpl->current_buffer = NULL;
+            continue;
+        }
+
         if (chunk > pad + left) {
             chunk = pad + left;
         }
