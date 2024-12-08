@@ -180,7 +180,7 @@ evpl_rpc2_send_reply_error(
     rpc_reply.body.rbody.areply.reply_data.stat        = PROG_MISMATCH;
     rpc_reply.body.rbody.areply.reply_data.results.len = 0;
 
-    reply_len = marshall_rpc_msg(&rpc_reply, 1, iov, niov, reply_iov, &
+    reply_len = marshall_rpc_msg(&rpc_reply, iov, niov, reply_iov, &
                                  reply_niov, 4);
 
     hdr = rpc2_hton32((reply_len - 4) | 0x80000000);
@@ -305,9 +305,7 @@ evpl_rpc2_event(
             evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
                                  notify->recv_msg.niov, sizeof(uint32_t));
 
-            rc = unmarshall_rpc_msg(&rpc_msg, 1,
-                                    hdr_iov, hdr_niov,
-                                    msg->dbuf);
+            rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, msg->dbuf);
 
             //dump_rpc_msg("rpc_msg", &rpc_msg);
 
@@ -376,7 +374,7 @@ evpl_rpc2_send_reply(
     rpc_reply.body.rbody.areply.reply_data.stat        = SUCCESS;
     rpc_reply.body.rbody.areply.reply_data.results.len = 0;
 
-    reply_len = marshall_rpc_msg(&rpc_reply, 1, iov, niov, reply_iov, &
+    reply_len = marshall_rpc_msg(&rpc_reply, iov, niov, reply_iov, &
                                  reply_niov, 4);
 
     hdr = rpc2_hton32(((reply_len - 4) + length) | 0x80000000);
@@ -434,15 +432,8 @@ evpl_rpc2_listen(
 
     server->metrics = evpl_zalloc(nprograms * sizeof(*server->metrics));
 
-    evpl_rpc2_debug("nprograms %d", nprograms);
     for (int i = 0; i < nprograms; i++) {
         server->programs[i]->reply_dispatch = evpl_rpc2_send_reply;
-
-        evpl_rpc2_debug("program %d progid %u verid %u maxprocs %u",
-                        i,
-                        server->programs[i]->program,
-                        server->programs[i]->version,
-                        server->programs[i]->maxproc);
 
         server->metrics[i] = evpl_zalloc(
             (server->programs[i]->maxproc + 1) * sizeof(struct evpl_rpc2_metric)
