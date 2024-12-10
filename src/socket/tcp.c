@@ -355,6 +355,11 @@ evpl_socket_tcp_listen(
     evpl_socket_abort_if(rc < 0, "Failed to set socket options: %s", strerror(
                              errno));
 
+    rc = setsockopt(s->fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(int));
+
+    evpl_socket_abort_if(rc < 0, "Failed to set socket options: %s", strerror(
+                             errno));
+
     rc = bind(s->fd, listen_bind->local->addr, listen_bind->local->addrlen);
 
     evpl_socket_abort_if(rc < 0, "Failed to bind listen socket: %s", strerror(
