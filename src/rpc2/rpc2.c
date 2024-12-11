@@ -10,13 +10,6 @@
 #include "rpc2/rpc2_program.h"
 #include "core/evpl.h"
 
-struct evpl_rpc2_metric {
-    uint64_t min_latency;
-    uint64_t max_latency;
-    uint64_t total_latency;
-    uint64_t total_calls;
-};
-
 struct evpl_rpc2_server {
     struct evpl_rpc2_agent    *agent;
     struct evpl_bind          *bind;
@@ -457,28 +450,35 @@ evpl_rpc2_server_destroy(
 {
     int                       i, j;
     struct evpl_rpc2_program *program;
-    struct evpl_rpc2_metric  *metric;
+    struct evpl_rpc2_metric  *shared_metric, *thread_metric;
 
     for (i = 0; i < server->nprograms; i++) {
 
         program = server->programs[i];
 
+        pthread_mutex_lock(&program->metrics_lock);
+
         for (j = 0; j < program->maxproc; j++) {
 
-            metric = &server->metrics[i][j];
+            shared_metric = &program->metrics[j];
+            thread_metric = &server->metrics[i][j];
 
-            if (metric->total_calls == 0) {
+            if (thread_metric->total_calls == 0) {
                 continue;
             }
+            shared_metric->total_latency += thread_metric->total_latency;
+            shared_metric->total_calls   += thread_metric->total_calls;
 
-            evpl_rpc2_info(
-                "RPC2 metrics for %18s: %8d requests, %8lldns avg latency, %8lldns min latency, %8lldns max latency",
-                program->procs[j],
-                metric->total_calls,
-                metric->total_latency / metric->total_calls,
-                metric->min_latency,
-                metric->max_latency);
+            if (thread_metric->min_latency < shared_metric->min_latency) {
+                shared_metric->min_latency = thread_metric->min_latency;
+            }
+
+            if (thread_metric->max_latency > shared_metric->max_latency) {
+                shared_metric->max_latency = thread_metric->max_latency;
+            }
         }
+
+        pthread_mutex_unlock(&program->metrics_lock);
     }
 
     for (i = 0; i < server->nprograms; i++) {
