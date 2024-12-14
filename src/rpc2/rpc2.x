@@ -74,7 +74,7 @@ struct mismatch_info {
 
 union reply_data switch (accept_stat stat) {
     case SUCCESS:
-        opaque results;
+        void;
     case PROG_MISMATCH:
         mismatch_info info;
     default:
