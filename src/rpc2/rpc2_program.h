@@ -18,7 +18,6 @@ struct evpl_rpc2_msg {
     uint32_t                  xid;
     uint32_t                  proc;
     struct timespec           timestamp;
-    void                     *msg_buffer;
     xdr_dbuf                 *dbuf;
     struct evpl_bind         *bind;
     struct evpl_rpc2_agent   *agent;

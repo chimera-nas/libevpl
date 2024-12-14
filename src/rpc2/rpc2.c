@@ -33,10 +33,9 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
         msg = agent->free_msg;
         LL_DELETE(agent->free_msg, msg);
     } else {
-        msg             = evpl_zalloc(sizeof(*msg));
-        msg->dbuf       = xdr_dbuf_alloc();
-        msg->msg_buffer = evpl_zalloc(4096);
-        msg->agent      = agent;
+        msg        = evpl_zalloc(sizeof(*msg));
+        msg->dbuf  = xdr_dbuf_alloc();
+        msg->agent = agent;
     }
 
     xdr_dbuf_reset(msg->dbuf);
@@ -119,7 +118,6 @@ evpl_rpc2_destroy(struct evpl_rpc2_agent *agent)
         msg = agent->free_msg;
         LL_DELETE(agent->free_msg, msg);
         xdr_dbuf_free(msg->dbuf);
-        evpl_free(msg->msg_buffer);
         evpl_free(msg);
     }
     evpl_free(agent);
@@ -358,7 +356,7 @@ evpl_rpc2_send_reply(
     struct timespec          now;
     uint64_t                 elapsed;
 
-    niov = evpl_iovec_reserve(evpl, 4096, 0, 1, &iov);
+    niov = evpl_iovec_alloc(evpl, 4096, 0, 1, &iov);
 
     evpl_rpc2_abort_if(niov != 1, "Failed to allocate iov for rpc header");
 
@@ -376,7 +374,7 @@ evpl_rpc2_send_reply(
 
     memcpy(reply_iov.data, &hdr, sizeof(hdr));
 
-    evpl_iovec_commit(evpl, 0, &iov, 1);
+    //evpl_iovec_commit(evpl, 0, &iov, 1);
 
     clock_gettime(CLOCK_MONOTONIC, &now);
 
