@@ -158,31 +158,31 @@ evpl_rpc2_send_reply_error(
     struct evpl          *evpl,
     struct evpl_rpc2_msg *msg)
 {
-    struct evpl_iovec iov[8], reply_iov[8];
-    int               reply_len, niov, reply_niov;
+    struct evpl_iovec iov, reply_iov;
+    int               reply_len, reply_niov, niov;
     uint32_t          hdr;
     struct rpc_msg    rpc_reply;
 
-    niov = evpl_iovec_reserve(evpl, 4096, 0, 8, iov);
+    niov = evpl_iovec_reserve(evpl, 4096, 0, 1, &iov);
 
-    rpc_reply.xid                                      = msg->xid;
-    rpc_reply.body.mtype                               = REPLY;
-    rpc_reply.body.rbody.stat                          = 0;
-    rpc_reply.body.rbody.areply.verf.flavor            = AUTH_NONE;
-    rpc_reply.body.rbody.areply.verf.body.len          = 0;
-    rpc_reply.body.rbody.areply.reply_data.stat        = PROG_MISMATCH;
-    rpc_reply.body.rbody.areply.reply_data.results.len = 0;
+    evpl_rpc2_abort_if(niov != 1, "Failed to allocate iov for rpc header");
 
-    reply_len = marshall_rpc_msg(&rpc_reply, iov, niov, reply_iov, &
-                                 reply_niov, 4);
+    rpc_reply.xid                               = msg->xid;
+    rpc_reply.body.mtype                        = REPLY;
+    rpc_reply.body.rbody.stat                   = 0;
+    rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
+    rpc_reply.body.rbody.areply.verf.body.len   = 0;
+    rpc_reply.body.rbody.areply.reply_data.stat = PROG_MISMATCH;
+
+    reply_len = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, 1);
 
     hdr = rpc2_hton32((reply_len - 4) | 0x80000000);
 
-    memcpy(reply_iov[0].data, &hdr, sizeof(hdr));
+    memcpy(reply_iov.data, &hdr, sizeof(hdr));
 
-    evpl_iovec_commit(evpl, 0, reply_iov, reply_niov);
+    evpl_iovec_commit(evpl, 0, &reply_iov, 1);
 
-    evpl_sendv(evpl, msg->bind, reply_iov, reply_niov, reply_len);
+    evpl_sendv(evpl, msg->bind, &reply_iov, 1, reply_len);
 
     evpl_rpc2_msg_free(msg->agent, msg);
 
@@ -350,31 +350,32 @@ evpl_rpc2_send_reply(
     int                   length)
 {
     struct evpl_rpc2_metric *metric = msg->metric;
-    struct evpl_iovec        iov[8], reply_iov[8];
+    struct evpl_iovec        iov, reply_iov;
     int                      reply_len, niov, reply_niov;
     uint32_t                 hdr;
     struct rpc_msg           rpc_reply;
     struct timespec          now;
     uint64_t                 elapsed;
 
-    niov = evpl_iovec_reserve(evpl, 4096, 0, 8, iov);
+    niov = evpl_iovec_reserve(evpl, 4096, 0, 1, &iov);
 
-    rpc_reply.xid                                      = msg->xid;
-    rpc_reply.body.mtype                               = REPLY;
-    rpc_reply.body.rbody.stat                          = 0;
-    rpc_reply.body.rbody.areply.verf.flavor            = AUTH_NONE;
-    rpc_reply.body.rbody.areply.verf.body.len          = 0;
-    rpc_reply.body.rbody.areply.reply_data.stat        = SUCCESS;
-    rpc_reply.body.rbody.areply.reply_data.results.len = 0;
+    evpl_rpc2_abort_if(niov != 1, "Failed to allocate iov for rpc header");
 
-    reply_len = marshall_rpc_msg(&rpc_reply, iov, niov, reply_iov, &
-                                 reply_niov, 4);
+    rpc_reply.xid                               = msg->xid;
+    rpc_reply.body.mtype                        = REPLY;
+    rpc_reply.body.rbody.stat                   = 0;
+    rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
+    rpc_reply.body.rbody.areply.verf.body.len   = 0;
+    rpc_reply.body.rbody.areply.reply_data.stat = SUCCESS;
+
+    reply_niov = 1;
+    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, 4);
 
     hdr = rpc2_hton32(((reply_len - 4) + length) | 0x80000000);
 
-    memcpy(reply_iov[0].data, &hdr, sizeof(hdr));
+    memcpy(reply_iov.data, &hdr, sizeof(hdr));
 
-    evpl_iovec_commit(evpl, 0, reply_iov, reply_niov);
+    evpl_iovec_commit(evpl, 0, &iov, 1);
 
     clock_gettime(CLOCK_MONOTONIC, &now);
 
@@ -394,10 +395,13 @@ evpl_rpc2_send_reply(
     evpl_sendv(
         evpl,
         msg->bind,
-        reply_iov,
-        reply_niov,
+        &reply_iov,
+        1,
         reply_len);
-    evpl_sendv(evpl, msg->bind, msg_iov, msg_niov, length);
+
+    if (length) {
+        evpl_sendv(evpl, msg->bind, msg_iov, msg_niov, length);
+    }
 
     evpl_rpc2_msg_free(msg->agent, msg);
 
