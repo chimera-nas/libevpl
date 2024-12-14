@@ -174,13 +174,14 @@ evpl_rpc2_send_reply_error(
     rpc_reply.body.rbody.areply.verf.body.len   = 0;
     rpc_reply.body.rbody.areply.reply_data.stat = PROG_MISMATCH;
 
-    reply_len = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, 1);
+    reply_niov = 1;
+    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, 4);
 
     hdr = rpc2_hton32((reply_len - 4) | 0x80000000);
 
     memcpy(reply_iov.data, &hdr, sizeof(hdr));
 
-    evpl_iovec_commit(evpl, 0, &reply_iov, 1);
+    evpl_iovec_commit(evpl, 0, &iov, 1);
 
     evpl_sendv(evpl, msg->bind, &reply_iov, 1, reply_len);
 
