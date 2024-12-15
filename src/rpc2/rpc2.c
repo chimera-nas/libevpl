@@ -371,7 +371,7 @@ evpl_rpc2_send_reply(
     int                   length)
 {
     struct evpl_rpc2_metric *metric = msg->metric;
-    struct evpl_iovec        iov, reply_iov;
+    struct evpl_iovec        iov, reply_iov, *send_iov;
     int                      reply_len, niov, reply_niov, offset;
     uint32_t                 hdr;
     struct rpc_msg           rpc_reply;
@@ -433,16 +433,21 @@ evpl_rpc2_send_reply(
         metric->max_latency = elapsed;
     }
 
+    /* XXX temporary workaround to get all the iovs in one sendv call,
+     * need this so rdma segments properly
+     */
+    send_iov = alloca(sizeof(*send_iov) * (msg_niov + 1));
+
+    send_iov[0] = reply_iov;
+    memcpy(send_iov + 1, msg_iov, msg_niov * sizeof(*msg_iov));
+
     evpl_sendv(
         evpl,
         msg->bind,
-        &reply_iov,
-        1,
-        reply_len);
+        send_iov,
+        msg_niov + 1,
+        reply_len + length);
 
-    if (length) {
-        evpl_sendv(evpl, msg->bind, msg_iov, msg_niov, length);
-    }
 
     evpl_rpc2_msg_free(msg->agent, msg);
 
