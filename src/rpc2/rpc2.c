@@ -356,7 +356,7 @@ evpl_rpc2_send_reply(
     struct timespec          now;
     uint64_t                 elapsed;
 
-    niov = evpl_iovec_alloc(evpl, 4096, 0, 1, &iov);
+    niov = evpl_iovec_reserve(evpl, 4096, 0, 1, &iov);
 
     evpl_rpc2_abort_if(niov != 1, "Failed to allocate iov for rpc header");
 
@@ -374,7 +374,7 @@ evpl_rpc2_send_reply(
 
     memcpy(reply_iov.data, &hdr, sizeof(hdr));
 
-    //evpl_iovec_commit(evpl, 0, &iov, 1);
+    evpl_iovec_commit(evpl, 0, &iov, 1);
 
     clock_gettime(CLOCK_MONOTONIC, &now);
 
