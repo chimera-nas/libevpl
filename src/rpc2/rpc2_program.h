@@ -6,6 +6,8 @@ struct evpl;
 struct evpl_rpc2_conn;
 struct evpl_rpc2_program;
 
+#define EVPL_RPC2_MAX_REPLY_SEGMENTS 16
+
 
 struct evpl_rpc2_metric {
     uint64_t min_latency;
@@ -14,18 +16,26 @@ struct evpl_rpc2_metric {
     uint64_t total_calls;
 };
 
+struct evpl_rpc2_rdma_segment {
+    uint32_t handle;
+    uint32_t length;
+    uint64_t offset;
+};
+
 struct evpl_rpc2_msg {
-    uint32_t                  xid;
-    uint32_t                  proc;
-    uint32_t                  rdma;
-    uint32_t                  rdma_credits;
-    struct timespec           timestamp;
-    xdr_dbuf                 *dbuf;
-    struct evpl_bind         *bind;
-    struct evpl_rpc2_agent   *agent;
-    struct evpl_rpc2_metric  *metric;
-    struct evpl_rpc2_program *program;
-    struct evpl_rpc2_msg     *next;
+    uint32_t                      xid;
+    uint32_t                      proc;
+    uint32_t                      rdma;
+    uint32_t                      rdma_credits;
+    struct timespec               timestamp;
+    int                           num_reply_segments;
+    xdr_dbuf                     *dbuf;
+    struct evpl_bind             *bind;
+    struct evpl_rpc2_agent       *agent;
+    struct evpl_rpc2_metric      *metric;
+    struct evpl_rpc2_program     *program;
+    struct evpl_rpc2_msg         *next;
+    struct evpl_rpc2_rdma_segment reply_segments[EVPL_RPC2_MAX_REPLY_SEGMENTS];
 };
 
 struct evpl_rpc2_program {

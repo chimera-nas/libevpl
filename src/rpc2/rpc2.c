@@ -273,7 +273,7 @@ evpl_rpc2_event(
     uint32_t                 hdr;
     struct evpl_iovec       *hdr_iov, *msg_iov;
     int                      hdr_niov, msg_niov;
-    int                      rc, msglen, rdma, offset;
+    int                      rc, i, msglen, rdma, offset;
 
     rdma = (server->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
@@ -299,9 +299,23 @@ evpl_rpc2_event(
 
                 offset = unmarshall_rdma_msg(&rdma_msg, notify->recv_msg.iovec, notify->recv_msg.niov, msg->dbuf);
 
-                dump_rdma_msg("rdma_msg", &rdma_msg);
+                //dump_rdma_msg("rdma_msg", &rdma_msg);
 
                 msg->rdma_credits = rdma_msg.rdma_credit;
+
+                msg->num_reply_segments = 0;
+                if (rdma_msg.rdma_body.proc == RDMA_MSG) {
+
+                    if (rdma_msg.rdma_body.rdma_msg.rdma_reply) {
+                        msg->num_reply_segments = rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target;
+
+                        for (i = 0; i < msg->num_reply_segments; i++) {
+                            msg->reply_segments[i].handle = rdma_msg.rdma_body.rdma_msg.rdma_reply->target[i].handle;
+                            msg->reply_segments[i].length = rdma_msg.rdma_body.rdma_msg.rdma_reply->target[i].length;
+                            msg->reply_segments[i].offset = rdma_msg.rdma_body.rdma_msg.rdma_reply->target[i].offset;
+                        }
+                    }
+                }
 
             } else {
                 /* We expect RPC2 on TCP to start with a 4 byte header */
@@ -372,10 +386,11 @@ evpl_rpc2_send_reply(
 {
     struct evpl_rpc2_metric *metric = msg->metric;
     struct evpl_iovec        iov, reply_iov, *send_iov;
-    int                      reply_len, niov, reply_niov, offset;
+    int                      i, reply_len, niov, reply_niov, offset;
     uint32_t                 hdr;
     struct rpc_msg           rpc_reply;
     struct rdma_msg          rdma_msg;
+    struct xdr_write_chunk   reply_chunk;
     struct timespec          now;
     uint64_t                 elapsed;
     int                      rdma = msg->rdma;
@@ -392,6 +407,20 @@ evpl_rpc2_send_reply(
         rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
         rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
+
+        if (msg->num_reply_segments) {
+
+            rdma_msg.rdma_body.rdma_msg.rdma_reply = &reply_chunk;
+
+            reply_chunk.num_target = msg->num_reply_segments;
+            reply_chunk.target     = alloca(msg->num_reply_segments * sizeof(struct xdr_rdma_segment));
+
+            for (i = 0; i < msg->num_reply_segments; i++) {
+                reply_chunk.target[i].handle = msg->reply_segments[i].handle;
+                reply_chunk.target[i].offset = msg->reply_segments[i].offset;
+                reply_chunk.target[i].length = 0;
+            }
+        }
 
         reply_niov = 1;
         offset     = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, 0);
