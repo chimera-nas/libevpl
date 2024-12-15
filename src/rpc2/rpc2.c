@@ -7,6 +7,7 @@
 
 #include "rpc2/common.h"
 #include "rpc2_xdr.h"
+#include "rpcrdma1_xdr.h"
 #include "rpc2/rpc2_program.h"
 #include "core/evpl.h"
 
@@ -267,6 +268,7 @@ evpl_rpc2_event(
     struct evpl_rpc2_server *server    = rpc2_conn->server;
     struct evpl_rpc2_agent  *agent     = server->agent;
     struct rpc_msg           rpc_msg;
+    struct rdma_msg          rdma_msg;
     struct evpl_rpc2_msg    *msg;
     uint32_t                 hdr;
     struct evpl_iovec       *hdr_iov, *msg_iov;
@@ -290,9 +292,18 @@ evpl_rpc2_event(
             msg->bind = bind;
 
             if (rdma) {
-                /* RPC2 on RDMA has no header since its message based */
-                hdr_iov  = notify->recv_msg.iovec;
-                hdr_niov = notify->recv_msg.niov;
+                /* RPC2 on RDMA has no header since its message based,
+                 * instead we should have an rdma_msg xdr structure
+                 * which describes the rdma particulars of the message */
+
+                rc = unmarshall_rdma_msg(&rdma_msg, notify->recv_msg.iovec, notify->recv_msg.niov, msg->dbuf);
+
+                dump_rdma_msg("rdma_msg", &rdma_msg);
+
+                /* Get IOV that skips the first four bytes */
+                evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
+                                     notify->recv_msg.niov, rc);
+
             } else {
                 /* We expect RPC2 on TCP to start with a 4 byte header */
                 hdr = *(uint32_t *) notify->recv_msg.iovec->data;
