@@ -289,6 +289,7 @@ evpl_rpc2_event(
 
             clock_gettime(CLOCK_MONOTONIC, &msg->timestamp);
 
+            msg->rdma = rdma;
             msg->bind = bind;
 
             if (rdma) {
@@ -299,6 +300,8 @@ evpl_rpc2_event(
                 rc = unmarshall_rdma_msg(&rdma_msg, notify->recv_msg.iovec, notify->recv_msg.niov, msg->dbuf);
 
                 dump_rdma_msg("rdma_msg", &rdma_msg);
+
+                msg->rdma_credits = rdma_msg.rdma_credit;
 
                 /* Get IOV that skips the first four bytes */
                 evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
@@ -372,15 +375,33 @@ evpl_rpc2_send_reply(
 {
     struct evpl_rpc2_metric *metric = msg->metric;
     struct evpl_iovec        iov, reply_iov;
-    int                      reply_len, niov, reply_niov;
+    int                      reply_len, niov, reply_niov, offset;
     uint32_t                 hdr;
     struct rpc_msg           rpc_reply;
+    struct rdma_msg          rdma_msg;
     struct timespec          now;
     uint64_t                 elapsed;
+    int                      rdma = msg->rdma;
 
     niov = evpl_iovec_reserve(evpl, 4096, 0, 1, &iov);
 
     evpl_rpc2_abort_if(niov != 1, "Failed to allocate iov for rpc header");
+
+    if (rdma) {
+        rdma_msg.rdma_xid                       = msg->xid;
+        rdma_msg.rdma_vers                      = 1;
+        rdma_msg.rdma_credit                    = msg->rdma_credits;
+        rdma_msg.rdma_body.proc                 = RDMA_MSG;
+        rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
+        rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
+        rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
+
+        reply_niov = 1;
+
+        offset = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, 0);
+    } else {
+        offset = 4;
+    }
 
     rpc_reply.xid                               = msg->xid;
     rpc_reply.body.mtype                        = REPLY;
@@ -390,11 +411,12 @@ evpl_rpc2_send_reply(
     rpc_reply.body.rbody.areply.reply_data.stat = SUCCESS;
 
     reply_niov = 1;
-    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, 4);
+    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, offset);
 
-    hdr = rpc2_hton32(((reply_len - 4) + length) | 0x80000000);
-
-    memcpy(reply_iov.data, &hdr, sizeof(hdr));
+    if (!rdma) {
+        hdr = rpc2_hton32(((reply_len - offset) + length) | 0x80000000);
+        memcpy(reply_iov.data, &hdr, sizeof(hdr));
+    }
 
     evpl_iovec_commit(evpl, 0, &iov, 1);
 

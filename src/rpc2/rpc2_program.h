@@ -17,6 +17,8 @@ struct evpl_rpc2_metric {
 struct evpl_rpc2_msg {
     uint32_t                  xid;
     uint32_t                  proc;
+    uint32_t                  rdma;
+    uint32_t                  rdma_credits;
     struct timespec           timestamp;
     xdr_dbuf                 *dbuf;
     struct evpl_bind         *bind;
