@@ -273,7 +273,7 @@ evpl_rpc2_event(
     uint32_t                 hdr;
     struct evpl_iovec       *hdr_iov, *msg_iov;
     int                      hdr_niov, msg_niov;
-    int                      rc, msglen, rdma;
+    int                      rc, msglen, rdma, offset;
 
     rdma = (server->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
@@ -297,30 +297,27 @@ evpl_rpc2_event(
                  * instead we should have an rdma_msg xdr structure
                  * which describes the rdma particulars of the message */
 
-                rc = unmarshall_rdma_msg(&rdma_msg, notify->recv_msg.iovec, notify->recv_msg.niov, msg->dbuf);
+                offset = unmarshall_rdma_msg(&rdma_msg, notify->recv_msg.iovec, notify->recv_msg.niov, msg->dbuf);
 
                 dump_rdma_msg("rdma_msg", &rdma_msg);
 
                 msg->rdma_credits = rdma_msg.rdma_credit;
 
-                /* Get IOV that skips the first four bytes */
-                evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
-                                     notify->recv_msg.niov, rc);
-
             } else {
                 /* We expect RPC2 on TCP to start with a 4 byte header */
-                hdr = *(uint32_t *) notify->recv_msg.iovec->data;
-                hdr = rpc2_ntoh32(hdr);
+
+                offset = 4;
+                hdr    = *(uint32_t *) notify->recv_msg.iovec->data;
+                hdr    = rpc2_ntoh32(hdr);
 
                 evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != notify->recv_msg.length
                                    ,
                                    "RPC message length mismatch %d != %d",
                                    (hdr & 0x7FFFFFFF) + 4, notify->recv_msg.length);
-
-                /* Get IOV that skips the first four bytes */
-                evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
-                                     notify->recv_msg.niov, sizeof(uint32_t));
             }
+
+            evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
+                                 notify->recv_msg.niov, offset);
 
             rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, msg->dbuf);
 
@@ -328,7 +325,7 @@ evpl_rpc2_event(
 
             evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
 
-            msglen = notify->recv_msg.length - (rc + 4);
+            msglen = notify->recv_msg.length - (rc + offset);
 
             evpl_rpc2_handle_msg(evpl, rpc2_conn, msg, &rpc_msg, msg_iov,
                                  msg_niov, msglen);
@@ -397,8 +394,9 @@ evpl_rpc2_send_reply(
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
 
         reply_niov = 1;
+        offset     = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, 0);
+        iov.length = 4096;
 
-        offset = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, 0);
     } else {
         offset = 4;
     }
