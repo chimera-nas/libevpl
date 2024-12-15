@@ -11,6 +11,7 @@
 #include "core/evpl.h"
 
 struct evpl_rpc2_server {
+    int                        protocol;
     struct evpl_rpc2_agent    *agent;
     struct evpl_bind          *bind;
     struct evpl_rpc2_program **programs;
@@ -270,7 +271,9 @@ evpl_rpc2_event(
     uint32_t                 hdr;
     struct evpl_iovec       *hdr_iov, *msg_iov;
     int                      hdr_niov, msg_niov;
-    int                      rc, msglen;
+    int                      rc, msglen, rdma;
+
+    rdma = (server->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -286,16 +289,24 @@ evpl_rpc2_event(
 
             msg->bind = bind;
 
-            hdr = *(uint32_t *) notify->recv_msg.iovec->data;
-            hdr = rpc2_ntoh32(hdr);
+            if (rdma) {
+                /* RPC2 on RDMA has no header since its message based */
+                hdr_iov  = notify->recv_msg.iovec;
+                hdr_niov = notify->recv_msg.niov;
+            } else {
+                /* We expect RPC2 on TCP to start with a 4 byte header */
+                hdr = *(uint32_t *) notify->recv_msg.iovec->data;
+                hdr = rpc2_ntoh32(hdr);
 
-            evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != notify->recv_msg.length
-                               ,
-                               "RPC message length mismatch %d != %d",
-                               (hdr & 0x7FFFFFFF) + 4, notify->recv_msg.length);
+                evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != notify->recv_msg.length
+                                   ,
+                                   "RPC message length mismatch %d != %d",
+                                   (hdr & 0x7FFFFFFF) + 4, notify->recv_msg.length);
 
-            evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
-                                 notify->recv_msg.niov, sizeof(uint32_t));
+                /* Get IOV that skips the first four bytes */
+                evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
+                                     notify->recv_msg.niov, sizeof(uint32_t));
+            }
 
             rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, msg->dbuf);
 
@@ -421,6 +432,7 @@ evpl_rpc2_listen(
     server = evpl_zalloc(sizeof(*server));
 
     server->agent        = agent;
+    server->protocol     = protocol;
     server->private_data = private_data;
     server->programs     = evpl_zalloc(nprograms * sizeof(*programs));
     server->nprograms    = nprograms;
