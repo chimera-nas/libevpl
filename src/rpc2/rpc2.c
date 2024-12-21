@@ -385,8 +385,8 @@ evpl_rpc2_send_reply(
     int                   length)
 {
     struct evpl_rpc2_metric *metric = msg->metric;
-    struct evpl_iovec        iov, reply_iov, *send_iov;
-    int                      i, reply_len, niov, reply_niov, offset;
+    struct evpl_iovec        iov, reply_iov;
+    int                      i, reply_len, reply_niov, offset, rpc_len;
     uint32_t                 hdr;
     struct rpc_msg           rpc_reply;
     struct rdma_msg          rdma_msg;
@@ -395,9 +395,14 @@ evpl_rpc2_send_reply(
     uint64_t                 elapsed;
     int                      rdma = msg->rdma;
 
-    niov = evpl_iovec_reserve(evpl, 4096, 0, 1, &iov);
+    rpc_reply.xid                               = msg->xid;
+    rpc_reply.body.mtype                        = REPLY;
+    rpc_reply.body.rbody.stat                   = 0;
+    rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
+    rpc_reply.body.rbody.areply.verf.body.len   = 0;
+    rpc_reply.body.rbody.areply.reply_data.stat = SUCCESS;
 
-    evpl_rpc2_abort_if(niov != 1, "Failed to allocate iov for rpc header");
+    rpc_len = marshall_length_rpc_msg(&rpc_reply);
 
     if (rdma) {
         rdma_msg.rdma_xid                       = msg->xid;
@@ -422,30 +427,36 @@ evpl_rpc2_send_reply(
             }
         }
 
+        offset = marshall_length_rdma_msg(&rdma_msg);
+
+        msg_iov[0].data   += msg->program->reserve - (rpc_len + offset);
+        msg_iov[0].length -= msg->program->reserve - (rpc_len + offset);
+        length            -= msg->program->reserve - (rpc_len + offset);
+
         reply_niov = 1;
+        iov        = msg_iov[0];
         offset     = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, 0);
-        iov.length = 4096;
 
     } else {
         offset = 4;
+
+        msg_iov[0].data   += msg->program->reserve - (rpc_len + offset);
+        msg_iov[0].length -= msg->program->reserve - (rpc_len + offset);
+        length            -= msg->program->reserve - (rpc_len + offset);
     }
 
-    rpc_reply.xid                               = msg->xid;
-    rpc_reply.body.mtype                        = REPLY;
-    rpc_reply.body.rbody.stat                   = 0;
-    rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
-    rpc_reply.body.rbody.areply.verf.body.len   = 0;
-    rpc_reply.body.rbody.areply.reply_data.stat = SUCCESS;
+    iov = msg_iov[0];
 
     reply_niov = 1;
     reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, offset);
 
-    if (!rdma) {
-        hdr = rpc2_hton32(((reply_len - offset) + length) | 0x80000000);
-        memcpy(reply_iov.data, &hdr, sizeof(hdr));
-    }
+    evpl_rpc2_abort_if(reply_len != rpc_len + offset,
+                       "marshalled reply length mismatch %d != %d", reply_len, rpc_len + offset);
 
-    evpl_iovec_commit(evpl, 0, &iov, 1);
+    if (!rdma) {
+        hdr = rpc2_hton32((length - 4) | 0x80000000);
+        memcpy(msg_iov[0].data, &hdr, sizeof(hdr));
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &now);
 
@@ -462,20 +473,12 @@ evpl_rpc2_send_reply(
         metric->max_latency = elapsed;
     }
 
-    /* XXX temporary workaround to get all the iovs in one sendv call,
-     * need this so rdma segments properly
-     */
-    send_iov = alloca(sizeof(*send_iov) * (msg_niov + 1));
-
-    send_iov[0] = reply_iov;
-    memcpy(send_iov + 1, msg_iov, msg_niov * sizeof(*msg_iov));
-
     evpl_sendv(
         evpl,
         msg->bind,
-        send_iov,
-        msg_niov + 1,
-        reply_len + length);
+        msg_iov,
+        msg_niov,
+        length);
 
 
     evpl_rpc2_msg_free(msg->agent, msg);

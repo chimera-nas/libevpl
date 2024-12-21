@@ -42,6 +42,7 @@ struct evpl_rpc2_program {
     uint32_t                 program;
     uint32_t                 version;
     uint32_t                 maxproc;
+    uint32_t                 reserve;
     const char             **procs;
     struct evpl_rpc2_metric *metrics;
     pthread_mutex_t          metrics_lock;
