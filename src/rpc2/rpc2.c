@@ -350,6 +350,8 @@ evpl_rpc2_event(
                                            "read segment position mismatch");
 
                         msg->read_chunk.length += read_list->entry.target.length;
+
+                        read_list = read_list->next;
                     }
 
                     xdr_dbuf_alloc_space(msg->read_chunk.iov, sizeof(*msg->read_chunk.iov), msg->dbuf);
