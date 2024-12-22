@@ -30,10 +30,13 @@ struct evpl_rpc2_msg {
     uint32_t                    rdma;
     uint32_t                    rdma_credits;
     uint32_t                    request_length;
+    uint32_t                    reply_length;
     uint16_t                    pending_reads;
     uint16_t                    pending_writes;
     struct evpl_iovec          *req_iov;
+    struct evpl_iovec          *reply_iov;
     int                         req_niov;
+    int                         reply_niov;
     struct timespec             timestamp;
     struct rpc_msg             *rpc_msg;
     struct rdma_msg            *rdma_msg;

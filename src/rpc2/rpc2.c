@@ -298,7 +298,7 @@ evpl_rpc2_event(
     uint32_t                 hdr;
     struct evpl_iovec       *hdr_iov;
     int                      hdr_niov;
-    int                      rc, rdma, offset, segment_offset;
+    int                      i, rc, rdma, offset, segment_offset;
     struct evpl_iovec        segment_iov;
 
     rdma = (server->protocol == EVPL_DATAGRAM_RDMACM_RC);
@@ -387,11 +387,11 @@ evpl_rpc2_event(
 
                     while (write_list) {
 
-                        evpl_rpc2_abort_if(write_list->entry.num_target != 1,
-                                           "got write segment with multiple targets");
+                        for (i = 0; i < write_list->entry.num_target; i++) {
+                            msg->write_chunk.length += write_list->entry.target[i].length;
+                        }
 
-                        msg->write_chunk.length += write_list->entry.target->length;
-                        write_list               = write_list->next;
+                        write_list = write_list->next;
                     }
                 } else {
                     evpl_rpc2_error("rpc2 received rdma msg with unhandled proc %d", rdma_msg->rdma_body.proc);
@@ -462,6 +462,37 @@ evpl_rpc2_accept(
 
 } /* evpl_rpc2_accept */
 
+static void
+evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
+{
+    struct evpl_rpc2_agent *agent = msg->agent;
+    struct evpl            *evpl  = agent->evpl;
+
+    evpl_sendv(
+        evpl,
+        msg->bind,
+        msg->reply_iov,
+        msg->reply_niov,
+        msg->reply_length);
+
+
+    evpl_rpc2_msg_free(agent, msg);
+} /* evpl_rpc2_dispatch_reply */
+
+static void
+evpl_rpc2_write_segment_callback(
+    int   status,
+    void *private_data)
+{
+    struct evpl_rpc2_msg *msg = private_data;
+
+    msg->pending_writes--;
+
+    if (msg->pending_writes == 0) {
+        evpl_rpc2_dispatch_reply(msg);
+    }
+} /* evpl_rpc2_write_segment_callback */
+
 static int
 evpl_rpc2_send_reply(
     struct evpl          *evpl,
@@ -473,13 +504,16 @@ evpl_rpc2_send_reply(
     struct evpl_rpc2_metric *metric = msg->metric;
     struct evpl_iovec        iov, reply_iov;
     int                      reply_len, reply_niov, offset, rpc_len;
-    uint32_t                 hdr;
+    uint32_t                 hdr, segment_offset;
     struct rpc_msg           rpc_reply;
     struct rdma_msg          rdma_msg, *req_rdma_msg;
     struct xdr_write_chunk   reply_chunk;
+    struct xdr_write_list   *write_list;
+    struct xdr_rdma_segment *target;
+    struct evpl_iovec        segment_iov;
     struct timespec          now;
     uint64_t                 elapsed;
-    int                      rdma = msg->rdma;
+    int                      i, rdma = msg->rdma;
 
     rpc_reply.xid                               = msg->xid;
     rpc_reply.body.mtype                        = REPLY;
@@ -501,6 +535,30 @@ evpl_rpc2_send_reply(
         rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
         rdma_msg.rdma_body.rdma_msg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
+
+        write_list     = rdma_msg.rdma_body.rdma_msg.rdma_writes;
+        segment_offset = 0;
+
+        while (write_list) {
+
+            for (i = 0; i < write_list->entry.num_target; i++) {
+                target = &write_list->entry.target[i];
+
+                segment_iov.data   = msg->write_chunk.iov->data + segment_offset;
+                segment_iov.length = target->length;
+                segment_iov.buffer = msg->write_chunk.iov->buffer;
+
+                evpl_rdma_write(evpl, msg->bind,
+                                target->handle, target->offset,
+                                &segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+
+                msg->pending_writes++;
+
+                segment_offset += target->length;
+            }
+
+            write_list = write_list->next;
+        }
 
         if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
 
@@ -564,15 +622,13 @@ evpl_rpc2_send_reply(
         metric->max_latency = elapsed;
     }
 
-    evpl_sendv(
-        evpl,
-        msg->bind,
-        msg_iov,
-        msg_niov,
-        length);
+    msg->reply_iov    = msg_iov;
+    msg->reply_niov   = msg_niov;
+    msg->reply_length = length;
 
-
-    evpl_rpc2_msg_free(msg->agent, msg);
+    if (msg->pending_writes == 0) {
+        evpl_rpc2_dispatch_reply(msg);
+    }
 
     return 0;
 } /* evpl_rpc2_send_reply */
