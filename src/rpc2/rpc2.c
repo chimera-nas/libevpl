@@ -43,6 +43,10 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
 
     xdr_dbuf_reset(msg->dbuf);
 
+    msg->read_chunk.niov    = 0;
+    msg->read_chunk.length  = 0;
+    msg->write_chunk.niov   = 0;
+    msg->write_chunk.length = 0;
     msg->num_read_segments  = 0;
     msg->num_write_segments = 0;
     msg->num_reply_segments = 0;
@@ -55,12 +59,14 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_agent *agent,
     struct evpl_rpc2_msg   *msg)
 {
-    int i, j;
+    int i;
 
-    for (i = 0; i < msg->num_read_segments; i++) {
-        for (j = 0; j < msg->read_segments[i].niov; j++) {
-            evpl_iovec_release(&msg->read_segments[i].iov[j]);
-        }
+    for (i = 0; i < msg->read_chunk.niov; i++) {
+        evpl_iovec_release(&msg->read_chunk.iov[i]);
+    }
+
+    for (i = 0; i < msg->write_chunk.niov; i++) {
+        evpl_iovec_release(&msg->write_chunk.iov[i]);
     }
 
     LL_PREPEND(agent->free_msg, msg);
@@ -318,7 +324,6 @@ evpl_rpc2_event(
                                              notify->recv_msg.iovec,
                                              notify->recv_msg.niov,
                                              NULL,
-                                             0,
                                              msg->dbuf);
 
                 //dump_rdma_msg("rdma_msg", &rdma_msg);
@@ -329,24 +334,27 @@ evpl_rpc2_event(
 
                     read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
 
-                    while (read_list) {
+                    if (read_list) {
+                        msg->read_chunk.xdr_position = read_list->entry.position;
+                    }
 
-                        evpl_rpc2_abort_if(msg->num_read_segments >= EVPL_RPC2_MAX_READ_SEGMENTS,
-                                           "too many read segments");
+                    while (read_list) {
 
                         segment = &msg->read_segments[msg->num_read_segments++];
 
-                        segment->xdr_position = read_list->entry.position;
-                        segment->handle       = read_list->entry.target.handle;
-                        segment->offset       = read_list->entry.target.offset;
-                        segment->length       = read_list->entry.target.length;
+                        segment->handle = read_list->entry.target.handle;
+                        segment->offset = read_list->entry.target.offset;
+                        segment->length = read_list->entry.target.length;
 
-                        xdr_dbuf_alloc_space(segment->iov, sizeof(*segment->iov), msg->dbuf);
+                        evpl_rpc2_abort_if(msg->read_chunk.xdr_position != read_list->entry.position,
+                                           "read segment position mismatch");
 
-                        segment->niov = evpl_iovec_alloc(evpl, segment->length, 4096, 1, segment->iov);
-
-                        read_list = read_list->next;
+                        msg->read_chunk.length += read_list->entry.target.length;
                     }
+
+                    xdr_dbuf_alloc_space(msg->read_chunk.iov, sizeof(*msg->read_chunk.iov), msg->dbuf);
+
+                    msg->read_chunk.niov = evpl_iovec_alloc(evpl, msg->read_chunk.length, 4096, 1, msg->read_chunk.iov);
 
                     write_list = rdma_msg.rdma_body.rdma_msg.rdma_writes;
 
@@ -357,10 +365,12 @@ evpl_rpc2_event(
 
                         segment = &msg->write_segments[msg->num_write_segments++];
 
-                        segment->xdr_position = 0;
-                        segment->handle       = write_list->entry.target->handle;
-                        segment->offset       = write_list->entry.target->offset;
-                        segment->length       = write_list->entry.target->length;
+                        evpl_rpc2_abort_if(write_list->entry.num_target != 1,
+                                           "got write segment with multiple targets");
+
+                        segment->handle = write_list->entry.target->handle;
+                        segment->offset = write_list->entry.target->offset;
+                        segment->length = write_list->entry.target->length;
 
                         write_list = write_list->next;
                     }
@@ -400,14 +410,12 @@ evpl_rpc2_event(
             evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
                                  notify->recv_msg.niov, offset);
 
-            rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, 0, msg->dbuf);
+            rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, msg->dbuf);
 
             //dump_rpc_msg("rpc_msg", &rpc_msg);
 
-            for (i = 0; i < msg->num_read_segments; i++) {
-                /* Adjust xdr positions for the rpc header */
-                msg->read_segments[i].xdr_position -= rc;
-            }
+            /* Adjust xdr positions for the rpc header */
+            msg->read_chunk.xdr_position -= rc;
 
             evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
 
