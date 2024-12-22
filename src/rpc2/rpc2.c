@@ -327,9 +327,10 @@ evpl_rpc2_event(
 
                         segment = &msg->read_segments[msg->num_read_segments++];
 
-                        segment->handle = read_list->entry.target.handle;
-                        segment->offset = read_list->entry.target.offset;
-                        segment->length = read_list->entry.target.length;
+                        segment->xdr_position = read_list->entry.position;
+                        segment->handle       = read_list->entry.target.handle;
+                        segment->offset       = read_list->entry.target.offset;
+                        segment->length       = read_list->entry.target.length;
 
                         read_list = read_list->next;
                     }
@@ -343,9 +344,10 @@ evpl_rpc2_event(
 
                         segment = &msg->write_segments[msg->num_write_segments++];
 
-                        segment->handle = write_list->entry.target->handle;
-                        segment->offset = write_list->entry.target->offset;
-                        segment->length = write_list->entry.target->length;
+                        segment->xdr_position = 0;
+                        segment->handle       = write_list->entry.target->handle;
+                        segment->offset       = write_list->entry.target->offset;
+                        segment->length       = write_list->entry.target->length;
 
                         write_list = write_list->next;
                     }
