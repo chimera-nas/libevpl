@@ -43,6 +43,8 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
 
     xdr_dbuf_reset(msg->dbuf);
 
+    msg->pending_reads      = 0;
+    msg->pending_writes     = 0;
     msg->read_chunk.niov    = 0;
     msg->read_chunk.length  = 0;
     msg->write_chunk.niov   = 0;
@@ -207,16 +209,13 @@ evpl_rpc2_send_reply_error(
 } /* evpl_rpc2_send_reply */
 
 static void
-evpl_rpc2_handle_msg(
-    struct evpl           *evpl,
-    struct evpl_rpc2_conn *conn,
-    struct evpl_rpc2_msg  *msg,
-    struct rpc_msg        *rpc_msg,
-    struct evpl_iovec     *iov,
-    int                    niov,
-    int                    length)
+evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
 {
-    struct evpl_rpc2_server  *server = conn->server;
+    struct evpl_rpc2_conn    *conn    = msg->conn;
+    struct evpl_rpc2_agent   *agent   = msg->agent;
+    struct evpl              *evpl    = agent->evpl;
+    struct evpl_rpc2_server  *server  = conn->server;
+    struct rpc_msg           *rpc_msg = msg->rpc_msg;
     struct evpl_rpc2_program *program;
     int                       i;
     int                       error;
@@ -227,15 +226,6 @@ evpl_rpc2_handle_msg(
     switch (rpc_msg->body.mtype) {
         case CALL:
 
-#if 0
-            evpl_rpc2_debug(
-                "rpc2 received call xid %u rpcvers %u prog %u vers %u proc %u",
-                rpc_msg->xid,
-                rpc_msg->body.cbody.rpcvers,
-                rpc_msg->body.cbody.prog,
-                rpc_msg->body.cbody.vers,
-                rpc_msg->body.cbody.proc);
-#endif /* if 0 */
             msg->program = NULL;
 
             for (i  = 0; i < server->nprograms; i++) {
@@ -260,7 +250,7 @@ evpl_rpc2_handle_msg(
                 return;
             }
 
-            error = program->call_dispatch(evpl, conn, msg, iov, niov, length,
+            error = program->call_dispatch(evpl, conn, msg, msg->req_iov, msg->req_niov, msg->request_length,
                                            server->private_data);
 
             if (unlikely(error)) {
@@ -272,6 +262,22 @@ evpl_rpc2_handle_msg(
             break;
     } /* switch */
 } /* evpl_rpc2_handle_msg */
+
+static void
+evpl_rpc2_read_segment_callback(
+    int   status,
+    void *private_data)
+{
+    struct evpl_rpc2_msg *msg = private_data;
+
+    evpl_rpc2_abort_if(status, "Failed to read rdma segment");
+
+    msg->pending_reads--;
+
+    if (msg->pending_reads == 0) {
+        evpl_rpc2_handle_msg(msg);
+    }
+} /* evpl_rpc2_read_segment_callback */
 
 static void
 evpl_rpc2_event(
@@ -290,9 +296,10 @@ evpl_rpc2_event(
     struct xdr_write_list   *write_list;
 
     uint32_t                 hdr;
-    struct evpl_iovec       *hdr_iov, *msg_iov;
-    int                      hdr_niov, msg_niov;
-    int                      rc, msglen, rdma, offset;
+    struct evpl_iovec       *hdr_iov;
+    int                      hdr_niov;
+    int                      rc, rdma, offset, segment_offset;
+    struct evpl_iovec        segment_iov;
 
     rdma = (server->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
@@ -312,6 +319,7 @@ evpl_rpc2_event(
 
             rpc_msg = msg->rpc_msg;
 
+            msg->conn = rpc2_conn;
             msg->rdma = rdma;
             msg->bind = bind;
 
@@ -354,6 +362,25 @@ evpl_rpc2_event(
 
                     msg->read_chunk.niov = evpl_iovec_alloc(evpl, msg->read_chunk.length, 4096, 1, msg->read_chunk.iov);
 
+                    read_list = rdma_msg->rdma_body.rdma_msg.rdma_reads;
+
+                    segment_offset = 0;
+
+                    while (read_list) {
+
+                        segment_iov.data   = msg->read_chunk.iov->data + segment_offset;
+                        segment_iov.length = read_list->entry.target.length;
+                        segment_iov.buffer = msg->read_chunk.iov->buffer;
+
+                        evpl_rdma_read(evpl, msg->bind,
+                                       read_list->entry.target.handle, read_list->entry.target.offset,
+                                       &segment_iov, 1, evpl_rpc2_read_segment_callback, msg);
+
+                        segment_offset += read_list->entry.target.length;
+
+                        read_list = read_list->next;
+                    }
+
                     write_list = rdma_msg->rdma_body.rdma_msg.rdma_writes;
 
                     while (write_list) {
@@ -393,11 +420,13 @@ evpl_rpc2_event(
                 msg->read_chunk.xdr_position -= rc;
             }
 
-            evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
+            evpl_rpc2_iovec_skip(&msg->req_iov, &msg->req_niov, hdr_iov, hdr_niov, rc);
 
-            msglen = notify->recv_msg.length - (rc + offset);
+            msg->request_length = notify->recv_msg.length - (rc + offset);
 
-            evpl_rpc2_handle_msg(evpl, rpc2_conn, msg, rpc_msg, msg_iov, msg_niov, msglen);
+            if (msg->pending_reads == 0) {
+                evpl_rpc2_handle_msg(msg);
+            }
 
             break;
         default:
