@@ -376,6 +376,8 @@ evpl_rpc2_event(
                                        read_list->entry.target.handle, read_list->entry.target.offset,
                                        &segment_iov, 1, evpl_rpc2_read_segment_callback, msg);
 
+                        msg->pending_reads++;
+
                         segment_offset += read_list->entry.target.length;
 
                         read_list = read_list->next;

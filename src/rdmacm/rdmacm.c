@@ -270,8 +270,8 @@ evpl_rdmacm_event_callback(
                     rdmacm->config->rdmacm_retry_count;
                 conn_param.rnr_retry_count =
                     rdmacm->config->rdmacm_rnr_retry_count;
-                conn_param.responder_resources = 0;
-                conn_param.initiator_depth     = 0;
+                conn_param.responder_resources = rdmacm->config->rdmacm_cq_size;
+                conn_param.initiator_depth     = rdmacm->config->rdmacm_sq_size;
 
                 listen_bind->accept_callback(
                     evpl,
