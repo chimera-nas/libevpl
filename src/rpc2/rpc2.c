@@ -388,8 +388,10 @@ evpl_rpc2_event(
 
             //dump_rpc_msg("rpc_msg", &rpc_msg);
 
-            /* Adjust xdr positions for the rpc header */
-            msg->read_chunk.xdr_position -= rc;
+            if (rdma) {
+                /* Adjust xdr positions for the rpc header */
+                msg->read_chunk.xdr_position -= rc;
+            }
 
             evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
 
@@ -482,7 +484,7 @@ evpl_rpc2_send_reply(
 
             reply_chunk.target->handle = req_rdma_msg->rdma_body.rdma_msg.rdma_reply->target->handle;
             reply_chunk.target->offset = req_rdma_msg->rdma_body.rdma_msg.rdma_reply->target->offset;
-            reply_chunk.target->length = req_rdma_msg->rdma_body.rdma_msg.rdma_reply->target->length;
+            reply_chunk.target->length = 0;
         }
 
         offset = marshall_length_rdma_msg(&rdma_msg);
