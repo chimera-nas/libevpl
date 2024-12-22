@@ -1,11 +1,15 @@
 #pragma once
 
+#define EVPL_RPC2                    1
+
 #include <pthread.h>
 
 struct evpl;
 struct evpl_rpc2_conn;
 struct evpl_rpc2_program;
 
+#define EVPL_RPC2_MAX_READ_SEGMENTS  1
+#define EVPL_RPC2_MAX_WRITE_SEGMENTS 1
 #define EVPL_RPC2_MAX_REPLY_SEGMENTS 16
 
 
@@ -17,9 +21,12 @@ struct evpl_rpc2_metric {
 };
 
 struct evpl_rpc2_rdma_segment {
-    uint32_t handle;
-    uint32_t length;
-    uint64_t offset;
+    uint32_t           xdr_position;
+    uint32_t           handle;
+    uint32_t           length;
+    uint64_t           offset;
+    struct evpl_iovec *iov;
+    int                niov;
 };
 
 struct evpl_rpc2_msg {
@@ -28,6 +35,8 @@ struct evpl_rpc2_msg {
     uint32_t                      rdma;
     uint32_t                      rdma_credits;
     struct timespec               timestamp;
+    int                           num_read_segments;
+    int                           num_write_segments;
     int                           num_reply_segments;
     xdr_dbuf                     *dbuf;
     struct evpl_bind             *bind;
@@ -35,6 +44,8 @@ struct evpl_rpc2_msg {
     struct evpl_rpc2_metric      *metric;
     struct evpl_rpc2_program     *program;
     struct evpl_rpc2_msg         *next;
+    struct evpl_rpc2_rdma_segment read_segments[EVPL_RPC2_MAX_READ_SEGMENTS];
+    struct evpl_rpc2_rdma_segment write_segments[EVPL_RPC2_MAX_WRITE_SEGMENTS];
     struct evpl_rpc2_rdma_segment reply_segments[EVPL_RPC2_MAX_REPLY_SEGMENTS];
 };
 
