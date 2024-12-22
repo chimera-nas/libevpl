@@ -468,7 +468,7 @@ evpl_rpc2_send_reply(
         rdma_msg.rdma_credit                    = msg->rdma_credits;
         rdma_msg.rdma_body.proc                 = RDMA_MSG;
         rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
-        rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
+        rdma_msg.rdma_body.rdma_msg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
 
         if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
