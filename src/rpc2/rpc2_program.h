@@ -21,12 +21,12 @@ struct evpl_rpc2_metric {
 };
 
 struct evpl_rpc2_rdma_segment {
-    uint32_t           xdr_position;
-    uint32_t           handle;
-    uint32_t           length;
-    uint64_t           offset;
-    struct evpl_iovec *iov;
-    int                niov;
+    uint32_t   xdr_position;
+    uint32_t   handle;
+    uint32_t   length;
+    uint64_t   offset;
+    xdr_iovec *iov;
+    int        niov;
 };
 
 struct evpl_rpc2_msg {

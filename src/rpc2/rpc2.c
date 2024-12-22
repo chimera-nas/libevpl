@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <time.h>
 
 #include "rpc2/rpc2.h"
@@ -42,6 +43,10 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
 
     xdr_dbuf_reset(msg->dbuf);
 
+    msg->num_read_segments  = 0;
+    msg->num_write_segments = 0;
+    msg->num_reply_segments = 0;
+
     return msg;
 } /* evpl_rpc2_msg_alloc */
 
@@ -50,6 +55,14 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_agent *agent,
     struct evpl_rpc2_msg   *msg)
 {
+    int i, j;
+
+    for (i = 0; i < msg->num_read_segments; i++) {
+        for (j = 0; j < msg->read_segments[i].niov; j++) {
+            evpl_iovec_release(&msg->read_segments[i].iov[j]);
+        }
+    }
+
     LL_PREPEND(agent->free_msg, msg);
 } /* evpl_rpc2_msg_free */
 
@@ -312,10 +325,6 @@ evpl_rpc2_event(
 
                 msg->rdma_credits = rdma_msg.rdma_credit;
 
-                msg->num_reply_segments = 0;
-                msg->num_read_segments  = 0;
-                msg->num_write_segments = 0;
-
                 if (rdma_msg.rdma_body.proc == RDMA_MSG) {
 
                     read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
@@ -331,6 +340,10 @@ evpl_rpc2_event(
                         segment->handle       = read_list->entry.target.handle;
                         segment->offset       = read_list->entry.target.offset;
                         segment->length       = read_list->entry.target.length;
+
+                        xdr_dbuf_alloc_space(segment->iov, sizeof(*segment->iov), msg->dbuf);
+
+                        segment->niov = evpl_iovec_alloc(evpl, segment->length, 4096, 1, segment->iov);
 
                         read_list = read_list->next;
                     }
@@ -390,6 +403,11 @@ evpl_rpc2_event(
             rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, 0, msg->dbuf);
 
             //dump_rpc_msg("rpc_msg", &rpc_msg);
+
+            for (i = 0; i < msg->num_read_segments; i++) {
+                /* Adjust xdr positions for the rpc header */
+                msg->read_segments[i].xdr_position -= rc;
+            }
 
             evpl_rpc2_iovec_skip(&msg_iov, &msg_niov, hdr_iov, hdr_niov, rc);
 
