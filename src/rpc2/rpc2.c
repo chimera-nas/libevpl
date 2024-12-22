@@ -47,9 +47,6 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
     msg->read_chunk.length  = 0;
     msg->write_chunk.niov   = 0;
     msg->write_chunk.length = 0;
-    msg->num_read_segments  = 0;
-    msg->num_write_segments = 0;
-    msg->num_reply_segments = 0;
 
     return msg;
 } /* evpl_rpc2_msg_alloc */
@@ -194,7 +191,7 @@ evpl_rpc2_send_reply_error(
     rpc_reply.body.rbody.areply.reply_data.stat = PROG_MISMATCH;
 
     reply_niov = 1;
-    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, 4);
+    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, NULL, 4);
 
     hdr = rpc2_hton32((reply_len - 4) | 0x80000000);
 
@@ -283,20 +280,19 @@ evpl_rpc2_event(
     struct evpl_notify *notify,
     void               *private_data)
 {
-    struct evpl_rpc2_conn         *rpc2_conn = private_data;
-    struct evpl_rpc2_server       *server    = rpc2_conn->server;
-    struct evpl_rpc2_agent        *agent     = server->agent;
-    struct rpc_msg                 rpc_msg;
-    struct rdma_msg                rdma_msg;
-    struct evpl_rpc2_msg          *msg;
-    struct xdr_read_list          *read_list;
-    struct xdr_write_list         *write_list;
-    struct evpl_rpc2_rdma_segment *segment;
+    struct evpl_rpc2_conn   *rpc2_conn = private_data;
+    struct evpl_rpc2_server *server    = rpc2_conn->server;
+    struct evpl_rpc2_agent  *agent     = server->agent;
+    struct rpc_msg          *rpc_msg;
+    struct rdma_msg         *rdma_msg;
+    struct evpl_rpc2_msg    *msg;
+    struct xdr_read_list    *read_list;
+    struct xdr_write_list   *write_list;
 
-    uint32_t                       hdr;
-    struct evpl_iovec             *hdr_iov, *msg_iov;
-    int                            hdr_niov, msg_niov;
-    int                            rc, i, msglen, rdma, offset;
+    uint32_t                 hdr;
+    struct evpl_iovec       *hdr_iov, *msg_iov;
+    int                      hdr_niov, msg_niov;
+    int                      rc, msglen, rdma, offset;
 
     rdma = (server->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
@@ -312,6 +308,10 @@ evpl_rpc2_event(
 
             clock_gettime(CLOCK_MONOTONIC, &msg->timestamp);
 
+            xdr_dbuf_alloc_space(msg->rpc_msg, sizeof(*msg->rpc_msg), msg->dbuf);
+
+            rpc_msg = msg->rpc_msg;
+
             msg->rdma = rdma;
             msg->bind = bind;
 
@@ -320,7 +320,10 @@ evpl_rpc2_event(
                  * instead we should have an rdma_msg xdr structure
                  * which describes the rdma particulars of the message */
 
-                offset = unmarshall_rdma_msg(&rdma_msg,
+                xdr_dbuf_alloc_space(msg->rdma_msg, sizeof(*msg->rdma_msg), msg->dbuf);
+                rdma_msg = msg->rdma_msg;
+
+                offset = unmarshall_rdma_msg(rdma_msg,
                                              notify->recv_msg.iovec,
                                              notify->recv_msg.niov,
                                              NULL,
@@ -328,24 +331,17 @@ evpl_rpc2_event(
 
                 //dump_rdma_msg("rdma_msg", &rdma_msg);
 
-                msg->rdma_credits = rdma_msg.rdma_credit;
+                msg->rdma_credits = rdma_msg->rdma_credit;
 
-                if (rdma_msg.rdma_body.proc == RDMA_MSG) {
+                if (rdma_msg->rdma_body.proc == RDMA_MSG) {
 
-                    read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
+                    read_list = rdma_msg->rdma_body.rdma_msg.rdma_reads;
 
                     if (read_list) {
                         msg->read_chunk.xdr_position = read_list->entry.position;
                     }
 
                     while (read_list) {
-
-                        segment = &msg->read_segments[msg->num_read_segments++];
-
-                        segment->handle = read_list->entry.target.handle;
-                        segment->offset = read_list->entry.target.offset;
-                        segment->length = read_list->entry.target.length;
-
                         evpl_rpc2_abort_if(msg->read_chunk.xdr_position != read_list->entry.position,
                                            "read segment position mismatch");
 
@@ -358,42 +354,18 @@ evpl_rpc2_event(
 
                     msg->read_chunk.niov = evpl_iovec_alloc(evpl, msg->read_chunk.length, 4096, 1, msg->read_chunk.iov);
 
-                    write_list = rdma_msg.rdma_body.rdma_msg.rdma_writes;
+                    write_list = rdma_msg->rdma_body.rdma_msg.rdma_writes;
 
                     while (write_list) {
-
-                        evpl_rpc2_abort_if(msg->num_write_segments >= EVPL_RPC2_MAX_WRITE_SEGMENTS,
-                                           "too many write segments");
-
-                        segment = &msg->write_segments[msg->num_write_segments++];
 
                         evpl_rpc2_abort_if(write_list->entry.num_target != 1,
                                            "got write segment with multiple targets");
 
-                        segment->handle = write_list->entry.target->handle;
-                        segment->offset = write_list->entry.target->offset;
-                        segment->length = write_list->entry.target->length;
-
-                        write_list = write_list->next;
-                    }
-
-                    if (rdma_msg.rdma_body.rdma_msg.rdma_reply) {
-                        msg->num_reply_segments = rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target;
-
-                        evpl_rpc2_abort_if(msg->num_reply_segments >= EVPL_RPC2_MAX_REPLY_SEGMENTS,
-                                           "too many reply segments");
-
-                        for (i = 0; i < msg->num_reply_segments; i++) {
-                            msg->reply_segments[i].handle = rdma_msg.rdma_body.rdma_msg.rdma_reply->target[i].handle
-                            ;
-                            msg->reply_segments[i].length = rdma_msg.rdma_body.rdma_msg.rdma_reply->target[i].length
-                            ;
-                            msg->reply_segments[i].offset = rdma_msg.rdma_body.rdma_msg.rdma_reply->target[i].offset
-                            ;
-                        }
+                        msg->write_chunk.length += write_list->entry.target->length;
+                        write_list               = write_list->next;
                     }
                 } else {
-                    evpl_rpc2_error("rpc2 received rdma msg with unhandled proc %d", rdma_msg.rdma_body.proc);
+                    evpl_rpc2_error("rpc2 received rdma msg with unhandled proc %d", rdma_msg->rdma_body.proc);
                 }
 
             } else {
@@ -412,7 +384,7 @@ evpl_rpc2_event(
             evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
                                  notify->recv_msg.niov, offset);
 
-            rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, msg->dbuf);
+            rc = unmarshall_rpc_msg(rpc_msg, hdr_iov, hdr_niov, NULL, msg->dbuf);
 
             //dump_rpc_msg("rpc_msg", &rpc_msg);
 
@@ -423,8 +395,7 @@ evpl_rpc2_event(
 
             msglen = notify->recv_msg.length - (rc + offset);
 
-            evpl_rpc2_handle_msg(evpl, rpc2_conn, msg, &rpc_msg, msg_iov,
-                                 msg_niov, msglen);
+            evpl_rpc2_handle_msg(evpl, rpc2_conn, msg, rpc_msg, msg_iov, msg_niov, msglen);
 
             break;
         default:
@@ -468,10 +439,10 @@ evpl_rpc2_send_reply(
 {
     struct evpl_rpc2_metric *metric = msg->metric;
     struct evpl_iovec        iov, reply_iov;
-    int                      i, reply_len, reply_niov, offset, rpc_len;
+    int                      reply_len, reply_niov, offset, rpc_len;
     uint32_t                 hdr;
     struct rpc_msg           rpc_reply;
-    struct rdma_msg          rdma_msg;
+    struct rdma_msg          rdma_msg, *req_rdma_msg;
     struct xdr_write_chunk   reply_chunk;
     struct timespec          now;
     uint64_t                 elapsed;
@@ -487,6 +458,9 @@ evpl_rpc2_send_reply(
     rpc_len = marshall_length_rpc_msg(&rpc_reply);
 
     if (rdma) {
+
+        req_rdma_msg = msg->rdma_msg;
+
         rdma_msg.rdma_xid                       = msg->xid;
         rdma_msg.rdma_vers                      = 1;
         rdma_msg.rdma_credit                    = msg->rdma_credits;
@@ -495,18 +469,20 @@ evpl_rpc2_send_reply(
         rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
 
-        if (msg->num_reply_segments) {
+        if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
+
+            evpl_rpc2_abort_if(req_rdma_msg->rdma_body.rdma_msg.rdma_reply->num_target != 1,
+                               "got reply segment with multiple targets");
 
             rdma_msg.rdma_body.rdma_msg.rdma_reply = &reply_chunk;
 
-            reply_chunk.num_target = msg->num_reply_segments;
-            reply_chunk.target     = alloca(msg->num_reply_segments * sizeof(struct xdr_rdma_segment));
+            reply_chunk.num_target = req_rdma_msg->rdma_body.rdma_msg.rdma_reply->num_target;
+            reply_chunk.target     = alloca(req_rdma_msg->rdma_body.rdma_msg.rdma_reply->num_target * sizeof(struct
+                                                                                                             xdr_rdma_segment));
 
-            for (i = 0; i < msg->num_reply_segments; i++) {
-                reply_chunk.target[i].handle = msg->reply_segments[i].handle;
-                reply_chunk.target[i].offset = msg->reply_segments[i].offset;
-                reply_chunk.target[i].length = 0;
-            }
+            reply_chunk.target->handle = req_rdma_msg->rdma_body.rdma_msg.rdma_reply->target->handle;
+            reply_chunk.target->offset = req_rdma_msg->rdma_body.rdma_msg.rdma_reply->target->offset;
+            reply_chunk.target->length = req_rdma_msg->rdma_body.rdma_msg.rdma_reply->target->length;
         }
 
         offset = marshall_length_rdma_msg(&rdma_msg);
@@ -517,7 +493,7 @@ evpl_rpc2_send_reply(
 
         reply_niov = 1;
         iov        = msg_iov[0];
-        offset     = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, 0);
+        offset     = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, NULL, 0);
 
     } else {
         offset = 4;
@@ -530,7 +506,7 @@ evpl_rpc2_send_reply(
     iov = msg_iov[0];
 
     reply_niov = 1;
-    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, offset);
+    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, NULL, offset);
 
     evpl_rpc2_abort_if(reply_len != rpc_len + offset,
                        "marshalled reply length mismatch %d != %d", reply_len, rpc_len + offset);
