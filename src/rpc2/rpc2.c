@@ -313,6 +313,9 @@ evpl_rpc2_event(
                 msg->rdma_credits = rdma_msg.rdma_credit;
 
                 msg->num_reply_segments = 0;
+                msg->num_read_segments  = 0;
+                msg->num_write_segments = 0;
+
                 if (rdma_msg.rdma_body.proc == RDMA_MSG) {
 
                     read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
