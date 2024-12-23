@@ -561,7 +561,7 @@ evpl_rpc2_send_reply(
                     write_left -= target->length;
                 }
 
-                if (target->length == 0) {
+                if (target->length) {
                     segment_iov.data   = msg->write_chunk.iov->data + segment_offset;
                     segment_iov.length = target->length;
                     segment_iov.buffer = msg->write_chunk.iov->buffer;
