@@ -265,13 +265,11 @@ evpl_rdmacm_event_callback(
 
                 evpl_rdmacm_create_qp(evpl, rdmacm, new_rdmacm_id);
 
-                conn_param.private_data = rdmacm;
-                conn_param.retry_count  =
-                    rdmacm->config->rdmacm_retry_count;
-                conn_param.rnr_retry_count =
-                    rdmacm->config->rdmacm_rnr_retry_count;
-                conn_param.responder_resources = rdmacm->config->rdmacm_cq_size;
-                conn_param.initiator_depth     = rdmacm->config->rdmacm_sq_size;
+                conn_param.private_data        = rdmacm;
+                conn_param.retry_count         = rdmacm->config->rdmacm_retry_count;
+                conn_param.rnr_retry_count     = rdmacm->config->rdmacm_rnr_retry_count;
+                conn_param.responder_resources = cm_event->param.conn.initiator_depth;
+                conn_param.initiator_depth     = cm_event->param.conn.initiator_depth;
 
                 listen_bind->accept_callback(
                     evpl,

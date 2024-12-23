@@ -143,32 +143,40 @@ evpl_rpc2_destroy(struct evpl_rpc2_agent *agent)
     evpl_free(agent);
 } /* evpl_rpc2_agent_destroy */
 
-static inline void
+static inline int
 evpl_rpc2_iovec_skip(
-    struct evpl_iovec **out_iov,
-    int                *out_niov,
-    struct evpl_iovec  *in_iov,
-    int                 in_niov,
-    int                 offset)
+    struct evpl_iovec *out_iov,
+    struct evpl_iovec *in_iov,
+    int                niov,
+    int                offset)
 {
-    struct evpl_iovec *cur  = in_iov;
+    struct evpl_iovec *outc = out_iov;
+    struct evpl_iovec *inc  = in_iov;
     int                left = offset;
-    int                niov = in_niov;
 
     while (left) {
-        if (cur->length <= left) {
-            left -= cur->length;
-            cur++;
-            --niov;
+
+        if (inc->length <= left) {
+            left -= inc->length;
+            inc++;
         } else {
-            cur->data   += left;
-            cur->length -= left;
-            left         = 0;
+            outc->data   = inc->data;
+            outc->length = left;
+            outc->buffer = inc->buffer;
+            inc++;
+            outc++;
         }
     }
 
-    *out_iov  = cur;
-    *out_niov = niov;
+    while (inc < in_iov + niov) {
+        outc->data   = inc->data;
+        outc->length = inc->length;
+        outc->buffer = inc->buffer;
+        inc++;
+        outc++;
+    }
+
+    return outc - out_iov;
 } /* evpl_rpc2_iovec_skip */
 
 static int
@@ -410,8 +418,8 @@ evpl_rpc2_event(
                                    (hdr & 0x7FFFFFFF) + 4, notify->recv_msg.length);
             }
 
-            evpl_rpc2_iovec_skip(&hdr_iov, &hdr_niov, notify->recv_msg.iovec,
-                                 notify->recv_msg.niov, offset);
+            xdr_dbuf_alloc_space(hdr_iov, sizeof(*hdr_iov) * notify->recv_msg.niov, msg->dbuf);
+            hdr_niov = evpl_rpc2_iovec_skip(hdr_iov, notify->recv_msg.iovec, notify->recv_msg.niov, offset);
 
             rc = unmarshall_rpc_msg(rpc_msg, hdr_iov, hdr_niov, NULL, msg->dbuf);
 
@@ -422,7 +430,8 @@ evpl_rpc2_event(
                 msg->read_chunk.xdr_position -= rc;
             }
 
-            evpl_rpc2_iovec_skip(&msg->req_iov, &msg->req_niov, hdr_iov, hdr_niov, rc);
+            xdr_dbuf_alloc_space(msg->req_iov, sizeof(*msg->req_iov) * hdr_niov, msg->dbuf);
+            evpl_rpc2_iovec_skip(msg->req_iov, hdr_iov, hdr_niov, rc);
 
             msg->request_length = notify->recv_msg.length - (rc + offset);
 
