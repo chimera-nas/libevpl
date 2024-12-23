@@ -58,8 +58,6 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_agent *agent,
     struct evpl_rpc2_msg   *msg)
 {
-    int i;
-
     LL_PREPEND(agent->free_msg, msg);
 } /* evpl_rpc2_msg_free */
 
@@ -516,7 +514,7 @@ evpl_rpc2_send_reply(
     struct evpl_iovec        segment_iov;
     struct timespec          now;
     uint64_t                 elapsed;
-    int                      i, rdma = msg->rdma;
+    int                      i, reduce = 0, rdma = msg->rdma;
 
     rpc_reply.xid                               = msg->xid;
     rpc_reply.body.mtype                        = REPLY;
@@ -578,7 +576,15 @@ evpl_rpc2_send_reply(
             evpl_rpc2_abort_if(req_rdma_msg->rdma_body.rdma_msg.rdma_reply->num_target != 1,
                                "got reply segment with multiple targets");
 
-            rdma_msg.rdma_body.rdma_msg.rdma_reply->target->length = 0;
+            reduce = 1;
+
+            rdma_msg.rdma_body.proc                   = RDMA_NOMSG;
+            rdma_msg.rdma_body.rdma_nomsg.rdma_reads  = NULL;
+            rdma_msg.rdma_body.rdma_nomsg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
+            rdma_msg.rdma_body.rdma_nomsg.rdma_reply  = req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
+
+            rdma_msg.rdma_body.rdma_nomsg.rdma_reply->target->length = rpc_len + length;
+
         }
 
         offset = marshall_length_rdma_msg(&rdma_msg);
@@ -627,9 +633,28 @@ evpl_rpc2_send_reply(
         metric->max_latency = elapsed;
     }
 
-    msg->reply_iov    = msg_iov;
-    msg->reply_niov   = msg_niov;
-    msg->reply_length = length;
+    if (reduce) {
+        xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
+        msg->reply_iov->length = offset;
+        msg->reply_niov        = 1;
+        msg->reply_length      = offset;
+        evpl_iovec_addref(msg->reply_iov);
+
+        msg_iov[0].data   += offset;
+        msg_iov[0].length -= offset;
+
+        evpl_rdma_write(evpl, msg->bind,
+                        rdma_msg.rdma_body.rdma_nomsg.rdma_reply->target->handle,
+                        rdma_msg.rdma_body.rdma_nomsg.rdma_reply->target->offset,
+                        msg_iov, msg_niov, evpl_rpc2_write_segment_callback, msg);
+
+        msg->pending_writes++;
+
+    } else {
+        msg->reply_iov    = msg_iov;
+        msg->reply_niov   = msg_niov;
+        msg->reply_length = length;
+    }
 
     if (msg->pending_writes == 0) {
         evpl_rpc2_dispatch_reply(msg);
