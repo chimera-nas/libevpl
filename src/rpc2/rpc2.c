@@ -514,7 +514,7 @@ evpl_rpc2_send_reply(
     struct evpl_rpc2_metric *metric = msg->metric;
     struct evpl_iovec        iov, reply_iov;
     int                      reply_len, reply_niov, offset, rpc_len;
-    uint32_t                 hdr, segment_offset;
+    uint32_t                 hdr, segment_offset, write_left;
     struct rpc_msg           rpc_reply;
     struct rdma_msg          rdma_msg, *req_rdma_msg;
     struct xdr_write_list   *write_list;
@@ -547,23 +547,33 @@ evpl_rpc2_send_reply(
 
         write_list     = rdma_msg.rdma_body.rdma_msg.rdma_writes;
         segment_offset = 0;
+        write_left     = msg->write_chunk.length;
 
         while (write_list) {
 
             for (i = 0; i < write_list->entry.num_target; i++) {
                 target = &write_list->entry.target[i];
 
-                segment_iov.data   = msg->write_chunk.iov->data + segment_offset;
-                segment_iov.length = target->length;
-                segment_iov.buffer = msg->write_chunk.iov->buffer;
+                if (write_left < target->length) {
+                    target->length = write_left;
+                    write_left     = 0;
+                } else {
+                    write_left -= target->length;
+                }
 
-                evpl_rdma_write(evpl, msg->bind,
-                                target->handle, target->offset,
-                                &segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+                if (target->length == 0) {
+                    segment_iov.data   = msg->write_chunk.iov->data + segment_offset;
+                    segment_iov.length = target->length;
+                    segment_iov.buffer = msg->write_chunk.iov->buffer;
 
-                msg->pending_writes++;
+                    evpl_rdma_write(evpl, msg->bind,
+                                    target->handle, target->offset,
+                                    &segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
 
-                segment_offset += target->length;
+                    msg->pending_writes++;
+
+                    segment_offset += target->length;
+                }
             }
 
             write_list = write_list->next;
