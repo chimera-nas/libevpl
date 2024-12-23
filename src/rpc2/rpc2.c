@@ -635,7 +635,9 @@ evpl_rpc2_send_reply(
 
     if (reduce) {
         xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
+        msg->reply_iov->data   = msg_iov[0].data;
         msg->reply_iov->length = offset;
+        msg->reply_iov->buffer = msg_iov[0].buffer;
         msg->reply_niov        = 1;
         msg->reply_length      = offset;
         evpl_iovec_addref(msg->reply_iov);
