@@ -58,6 +58,12 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_agent *agent,
     struct evpl_rpc2_msg   *msg)
 {
+    int i;
+
+    for (i = 0; i < msg->req_niov; ++i) {
+        evpl_iovec_release(&msg->req_iov[i]);
+
+    }
     LL_PREPEND(agent->free_msg, msg);
 } /* evpl_rpc2_msg_free */
 
@@ -422,7 +428,11 @@ evpl_rpc2_event(
             }
 
             xdr_dbuf_alloc_space(msg->req_iov, sizeof(*msg->req_iov) * hdr_niov, msg->dbuf);
-            evpl_rpc2_iovec_skip(msg->req_iov, hdr_iov, hdr_niov, rc);
+            msg->req_niov = evpl_rpc2_iovec_skip(msg->req_iov, hdr_iov, hdr_niov, rc);
+
+            for (i = 0; i < msg->req_niov; ++i) {
+                evpl_iovec_addref(&msg->req_iov[i]);
+            }
 
             msg->request_length = notify->recv_msg.length - (rc + offset);
 
