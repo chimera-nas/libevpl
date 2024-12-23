@@ -160,11 +160,12 @@ evpl_rpc2_iovec_skip(
             left -= inc->length;
             inc++;
         } else {
-            outc->data   = inc->data;
-            outc->length = left;
+            outc->data   = inc->data + left;
+            outc->length = inc->length - left;
             outc->buffer = inc->buffer;
             inc++;
             outc++;
+            left = 0;
         }
     }
 
