@@ -60,14 +60,6 @@ evpl_rpc2_msg_free(
 {
     int i;
 
-    for (i = 0; i < msg->read_chunk.niov; i++) {
-        evpl_iovec_release(&msg->read_chunk.iov[i]);
-    }
-
-    for (i = 0; i < msg->write_chunk.niov; i++) {
-        evpl_iovec_release(&msg->write_chunk.iov[i]);
-    }
-
     LL_PREPEND(agent->free_msg, msg);
 } /* evpl_rpc2_msg_free */
 
@@ -495,6 +487,8 @@ evpl_rpc2_write_segment_callback(
     void *private_data)
 {
     struct evpl_rpc2_msg *msg = private_data;
+
+    evpl_rpc2_abort_if(status, "Failed to write rdma segment");
 
     msg->pending_writes--;
 

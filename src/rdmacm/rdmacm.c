@@ -571,12 +571,22 @@ evpl_rdmacm_poll_cq(
                 break;
             case IBV_WC_RDMA_READ:
                 sr = (struct evpl_rdmacm_sr *) cq->wr_id;
+
+                for (i = 0; i < sr->nbufref; ++i) {
+                    evpl_buffer_release(sr->bufref[i]);
+                }
+
                 sr->callback(0, sr->private_data);
                 evpl_free(sr);
                 break;
             case IBV_WC_RDMA_WRITE:
 
                 sr = (struct evpl_rdmacm_sr *) cq->wr_id;
+
+                for (i = 0; i < sr->nbufref; ++i) {
+                    evpl_buffer_release(sr->bufref[i]);
+                }
+
                 sr->callback(0, sr->private_data);
                 evpl_free(sr);
                 break;
