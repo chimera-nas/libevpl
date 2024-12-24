@@ -617,6 +617,30 @@ evpl_bind_flush_deferral(
     }
 } /* evpl_bind_flush_deferral */
 
+void
+evpl_attach_framework(
+    struct evpl           *evpl,
+    enum evpl_framework_id framework_id)
+{
+    struct evpl_framework *framework = evpl_shared->framework[framework_id];
+
+    pthread_mutex_lock(&evpl_shared->lock);
+
+    if (!evpl_shared->framework_private[framework->id]) {
+
+        evpl_shared->framework_private[framework->id] = framework->init();
+
+        evpl_allocator_reregister(evpl_shared->allocator);
+    }
+
+    pthread_mutex_unlock(&evpl_shared->lock);
+
+    if (!evpl->framework_private[framework->id]) {
+        evpl->framework_private[framework->id] =
+            framework->create(evpl, evpl_shared->framework_private[framework->id]);
+    }
+} /* evpl_attach_framework */
+
 struct evpl_bind *
 evpl_bind_prepare(
     struct evpl          *evpl,
@@ -628,21 +652,7 @@ evpl_bind_prepare(
     struct evpl_bind      *bind;
 
     if (framework) {
-
-        if (!evpl_shared->framework_private[framework->id]) {
-
-            evpl_shared->framework_private[framework->id] =
-                framework->init();
-
-            evpl_allocator_reregister(evpl_shared->allocator);
-        }
-
-        if (!evpl->framework_private[framework->id]) {
-            evpl->framework_private[framework->id] =
-                framework->create(evpl,
-                                  evpl_shared->framework_private[framework->id])
-            ;
-        }
+        evpl_attach_framework(evpl, framework->id);
     }
 
     if (evpl->free_binds) {

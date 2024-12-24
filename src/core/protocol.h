@@ -136,3 +136,8 @@ evpl_framework_private(
     struct evpl *evpl,
     int          id);
 
+
+void
+evpl_attach_framework(
+    struct evpl           *evpl,
+    enum evpl_framework_id framework_id);

@@ -13,6 +13,7 @@
 #include "uthash.h"
 #include "utlist.h"
 
+#include "rdmacm/rdmacm.h"
 #include "core/internal.h"
 #include "core/evpl.h"
 #include "core/protocol.h"
@@ -83,6 +84,7 @@ struct evpl_rdmacm_listen_id {
 
 
 struct evpl_rdmacm_listener {
+    int                           started;
     struct evpl_thread           *thread;
     pthread_mutex_t               mutex;
     struct evpl_rdmacm_listen_id *listen_ids;
@@ -306,6 +308,8 @@ evpl_rdmacm_event_callback(
 
                 pthread_mutex_unlock(&listener->mutex);
 
+                cm_event = NULL;
+
             } else {
                 /* XXX why is this necessary? */
                 cm_event->id->qp = (struct ibv_qp *) rdmacm_id->qp;
@@ -371,7 +375,9 @@ evpl_rdmacm_event_callback(
             evpl_rdmacm_debug("unhandled rdmacm event %u", cm_event->event);
     } /* switch */
 
-    rdma_ack_cm_event(cm_event);
+    if (cm_event) {
+        rdma_ack_cm_event(cm_event);
+    }
 
 } /* evpl_rdmacm_event_callback */
 
@@ -674,6 +680,8 @@ evpl_rdmacm_listener_wake(
     struct evpl_rdmacm_listen_id *listen_id, *tmp;
     int                           rc;
 
+    evpl_attach_framework(evpl, EVPL_FRAMEWORK_RDMACM);
+
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
     pthread_mutex_lock(&listener->mutex);
@@ -686,6 +694,8 @@ evpl_rdmacm_listener_wake(
         }
 
         rdmacm_id = evpl_zalloc(sizeof(*rdmacm_id));
+
+        listen_id->rdmacm_id = rdmacm_id;
 
         rdmacm_id->listen_id = listen_id;
 
@@ -726,13 +736,8 @@ evpl_rdmacm_init()
     }
 
     pthread_mutex_init(&devices->listener.mutex, NULL);
+    devices->listener.started = 0;
 
-    devices->listener.thread = evpl_thread_create(NULL,
-                                                  evpl_rdmacm_listener_wake,
-                                                  NULL,
-                                                  NULL,
-                                                  1000,
-                                                  &devices->listener);
     return devices;
 } /* evpl_rdmacm_init */
 
@@ -742,13 +747,15 @@ evpl_rdmacm_cleanup(void *private_data)
     struct evpl_rdmacm_devices *devices = private_data;
     int                         i;
 
-    evpl_thread_destroy(devices->listener.thread);
+    if (devices->listener.started) {
+        evpl_thread_destroy(devices->listener.thread);
+    }
 
     for (i = 0; i < devices->num_devices; ++i) {
         ibv_dealloc_pd(devices->pd[i]);
     }
 
-    rdma_free_devices(devices->context);
+    rdma_free_devices(context);
     evpl_free(devices->pd);
     evpl_free(devices);
 
@@ -770,7 +777,12 @@ evpl_rdmacm_new_id_callback(
     int                               rc;
     struct rdma_conn_param            conn_param;
 
-    read(event->fd, &value, sizeof(value));
+    rc = read(event->fd, &value, sizeof(value));
+
+    if (rc != sizeof(value)) {
+        evpl_event_mark_unreadable(event);
+        return;
+    }
 
     pthread_mutex_lock(&rdmacm->mutex);
 
@@ -824,6 +836,10 @@ evpl_rdmacm_new_id_callback(
             &bind->private_data,
             listen_bind->private_data);
 
+
+        rc = rdma_migrate_id(cm_event->id, rdmacm->event_channel);
+
+        evpl_rdmacm_abort_if(rc, "rdma_migrate_id error %s", strerror(errno));
 
         rc = rdma_accept(cm_event->id, &conn_param);
 
@@ -972,10 +988,10 @@ evpl_rdmacm_create(
 
     rdmacm->new_id_eventfd = eventfd(0, EFD_NONBLOCK);
 
-    evpl_rdmacm_abort_if(rdmacm->new_id_eventfd == -1, "Failed to create eventfd for new id");
+    evpl_rdmacm_abort_if(rdmacm->new_id_eventfd < 0, "Failed to create eventfd for new id");
 
-    rdmacm->event.fd            = rdmacm->new_id_eventfd;
-    rdmacm->event.read_callback = evpl_rdmacm_new_id_callback;
+    rdmacm->new_id_event.fd            = rdmacm->new_id_eventfd;
+    rdmacm->new_id_event.read_callback = evpl_rdmacm_new_id_callback;
 
     evpl_add_event(evpl, &rdmacm->new_id_event);
     evpl_event_read_interest(evpl, &rdmacm->new_id_event);
@@ -1058,13 +1074,23 @@ evpl_rdmacm_listen(
 
     pthread_mutex_lock(&listener->mutex);
 
+    if (!listener->started) {
+        listener->started = 1;
+        listener->thread  = evpl_thread_create(NULL,
+                                               evpl_rdmacm_listener_wake,
+                                               NULL,
+                                               NULL,
+                                               1000,
+                                               listener);
+    }
+
     HASH_FIND(hh, listener->listen_ids, bind->local->addr, bind->local->addrlen, listen_id);
 
     if (!listen_id) {
         listen_id          = evpl_zalloc(sizeof(*listen_id));
         listen_id->addrlen = bind->local->addrlen;
         memcpy(&listen_id->addr, bind->local->addr, bind->local->addrlen);
-        HASH_ADD(hh, listener->listen_ids, addr, bind->local->addrlen, listen_id);
+        HASH_ADD(hh, listener->listen_ids, addr, listen_id->addrlen, listen_id);
 
         evpl_thread_wake(listener->thread);
     }
@@ -1119,9 +1145,7 @@ evpl_rdmacm_register(
     if (buffer_private) {
         mrset = (struct ibv_mr **) buffer_private;
     } else {
-        mrset = evpl_zalloc(sizeof(struct ibv_mr *) * rdmacm_devices->
-                            num_devices)
-        ;
+        mrset = evpl_zalloc(sizeof(struct ibv_mr *) * rdmacm_devices->num_devices);
     }
 
     for (i = 0; i < rdmacm_devices->num_devices; ++i) {
