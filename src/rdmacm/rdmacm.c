@@ -755,7 +755,7 @@ evpl_rdmacm_cleanup(void *private_data)
         ibv_dealloc_pd(devices->pd[i]);
     }
 
-    rdma_free_devices(context);
+    rdma_free_devices(devices->context);
     evpl_free(devices->pd);
     evpl_free(devices);
 
