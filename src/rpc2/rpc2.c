@@ -62,8 +62,16 @@ evpl_rpc2_msg_free(
 
     for (i = 0; i < msg->req_niov; ++i) {
         evpl_iovec_release(&msg->req_iov[i]);
-
     }
+
+    for (i = 0; i < msg->read_chunk.niov; ++i) {
+        evpl_iovec_release(&msg->read_chunk.iov[i]);
+    }
+
+    for (i = 0; i < msg->write_chunk.niov; ++i) {
+        evpl_iovec_release(&msg->write_chunk.iov[i]);
+    }
+
     LL_PREPEND(agent->free_msg, msg);
 } /* evpl_rpc2_msg_free */
 
@@ -211,7 +219,7 @@ evpl_rpc2_send_reply_error(
     evpl_rpc2_msg_free(msg->agent, msg);
 
     return 0;
-} /* evpl_rpc2_send_reply */
+} /* evpl_rpc2_send_reply_error */
 
 static void
 evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
@@ -568,6 +576,7 @@ evpl_rpc2_send_reply(
                     segment_iov.length = target->length;
                     segment_iov.buffer = msg->write_chunk.iov->buffer;
 
+                    /* XXX this logic is wrong if write_chunk contains many small IOV */
                     evpl_rdma_write(evpl, msg->bind,
                                     target->handle, target->offset,
                                     &segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
@@ -650,7 +659,6 @@ evpl_rpc2_send_reply(
         msg->reply_iov->buffer = msg_iov[0].buffer;
         msg->reply_niov        = 1;
         msg->reply_length      = offset;
-        evpl_iovec_addref(msg->reply_iov);
 
         msg_iov[0].data   += offset;
         msg_iov[0].length -= offset;
