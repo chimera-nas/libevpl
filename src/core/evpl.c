@@ -35,6 +35,10 @@
 #include "core/endpoint.h"
 #include "core/poll.h"
 
+#ifdef HAVE_IO_URING
+#include "io_uring/io_uring.h"
+#endif /* ifdef HAVE_IO_URING */
+
 #ifdef HAVE_RDMACM
 #include "rdmacm/rdmacm.h"
 #endif /* ifdef HAVE_RDMACM */
@@ -105,6 +109,15 @@ evpl_protocol_init(
 } /* evpl_protocol_init */
 
 static void
+evpl_block_protocol_init(
+    struct evpl_shared         *evpl_shared,
+    unsigned int                id,
+    struct evpl_block_protocol *protocol)
+{
+    evpl_shared->block_protocol[id] = protocol;
+} /* evpl_block_protocol_init */
+
+static void
 evpl_shared_init(struct evpl_config *config)
 {
     evpl_shared = evpl_zalloc(sizeof(*evpl_shared));
@@ -124,6 +137,16 @@ evpl_shared_init(struct evpl_config *config)
 
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TCP,
                        &evpl_socket_tcp);
+
+#ifdef HAVE_IO_URING
+    if (config->io_uring_enabled) {
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_IO_URING, &
+                            evpl_framework_io_uring);
+
+        evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_IO_URING,
+                                 &evpl_block_protocol_io_uring);
+    }
+#endif /* ifdef HAVE_IO_URING */
 
 #ifdef HAVE_RDMACM
     if (config->rdmacm_enabled) {
@@ -1824,3 +1847,93 @@ evpl_activity(struct evpl *evpl)
 {
     evpl->activity++;
 } /* evpl_activity */
+
+struct evpl_block_device *
+evpl_block_open_device(
+    enum evpl_block_protocol_id protocol_id,
+    const char                 *uri)
+{
+    struct evpl_block_protocol *protocol;
+    struct evpl_block_device   *blockdev;
+
+    if (protocol_id >= EVPL_NUM_BLOCK_PROTOCOL) {
+        return NULL;
+    }
+
+    protocol = evpl_shared->block_protocol[protocol_id];
+
+    blockdev = protocol->open_device(uri);
+
+    blockdev->protocol = protocol;
+
+    return blockdev;
+} /* evpl_block_open_device */
+
+void
+evpl_block_close_device(struct evpl_block_device *bdev)
+{
+    bdev->close_device(bdev);
+} /* evpl_block_close_device */
+
+struct evpl_block_queue *
+evpl_block_open_queue(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev)
+{
+    struct evpl_block_queue *queue;
+
+    evpl_attach_framework(evpl, blockdev->protocol->framework->id);
+
+    queue = blockdev->open_queue(evpl, blockdev);
+
+    queue->protocol = blockdev->protocol;
+
+    return queue;
+} /* evpl_block_open_queue */
+
+void
+evpl_block_close_queue(
+    struct evpl             *evpl,
+    struct evpl_block_queue *queue)
+{
+    queue->close_queue(evpl, queue);
+} /* evpl_block_close_queue */
+
+
+void
+evpl_block_read(
+    struct evpl *evpl,
+    struct evpl_block_queue *queue,
+    struct evpl_iovec *iov,
+    int niov,
+    uint64_t offset,
+    void ( *callback )(int64_t status, void *private_data),
+    void *private_data)
+{
+    queue->read(evpl, queue, iov, niov, offset, callback, private_data);
+} /* evpl_block_read */
+
+void
+evpl_block_write(
+    struct evpl *evpl,
+    struct evpl_block_queue *queue,
+    struct evpl_iovec *iov,
+    int niov,
+    uint64_t offset,
+    int sync,
+    void ( *callback )(int64_t status, void *private_data),
+    void *private_data)
+{
+    queue->write(evpl, queue, iov, niov, offset, sync, callback, private_data);
+} /* evpl_block_write */
+
+void
+evpl_block_flush(
+    struct evpl *evpl,
+    struct evpl_block_queue *queue,
+    void ( *callback )(int64_t status, void *private_data),
+    void *private_data)
+{
+    queue->flush(evpl, queue, callback, private_data);
+} /* evpl_block_flush */
+

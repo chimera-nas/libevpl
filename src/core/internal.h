@@ -40,6 +40,8 @@ struct evpl_config {
     unsigned int spin_ns;
     unsigned int wait_ms;
 
+    unsigned int io_uring_enabled;
+
     unsigned int rdmacm_enabled;
     unsigned int rdmacm_cq_size;
     unsigned int rdmacm_sq_size;

@@ -1,0 +1,71 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include "core/evpl.h"
+
+static void
+read_callback(
+    int64_t status,
+    void   *private_data)
+{
+    int *pending = private_data;
+
+    if (status < 0) {
+        exit(1);
+    }
+
+    (*pending)--;
+
+} /* read_callback */
+
+int
+main(
+    int   argc,
+    char *argv[])
+{
+    struct evpl              *evpl;
+    struct evpl_block_device *bdev;
+    int                       fd;
+    struct evpl_block_queue  *bqueue;
+    int                       pending = 0;
+    struct evpl_iovec         iov;
+    int                       niov;
+
+    fd = open("test.img", O_RDWR | O_CREAT, 0666);
+    ftruncate(fd, 1024 * 1024 * 1024);
+    close(fd);
+
+    evpl = evpl_create();
+
+    bdev = evpl_block_open_device(EVPL_BLOCK_PROTOCOL_IO_URING, "test.img");
+
+    bqueue = evpl_block_open_queue(evpl, bdev);
+
+
+    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, &iov);
+
+    pending++;
+    evpl_block_write(evpl, bqueue, &iov, niov, 0, 0, read_callback, &pending);
+
+    pending++;
+    evpl_block_read(evpl, bqueue, &iov, niov, 0, read_callback, &pending);
+
+    pending++;
+    evpl_block_flush(evpl, bqueue, read_callback, &pending);
+
+    while (pending) {
+        evpl_wait(evpl, -1);
+    }
+
+    evpl_iovec_release(&iov);
+
+    evpl_block_close_queue(evpl, bqueue);
+
+    evpl_block_close_device(bdev);
+
+    evpl_destroy(evpl);
+
+    return 0;
+} /* main */

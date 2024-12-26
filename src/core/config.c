@@ -35,6 +35,8 @@ evpl_config_init(void)
         config->page_size = 4096;
     }
 
+    config->io_uring_enabled = 1;
+
     config->rdmacm_enabled         = 1;
     config->rdmacm_cq_size         = 8192;
     config->rdmacm_sq_size         = 256;

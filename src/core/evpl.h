@@ -12,9 +12,10 @@ struct iovec;
 struct evpl_config;
 
 enum evpl_framework_id {
-    EVPL_FRAMEWORK_RDMACM = 0,
-    EVPL_FRAMEWORK_XLIO   = 1,
-    EVPL_NUM_FRAMEWORK    = 2
+    EVPL_FRAMEWORK_RDMACM   = 0,
+    EVPL_FRAMEWORK_XLIO     = 1,
+    EVPL_FRAMEWORK_IO_URING = 2,
+    EVPL_NUM_FRAMEWORK      = 3
 };
 
 enum evpl_protocol_id {
@@ -25,6 +26,11 @@ enum evpl_protocol_id {
     EVPL_STREAM_XLIO_TCP     = 4,
     EVPL_STREAM_RDMACM_RC    = 5,
     EVPL_NUM_PROTO           = 6
+};
+
+enum evpl_block_protocol_id {
+    EVPL_BLOCK_PROTOCOL_IO_URING = 0,
+    EVPL_NUM_BLOCK_PROTOCOL      = 1
 };
 
 struct evpl;
@@ -348,3 +354,49 @@ void evpl_arm_uevent(
 void evpl_destroy_uevent(
     struct evpl        *evpl,
     struct evpl_uevent *uevent);
+
+struct evpl_block_device;
+struct evpl_block_queue;
+
+struct evpl_block_device *
+evpl_block_open_device(
+    enum evpl_block_protocol_id protocol,
+    const char                 *uri);
+
+void evpl_block_close_device(
+    struct evpl_block_device *blockdev);
+
+struct evpl_block_queue *
+evpl_block_open_queue(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev);
+
+void evpl_block_close_queue(
+    struct evpl             *evpl,
+    struct evpl_block_queue *queue);
+
+
+void evpl_block_read(
+    struct evpl *evpl,
+    struct evpl_block_queue *queue,
+    struct evpl_iovec *iov,
+    int niov,
+    uint64_t offset,
+    void ( *callback )(int64_t status, void *private_data),
+    void *private_data);
+
+void evpl_block_write(
+    struct evpl *evpl,
+    struct evpl_block_queue *queue,
+    struct evpl_iovec *iov,
+    int niov,
+    uint64_t offset,
+    int sync,
+    void ( *callback )(int64_t status, void *private_data),
+    void *private_data);
+
+void evpl_block_flush(
+    struct evpl *evpl,
+    struct evpl_block_queue *queue,
+    void ( *callback )(int64_t status, void *private_data),
+    void *private_data);

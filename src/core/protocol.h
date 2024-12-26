@@ -131,6 +131,79 @@ struct evpl_protocol {
         void *private_data);
 };
 
+struct evpl_block_device {
+    /* Private data owned by the protocol */
+    void                       *private_data;
+
+    /* Protocol that owns this device */
+    struct evpl_block_protocol *protocol;
+
+    /* Open a device queue */
+    struct evpl_block_queue   * (*open_queue)(
+        struct evpl              *evpl,
+        struct evpl_block_device *blockdev);
+
+    void                        (*close_device)(
+        struct evpl_block_device *blockdev);
+};
+
+struct evpl_block_queue {
+    /* Private data owned by the protocol */
+    void                       *private_data;
+
+    /* Protocol that owns this queue */
+    struct evpl_block_protocol *protocol;
+
+    /* Close a device queue */
+    void                        (*close_queue)(
+        struct evpl             *evpl,
+        struct evpl_block_queue *queue);
+
+    /* Read from a block queue */
+    void                        (*read)(
+        struct evpl *evpl,
+        struct evpl_block_queue *queue,
+        struct evpl_iovec *iov,
+        int niov,
+        uint64_t offset,
+        void ( *callback )(int64_t status, void *private_data),
+        void *private_data);
+
+    /* Write to a block queue */
+    void                        (*write)(
+        struct evpl *evpl,
+        struct evpl_block_queue *queue,
+        struct evpl_iovec *iov,
+        int niov,
+        uint64_t offset,
+        int sync,
+        void ( *callback )(int64_t status, void *private_data),
+        void *private_data);
+
+    /* Flush a block device */
+    void                        (*flush)(
+        struct evpl *evpl,
+        struct evpl_block_queue *queue,
+        void ( *callback )(int64_t status, void *private_data),
+        void *private_data);
+};
+
+struct evpl_block_protocol {
+    /* unique ID number for each protocol */
+    unsigned int               id;
+
+    /* human readable name for protocol, no spaces */
+    const char                *name;
+
+    /* pointer to associated framework, or NULL if no framework */
+    struct evpl_framework     *framework;
+
+    /* Open a block device */
+    struct evpl_block_device * (*open_device)(
+        const char *uri);
+};
+
+
 void *
 evpl_framework_private(
     struct evpl *evpl,

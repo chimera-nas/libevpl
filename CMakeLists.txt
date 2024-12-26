@@ -31,6 +31,19 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_definitions(-O3)
 endif()
 
+find_library(URING_LIB NAMES uring)
+find_path(URING_INCLUDE_DIR NAMES liburing/io_uring.h)
+
+if (URING_LIB AND URING_INCLUDE_DIR)
+    message(STATUS "io_uring library ${URING_LIB}")
+    message(STATUS "io_uring include ${URING_INCLUDE_DIR}")
+    include_directories(${URING_INCLUDE_DIR})
+    add_definitions(-DHAVE_IO_URING)
+    set(HAVE_IO_URING 1)
+else()
+    message(STATUS "io_uring library not found.")
+endif()
+
 find_library(RDMACM_LIB NAMES rdmacm)
 find_path(RDMACM_INCLUDE_DIR NAMES rdma/rdma_cma.h)
 

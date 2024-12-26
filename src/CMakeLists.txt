@@ -63,6 +63,11 @@ add_subdirectory(core)
 add_subdirectory(socket)
 add_subdirectory(thread)
 add_subdirectory(rpc2)
+
+if (HAVE_IO_URING)
+    add_subdirectory(io_uring)
+endif()
+
 if (HAVE_RDMACM)
     add_subdirectory(rdmacm)
 endif()

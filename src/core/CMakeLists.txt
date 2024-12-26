@@ -22,6 +22,10 @@ add_library(evpl SHARED ${CORE_SRC})
 
 target_link_libraries(evpl evpl_socket evpl_thread)
 
+if (HAVE_IO_URING)
+    target_link_libraries(evpl evpl_io_uring)
+endif()
+
 if (HAVE_RDMACM)
     target_link_libraries(evpl evpl_rdmacm)
 endif()
