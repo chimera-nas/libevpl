@@ -1856,6 +1856,8 @@ evpl_block_open_device(
     struct evpl_block_protocol *protocol;
     struct evpl_block_device   *blockdev;
 
+    pthread_once(&evpl_shared_once, evpl_init_once);
+
     if (protocol_id >= EVPL_NUM_BLOCK_PROTOCOL) {
         return NULL;
     }
