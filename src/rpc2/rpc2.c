@@ -746,10 +746,12 @@ evpl_rpc2_server_destroy(
             if (thread_metric->total_calls == 0) {
                 continue;
             }
+
             shared_metric->total_latency += thread_metric->total_latency;
             shared_metric->total_calls   += thread_metric->total_calls;
 
-            if (thread_metric->min_latency < shared_metric->min_latency) {
+            if (thread_metric->min_latency < shared_metric->min_latency ||
+                shared_metric->min_latency == 0) {
                 shared_metric->min_latency = thread_metric->min_latency;
             }
 
