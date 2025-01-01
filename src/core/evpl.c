@@ -1001,7 +1001,7 @@ evpl_iovec_alloc_datagram(
     r_iovec->length = size;
     r_iovec->buffer = buffer;
 
-    buffer->used += evpl->config->max_datagram_size;
+    buffer->used += size;
     atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 
     if (buffer->size - buffer->used < evpl->config->max_datagram_size) {

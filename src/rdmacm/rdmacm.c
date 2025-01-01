@@ -121,6 +121,7 @@ struct evpl_rdmacm {
     struct rdma_event_channel   *event_channel;
     struct evpl_config          *config;
     struct evpl_event            event;
+    struct evpl_poll            *poll;
     struct evpl_rdmacm_id       *ids;
     struct evpl_rdmacm_listener *listener;
     struct evpl_rdmacm_device   *devices;
@@ -496,6 +497,8 @@ evpl_rdmacm_poll_cq(
     }
 
     n = 0;
+
+    evpl_activity(evpl);
 
     do {
 
@@ -877,6 +880,22 @@ evpl_rdmacm_new_id_callback(
 
 } /* evpl_rdmacm_new_id_callback */
 
+static void
+evpl_rdmacm_poll(
+    struct evpl *evpl,
+    void        *arg)
+{
+    struct evpl_rdmacm        *rdmacm = arg;
+    struct evpl_rdmacm_device *dev;
+    int                        i;
+
+    for (i = 0; i < rdmacm->num_devices; ++i) {
+        dev = &rdmacm->devices[i];
+        evpl_rdmacm_poll_cq(evpl, dev);
+    }
+
+} /* evpl_rdmacm_poll */
+
 void *
 evpl_rdmacm_create(
     struct evpl *evpl,
@@ -1017,6 +1036,8 @@ evpl_rdmacm_create(
     evpl_add_event(evpl, &rdmacm->new_id_event);
     evpl_event_read_interest(evpl, &rdmacm->new_id_event);
 
+    rdmacm->poll = evpl_add_poll(evpl, evpl_rdmacm_poll, rdmacm);
+
     if (rdmacm->config->rdmacm_srq_prefill) {
         evpl_rdmacm_fill_all_srq(evpl, rdmacm);
     }
@@ -1034,6 +1055,8 @@ evpl_rdmacm_destroy(
     struct evpl_rdmacm_request *req;
     struct evpl_rdmacm_sr      *sr;
     int                         i, j;
+
+    evpl_remove_poll(evpl, rdmacm->poll);
 
     evpl_remove_event(evpl, &rdmacm->new_id_event);
     close(rdmacm->new_id_eventfd);
