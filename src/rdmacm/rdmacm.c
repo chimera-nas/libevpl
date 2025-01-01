@@ -59,6 +59,8 @@ struct evpl_rdmacm_sr {
         int   status,
         void *private_data);
     void                  *private_data;
+
+    struct evpl_rdmacm_sr *next;
 };
 
 struct evpl_rdmacm_new_id {
@@ -123,7 +125,7 @@ struct evpl_rdmacm {
     struct evpl_rdmacm_listener *listener;
     struct evpl_rdmacm_device   *devices;
     int                          num_devices;
-
+    struct evpl_rdmacm_sr       *free_sr;
     pthread_mutex_t              mutex;
     int                          new_id_eventfd;
     struct evpl_event            new_id_event;
@@ -155,6 +157,29 @@ struct evpl_rdmacm_id {
     int                           active_sends;
     struct UT_hash_handle         hh;
 };
+
+static inline struct evpl_rdmacm_sr *
+evpl_rdmacm_sr_alloc(struct evpl_rdmacm *rdmacm)
+{
+    struct evpl_rdmacm_sr *sr;
+
+    if (rdmacm->free_sr) {
+        sr = rdmacm->free_sr;
+        LL_DELETE(rdmacm->free_sr, sr);
+    } else {
+        sr = evpl_zalloc(sizeof(*sr));
+    }
+
+    return sr;
+} /* evpl_rdmacm_sr_alloc */
+
+static inline void
+evpl_rdmacm_sr_free(
+    struct evpl_rdmacm    *rdmacm,
+    struct evpl_rdmacm_sr *sr)
+{
+    LL_PREPEND(rdmacm->free_sr, sr);
+} /* evpl_rdmacm_sr_free */
 
 static struct evpl_rdmacm_device *
 evpl_rdmacm_map_device(
@@ -384,12 +409,20 @@ evpl_rdmacm_event_callback(
 void
 evpl_rdmacm_fill_srq(
     struct evpl               *evpl,
+    struct evpl_rdmacm        *rdmacm,
     struct evpl_rdmacm_device *dev)
 {
     struct evpl_rdmacm_request *req;
     struct ibv_mr             **mrset, *mr;
     struct ibv_recv_wr          wr, *bad_wr;
     int                         rc;
+    int                         size;
+
+    if (rdmacm->config->rdmacm_datagram_size_override) {
+        size = rdmacm->config->rdmacm_datagram_size_override;
+    } else {
+        size = rdmacm->config->max_datagram_size;
+    }
 
     while (dev->srq_free_reqs) {
 
@@ -398,7 +431,7 @@ evpl_rdmacm_fill_srq(
 
         req->used = 1;
 
-        evpl_iovec_alloc_datagram(evpl, &req->iovec);
+        evpl_iovec_alloc_datagram(evpl, &req->iovec, size);
 
         mrset = evpl_buffer_framework_private(req->iovec.buffer,
                                               EVPL_FRAMEWORK_RDMACM);
@@ -421,7 +454,6 @@ evpl_rdmacm_fill_srq(
 
         ++dev->srq_fill;
     }
-
 } /* evpl_rdmacm_fill_srq */
 
 void
@@ -434,7 +466,7 @@ evpl_rdmacm_fill_all_srq(
 
     for (i = 0; i < rdmacm->num_devices; ++i) {
         dev = &rdmacm->devices[i];
-        evpl_rdmacm_fill_srq(evpl, dev);
+        evpl_rdmacm_fill_srq(evpl, rdmacm, dev);
     }
 } /* evpl_rdmacm_fill_all_srq */
 
@@ -495,7 +527,7 @@ evpl_rdmacm_poll_cq(
                                       ibv_wc_read_vendor_err(cq));
                     sr = (struct evpl_rdmacm_sr *) cq->wr_id;
                     sr->callback(EIO, sr->private_data);
-                    evpl_free(sr);
+                    evpl_rdmacm_sr_free(rdmacm, sr);
                     break;
                 case IBV_WC_RDMA_READ:
                     evpl_rdmacm_error("rdma read completion error wr_id %lu type %u status %u vendor_err %u",
@@ -505,7 +537,7 @@ evpl_rdmacm_poll_cq(
                                       ibv_wc_read_vendor_err(cq));
                     sr = (struct evpl_rdmacm_sr *) cq->wr_id;
                     sr->callback(EIO, sr->private_data);
-                    evpl_free(sr);
+                    evpl_rdmacm_sr_free(rdmacm, sr);
                     break;
                 default:
                     abort();
@@ -598,18 +630,18 @@ evpl_rdmacm_poll_cq(
                     }
                 }
 
-                evpl_free(sr);
+                evpl_rdmacm_sr_free(rdmacm, sr);
 
                 break;
             case IBV_WC_RDMA_READ:
                 sr = (struct evpl_rdmacm_sr *) cq->wr_id;
                 sr->callback(0, sr->private_data);
-                evpl_free(sr);
+                evpl_rdmacm_sr_free(rdmacm, sr);
                 break;
             case IBV_WC_RDMA_WRITE:
                 sr = (struct evpl_rdmacm_sr *) cq->wr_id;
                 sr->callback(0, sr->private_data);
-                evpl_free(sr);
+                evpl_rdmacm_sr_free(rdmacm, sr);
                 break;
             default:
                 evpl_rdmacm_error("Unhandled RDMA completion opcode %u",
@@ -621,7 +653,7 @@ evpl_rdmacm_poll_cq(
 
     ibv_end_poll(cq);
 
-    evpl_rdmacm_fill_srq(evpl, dev);
+    evpl_rdmacm_fill_srq(evpl, rdmacm, dev);
 
     if (n) {
         goto again;
@@ -1000,6 +1032,7 @@ evpl_rdmacm_destroy(
     struct evpl_rdmacm         *rdmacm = private_data;
     struct evpl_rdmacm_device  *dev;
     struct evpl_rdmacm_request *req;
+    struct evpl_rdmacm_sr      *sr;
     int                         i, j;
 
     evpl_remove_event(evpl, &rdmacm->new_id_event);
@@ -1030,6 +1063,12 @@ evpl_rdmacm_destroy(
         ibv_dealloc_pd(dev->pd);
         ibv_destroy_comp_channel(dev->comp_channel);
         ibv_dealloc_td(dev->td);
+    }
+
+    while (rdmacm->free_sr) {
+        sr = rdmacm->free_sr;
+        LL_DELETE(rdmacm->free_sr, sr);
+        evpl_free(sr);
     }
 
     evpl_free(rdmacm->devices);
@@ -1197,6 +1236,7 @@ evpl_rdmacm_flush_datagram(
     struct evpl_bind *bind)
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
     struct evpl_rdmacm_sr *sr;
     struct evpl_iovec     *cur;
     struct evpl_dgram     *dgram;
@@ -1231,7 +1271,7 @@ evpl_rdmacm_flush_datagram(
             }
         }
 
-        sr = evpl_zalloc(sizeof(*sr));
+        sr = evpl_rdmacm_sr_alloc(rdmacm);
 
         sr->rdmacm_id = rdmacm_id;
 
@@ -1327,7 +1367,7 @@ evpl_rdmacm_flush_stream(
 
     while (!evpl_iovec_ring_is_empty(&bind->iovec_send)) {
 
-        sr = evpl_zalloc(sizeof(*sr));
+        sr = evpl_rdmacm_sr_alloc(rdmacm);
 
         sr->rdmacm_id = rdmacm_id;
 
@@ -1488,6 +1528,7 @@ evpl_rdmacm_rdma_read(
     void *private_data)
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
     struct ibv_qp_ex      *qp        = rdmacm_id->qp;
     struct ibv_mr        **mrset, *mr;
     struct evpl_iovec     *cur;
@@ -1495,7 +1536,7 @@ evpl_rdmacm_rdma_read(
     struct ibv_sge        *sge;
     int                    len = 0, i, rc;
 
-    sr = evpl_zalloc(sizeof(*sr));
+    sr = evpl_rdmacm_sr_alloc(rdmacm);
 
     sr->callback     = callback;
     sr->private_data = private_data;
@@ -1547,6 +1588,7 @@ evpl_rdmacm_rdma_write(
     void *private_data)
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
     struct ibv_qp_ex      *qp        = rdmacm_id->qp;
     struct ibv_mr        **mrset, *mr;
     struct evpl_iovec     *cur;
@@ -1554,7 +1596,7 @@ evpl_rdmacm_rdma_write(
     struct ibv_sge        *sge;
     int                    len = 0, i, rc;
 
-    sr = evpl_zalloc(sizeof(*sr));
+    sr = evpl_rdmacm_sr_alloc(rdmacm);
 
     sr->callback     = callback;
     sr->private_data = private_data;

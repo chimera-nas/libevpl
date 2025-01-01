@@ -45,6 +45,7 @@ struct evpl_config {
     unsigned int rdmacm_enabled;
     unsigned int rdmacm_cq_size;
     unsigned int rdmacm_sq_size;
+    unsigned int rdmacm_datagram_size_override;
     unsigned int rdmacm_srq_size;
     unsigned int rdmacm_srq_min;
     unsigned int rdmacm_srq_prefill;
@@ -143,7 +144,8 @@ void evpl_iovec_alloc_whole(
  */
 void evpl_iovec_alloc_datagram(
     struct evpl       *evpl,
-    struct evpl_iovec *r_iovec);
+    struct evpl_iovec *r_iovec,
+    int                size);
 
 static uint64_t
 evpl_ts_interval(

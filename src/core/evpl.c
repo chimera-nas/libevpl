@@ -986,7 +986,8 @@ evpl_iovec_alloc_whole(
 void
 evpl_iovec_alloc_datagram(
     struct evpl       *evpl,
-    struct evpl_iovec *r_iovec)
+    struct evpl_iovec *r_iovec,
+    int                size)
 {
     struct evpl_buffer *buffer;
 
@@ -997,7 +998,7 @@ evpl_iovec_alloc_datagram(
     buffer = evpl->datagram_buffer;
 
     r_iovec->data   = buffer->data + buffer->used;
-    r_iovec->length = evpl->config->max_datagram_size;
+    r_iovec->length = size;
     r_iovec->buffer = buffer;
 
     buffer->used += evpl->config->max_datagram_size;

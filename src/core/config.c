@@ -37,16 +37,25 @@ evpl_config_init(void)
 
     config->io_uring_enabled = 1;
 
-    config->rdmacm_enabled         = 1;
-    config->rdmacm_cq_size         = 8192;
-    config->rdmacm_sq_size         = 256;
-    config->rdmacm_srq_size        = 16384;
-    config->rdmacm_srq_min         = 4096;
-    config->rdmacm_srq_prefill     = 0;
-    config->rdmacm_retry_count     = 0;
-    config->rdmacm_rnr_retry_count = 0;
+    config->rdmacm_enabled                = 1;
+    config->rdmacm_cq_size                = 8192;
+    config->rdmacm_sq_size                = 256;
+    config->rdmacm_srq_size               = 16384;
+    config->rdmacm_srq_min                = 4096;
+    config->rdmacm_datagram_size_override = 0;
+    config->rdmacm_srq_prefill            = 0;
+    config->rdmacm_retry_count            = 0;
+    config->rdmacm_rnr_retry_count        = 0;
 
     config->xlio_enabled = 1;
 
     return config;
 } /* evpl_config_init */
+
+void
+evpl_config_set_rdmacm_datagram_size_override(
+    struct evpl_config *config,
+    unsigned int        size)
+{
+    config->rdmacm_datagram_size_override = size;
+} /* evpl_config_set_rdmacm_datagram_size_override */

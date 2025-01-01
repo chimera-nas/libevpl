@@ -48,7 +48,7 @@ evpl_socket_datagram_alloc(
         LL_DELETE(s->free_datagrams, datagram);
     } else {
         datagram = evpl_zalloc(sizeof(*datagram));
-        evpl_iovec_alloc_datagram(evpl, &datagram->iovec);
+        evpl_iovec_alloc_datagram(evpl, &datagram->iovec, s->config->max_datagram_size);
     }
 
     return datagram;
@@ -69,7 +69,7 @@ evpl_socket_datagram_reload(
     struct evpl_socket          *s,
     struct evpl_socket_datagram *datagram)
 {
-    evpl_iovec_alloc_datagram(evpl, &datagram->iovec);
+    evpl_iovec_alloc_datagram(evpl, &datagram->iovec, s->config->max_datagram_size);
 } // evpl_socket_msg_reload
 
 static inline void
