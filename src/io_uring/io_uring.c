@@ -34,8 +34,11 @@ struct evpl_io_uring_request {
         void *private_data);
     void                         *private_data;
     int                           niov;
+    int                           need_debounce;
     int64_t                       length;
     struct iovec                  iov[64];
+    struct iovec                  bounce_iov;
+    void                         *bounce;
     struct evpl_io_uring_request *next;
 };
 
@@ -69,6 +72,9 @@ evpl_io_uring_request_alloc(struct evpl_io_uring_context *ctx)
     } else {
         req = evpl_zalloc(sizeof(*req));
     }
+
+    req->bounce        = NULL;
+    req->need_debounce = 0;
 
     return req;
 } /* evpl_io_uring_request_alloc */
@@ -108,7 +114,7 @@ evpl_io_uring_complete(
     struct evpl_event *event)
 {
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
-    uint64_t                      value;
+    uint64_t                      value, debounce_offset;
     int                           rc;
     struct io_uring_cqe          *cqe;
     struct evpl_io_uring_request *req;
@@ -131,7 +137,20 @@ evpl_io_uring_complete(
             rc = 0;
         }
 
+        if (req->need_debounce) {
+            debounce_offset = 0;
+
+            for (int i = 0; i < req->niov; i++) {
+                memcpy(req->iov[i].iov_base, req->bounce + debounce_offset, req->iov[i].iov_len);
+                debounce_offset += req->iov[i].iov_len;
+            }
+        }
+
         req->callback(rc, req->private_data);
+
+        if (req->bounce) {
+            evpl_free(req->bounce);
+        }
 
         io_uring_cqe_seen(&ctx->ring, cqe);
 
@@ -208,7 +227,7 @@ evpl_io_uring_read(
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
     struct evpl_io_uring_request *req;
     struct io_uring_sqe          *sqe;
-    int                           i;
+    int                           i, bounce_needed = 0;
 
     req = evpl_io_uring_request_alloc(ctx);
 
@@ -216,20 +235,34 @@ evpl_io_uring_read(
     req->private_data = private_data;
     req->niov         = niov;
     req->length       = 0;
-
-    for (i = 0; i < niov; i++) {
-        req->iov[i].iov_base = iov[i].data;
-        req->iov[i].iov_len  = iov[i].length;
-        req->length         += iov[i].length;
-    }
-
-    sqe = io_uring_get_sqe(&ctx->ring);
+    sqe               = io_uring_get_sqe(&ctx->ring);
 
     evpl_io_uring_abort_if(!sqe, "io_uring_get_sqe");
 
     io_uring_sqe_set_data64(sqe, (uint64_t) req);
 
-    io_uring_prep_readv(sqe, dev->fd, req->iov, req->niov, offset);
+    for (i = 0; i < niov; i++) {
+        req->iov[i].iov_base = iov[i].data;
+        req->iov[i].iov_len  = iov[i].length;
+        req->length         += iov[i].length;
+
+        if ((uint64_t) iov[i].data & 4095) {
+            bounce_needed = 1;
+        }
+    }
+
+    if (bounce_needed) {
+        req->bounce = evpl_valloc(req->length, 4096);
+
+        req->bounce_iov.iov_base = req->bounce;
+        req->bounce_iov.iov_len  = req->length;
+
+        req->need_debounce = 1;
+
+        io_uring_prep_readv(sqe, dev->fd, &req->bounce_iov, 1, offset);
+    } else {
+        io_uring_prep_readv(sqe, dev->fd, req->iov, req->niov, offset);
+    }
 
     evpl_defer(evpl, &ctx->flush);
 } /* evpl_io_uring_read */
@@ -249,11 +282,8 @@ evpl_io_uring_write(
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
     struct io_uring_sqe          *sqe;
     struct evpl_io_uring_request *req;
-    int                           i, flags = 0;
-
-    if (sync) {
-        flags |= RWF_SYNC;
-    }
+    int                           i, need_bounce = 0, flags = 0;
+    uint64_t                      bounce_offset;
 
     req = evpl_io_uring_request_alloc(ctx);
 
@@ -262,10 +292,15 @@ evpl_io_uring_write(
     req->niov         = niov;
     req->length       = 0;
 
+
     for (i = 0; i < niov; i++) {
         req->iov[i].iov_base = iov[i].data;
         req->iov[i].iov_len  = iov[i].length;
         req->length         += iov[i].length;
+
+        if ((uint64_t) iov[i].data & 4095) {
+            need_bounce = 1;
+        }
     }
 
     sqe = io_uring_get_sqe(&ctx->ring);
@@ -274,7 +309,23 @@ evpl_io_uring_write(
 
     io_uring_sqe_set_data64(sqe, (uint64_t) req);
 
-    io_uring_prep_writev2(sqe, dev->fd, req->iov, req->niov, offset, flags);
+    if (need_bounce) {
+        req->bounce = evpl_valloc(req->length, 4096);
+
+        bounce_offset = 0;
+
+        for (i = 0; i < niov; i++) {
+            memcpy(req->bounce + bounce_offset, iov[i].data, iov[i].length);
+            bounce_offset += iov[i].length;
+        }
+
+        req->bounce_iov.iov_base = req->bounce;
+        req->bounce_iov.iov_len  = req->length;
+
+        io_uring_prep_writev2(sqe, dev->fd, &req->bounce_iov, 1, offset, flags);
+    } else {
+        io_uring_prep_writev2(sqe, dev->fd, req->iov, req->niov, offset, flags);
+    }
 
     evpl_defer(evpl, &ctx->flush);
 } /* evpl_io_uring_write */
@@ -352,7 +403,7 @@ evpl_io_uring_open_device(const char *uri)
 
     dev = evpl_zalloc(sizeof(*dev));
 
-    dev->fd = open(uri, O_RDWR);
+    dev->fd = open(uri, O_RDWR | O_DIRECT);
 
     if (dev->fd < 0) {
         evpl_free(dev);
