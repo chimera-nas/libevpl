@@ -28,6 +28,10 @@
 #define evpl_io_uring_abort_if(cond, ...) \
         evpl_abort_if(cond, "io_uring", __VA_ARGS__)
 
+struct evpl_io_uring_shared {
+    struct io_uring ring;
+};
+
 struct evpl_io_uring_request {
     void                          (*callback)(
         int   status,
@@ -90,12 +94,24 @@ evpl_io_uring_request_free(
 static void *
 evpl_io_uring_init(void)
 {
-    return NULL;
+    struct evpl_io_uring_shared *shared;
+    struct io_uring_params       params = { 0 };
+
+    shared = evpl_zalloc(sizeof(*shared));
+
+    io_uring_queue_init_params(256, &shared->ring, &params);
+
+    return shared;
 } /* evpl_io_uring_init */
 
 static void
 evpl_io_uring_cleanup(void *private_data)
 {
+    struct evpl_io_uring_shared *shared = private_data;
+
+    io_uring_queue_exit(&shared->ring);
+
+    evpl_free(shared);
 } /* evpl_io_uring_cleanup */
 
 static void
@@ -165,12 +181,21 @@ evpl_io_uring_create(
     struct evpl *evpl,
     void        *private_data)
 {
+    struct evpl_io_uring_shared  *shared = private_data;
     struct evpl_io_uring_context *ctx;
     int                           ret;
+    struct io_uring_params        params = { 0 };
+
+
+    params.flags  = IORING_SETUP_SINGLE_ISSUER;
+    params.flags |= IORING_SETUP_COOP_TASKRUN;
+
+    params.flags |= IORING_SETUP_ATTACH_WQ;
+    params.wq_fd  = shared->ring.ring_fd;
 
     ctx = evpl_zalloc(sizeof(*ctx));
 
-    ret = io_uring_queue_init(256, &ctx->ring, 0);
+    ret = io_uring_queue_init_params(8192, &ctx->ring, &params);
 
     evpl_io_uring_abort_if(ret < 0, "io_uring_queue_init");
 
