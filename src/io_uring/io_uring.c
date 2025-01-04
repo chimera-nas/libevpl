@@ -30,10 +30,11 @@
 
 struct evpl_io_uring_request {
     void                          (*callback)(
-        int64_t status,
-        void   *private_data);
+        int   status,
+        void *private_data);
     void                         *private_data;
     int                           niov;
+    int64_t                       length;
     struct iovec                  iov[64];
     struct evpl_io_uring_request *next;
 };
@@ -64,7 +65,6 @@ evpl_io_uring_request_alloc(struct evpl_io_uring_context *ctx)
     req = ctx->free_requests;
 
     if (req) {
-        ctx->free_requests = req->next;
         LL_DELETE(ctx->free_requests, req);
     } else {
         req = evpl_zalloc(sizeof(*req));
@@ -123,12 +123,20 @@ evpl_io_uring_complete(
     while (io_uring_peek_cqe(&ctx->ring, &cqe) == 0) {
         req = (struct evpl_io_uring_request *) io_uring_cqe_get_data64(cqe);
 
-        req->callback(cqe->res, req->private_data);
+        if (cqe->res >= 0 && cqe->res !=  req->length) {
+            rc = EIO;
+        } else if (cqe->res < 0) {
+            rc = -cqe->res;
+        } else {
+            rc = 0;
+        }
+
+        req->callback(rc, req->private_data);
 
         io_uring_cqe_seen(&ctx->ring, cqe);
 
         evpl_io_uring_request_free(ctx, req);
-    }
+    } /* evpl_io_uring_complete */
 
 
 } /* evpl_io_uring_complete */
@@ -193,7 +201,7 @@ evpl_io_uring_read(
     struct evpl_iovec *iov,
     int niov,
     uint64_t offset,
-    void ( *callback )(int64_t status, void *private_data),
+    void ( *callback )(int status, void *private_data),
     void *private_data)
 {
     struct evpl_io_uring_device  *dev = queue->private_data;
@@ -207,10 +215,12 @@ evpl_io_uring_read(
     req->callback     = callback;
     req->private_data = private_data;
     req->niov         = niov;
+    req->length       = 0;
 
     for (i = 0; i < niov; i++) {
         req->iov[i].iov_base = iov[i].data;
         req->iov[i].iov_len  = iov[i].length;
+        req->length         += iov[i].length;
     }
 
     sqe = io_uring_get_sqe(&ctx->ring);
@@ -228,11 +238,11 @@ static void
 evpl_io_uring_write(
     struct evpl *evpl,
     struct evpl_block_queue *queue,
-    struct evpl_iovec *iov,
+    const struct evpl_iovec *iov,
     int niov,
     uint64_t offset,
     int sync,
-    void ( *callback )(int64_t status, void *private_data),
+    void ( *callback )(int status, void *private_data),
     void *private_data)
 {
     struct evpl_io_uring_device  *dev = queue->private_data;
@@ -250,10 +260,12 @@ evpl_io_uring_write(
     req->callback     = callback;
     req->private_data = private_data;
     req->niov         = niov;
+    req->length       = 0;
 
     for (i = 0; i < niov; i++) {
         req->iov[i].iov_base = iov[i].data;
         req->iov[i].iov_len  = iov[i].length;
+        req->length         += iov[i].length;
     }
 
     sqe = io_uring_get_sqe(&ctx->ring);
@@ -271,7 +283,7 @@ static void
 evpl_io_uring_flush(
     struct evpl *evpl,
     struct evpl_block_queue *queue,
-    void ( *callback )(int64_t status, void *private_data),
+    void ( *callback )(int status, void *private_data),
     void *private_data)
 {
     struct evpl_io_uring_device  *dev = queue->private_data;
@@ -340,7 +352,7 @@ evpl_io_uring_open_device(const char *uri)
 
     dev = evpl_zalloc(sizeof(*dev));
 
-    dev->fd = open(uri, O_RDWR | O_DIRECT);
+    dev->fd = open(uri, O_RDWR);
 
     if (dev->fd < 0) {
         evpl_free(dev);

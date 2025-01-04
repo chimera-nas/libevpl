@@ -7,12 +7,12 @@
 
 static void
 read_callback(
-    int64_t status,
-    void   *private_data)
+    int   status,
+    void *private_data)
 {
     int *pending = private_data;
 
-    if (status < 0) {
+    if (status) {
         exit(1);
     }
 
