@@ -576,6 +576,8 @@ evpl_rpc2_send_reply(
                     segment_iov.length = target->length;
                     segment_iov.buffer = msg->write_chunk.iov->buffer;
 
+                    evpl_rpc2_abort_if(msg->write_chunk.niov > 1, "write_chunk.niov > 1 unsupported atm");
+
                     /* XXX this logic is wrong if write_chunk contains many small IOV */
                     evpl_rdma_write(evpl, msg->bind,
                                     target->handle, target->offset,
