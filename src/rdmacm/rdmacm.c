@@ -52,15 +52,20 @@ struct evpl_rdmacm_request {
 struct evpl_rdmacm_sr {
     struct evpl_rdmacm_id *rdmacm_id;
     struct evpl_buffer    *bufref[32];
+    int                    opcode;
     int                    nbufref;
+    int                    nsge;
     uint64_t               length;
-
+    uint32_t               remote_key;
+    uint64_t               remote_addr;
     void                   (*callback)(
         int   status,
         void *private_data);
     void                  *private_data;
 
+    struct evpl_rdmacm_sr *prev;
     struct evpl_rdmacm_sr *next;
+    struct ibv_sge         sge[32];
 };
 
 struct evpl_rdmacm_new_id {
@@ -148,6 +153,10 @@ struct evpl_rdmacm_id {
     struct ibv_qp_ex             *qp;
     int                           stream;
     int                           ud;
+
+    struct evpl_rdmacm_sr        *pending_rdma_sr;
+    uint32_t                      num_rdma_inflight;
+    uint32_t                      max_rdma_inflight;
 
     struct evpl_address          *resolve_addr;
 
@@ -471,6 +480,33 @@ evpl_rdmacm_fill_all_srq(
     }
 } /* evpl_rdmacm_fill_all_srq */
 
+static void
+evpl_rdmacm_rdma_op_dispatch(struct evpl_rdmacm_sr *sr)
+{
+    struct evpl_rdmacm_id *rdmacm_id = sr->rdmacm_id;
+    struct ibv_qp_ex      *qp        = rdmacm_id->qp;
+    int                    rc;
+
+    ++rdmacm_id->num_rdma_inflight;
+
+    ibv_wr_start(qp);
+
+    qp->wr_id    = (uint64_t) sr;
+    qp->wr_flags = 0;
+
+    if (sr->opcode == IBV_WR_RDMA_READ) {
+        ibv_wr_rdma_read(qp, sr->remote_key, sr->remote_addr);
+    } else {
+        ibv_wr_rdma_write(qp, sr->remote_key, sr->remote_addr);
+    }
+
+    ibv_wr_set_sge_list(qp, sr->nsge, sr->sge);
+
+    rc = ibv_wr_complete(qp);
+
+    evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(errno));
+} /* evpl_rdmacm_rdma_op_dispatch */
+
 
 static void
 evpl_rdmacm_poll_cq(
@@ -637,14 +673,30 @@ evpl_rdmacm_poll_cq(
 
                 break;
             case IBV_WC_RDMA_READ:
-                sr = (struct evpl_rdmacm_sr *) cq->wr_id;
+                sr        = (struct evpl_rdmacm_sr *) cq->wr_id;
+                rdmacm_id = sr->rdmacm_id;
                 sr->callback(0, sr->private_data);
                 evpl_rdmacm_sr_free(rdmacm, sr);
+                --rdmacm_id->num_rdma_inflight;
+                while (rdmacm_id->pending_rdma_sr &&
+                       rdmacm_id->num_rdma_inflight < rdmacm_id->max_rdma_inflight) {
+                    sr = rdmacm_id->pending_rdma_sr;
+                    DL_DELETE(rdmacm_id->pending_rdma_sr, sr);
+                    evpl_rdmacm_rdma_op_dispatch(sr);
+                }
                 break;
             case IBV_WC_RDMA_WRITE:
-                sr = (struct evpl_rdmacm_sr *) cq->wr_id;
+                sr        = (struct evpl_rdmacm_sr *) cq->wr_id;
+                rdmacm_id = sr->rdmacm_id;
                 sr->callback(0, sr->private_data);
                 evpl_rdmacm_sr_free(rdmacm, sr);
+                --rdmacm_id->num_rdma_inflight;
+                while (rdmacm_id->pending_rdma_sr &&
+                       rdmacm_id->num_rdma_inflight < rdmacm_id->max_rdma_inflight) {
+                    sr = rdmacm_id->pending_rdma_sr;
+                    DL_DELETE(rdmacm_id->pending_rdma_sr, sr);
+                    evpl_rdmacm_rdma_op_dispatch(sr);
+                }
                 break;
             default:
                 evpl_rdmacm_error("Unhandled RDMA completion opcode %u",
@@ -838,10 +890,11 @@ evpl_rdmacm_new_id_callback(
 
         new_rdmacm_id = evpl_bind_private(bind);
 
-        new_rdmacm_id->rdmacm      = rdmacm;
-        new_rdmacm_id->stream      = listen_bind->protocol->stream;
-        new_rdmacm_id->id          = cm_event->id;
-        new_rdmacm_id->id->context = new_rdmacm_id;
+        new_rdmacm_id->rdmacm            = rdmacm;
+        new_rdmacm_id->stream            = listen_bind->protocol->stream;
+        new_rdmacm_id->id                = cm_event->id;
+        new_rdmacm_id->id->context       = new_rdmacm_id;
+        new_rdmacm_id->max_rdma_inflight = cm_event->param.conn.initiator_depth;
 
         evpl_rdmacm_create_qp(evpl, rdmacm, new_rdmacm_id);
 
@@ -1540,9 +1593,10 @@ evpl_rdmacm_release_address(
 } /* evpl_rdmacm_release_address */
 
 void
-evpl_rdmacm_rdma_read(
+evpl_rdmacm_rdma_op(
     struct evpl *evpl,
     struct evpl_bind *bind,
+    int opcode,
     uint32_t remote_key,
     uint64_t remote_address,
     struct evpl_iovec *iov,
@@ -1552,19 +1606,21 @@ evpl_rdmacm_rdma_read(
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
-    struct ibv_qp_ex      *qp        = rdmacm_id->qp;
     struct ibv_mr        **mrset, *mr;
     struct evpl_iovec     *cur;
     struct evpl_rdmacm_sr *sr;
-    struct ibv_sge        *sge;
-    int                    len = 0, i, rc;
+    int                    i;
 
     sr = evpl_rdmacm_sr_alloc(rdmacm);
 
+    sr->rdmacm_id    = rdmacm_id;
+    sr->opcode       = opcode;
     sr->callback     = callback;
     sr->private_data = private_data;
-
-    sge = alloca(sizeof(struct ibv_sge) * niov);
+    sr->remote_key   = remote_key;
+    sr->remote_addr  = remote_address;
+    sr->length       = 0;
+    sr->nsge         = niov;
 
     for (i = 0; i < niov; ++i) {
 
@@ -1575,28 +1631,33 @@ evpl_rdmacm_rdma_read(
 
         mr = mrset[rdmacm_id->devindex];
 
-        sge[i].addr   = (uint64_t) cur->data;
-        sge[i].length = cur->length;
-        sge[i].lkey   = mr->lkey;
+        sr->sge[i].addr   = (uint64_t) cur->data;
+        sr->sge[i].length = cur->length;
+        sr->sge[i].lkey   = mr->lkey;
 
-        len += cur->length;
+        sr->length += cur->length;
     }
 
-    sr->length = len;
+    if (rdmacm_id->num_rdma_inflight < rdmacm_id->max_rdma_inflight) {
+        evpl_rdmacm_rdma_op_dispatch(sr);
+    } else {
+        DL_APPEND(rdmacm_id->pending_rdma_sr, sr);
+    }
 
-    ibv_wr_start(qp);
+} /* evpl_rdmacm_rdma_read */
 
-    qp->wr_id    = (uint64_t) sr;
-    qp->wr_flags = 0;
-
-    ibv_wr_rdma_read(qp, remote_key, remote_address);
-
-    ibv_wr_set_sge_list(qp, niov, sge);
-
-    rc = ibv_wr_complete(qp);
-
-    evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(errno));
-
+void
+evpl_rdmacm_rdma_read(
+    struct evpl *evpl,
+    struct evpl_bind *bind,
+    uint32_t remote_key,
+    uint64_t remote_address,
+    struct evpl_iovec *iov,
+    int niov,
+    void ( *callback )(int status, void *private_data),
+    void *private_data)
+{
+    evpl_rdmacm_rdma_op(evpl, bind, IBV_WR_RDMA_READ, remote_key, remote_address, iov, niov, callback, private_data);
 } /* evpl_rdmacm_rdma_read */
 
 void
@@ -1610,52 +1671,7 @@ evpl_rdmacm_rdma_write(
     void ( *callback )(int status, void *private_data),
     void *private_data)
 {
-    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
-    struct ibv_qp_ex      *qp        = rdmacm_id->qp;
-    struct ibv_mr        **mrset, *mr;
-    struct evpl_iovec     *cur;
-    struct evpl_rdmacm_sr *sr;
-    struct ibv_sge        *sge;
-    int                    len = 0, i, rc;
-
-    sr = evpl_rdmacm_sr_alloc(rdmacm);
-
-    sr->callback     = callback;
-    sr->private_data = private_data;
-
-    sge = alloca(sizeof(struct ibv_sge) * niov);
-
-    for (i = 0; i < niov; ++i) {
-
-        cur = &iov[i];
-
-        mrset = evpl_buffer_framework_private(cur->buffer,
-                                              EVPL_FRAMEWORK_RDMACM);
-
-        mr = mrset[rdmacm_id->devindex];
-
-        sge[i].addr   = (uint64_t) cur->data;
-        sge[i].length = cur->length;
-        sge[i].lkey   = mr->lkey;
-
-        len += cur->length;
-    }
-
-    sr->length = len;
-
-    ibv_wr_start(qp);
-
-    qp->wr_id    = (uint64_t) sr;
-    qp->wr_flags = 0;
-
-    ibv_wr_rdma_write(qp, remote_key, remote_address);
-
-    ibv_wr_set_sge_list(qp, niov, sge);
-
-    rc = ibv_wr_complete(qp);
-
-    evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(errno));
+    evpl_rdmacm_rdma_op(evpl, bind, IBV_WR_RDMA_WRITE, remote_key, remote_address, iov, niov, callback, private_data);
 } /* evpl_rdmacm_rdma_write */
 
 
