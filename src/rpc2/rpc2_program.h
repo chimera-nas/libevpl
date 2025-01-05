@@ -20,6 +20,7 @@ struct evpl_rpc2_metric {
 struct evpl_rpc2_rdma_chunk {
     uint32_t   xdr_position;
     uint32_t   length;
+    uint32_t   max_length;
     xdr_iovec *iov;
     int        niov;
 };

@@ -401,7 +401,7 @@ evpl_rpc2_event(
                     while (write_list) {
 
                         for (i = 0; i < write_list->entry.num_target; i++) {
-                            msg->write_chunk.length += write_list->entry.target[i].length;
+                            msg->write_chunk.max_length += write_list->entry.target[i].length;
                         }
 
                         write_list = write_list->next;
