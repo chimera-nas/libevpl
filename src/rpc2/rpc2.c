@@ -43,12 +43,13 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
 
     xdr_dbuf_reset(msg->dbuf);
 
-    msg->pending_reads      = 0;
-    msg->pending_writes     = 0;
-    msg->read_chunk.niov    = 0;
-    msg->read_chunk.length  = 0;
-    msg->write_chunk.niov   = 0;
-    msg->write_chunk.length = 0;
+    msg->pending_reads          = 0;
+    msg->pending_writes         = 0;
+    msg->read_chunk.niov        = 0;
+    msg->read_chunk.length      = 0;
+    msg->write_chunk.niov       = 0;
+    msg->write_chunk.length     = 0;
+    msg->write_chunk.max_length = 0;
 
     return msg;
 } /* evpl_rpc2_msg_alloc */
