@@ -14,6 +14,7 @@
 #include "core/internal.h"
 #include "core/evpl.h"
 #include "core/event.h"
+#include "core/internal.h"
 #include "core/deferral.h"
 #include "core/protocol.h"
 #include "core/buffer.h"
@@ -360,7 +361,7 @@ evpl_vfio_enable_msix(struct evpl_vfio_device *device)
     device->eventfds = evpl_zalloc(device->msixsize * sizeof(int));
 
     for (i = 0; i < device->msixsize; ++i) {
-        device->eventfds[i] = eventfd(0, 0);
+        device->eventfds[i] = eventfd(0, EFD_NONBLOCK);
 
         evpl_vfio_abort_if(device->eventfds[i] < 0, "Failed to create eventfd");
     }
@@ -799,6 +800,8 @@ evpl_vfio_read(
     struct nvme_command_rw  *cmd;
     int                      cid;
 
+    evpl_activity(evpl);
+
     cid = evpl_vfio_alloc_cid(queue, callback, private_data);
 
     cmd = &queue->sq[cid].rw;
@@ -845,6 +848,9 @@ evpl_vfio_write(
     struct nvme_command_rw  *cmd;
     int                      cid;
 
+    evpl_activity(evpl);
+
+
     cid = evpl_vfio_alloc_cid(queue, callback, private_data);
 
     cmd = &queue->sq[cid].rw;
@@ -886,6 +892,9 @@ evpl_vfio_flush(
     struct evpl_vfio_queue *queue = bqueue->private_data;
     struct nvme_command_rw *cmd;
     int                     cid;
+
+    evpl_activity(evpl);
+
 
     cid = evpl_vfio_alloc_cid(queue, callback, private_data);
 
@@ -964,6 +973,16 @@ evpl_vfio_defer_ring_sq(
     evpl_vfio_ring_sq(queue);
 } /* evpl_vfio_defer_ring_sq */
 
+static void
+evpl_vfio_poll_cq(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct evpl_vfio_queue *queue = private_data;
+
+    evpl_vfio_poll_queue(queue);
+} /* evpl_vfio_poll_cq */
+
 static struct evpl_block_queue *
 evpl_vfio_open_queue(
     struct evpl              *evpl,
@@ -992,6 +1011,8 @@ evpl_vfio_open_queue(
     evpl_event_read_interest(evpl, &queue->event);
 
     evpl_deferral_init(&queue->ring_sq, evpl_vfio_defer_ring_sq, queue);
+
+    evpl_add_poll(evpl, evpl_vfio_poll_cq, queue);
 
     return bqueue;
 } /* evpl_vfio_open_queue */
