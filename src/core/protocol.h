@@ -138,6 +138,9 @@ struct evpl_block_device {
     /* Protocol that owns this device */
     struct evpl_block_protocol *protocol;
 
+    /* Size of the device in bytes, set by the protocol */
+    uint64_t                    size;
+
     /* Open a device queue */
     struct evpl_block_queue   * (*open_queue)(
         struct evpl              *evpl,

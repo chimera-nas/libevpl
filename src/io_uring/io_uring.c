@@ -6,6 +6,8 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
 
 #include "utlist.h"
 
@@ -425,10 +427,10 @@ evpl_io_uring_open_device(
 {
     struct evpl_block_device    *bdev;
     struct evpl_io_uring_device *dev;
+    struct stat                  st;
 
     bdev = evpl_zalloc(sizeof(*bdev));
-
-    dev = evpl_zalloc(sizeof(*dev));
+    dev  = evpl_zalloc(sizeof(*dev));
 
     dev->fd = open(uri, O_RDWR | O_DIRECT);
 
@@ -437,9 +439,29 @@ evpl_io_uring_open_device(
         return NULL;
     }
 
+    if (fstat(dev->fd, &st) < 0) {
+        close(dev->fd);
+        evpl_free(dev);
+        evpl_free(bdev);
+        return NULL;
+    }
+
     bdev->private_data = dev;
     bdev->open_queue   = evpl_io_uring_open_queue;
     bdev->close_device = evpl_io_uring_close_device;
+
+    if (S_ISBLK(st.st_mode)) {
+        uint64_t bytes;
+        if (ioctl(dev->fd, BLKGETSIZE64, &bytes) < 0) {
+            close(dev->fd);
+            evpl_free(dev);
+            evpl_free(bdev);
+            return NULL;
+        }
+        bdev->size = bytes;
+    } else {
+        bdev->size = st.st_size;
+    }
 
     return bdev;
 } /* evpl_io_uring_open_device */

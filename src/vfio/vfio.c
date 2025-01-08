@@ -68,6 +68,8 @@ struct evpl_vfio_queue {
     int                            cq_head;
     uint16_t                       cq_phase;
     int                            eventfd;
+    struct evpl_event              event;
+    struct evpl_deferral           ring_sq;
     struct evpl_vfio_callback_ctx *callbacks;
     struct evpl_vfio_queue        *prev;
     struct evpl_vfio_queue        *next;
@@ -114,13 +116,6 @@ struct evpl_vfio_device {
     struct evpl_vfio_queue     *adminq;
     struct evpl_vfio_queue     *ioq;
     pthread_mutex_t             lock;
-};
-
-struct evpl_vfio_context {
-    int                       eventfd;
-    struct evpl_event         event;
-    struct evpl_deferral      flush;
-    struct evpl_vfio_request *free_requests;
 };
 
 static void *
@@ -187,15 +182,14 @@ evpl_vfio_register(
 {
     struct vfio_iommu_type1_dma_map map = { 0 };
     struct evpl_vfio_mr            *mr;
+    int                             rc;
 
     mr = evpl_zalloc(sizeof(*mr));
 
     pthread_mutex_lock(&vfio->lock);
 
-    if (vfio->iova_current + size > VFIO_IOVA_MAX) {
-        pthread_mutex_unlock(&vfio->lock);
-        return NULL;
-    }
+    evpl_vfio_abort_if(vfio->iova_current + size > VFIO_IOVA_MAX,
+                       "Registered maximum amount of VFIO memory");
 
     mr->buffer = buffer;
     mr->iova   = vfio->iova_current;
@@ -209,15 +203,12 @@ evpl_vfio_register(
     map.iova  = mr->iova;
     map.size  = mr->size;
 
-    if (ioctl(vfio->container_fd, VFIO_IOMMU_MAP_DMA, &map)) {
-        pthread_mutex_unlock(&vfio->lock);
-        return NULL;
-    }
+    rc = ioctl(vfio->container_fd, VFIO_IOMMU_MAP_DMA, &map);
+
+
+    evpl_vfio_abort_if(rc < 0, "Failed to MAP DMA memory: %s", strerror(errno));
 
     pthread_mutex_unlock(&vfio->lock);
-
-    evpl_vfio_debug("Registered memory %p with iova %llx and size %llx",
-                    mr->buffer, mr->iova, mr->size);
 
     return mr;
 } /* evpl_vfio_register */
@@ -244,7 +235,7 @@ evpl_vfio_alloc(
     struct evpl_vfio_shared *vfio,
     int                      size)
 {
-    void *buffer = evpl_zalloc(size);
+    void *buffer = evpl_valloc(size, 4096);
 
     return evpl_vfio_register(vfio, buffer, size);
 } /* evpl_vfio_alloc */
@@ -491,7 +482,9 @@ evpl_vfio_poll_queue(struct evpl_vfio_queue *queue)
 
         cb = &queue->callbacks[cid];
 
-        cb->fn(cqe->cs, cb->arg);
+        if (cb->fn) {
+            cb->fn(cqe->cs, cb->arg);
+        }
 
         --queue->cidcount;
 
@@ -833,7 +826,7 @@ evpl_vfio_read(
 
     evpl_vfio_prepare_prplist(device, queue, cid, cmd, iov, niov);
 
-    evpl_vfio_ring_sq(queue);
+    evpl_defer(evpl, &queue->ring_sq);
 } /* evpl_vfio_read */
 
 static void
@@ -879,7 +872,7 @@ evpl_vfio_write(
 
     evpl_vfio_prepare_prplist(device, queue, cid, cmd, iov, niov);
 
-    evpl_vfio_ring_sq(queue);
+    evpl_defer(evpl, &queue->ring_sq);
 
 } /* evpl_vfio_write */
 
@@ -922,7 +915,7 @@ evpl_vfio_flush(
     cmd->common.prp1   = 0;
     cmd->common.prp2   = 0;
 
-    evpl_vfio_ring_sq(queue);
+    evpl_defer(evpl, &queue->ring_sq);
 } /* evpl_vfio_flush */
 
 static void
@@ -932,6 +925,8 @@ evpl_vfio_close_queue(
 {
     struct evpl_vfio_queue *queue = bqueue->private_data;
 
+    evpl_remove_event(evpl, &queue->event);
+
     evpl_vfio_queue_close(
         queue->device,
         queue);
@@ -940,6 +935,35 @@ evpl_vfio_close_queue(
     evpl_free(bqueue);
 } /* evpl_vfio_close_queue */
 
+static void
+evpl_vfio_event_callback(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    struct evpl_vfio_queue *queue = container_of(event, struct evpl_vfio_queue, event);
+    uint64_t                value;
+    ssize_t                 len;
+
+    len = read(event->fd, &value, sizeof(value));
+
+    if (len != sizeof(value)) {
+        evpl_event_mark_unreadable(event);
+        return;
+    }
+
+    evpl_vfio_poll_queue(queue);
+} /* evpl_vfio_event_callback */
+
+static void
+evpl_vfio_defer_ring_sq(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct evpl_vfio_queue *queue = private_data;
+
+    evpl_vfio_ring_sq(queue);
+} /* evpl_vfio_defer_ring_sq */
+
 static struct evpl_block_queue *
 evpl_vfio_open_queue(
     struct evpl              *evpl,
@@ -947,14 +971,27 @@ evpl_vfio_open_queue(
 {
     struct evpl_vfio_device *device = bdev->private_data;
     struct evpl_block_queue *bqueue;
+    struct evpl_vfio_queue  *queue;
 
     bqueue = evpl_zalloc(sizeof(*bqueue));
 
-    bqueue->private_data = evpl_vfio_create_ioq(device, 1024);
+    queue = evpl_vfio_create_ioq(device, 1024);
+
+    bqueue->private_data = queue;
     bqueue->close_queue  = evpl_vfio_close_queue;
     bqueue->read         = evpl_vfio_read;
     bqueue->write        = evpl_vfio_write;
     bqueue->flush        = evpl_vfio_flush;
+
+
+    queue->event.fd            = queue->eventfd;
+    queue->event.read_callback = evpl_vfio_event_callback;
+
+    evpl_add_event(evpl, &queue->event);
+
+    evpl_event_read_interest(evpl, &queue->event);
+
+    evpl_deferral_init(&queue->ring_sq, evpl_vfio_defer_ring_sq, queue);
 
     return bqueue;
 } /* evpl_vfio_open_queue */
@@ -1013,13 +1050,6 @@ evpl_vfio_open_device(
     pthread_mutex_init(&dev->lock, NULL);
 
     dev->next_ioq_id = 1;
-
-    dev->fd = open(uri, O_RDWR | O_DIRECT);
-
-    if (dev->fd < 0) {
-        evpl_free(dev);
-        return NULL;
-    }
 
     bdev->private_data = dev;
     bdev->open_queue   = evpl_vfio_open_queue;
@@ -1121,6 +1151,8 @@ evpl_vfio_open_device(
     while (dev->adminq->cidcount > 0) {
         evpl_vfio_poll_queue(dev->adminq);
     }
+
+    bdev->size = dev->num_sectors * dev->sector_size;
 
     return bdev;
 } /* evpl_vfio_open_device */

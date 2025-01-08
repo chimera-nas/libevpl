@@ -659,9 +659,7 @@ evpl_bind_flush_deferral(
 } /* evpl_bind_flush_deferral */
 
 void
-evpl_attach_framework(
-    struct evpl           *evpl,
-    enum evpl_framework_id framework_id)
+evpl_attach_framework_shared(enum evpl_framework_id framework_id)
 {
     struct evpl_framework *framework = evpl_shared->framework[framework_id];
 
@@ -675,6 +673,16 @@ evpl_attach_framework(
     }
 
     pthread_mutex_unlock(&evpl_shared->lock);
+} /* evpl_attach_framework_shared */
+
+void
+evpl_attach_framework(
+    struct evpl           *evpl,
+    enum evpl_framework_id framework_id)
+{
+    struct evpl_framework *framework = evpl_shared->framework[framework_id];
+
+    evpl_attach_framework_shared(framework_id);
 
     if (!evpl->framework_private[framework->id]) {
         evpl->framework_private[framework->id] =
@@ -1882,7 +1890,10 @@ evpl_block_open_device(
         return NULL;
     }
 
+
     protocol = evpl_shared->block_protocol[protocol_id];
+
+    evpl_attach_framework_shared(protocol->framework->id);
 
     protocol_private_data = evpl_shared->framework_private[protocol->framework->id];
 
@@ -1898,6 +1909,12 @@ evpl_block_close_device(struct evpl_block_device *bdev)
 {
     bdev->close_device(bdev);
 } /* evpl_block_close_device */
+
+uint64_t
+evpl_block_size(struct evpl_block_device *bdev)
+{
+    return bdev->size;
+} /* evpl_block_size */
 
 struct evpl_block_queue *
 evpl_block_open_queue(
