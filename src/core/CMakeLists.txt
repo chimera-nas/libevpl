@@ -34,6 +34,10 @@ if (HAVE_XLIO)
     target_link_libraries(evpl evpl_xlio)
 endif()
 
+if (HAVE_VFIO)
+    target_link_libraries(evpl evpl_vfio)
+endif()
+
 install(TARGETS evpl DESTINATION lib)
 
 if (NOT DISABLE_TESTS)

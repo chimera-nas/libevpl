@@ -49,6 +49,8 @@ evpl_config_init(void)
 
     config->xlio_enabled = 1;
 
+    config->vfio_enabled = 1;
+
     return config;
 } /* evpl_config_init */
 

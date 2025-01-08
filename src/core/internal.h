@@ -53,6 +53,8 @@ struct evpl_config {
     unsigned int rdmacm_rnr_retry_count;
 
     unsigned int xlio_enabled;
+
+    unsigned int vfio_enabled;
 };
 
 void * evpl_malloc(
@@ -76,22 +78,32 @@ void evpl_free(
 
 void evpl_debug(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...);
 void evpl_info(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...);
 void evpl_error(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...);
 void evpl_fatal(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...);
 void evpl_abort(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...);
 
@@ -107,17 +119,17 @@ void evpl_abort(
             evpl_abort(__VA_ARGS__); \
         }
 
-#define evpl_core_debug(...)            evpl_debug("core", __VA_ARGS__)
-#define evpl_core_info(...)             evpl_info("core", __VA_ARGS__)
-#define evpl_core_error(...)            evpl_error("core", __VA_ARGS__)
-#define evpl_core_fatal(...)            evpl_fatal("core", __VA_ARGS__)
-#define evpl_core_abort(...)            evpl_abort("core", __VA_ARGS__)
+#define evpl_core_debug(...)            evpl_debug("core", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_core_info(...)             evpl_info("core", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_core_error(...)            evpl_error("core", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_core_fatal(...)            evpl_fatal("core", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_core_abort(...)            evpl_abort("core", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_core_fatal_if(cond, ...) \
-        evpl_fatal_if(cond, "core", __VA_ARGS__)
+        evpl_fatal_if(cond, "core", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_core_abort_if(cond, ...) \
-        evpl_abort_if(cond, "core", __VA_ARGS__)
+        evpl_abort_if(cond, "core", __FILE__, __LINE__, __VA_ARGS__)
 
 #ifndef unlikely
 #define unlikely(x)                     __builtin_expect(!!(x), 0)

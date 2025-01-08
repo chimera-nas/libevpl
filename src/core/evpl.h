@@ -7,7 +7,7 @@
 #pragma once
 
 #include <stdint.h>
-
+#include <stdarg.h>
 struct iovec;
 struct evpl_config;
 
@@ -15,7 +15,8 @@ enum evpl_framework_id {
     EVPL_FRAMEWORK_RDMACM   = 0,
     EVPL_FRAMEWORK_XLIO     = 1,
     EVPL_FRAMEWORK_IO_URING = 2,
-    EVPL_NUM_FRAMEWORK      = 3
+    EVPL_FRAMEWORK_VFIO     = 3,
+    EVPL_NUM_FRAMEWORK      = 4
 };
 
 enum evpl_protocol_id {
@@ -30,7 +31,8 @@ enum evpl_protocol_id {
 
 enum evpl_block_protocol_id {
     EVPL_BLOCK_PROTOCOL_IO_URING = 0,
-    EVPL_NUM_BLOCK_PROTOCOL      = 1
+    EVPL_BLOCK_PROTOCOL_VFIO     = 1,
+    EVPL_NUM_BLOCK_PROTOCOL      = 2
 };
 
 struct evpl;
@@ -85,6 +87,17 @@ void evpl_config_release(
 void evpl_config_set_rdmacm_datagram_size_override(
     struct evpl_config *config,
     unsigned int        size);
+
+typedef void (*evpl_log_fn)(
+    const char *level,
+    const char *module,
+    const char *srcfile,
+    int         lineno,
+    const char *fmt,
+    va_list     argp);
+
+void evpl_set_log_fn(
+    evpl_log_fn log_fn);
 
 void evpl_init(
     struct evpl_config *config);

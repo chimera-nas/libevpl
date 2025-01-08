@@ -200,7 +200,8 @@ struct evpl_block_protocol {
 
     /* Open a block device */
     struct evpl_block_device * (*open_device)(
-        const char *uri);
+        const char *uri,
+        void       *private_data);
 };
 
 

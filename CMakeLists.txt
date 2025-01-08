@@ -44,6 +44,17 @@ else()
     message(STATUS "io_uring library not found.")
 endif()
 
+find_path(VFIO_INCLUDE_DIR NAMES linux/vfio.h)
+
+if (VFIO_INCLUDE_DIR)
+    message(STATUS "VFIO include ${VFIO_INCLUDE_DIR}")
+    include_directories(${VFIO_INCLUDE_DIR})
+    add_definitions(-DHAVE_VFIO)
+    set(HAVE_VFIO 1)
+else()
+    message(STATUS "vfio library not found.")
+endif()
+
 find_library(RDMACM_LIB NAMES rdmacm)
 find_path(RDMACM_INCLUDE_DIR NAMES rdma/rdma_cma.h)
 

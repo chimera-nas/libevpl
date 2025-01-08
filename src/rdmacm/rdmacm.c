@@ -21,17 +21,17 @@
 #include "core/endpoint.h"
 #include "thread/thread.h"
 
-#define evpl_rdmacm_debug(...) evpl_debug("rdmacm", __VA_ARGS__)
-#define evpl_rdmacm_info(...)  evpl_info("rdmacm", __VA_ARGS__)
-#define evpl_rdmacm_error(...) evpl_error("rdmacm", __VA_ARGS__)
-#define evpl_rdmacm_fatal(...) evpl_fatal("rdmacm", __VA_ARGS__)
-#define evpl_rdmacm_abort(...) evpl_abort("rdmacm", __VA_ARGS__)
+#define evpl_rdmacm_debug(...) evpl_debug("rdmacm", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_rdmacm_info(...)  evpl_info("rdmacm", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_rdmacm_error(...) evpl_error("rdmacm", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_rdmacm_fatal(...) evpl_fatal("rdmacm", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_rdmacm_abort(...) evpl_abort("rdmacm", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_rdmacm_fatal_if(cond, ...) \
-        evpl_fatal_if(cond, "rdmacm", __VA_ARGS__)
+        evpl_fatal_if(cond, "rdmacm", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_rdmacm_abort_if(cond, ...) \
-        evpl_abort_if(cond, "rdmacm", __VA_ARGS__)
+        evpl_abort_if(cond, "rdmacm", __FILE__, __LINE__, __VA_ARGS__)
 
 struct ibv_context **context = NULL;
 

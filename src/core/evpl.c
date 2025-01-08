@@ -43,6 +43,10 @@
 #include "rdmacm/rdmacm.h"
 #endif /* ifdef HAVE_RDMACM */
 
+#ifdef HAVE_VFIO
+#include "vfio/vfio.h"
+#endif /* ifdef HAVE_VFIO */
+
 #ifdef HAVE_XLIO
 #include "xlio/xlio.h"
 #endif /* ifdef HAVE_XLIO */
@@ -161,6 +165,13 @@ evpl_shared_init(struct evpl_config *config)
     }
 #endif /* ifdef HAVE_RDMACM */
 
+#ifdef HAVE_VFIO
+    if (config->vfio_enabled) {
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_VFIO, &evpl_framework_vfio);
+        evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_VFIO, &evpl_block_protocol_vfio);
+    }
+#endif /* ifdef HAVE_VFIO */
+
 #ifdef HAVE_XLIO
 
     if (config->xlio_enabled) {
@@ -172,6 +183,13 @@ evpl_shared_init(struct evpl_config *config)
 #endif /* ifdef HAVE_XLIO */
 
 } /* evpl_shared_init */
+
+extern evpl_log_fn EvplLog;
+void
+evpl_set_log_fn(evpl_log_fn log_fn)
+{
+    EvplLog = log_fn;
+} /* evpl_set_log_fn */
 
 void
 evpl_init_auto(struct evpl_config *config)
@@ -1856,6 +1874,7 @@ evpl_block_open_device(
 {
     struct evpl_block_protocol *protocol;
     struct evpl_block_device   *blockdev;
+    void                       *protocol_private_data;
 
     pthread_once(&evpl_shared_once, evpl_init_once);
 
@@ -1865,7 +1884,9 @@ evpl_block_open_device(
 
     protocol = evpl_shared->block_protocol[protocol_id];
 
-    blockdev = protocol->open_device(uri);
+    protocol_private_data = evpl_shared->framework_private[protocol->framework->id];
+
+    blockdev = protocol->open_device(uri, protocol_private_data);
 
     blockdev->protocol = protocol;
 

@@ -23,11 +23,12 @@ static const char *level_string[] = {
     "fatal"
 };
 
-
 void
 evpl_vlog(
-    int         level,
+    const char *level,
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     va_list     argp)
 {
@@ -51,61 +52,70 @@ evpl_vlog(
 
     bp += vsnprintf(bp, (buf + sizeof(buf)) - bp, fmt, argp);
     bp += snprintf(bp, (buf + sizeof(buf)) - bp,
-                   "\" process=%lu thread=%lu level=%s module=%s\n",
-                   pid, tid, level_string[level], mod);
+                   "\" process=%lu thread=%lu level=%s module=%s file=\"%s:%d\"\n",
+                   pid, tid, level, mod, srcfile, lineno);
     fprintf(stderr, "%s", buf);
 } /* evpl_vlog */
 
+evpl_log_fn EvplLog = evpl_vlog;
 
 void
 evpl_debug(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(EVPL_LOG_DEBUG, mod, fmt, argp);
+    evpl_vlog(level_string[EVPL_LOG_DEBUG], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 } /* evpl_debug */
 
 void
 evpl_info(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(EVPL_LOG_INFO, mod, fmt, argp);
+    evpl_vlog(level_string[EVPL_LOG_INFO], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 } /* evpl_info */
 
 void
 evpl_error(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(EVPL_LOG_ERROR, mod, fmt, argp);
+    evpl_vlog(level_string[EVPL_LOG_ERROR], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 } /* evpl_error */
 
 void
 evpl_fatal(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(EVPL_LOG_FATAL, mod, fmt, argp);
+    evpl_vlog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
     exit(1);
@@ -114,13 +124,15 @@ evpl_fatal(
 void
 evpl_abort(
     const char *mod,
+    const char *srcfile,
+    int         lineno,
     const char *fmt,
     ...)
 {
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(EVPL_LOG_FATAL, mod, fmt, argp);
+    evpl_vlog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
     abort();

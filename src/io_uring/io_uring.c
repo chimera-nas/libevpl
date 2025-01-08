@@ -16,17 +16,17 @@
 #include "core/deferral.h"
 #include "io_uring/io_uring.h"
 
-#define evpl_io_uring_debug(...) evpl_debug("io_uring", __VA_ARGS__)
-#define evpl_io_uring_info(...)  evpl_info("io_uring", __VA_ARGS__)
-#define evpl_io_uring_error(...) evpl_error("io_uring", __VA_ARGS__)
-#define evpl_io_uring_fatal(...) evpl_fatal("io_uring", __VA_ARGS__)
-#define evpl_io_uring_abort(...) evpl_abort("io_uring", __VA_ARGS__)
+#define evpl_io_uring_debug(...) evpl_debug("io_uring", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_io_uring_info(...)  evpl_info("io_uring", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_io_uring_error(...) evpl_error("io_uring", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_io_uring_fatal(...) evpl_fatal("io_uring", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_io_uring_abort(...) evpl_abort("io_uring", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_io_uring_fatal_if(cond, ...) \
-        evpl_fatal_if(cond, "io_uring", __VA_ARGS__)
+        evpl_fatal_if(cond, "io_uring", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_io_uring_abort_if(cond, ...) \
-        evpl_abort_if(cond, "io_uring", __VA_ARGS__)
+        evpl_abort_if(cond, "io_uring", __FILE__, __LINE__, __VA_ARGS__)
 
 struct evpl_io_uring_shared {
     struct io_uring ring;
@@ -419,7 +419,9 @@ evpl_io_uring_close_device(struct evpl_block_device *bdev)
 } /* evpl_io_uring_close_device */
 
 static struct evpl_block_device *
-evpl_io_uring_open_device(const char *uri)
+evpl_io_uring_open_device(
+    const char *uri,
+    void       *private_data)
 {
     struct evpl_block_device    *bdev;
     struct evpl_io_uring_device *dev;

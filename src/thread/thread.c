@@ -7,17 +7,17 @@
 #include "core/event.h"
 #include "thread/thread.h"
 
-#define evpl_thread_debug(...) evpl_debug("thread", __VA_ARGS__)
-#define evpl_thread_info(...)  evpl_info("thread", __VA_ARGS__)
-#define evpl_thread_error(...) evpl_error("thread", __VA_ARGS__)
-#define evpl_thread_fatal(...) evpl_fatal("thread", __VA_ARGS__)
-#define evpl_thread_abort(...) evpl_abort("thread", __VA_ARGS__)
+#define evpl_thread_debug(...) evpl_debug("thread", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_thread_info(...)  evpl_info("thread", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_thread_error(...) evpl_error("thread", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_thread_fatal(...) evpl_fatal("thread", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_thread_abort(...) evpl_abort("thread", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_thread_fatal_if(cond, ...) \
-        evpl_fatal_if(cond, "thread", __VA_ARGS__)
+        evpl_fatal_if(cond, "thread", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_thread_abort_if(cond, ...) \
-        evpl_abort_if(cond, "thread", __VA_ARGS__)
+        evpl_abort_if(cond, "thread", __FILE__, __LINE__, __VA_ARGS__)
 
 struct evpl_thread {
     pthread_t                       thread;

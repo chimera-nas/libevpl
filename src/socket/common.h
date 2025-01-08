@@ -6,17 +6,17 @@
 #include "utlist.h"
 #include "core/evpl.h"
 
-#define evpl_socket_debug(...) evpl_debug("socket", __VA_ARGS__)
-#define evpl_socket_info(...)  evpl_info("socket", __VA_ARGS__)
-#define evpl_socket_error(...) evpl_error("socket", __VA_ARGS__)
-#define evpl_socket_fatal(...) evpl_fatal("socket", __VA_ARGS__)
-#define evpl_socket_abort(...) evpl_abort("socket", __VA_ARGS__)
+#define evpl_socket_debug(...) evpl_debug("socket", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_socket_info(...)  evpl_info("socket", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_socket_error(...) evpl_error("socket", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_socket_fatal(...) evpl_fatal("socket", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_socket_abort(...) evpl_abort("socket", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_socket_fatal_if(cond, ...) \
-        evpl_fatal_if(cond, "socket", __VA_ARGS__)
+        evpl_fatal_if(cond, "socket", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_socket_abort_if(cond, ...) \
-        evpl_abort_if(cond, "socket", __VA_ARGS__)
+        evpl_abort_if(cond, "socket", __FILE__, __LINE__, __VA_ARGS__)
 
 struct evpl_socket_datagram {
     struct evpl_iovec            iovec;

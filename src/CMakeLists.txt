@@ -64,6 +64,10 @@ add_subdirectory(socket)
 add_subdirectory(thread)
 add_subdirectory(rpc2)
 
+if (HAVE_VFIO)
+    add_subdirectory(vfio)
+endif()
+
 if (HAVE_IO_URING)
     add_subdirectory(io_uring)
 endif()
