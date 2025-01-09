@@ -154,6 +154,13 @@ static void
 evpl_vfio_cleanup(void *framework_private)
 {
     struct evpl_vfio_shared *shared = framework_private;
+    struct evpl_vfio_group  *group;
+
+    while (shared->groups) {
+        group = shared->groups;
+        DL_DELETE(shared->groups, group);
+        evpl_free(group);
+    }
 
     close(shared->container_fd);
     pthread_mutex_destroy(&shared->lock);
@@ -192,9 +199,14 @@ evpl_vfio_register(
     evpl_vfio_abort_if(vfio->iova_current + size > VFIO_IOVA_MAX,
                        "Registered maximum amount of VFIO memory");
 
+    size = (size + 4095) & ~4095;
+
+    vfio->iova_current = (vfio->iova_current + size - 1) & ~(size - 1);
+
     mr->buffer = buffer;
     mr->iova   = vfio->iova_current;
     mr->size   = size;
+
 
     vfio->iova_current += size;
 
@@ -323,8 +335,6 @@ evpl_vfio_attach_device(
 
     snprintf(vfio_device_path, sizeof(vfio_device_path), "/dev/vfio%s", iommu_group);
 
-    evpl_vfio_debug("VFIO group path '%s'", vfio_device_path);
-
     group = evpl_zalloc(sizeof(*group));
 
     DL_APPEND(vfio->groups, group);
@@ -425,6 +435,11 @@ evpl_vfio_queue_close(
     struct evpl_vfio_device *device,
     struct evpl_vfio_queue  *queue)
 {
+
+    evpl_vfio_free(device->vfio, queue->sqbuffer);
+    evpl_vfio_free(device->vfio, queue->cqbuffer);
+    evpl_vfio_free(device->vfio, queue->prplist);
+    evpl_free(queue->callbacks);
     evpl_free(queue);
 } /* evpl_vfio_queue_close */
 
@@ -483,8 +498,12 @@ evpl_vfio_poll_queue(struct evpl_vfio_queue *queue)
 
         cb = &queue->callbacks[cid];
 
+        if (cqe->sc) {
+            evpl_vfio_error("cqecid %d  cs %d sct %d sc %d", cid, cqe->cs, cqe->sct, cqe->sc);
+        }
+
         if (cb->fn) {
-            cb->fn(cqe->cs, cb->arg);
+            cb->fn(cqe->sc ? EIO : 0, cb->arg);
         }
 
         --queue->cidcount;
@@ -553,6 +572,9 @@ evpl_vfio_create_ioq(
     int                          id;
 
     pthread_mutex_lock(&device->lock);
+
+    evpl_vfio_abort_if(device->next_ioq_id >= device->msixsize,
+                       "Too many VFIO device queues, exceeded msixsize.  Consider reducing thread count.");
 
     id = device->next_ioq_id++;
 
@@ -623,6 +645,10 @@ evpl_vfio_identify(
     cmd->cns         = nsid == 0 ? 1 : 0;
 
     evpl_vfio_ring_sq(device->adminq);
+
+    while (device->adminq->cidcount > 0) {
+        evpl_vfio_poll_queue(device->adminq);
+    }
 } /* evpl_vfio_identify */
 
 static void
@@ -934,13 +960,10 @@ evpl_vfio_close_queue(
 {
     struct evpl_vfio_queue *queue = bqueue->private_data;
 
-    evpl_remove_event(evpl, &queue->event);
-
     evpl_vfio_queue_close(
         queue->device,
         queue);
 
-    evpl_free(queue);
     evpl_free(bqueue);
 } /* evpl_vfio_close_queue */
 
@@ -1027,13 +1050,6 @@ evpl_vfio_close_device(struct evpl_block_device *bdev)
         dev,
         dev->adminq);
 
-#if 0
-    while (dev->ioq) {
-        queue = dev->ioq;
-        list_delete(dev->ioq, queue);
-        evpl_vfio_queue_close(dev, queue);
-    }
-#endif /* if 0 */
 
     for (i = 0; i < dev->msixsize; ++i) {
         close(dev->eventfds[i]);
@@ -1063,6 +1079,7 @@ evpl_vfio_open_device(
     uint8_t                       region_config[256];
     uint16_t                     *cmd;
     uint8_t                       u8;
+    struct evpl_vfio_mr          *inquiry_mr;
 
     bdev = evpl_zalloc(sizeof(*bdev));
 
@@ -1087,11 +1104,6 @@ evpl_vfio_open_device(
     rc = ioctl(dev->fd, VFIO_DEVICE_GET_INFO, &dev->device_info);
 
     evpl_vfio_abort_if(rc < 0, "Failed to get NVMe device info");
-
-    evpl_vfio_debug("NVMe device flags %u num_regions %u num irqs %u",
-                    dev->device_info.flags,
-                    dev->device_info.num_regions,
-                    dev->device_info.num_irqs);
 
     memory_region.argsz = sizeof(memory_region);
     memory_region.index = VFIO_PCI_CONFIG_REGION_INDEX;
@@ -1129,17 +1141,18 @@ evpl_vfio_open_device(
 
     evpl_vfio_create_adminq(dev, 512);
 
+    inquiry_mr = evpl_vfio_alloc(dev->vfio, 4096);
 
     ctrl_id_ctx.device = dev;
     ctrl_id_ctx.nsid   = 0;
-    ctrl_id_ctx.mr     = evpl_vfio_alloc(dev->vfio, 4096);
+    ctrl_id_ctx.mr     = inquiry_mr;
 
     evpl_vfio_identify(dev, ctrl_id_ctx.mr, 0,
                        evpl_vfio_identify_ctrl, &ctrl_id_ctx);
 
     ns_id_ctx.device = dev;
     ns_id_ctx.nsid   = 1;
-    ns_id_ctx.mr     = evpl_vfio_alloc(dev->vfio, 4096);
+    ns_id_ctx.mr     = inquiry_mr;
 
     evpl_vfio_identify(dev, ns_id_ctx.mr, 1,
                        evpl_vfio_identify_ns, &ns_id_ctx);
@@ -1162,18 +1175,14 @@ evpl_vfio_open_device(
         dev->queue_size <<= 1;
     }
 
-#if 0
-    for (i = 0; i < dev->max_queues; ++i) {
-        evpl_vfio_create_ioq(dev, i + 1, dev->queue_size,
-                             evpl_vfio_queue_created, dev);
-    }
-#endif /* if 0 */
-
     while (dev->adminq->cidcount > 0) {
         evpl_vfio_poll_queue(dev->adminq);
     }
 
-    bdev->size = dev->num_sectors * dev->sector_size;
+    bdev->size             = dev->num_sectors * dev->sector_size;
+    bdev->max_request_size = dev->max_xfer_bytes;
+
+    evpl_vfio_free(dev->vfio, inquiry_mr);
 
     return bdev;
 } /* evpl_vfio_open_device */

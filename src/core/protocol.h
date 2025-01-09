@@ -141,6 +141,9 @@ struct evpl_block_device {
     /* Size of the device in bytes, set by the protocol */
     uint64_t                    size;
 
+    /* maximum size of a single I/O request in bytes */
+    uint64_t                    max_request_size;
+
     /* Open a device queue */
     struct evpl_block_queue   * (*open_queue)(
         struct evpl              *evpl,

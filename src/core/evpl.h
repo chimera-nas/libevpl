@@ -386,6 +386,9 @@ void evpl_block_close_device(
 uint64_t evpl_block_size(
     struct evpl_block_device *blockdev);
 
+uint64_t evpl_block_max_request_size(
+    struct evpl_block_device *blockdev);
+
 struct evpl_block_queue *
 evpl_block_open_queue(
     struct evpl              *evpl,

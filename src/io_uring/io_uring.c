@@ -463,6 +463,8 @@ evpl_io_uring_open_device(
         bdev->size = st.st_size;
     }
 
+    bdev->max_request_size = 4 * 1024 * 1024;
+
     return bdev;
 } /* evpl_io_uring_open_device */
 
