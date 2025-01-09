@@ -159,6 +159,7 @@ evpl_vfio_cleanup(void *framework_private)
     while (shared->groups) {
         group = shared->groups;
         DL_DELETE(shared->groups, group);
+        close(group->fd);
         evpl_free(group);
     }
 
@@ -1017,7 +1018,7 @@ evpl_vfio_open_queue(
 
     bqueue = evpl_zalloc(sizeof(*bqueue));
 
-    queue = evpl_vfio_create_ioq(device, 1024);
+    queue = evpl_vfio_create_ioq(device, 256);
 
     bqueue->private_data = queue;
     bqueue->close_queue  = evpl_vfio_close_queue;
