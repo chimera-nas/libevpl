@@ -37,7 +37,7 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
         LL_DELETE(agent->free_msg, msg);
     } else {
         msg        = evpl_zalloc(sizeof(*msg));
-        msg->dbuf  = xdr_dbuf_alloc();
+        msg->dbuf  = xdr_dbuf_alloc(128 * 1024);
         msg->agent = agent;
     }
 
@@ -525,15 +525,17 @@ evpl_rpc2_send_reply(
     struct evpl_rpc2_metric *metric = msg->metric;
     struct evpl_iovec        iov, reply_iov;
     int                      reply_len, reply_niov, offset, rpc_len;
-    uint32_t                 hdr, segment_offset, write_left;
+    uint32_t                 hdr, segment_offset, write_left, left, chunk, reply_offset;
     struct rpc_msg           rpc_reply;
     struct rdma_msg          rdma_msg, *req_rdma_msg;
     struct xdr_write_list   *write_list;
     struct xdr_rdma_segment *target;
-    struct evpl_iovec        segment_iov;
+    struct evpl_iovec        segment_iov, *reply_segment_iov;
     struct timespec          now;
     uint64_t                 elapsed;
     int                      i, reduce = 0, rdma = msg->rdma;
+    struct  xdr_write_chunk *reply_chunk;
+
 
     rpc_reply.xid                               = msg->xid;
     rpc_reply.body.mtype                        = REPLY;
@@ -594,10 +596,6 @@ evpl_rpc2_send_reply(
         }
 
         if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
-
-            evpl_rpc2_abort_if(req_rdma_msg->rdma_body.rdma_msg.rdma_reply->num_target != 1,
-                               "got reply segment with multiple targets");
-
             reduce = 1;
 
             rdma_msg.rdma_body.proc                   = RDMA_NOMSG;
@@ -605,8 +603,20 @@ evpl_rpc2_send_reply(
             rdma_msg.rdma_body.rdma_nomsg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
             rdma_msg.rdma_body.rdma_nomsg.rdma_reply  = req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
 
-            rdma_msg.rdma_body.rdma_nomsg.rdma_reply->target->length = rpc_len + length;
+            left = rpc_len + length;
 
+            for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
+
+                chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[i].length;
+
+                if (left < chunk) {
+                    chunk = left;
+                }
+
+                req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = chunk;
+
+                left -= chunk;
+            }
         }
 
         offset = marshall_length_rdma_msg(&rdma_msg);
@@ -656,7 +666,11 @@ evpl_rpc2_send_reply(
     }
 
     if (reduce) {
+
+        reply_chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply;
+
         xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
+
         msg->reply_iov->data   = msg_iov[0].data;
         msg->reply_iov->length = offset;
         msg->reply_iov->buffer = msg_iov[0].buffer;
@@ -666,12 +680,28 @@ evpl_rpc2_send_reply(
         msg_iov[0].data   += offset;
         msg_iov[0].length -= offset;
 
-        evpl_rdma_write(evpl, msg->bind,
-                        rdma_msg.rdma_body.rdma_nomsg.rdma_reply->target->handle,
-                        rdma_msg.rdma_body.rdma_nomsg.rdma_reply->target->offset,
-                        msg_iov, msg_niov, evpl_rpc2_write_segment_callback, msg);
+        reply_offset = 0;
 
-        msg->pending_writes++;
+        for (i = 0; i < reply_chunk->num_target; i++) {
+
+            if (reply_chunk->target[i].length == 0) {
+                continue;
+            }
+            xdr_dbuf_alloc_space(reply_segment_iov, sizeof(*reply_segment_iov), msg->dbuf);
+
+            reply_segment_iov->data   = msg_iov[0].data + reply_offset;
+            reply_segment_iov->length = reply_chunk->target[i].length;
+            reply_segment_iov->buffer = msg_iov[0].buffer;
+
+            evpl_rdma_write(evpl, msg->bind,
+                            reply_chunk->target[i].handle,
+                            reply_chunk->target[i].offset,
+                            reply_segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+
+            reply_offset += reply_chunk->target[i].length;
+
+            msg->pending_writes++;
+        }
 
     } else {
         msg->reply_iov    = msg_iov;
