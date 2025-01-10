@@ -1018,7 +1018,7 @@ evpl_vfio_open_queue(
 
     bqueue = evpl_zalloc(sizeof(*bqueue));
 
-    queue = evpl_vfio_create_ioq(device, 256);
+    queue = evpl_vfio_create_ioq(device, device->queue_size);
 
     bqueue->private_data = queue;
     bqueue->close_queue  = evpl_vfio_close_queue;
@@ -1167,12 +1167,7 @@ evpl_vfio_open_device(
 
     dev->queue_size = 1;
 
-    /* XXX think harder about t his */
-    if (dev->max_queue_size > 256) {
-        dev->max_queue_size = 256;
-    }
-
-    while ((dev->queue_size << 1) <= dev->max_queue_size) {
+    while ((dev->queue_size << 1) <= dev->max_queue_size && dev->queue_size <= 1024) {
         dev->queue_size <<= 1;
     }
 
