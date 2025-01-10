@@ -423,3 +423,7 @@ void evpl_block_flush(
     struct evpl_block_queue *queue,
     void ( *callback )(int status, void *private_data),
     void *private_data);
+
+void *
+evpl_slab_alloc(
+    void);

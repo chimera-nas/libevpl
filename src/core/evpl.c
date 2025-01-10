@@ -1984,3 +1984,9 @@ evpl_block_flush(
     queue->flush(evpl, queue, callback, private_data);
 } /* evpl_block_flush */
 
+void *
+evpl_slab_alloc(void)
+{
+    return evpl_allocator_alloc_slab(evpl_shared->allocator);
+} /* evpl_slab_alloc */
+
