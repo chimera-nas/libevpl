@@ -771,7 +771,7 @@ evpl_rpc2_server_destroy(
 
         pthread_mutex_lock(&program->metrics_lock);
 
-        for (j = 0; j < program->maxproc; j++) {
+        for (j = 0; j <= program->maxproc; j++) {
 
             shared_metric = &program->metrics[j];
             thread_metric = &server->metrics[i][j];
