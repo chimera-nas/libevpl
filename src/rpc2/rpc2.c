@@ -596,26 +596,34 @@ evpl_rpc2_send_reply(
         }
 
         if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
-            reduce = 1;
+            if (rpc_len + length > 2048) {
+                reduce = 1;
 
-            rdma_msg.rdma_body.proc                   = RDMA_NOMSG;
-            rdma_msg.rdma_body.rdma_nomsg.rdma_reads  = NULL;
-            rdma_msg.rdma_body.rdma_nomsg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
-            rdma_msg.rdma_body.rdma_nomsg.rdma_reply  = req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
+                rdma_msg.rdma_body.proc                   = RDMA_NOMSG;
+                rdma_msg.rdma_body.rdma_nomsg.rdma_reads  = NULL;
+                rdma_msg.rdma_body.rdma_nomsg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
+                rdma_msg.rdma_body.rdma_nomsg.rdma_reply  = req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
 
-            left = rpc_len + length;
+                left = rpc_len + length;
 
-            for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
+                for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
 
-                chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[i].length;
+                    chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[i].length;
 
-                if (left < chunk) {
-                    chunk = left;
+                    if (left < chunk) {
+                        chunk = left;
+                    }
+
+                    req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = chunk;
+
+                    left -= chunk;
                 }
 
-                req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = chunk;
+            } else {
 
-                left -= chunk;
+                for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
+                    req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = 0;
+                }
             }
         }
 
