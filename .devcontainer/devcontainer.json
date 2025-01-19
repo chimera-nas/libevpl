@@ -1,7 +1,8 @@
 {
         "name": "libevpl",
         "build": {
-                "dockerfile": "Dockerfile"
+                "dockerfile": "Dockerfile",
+                "context": "../docs"
         },
         "customizations": {
                 "vscode": {
