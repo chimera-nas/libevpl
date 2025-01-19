@@ -4,7 +4,7 @@
 #include "rpc2/rpc2.h"
 #include "core/internal.h"
 
-#include "utlist.h"
+#include "uthash/utlist.h"
 
 #include "rpc2/common.h"
 #include "rpc2_xdr.h"
@@ -314,13 +314,20 @@ evpl_rpc2_event(
     int                      hdr_niov;
     int                      i, rc, rdma, offset, segment_offset;
     struct evpl_iovec        segment_iov;
+    char                     addr_str[80], addr_str_local[80];
 
     rdma = (server->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
+            evpl_bind_get_local_address(bind, addr_str_local, sizeof(addr_str_local));
+            evpl_bind_get_remote_address(bind, addr_str, sizeof(addr_str));
+            evpl_rpc2_debug("Connection established from %s to %s", addr_str, addr_str_local);
             break;
         case EVPL_NOTIFY_DISCONNECTED:
+            evpl_bind_get_local_address(bind, addr_str_local, sizeof(addr_str_local));
+            evpl_bind_get_remote_address(bind, addr_str, sizeof(addr_str));
+            evpl_rpc2_debug("Connection terminated from %s to %s", addr_str, addr_str_local);
             free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:

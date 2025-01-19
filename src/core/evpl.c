@@ -17,7 +17,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "utlist.h"
+#include "uthash/utlist.h"
 
 #include "core/internal.h"
 #if EVPL_MECH == epoll
@@ -1356,6 +1356,61 @@ evpl_peek(
 } /* evpl_peek */
 
 int
+evpl_peekv(
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovecs,
+    int                maxiovecs,
+    int                length)
+{
+    int                left = length, chunk, niovs = 0;
+    struct evpl_iovec *cur, *out;
+
+    if (unlikely(!evpl || !bind || !iovecs || maxiovecs <= 0 || length <= 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (unlikely(!bind->protocol->stream)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    cur = evpl_iovec_ring_tail(&bind->iovec_recv);
+
+    if (!cur) {
+        return 0;
+    }
+
+    while (cur && left && niovs < maxiovecs) {
+        chunk = cur->length;
+
+        if (chunk > left) {
+            chunk = left;
+        }
+
+        out         = &iovecs[niovs++];
+        out->data   = cur->data;
+        out->length = chunk;
+        out->buffer = cur->buffer;
+
+        left -= chunk;
+        cur   = evpl_iovec_ring_next(&bind->iovec_recv, cur);
+    }
+
+    return niovs;
+} /* evpl_peekv */
+
+void
+evpl_consume(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    int               length)
+{
+    evpl_iovec_ring_consume(evpl, &bind->iovec_recv, length);
+} /* evpl_consume */
+
+int
 evpl_read(
     struct evpl      *evpl,
     struct evpl_bind *bind,
@@ -1874,6 +1929,25 @@ evpl_activity(struct evpl *evpl)
 {
     evpl->activity++;
 } /* evpl_activity */
+
+void
+evpl_bind_get_local_address(
+    struct evpl_bind *bind,
+    char             *str,
+    int               len)
+{
+    evpl_address_get_address(bind->local, str, len);
+} /* evpl_bind_get_local_address */
+
+void
+evpl_bind_get_remote_address(
+    struct evpl_bind *bind,
+    char             *str,
+    int               len)
+{
+    evpl_address_get_address(bind->remote, str, len);
+} /* evpl_bind_get_remote_address */
+
 
 struct evpl_block_device *
 evpl_block_open_device(

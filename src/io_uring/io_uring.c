@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 
-#include "utlist.h"
+#include "uthash/utlist.h"
 
 #include "core/internal.h"
 #include "core/evpl.h"

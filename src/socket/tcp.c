@@ -288,6 +288,8 @@ evpl_accept_tcp(
 
         remote_addr = evpl_address_alloc(evpl);
 
+        remote_addr->addrlen = sizeof(remote_addr->sa);
+
         fd = accept(ls->fd, remote_addr->addr, &remote_addr->addrlen);
 
         if (fd < 0) {
@@ -309,6 +311,7 @@ evpl_accept_tcp(
 
         evpl_socket_abort_if(rc, "Failed to set TCP_QUICKACK on socket");
 
+        s->connected            = 1;
         s->event.fd             = fd;
         s->event.read_callback  = evpl_socket_tcp_read;
         s->event.write_callback = evpl_socket_tcp_write;

@@ -266,6 +266,20 @@ int evpl_peek(
     void             *buffer,
     int               length);
 
+int
+evpl_peekv(
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovecs,
+    int                maxiovecs,
+    int                length);
+
+void
+evpl_consume(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    int               length);
+
 int evpl_read(
     struct evpl      *evpl,
     struct evpl_bind *bind,
@@ -353,6 +367,18 @@ void evpl_remove_poll(
 struct evpl_config *
 evpl_config(
     struct evpl *evpl);
+
+void
+evpl_bind_get_local_address(
+    struct evpl_bind *bind,
+    char             *str,
+    int               len);
+
+void
+evpl_bind_get_remote_address(
+    struct evpl_bind *bind,
+    char             *str,
+    int               len);
 
 typedef void (*evpl_uevent_callback_t)(
     struct evpl *evpl,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdio.h>
 #include <sys/socket.h>
 #include "core/evpl.h"
 
@@ -59,4 +60,26 @@ evpl_address_set_private(
 {
     address->framework_private[protocol] = private_data;
 } // evpl_address_set_private
+
+static void
+evpl_address_get_address(
+    struct evpl_address *address,
+    char                *str,
+    int                  len)
+{
+    struct sockaddr     *sa = address->addr;
+    struct sockaddr_in  *sin;
+    struct sockaddr_in6 *sin6;
+    char                 addr_str[INET6_ADDRSTRLEN];
+
+    if (sa->sa_family == AF_INET) {
+        sin = (struct sockaddr_in *) sa;
+        inet_ntop(AF_INET, &sin->sin_addr, addr_str, sizeof(addr_str));
+        snprintf(str, len, "%s:%d", addr_str, ntohs(sin->sin_port));
+    } else if (sa->sa_family == AF_INET6) {
+        sin6 = (struct sockaddr_in6 *) sa;
+        inet_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
+        snprintf(str, len, "[%s]:%d", addr_str, ntohs(sin6->sin6_port));
+    }
+} /* evpl_bind_get_local_address */
 

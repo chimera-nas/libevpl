@@ -61,7 +61,7 @@ add_subdirectory(core)
 add_subdirectory(socket)
 add_subdirectory(thread)
 add_subdirectory(rpc2)
-
+add_subdirectory(http)
 if (HAVE_VFIO)
     add_subdirectory(vfio)
 endif()
@@ -77,6 +77,8 @@ endif()
 if (HAVE_XLIO)
     add_subdirectory(xlio)
 endif()
+
+
 
 
 #add_subdirectory(rpc2)
