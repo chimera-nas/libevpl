@@ -1,0 +1,28 @@
+{
+        "name": "libevpl",
+        "build": {
+                "dockerfile": "Dockerfile"
+        },
+        "customizations": {
+                "vscode": {
+                        // Set *default* container specific settings.json values on container create.
+                        "settings": {},
+                        // Add the IDs of extensions you want installed when the container is created.
+                        "extensions": [
+                                "ms-vscode.cpptools-extension-pack",
+                                "ms-vscode.cmake-tools",
+                                "fredericbonnet.cmake-test-adapter",
+                                "ms-azuretools.vscode-docker",
+                                "zachflower.uncrustify"
+                        ]
+                }
+        },
+        "mounts": [
+                "source=libevpl-build,target=/build,type=volume"
+        ],
+        "appPort": [],
+        "forwardPorts": [],
+        "privileged": true,
+        "workspaceMount": "source=${localWorkspaceFolder},target=/libevpl,type=bind",
+        "workspaceFolder": "/libevpl"
+}
