@@ -9,8 +9,6 @@ macro(unit_test module test_name)
     # Add the test
     add_test(NAME libevpl/${module}/${test_name} COMMAND ${module}_${test_name})
 
-    add_dependencies(${module}_${test_name} xdrzcc)
-
     # Set TEST_FILE environment variable to point to the test source
     list(GET sources 0 first_source)
     set_tests_properties(libevpl/${module}/${test_name} PROPERTIES

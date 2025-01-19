@@ -10,8 +10,8 @@
 #include <netdb.h>
 #include <unistd.h>
 
-#include "uthash.h"
-#include "utlist.h"
+#include "uthash/uthash.h"
+#include "uthash/utlist.h"
 
 #include "rdmacm/rdmacm.h"
 #include "core/internal.h"

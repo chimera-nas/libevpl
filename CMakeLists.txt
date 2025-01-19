@@ -83,6 +83,6 @@ endif()
 
 add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
 
-include_directories(3rdparty/uthash)
+include_directories(3rdparty)
 
 add_subdirectory(src)

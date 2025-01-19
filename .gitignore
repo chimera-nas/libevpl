@@ -1,4 +1,6 @@
 build
 *.swp
 *.swo
+*.diff
 cscope.out
+*.log
