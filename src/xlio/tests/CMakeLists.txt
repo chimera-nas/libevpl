@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
+
 if (DEFINED ENV{EVPL_RDMACM_IP})
     SET(ADDR $ENV{EVPL_RDMACM_IP})
 else()

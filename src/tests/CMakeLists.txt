@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
+
 set(TEST_BIN ${CMAKE_CURRENT_BINARY_DIR} PARENT_SCOPE)
 
 macro(evpl_test name)

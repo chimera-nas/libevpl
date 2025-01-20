@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #pragma once
 
 /* NVME definitions per 1.4 specification */

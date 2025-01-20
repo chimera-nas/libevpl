@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
+
 add_definitions(-DXDR_CUSTOM_IOVEC=${CMAKE_CURRENT_SOURCE_DIR}/xdr_iovec.h)
 add_definitions(-DXDR_CUSTOM_DUMP=1)
 

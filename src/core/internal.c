@@ -1,8 +1,6 @@
-/*
- * SPDX-FileCopyrightText: 2024 Ben Jarvis
- *
- * SPDX-License-Identifier: LGPL
- */
+// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
 
 #define _GNU_SOURCE
 
@@ -14,6 +12,7 @@
 #include <sys/types.h>
 
 #include "core/internal.h"
+#include "evpl/evpl.h"
 
 static const char *level_string[] = {
     "none",

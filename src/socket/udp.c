@@ -1,8 +1,6 @@
-/*
- * SPDX-FileCopyrightText: 2024 Ben Jarvis
- *
- * SPDX-License-Identifier: LGPL
- */
+// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
 
 #define _GNU_SOURCE
 
@@ -19,7 +17,7 @@
 #include <unistd.h>
 
 #include "core/internal.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/endpoint.h"

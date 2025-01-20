@@ -1,7 +1,7 @@
 ---
-title: Building libevpl
+title: Building
 layout: default
-nav_order: 1
+nav_order: 2
 permalink: /build
 ---
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
+
 macro(unit_test module test_name)
 
     set(sources ${ARGN})

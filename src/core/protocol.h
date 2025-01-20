@@ -1,6 +1,10 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #pragma once
 
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 
 struct evpl_event;
 struct evpl_bind;

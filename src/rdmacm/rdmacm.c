@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
 
 #include <stdlib.h>
 #include <fcntl.h>
@@ -15,7 +18,7 @@
 
 #include "rdmacm/rdmacm.h"
 #include "core/internal.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/protocol.h"
 #include "core/bind.h"
 #include "core/endpoint.h"

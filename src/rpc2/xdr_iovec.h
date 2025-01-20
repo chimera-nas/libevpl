@@ -1,6 +1,10 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #pragma once
 
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 
 typedef struct evpl_iovec xdr_iovec;
 
@@ -12,10 +16,10 @@ typedef struct evpl_iovec xdr_iovec;
 
 #define xdr_iovec_copy_private(out, in) \
     {                                   \
-        (out)->private = (in)->private; \
+        (out)->__private = (in)->__private; \
     }
 
 #define xdr_iovec_set_private_null(out) \
-    { \
-    (out)->private = NULL; \
+    {                                   \
+        (out)->__private = NULL;          \
     }

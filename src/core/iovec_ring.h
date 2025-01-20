@@ -1,8 +1,6 @@
-/*
- * SPDX-FileCopyrightText: 2024 Ben Jarvis
- *
- * SPDX-License-Identifier: LGPL
- */
+// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
 
 #pragma once
 
@@ -10,7 +8,7 @@
 #include <sys/uio.h>
 
 #include "core/internal.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/buffer.h"
 
 struct evpl_iovec_ring {

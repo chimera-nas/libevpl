@@ -1,12 +1,10 @@
-/*
- * SPDX-FileCopyrightText: 2024 Ben Jarvis
- *
- * SPDX-License-Identifier: LGPL
- */
+// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
 
 #pragma once
 
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 
 struct evpl_listener;
 struct evpl_conn;

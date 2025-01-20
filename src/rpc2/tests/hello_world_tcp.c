@@ -1,8 +1,6 @@
-/*
- * SPDX-FileCopyrightText: 2024 Ben Jarvis
- *
- * SPDX-License-Identifier: LGPL
- */
+// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
 
 #include <stdio.h>
 #include <stdlib.h>

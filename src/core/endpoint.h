@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #pragma once
 
 #include <stdio.h>
 #include <sys/socket.h>
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 
 struct addrinfo;
 

@@ -1,8 +1,6 @@
-/*
- * SPDX-FileCopyrightText: 2024 Ben Jarvis
- *
- * SPDX-License-Identifier: LGPL
- */
+// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
 
 #pragma once
 
@@ -10,7 +8,7 @@
 #include <sys/uio.h>
 #include <stdatomic.h>
 
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/internal.h"
 
 struct evpl_slab {

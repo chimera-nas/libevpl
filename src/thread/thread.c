@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #include <pthread.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 
 #include "core/internal.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/event.h"
 #include "thread/thread.h"
 

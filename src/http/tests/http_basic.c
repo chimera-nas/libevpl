@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #include <stdio.h>
 #include <string.h>
 #include <sys/eventfd.h>
@@ -6,7 +10,7 @@
 #include <curl/curl.h>
 
 #include "http/http.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/event.h"
 struct test_server {
     pthread_t thread;

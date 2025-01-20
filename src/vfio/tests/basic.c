@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
 
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 
 static void
 read_callback(

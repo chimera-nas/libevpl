@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <sys/mman.h>
@@ -7,7 +11,7 @@
 #include "uthash/utlist.h"
 
 #include "core/internal.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/evpl_shared.h"
 #include "core/buffer.h"
 #include "core/protocol.h"

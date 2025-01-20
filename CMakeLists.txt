@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024 Ben Jarvis
+# SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 #
 # SPDX-License-Identifier: LGPL
 
@@ -84,6 +84,7 @@ endif()
 add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
 
 include_directories(3rdparty)
+include_directories(include)
 
 add_subdirectory(ext)
 add_subdirectory(src)

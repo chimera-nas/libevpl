@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
+
 add_library(evpl_io_uring SHARED io_uring.c)
 
 target_link_libraries(evpl_io_uring uring)

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 Ben Jarvis
+#
+# SPDX-License-Identifier: LGPL
 
 add_library(evpl_rdmacm SHARED rdmacm.c)
 

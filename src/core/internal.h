@@ -1,8 +1,6 @@
-/*
- * SPDX-FileCopyrightText: 2024 Ben Jarvis
- *
- * SPDX-License-Identifier: LGPL
- */
+// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
 
 #pragma once
 #include <stdint.h>
@@ -10,8 +8,7 @@
 #include <stddef.h>
 
 #define EVPL_INTERNAL      1
-
-#include "core/evpl.h"
+struct evpl;
 
 #define NS_PER_S           (1000000000UL)
 

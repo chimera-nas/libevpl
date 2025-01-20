@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #define _GNU_SOURCE
 #include <time.h>
 
@@ -10,7 +14,7 @@
 #include "rpc2_xdr.h"
 #include "rpcrdma1_xdr.h"
 #include "rpc2/rpc2_program.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 
 struct evpl_rpc2_server {
     int                        protocol;

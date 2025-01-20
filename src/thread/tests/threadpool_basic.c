@@ -1,6 +1,10 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #include "core/test_log.h"
 #include "thread/thread.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 
 void *
 thread_init(

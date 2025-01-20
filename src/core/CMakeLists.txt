@@ -1,10 +1,9 @@
-# SPDX-FileCopyrightText: 2024 Ben Jarvis
+# SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 #
 # SPDX-License-Identifier: LGPL
 
 set(CORE_SRC
     evpl.c
-    evpl.h
     buffer.c
     config.c
     internal.c

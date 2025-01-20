@@ -1,10 +1,14 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #pragma once
 
 #include <netinet/tcp.h> // For TCP_NODELAY
 
 
 #include "uthash/utlist.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 
 #define evpl_socket_debug(...) evpl_debug("socket", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_socket_info(...)  evpl_info("socket", __FILE__, __LINE__, __VA_ARGS__)

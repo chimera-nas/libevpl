@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
 #define _GNU_SOURCE
 #include <string.h>
 #include <stdio.h>
@@ -12,7 +16,7 @@
 #include <sys/ioctl.h>
 #include "vfio.h"
 #include "core/internal.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/event.h"
 #include "core/internal.h"
 #include "core/deferral.h"
