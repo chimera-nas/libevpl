@@ -24,8 +24,8 @@
 #include "core/bind.h"
 #include "core/protocol.h"
 
-#include "socket/common.h"
-#include "socket/udp.h"
+#include "core/socket/common.h"
+#include "core/socket/udp.h"
 
 void
 evpl_socket_udp_read(

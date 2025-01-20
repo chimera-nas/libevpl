@@ -23,5 +23,9 @@
   "editor.tabSize": 4,
   "editor.formatOnSave": true,
   "files.associations": {
+    "enum_xdr.h": "c",
+    "union_xdr.h": "c",
+    "uint32_vector_one_xdr.h": "c",
+    "uint32_array_xdr.h": "c"
   }
 }

@@ -20,7 +20,7 @@
 #include "core/event.h"
 #include "core/protocol.h"
 #include "core/deferral.h"
-#include "io_uring/io_uring.h"
+#include "core/io_uring/io_uring.h"
 
 #define evpl_io_uring_debug(...) evpl_debug("io_uring", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_io_uring_info(...)  evpl_info("io_uring", __FILE__, __LINE__, __VA_ARGS__)

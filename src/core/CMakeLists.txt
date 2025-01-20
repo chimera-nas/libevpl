@@ -17,25 +17,37 @@ else()
     message(FATAL_ERROR "No supported EVPL_MECH specified")
 endif()
 
-add_library(evpl SHARED ${CORE_SRC})
+set(BACKEND_LIBDEPS)
 
-target_link_libraries(evpl evpl_socket evpl_thread)
+set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h)
+add_subdirectory(socket)
+
+if (HAVE_VFIO)
+    set(CORE_SRC ${CORE_SRC} vfio/vfio.c vfio/vfio.h vfio/nvme.h)
+    add_subdirectory(vfio)
+endif()
 
 if (HAVE_IO_URING)
-    target_link_libraries(evpl evpl_io_uring)
+    set(CORE_SRC ${CORE_SRC} io_uring/io_uring.c io_uring/io_uring.h)
+    add_subdirectory(io_uring)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} uring)
 endif()
 
 if (HAVE_RDMACM)
-    target_link_libraries(evpl evpl_rdmacm)
+    set(CORE_SRC ${CORE_SRC} rdmacm/rdmacm.c rdmacm/rdmacm.h)
+    add_subdirectory(rdmacm)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} rdmacm)
 endif()
 
 if (HAVE_XLIO)
-    target_link_libraries(evpl evpl_xlio)
+    set(CORE_SRC ${CORE_SRC} xlio/xlio.c xlio/xlio.h xlio/tcp.c xlio/common.h)
+    add_subdirectory(xlio)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} xlio)
 endif()
 
-if (HAVE_VFIO)
-    target_link_libraries(evpl evpl_vfio)
-endif()
+add_library(evpl SHARED ${CORE_SRC})
+
+target_link_libraries(evpl evpl_thread ${BACKEND_LIBDEPS})
 
 install(TARGETS evpl DESTINATION lib)
 

@@ -62,27 +62,6 @@ if (NOT DISABLE_TESTS)
 endif()
 
 add_subdirectory(core)
-add_subdirectory(socket)
 add_subdirectory(thread)
 add_subdirectory(rpc2)
 add_subdirectory(http)
-if (HAVE_VFIO)
-    add_subdirectory(vfio)
-endif()
-
-if (HAVE_IO_URING)
-    add_subdirectory(io_uring)
-endif()
-
-if (HAVE_RDMACM)
-    add_subdirectory(rdmacm)
-endif()
-
-if (HAVE_XLIO)
-    add_subdirectory(xlio)
-endif()
-
-
-
-
-#add_subdirectory(rpc2)

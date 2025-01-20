@@ -16,7 +16,7 @@
 #include "uthash/uthash.h"
 #include "uthash/utlist.h"
 
-#include "rdmacm/rdmacm.h"
+#include "core/rdmacm/rdmacm.h"
 #include "core/internal.h"
 #include "evpl/evpl.h"
 #include "core/protocol.h"

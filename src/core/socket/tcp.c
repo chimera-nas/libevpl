@@ -21,8 +21,8 @@
 #include "core/bind.h"
 #include "core/protocol.h"
 
-#include "socket/common.h"
-#include "socket/tcp.h"
+#include "core/socket/common.h"
+#include "core/socket/tcp.h"
 
 static inline void
 evpl_check_conn(
