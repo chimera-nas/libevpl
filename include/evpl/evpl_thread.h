@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifndef EVPL_INCLUDED
+#error "Do not include evpl_thread.h directly, include evpl/evpl.h instead"
+#endif
+
 struct evpl;
 struct evpl_thread;
 struct evpl_threadpool;

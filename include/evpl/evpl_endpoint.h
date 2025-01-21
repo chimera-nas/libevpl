@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifndef EVPL_INCLUDED
+#error "Do not include evpl_endpoint.h directly, include evpl/evpl.h instead"
+#endif
+
 struct evpl_endpoint;
 struct evpl_address;
 

@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifndef EVPL_INCLUDED
+#error "Do not include evpl_rdma.h directly, include evpl/evpl.h instead"
+#endif
+
 void evpl_rdma_read(
     struct evpl *evpl,
     struct evpl_bind *bind,

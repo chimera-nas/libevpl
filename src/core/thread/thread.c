@@ -9,7 +9,6 @@
 #include "core/internal.h"
 #include "evpl/evpl.h"
 #include "core/event.h"
-#include "core/thread/thread.h"
 
 #define evpl_thread_debug(...) evpl_debug("thread", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_thread_info(...)  evpl_info("thread", __FILE__, __LINE__, __VA_ARGS__)

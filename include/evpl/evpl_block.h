@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifndef EVPL_INCLUDED
+#error "Do not include evpl_block.h directly, include evpl/evpl.h instead"
+#endif
+
 #include <stdint.h>
 
 struct evpl_block_device;

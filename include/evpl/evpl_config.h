@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifndef EVPL_INCLUDED
+#error "Do not include evpl_config.h directly, include evpl/evpl.h instead"
+#endif
+
 struct evpl_config *
 evpl_config_init(
     void);

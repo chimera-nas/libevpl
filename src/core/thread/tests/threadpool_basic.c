@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: LGPL
 
 #include "core/test_log.h"
-#include "core/thread/thread.h"
 #include "evpl/evpl.h"
 
 void *

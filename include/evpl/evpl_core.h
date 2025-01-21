@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifndef EVPL_INCLUDED
+#error "Do not include evpl_core.h directly, include evpl/evpl.h instead"
+#endif
+
 enum evpl_framework_id
 {
     EVPL_FRAMEWORK_RDMACM = 0,

@@ -45,7 +45,7 @@ if (HAVE_XLIO)
     set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} xlio)
 endif()
 
-set(CORE_SRC ${CORE_SRC} thread/thread.c thread/thread.h)
+set(CORE_SRC ${CORE_SRC} thread/thread.c)
 add_subdirectory(thread)
 
 add_library(evpl SHARED ${CORE_SRC})
