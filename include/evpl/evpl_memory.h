@@ -1,0 +1,58 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL
+
+#pragma once
+
+struct evpl_buffer;
+
+#ifndef EVPL_INTERNAL
+struct evpl_iovec
+{
+    void *data;
+    unsigned int length;
+    unsigned int __pad;
+    unsigned long __private;
+};
+#else  // ifndef EVPL_INTERNAL
+struct evpl_iovec;
+#endif // ifndef EVPL_INTERNAL
+
+int evpl_iovec_alloc(
+    struct evpl *evpl,
+    unsigned int length,
+    unsigned int alignment,
+    unsigned int max_iovecs,
+    struct evpl_iovec *r_iovec);
+
+int evpl_iovec_reserve(
+    struct evpl *evpl,
+    unsigned int length,
+    unsigned int alignment,
+    unsigned int max_vec,
+    struct evpl_iovec *r_iovec);
+
+void evpl_iovec_commit(
+    struct evpl *evpl,
+    unsigned int alignment,
+    struct evpl_iovec *iovecs,
+    int niovs);
+
+void evpl_iovec_release(
+    struct evpl_iovec *iovec);
+
+
+const void *
+evpl_iovec_data(
+    const struct evpl_iovec *iovec);
+
+unsigned int
+evpl_iovec_length(
+    const struct evpl_iovec *iovec);
+
+void evpl_iovec_addref(
+    struct evpl_iovec *iovec);
+
+void *
+evpl_slab_alloc(
+    void);

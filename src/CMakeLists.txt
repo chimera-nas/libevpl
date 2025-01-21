@@ -62,6 +62,5 @@ if (NOT DISABLE_TESTS)
 endif()
 
 add_subdirectory(core)
-add_subdirectory(thread)
 add_subdirectory(rpc2)
 add_subdirectory(http)

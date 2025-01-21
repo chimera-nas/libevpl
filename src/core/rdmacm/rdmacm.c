@@ -22,7 +22,7 @@
 #include "core/protocol.h"
 #include "core/bind.h"
 #include "core/endpoint.h"
-#include "thread/thread.h"
+#include "core/thread/thread.h"
 
 #define evpl_rdmacm_debug(...) evpl_debug("rdmacm", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_rdmacm_info(...)  evpl_info("rdmacm", __FILE__, __LINE__, __VA_ARGS__)
