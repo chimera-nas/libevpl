@@ -57,7 +57,7 @@ evpl_iovec_ring_check(const struct evpl_iovec_ring *ring)
         bytes += iovec->length;
 
         evpl_core_abort_if(iovec->length < 1, "zero length iovec in ring");
-        evpl_core_abort_if(iovec->buffer->refcnt < 1,
+        evpl_core_abort_if(evpl_iovec_buffer(iovec)->refcnt < 1,
                            "iovec in ring with no refcnt!");
 
         cur = (cur + 1) & ring->mask;
@@ -292,7 +292,7 @@ evpl_iovec_ring_copyv(
 
         iovec = &ring->iovec[ring->tail];
 
-        out[niov].buffer = iovec->buffer;
+        out[niov].private = iovec->private;
         out[niov].data   = iovec->data;
 
         if (left < iovec->length) {
@@ -356,7 +356,7 @@ evpl_iovec_ring_append(
     } else {
         head         = evpl_iovec_ring_add_new(ring);
         head->data   = append->data;
-        head->buffer = append->buffer;
+        head->private = append->private;
         head->length = length;
         evpl_iovec_incref(head);
     }

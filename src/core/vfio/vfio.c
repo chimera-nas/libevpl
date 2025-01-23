@@ -750,7 +750,7 @@ evpl_vfio_prepare_prplist(
 
     if (niov == 1 && iov[0].length <= 4096) {
 
-        mr = evpl_buffer_framework_private(iov[0].buffer, EVPL_FRAMEWORK_VFIO);
+        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
 
         cmd->common.prp1 = mr->iova + (iov[0].data - mr->buffer);
         cmd->common.prp2 = 0;
@@ -759,7 +759,7 @@ evpl_vfio_prepare_prplist(
 
     } else if (niov == 1 && iov[0].length <= 8192) {
 
-        mr = evpl_buffer_framework_private(iov[0].buffer, EVPL_FRAMEWORK_VFIO);
+        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
 
         cmd->common.prp1 = mr->iova + (iov[0].data - mr->buffer);
         cmd->common.prp2 = mr->iova + (iov[0].data - mr->buffer) + 4096;
@@ -768,11 +768,11 @@ evpl_vfio_prepare_prplist(
 
     } else if (niov == 2 && iov[0].length <= 4096 && iov[1].length <= 4096) {
 
-        mr = evpl_buffer_framework_private(iov[0].buffer, EVPL_FRAMEWORK_VFIO);
+        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
 
         cmd->common.prp1 = mr->iova + (iov[0].data - mr->buffer);
 
-        mr = evpl_buffer_framework_private(iov[1].buffer, EVPL_FRAMEWORK_VFIO);
+        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[1]), EVPL_FRAMEWORK_VFIO);
 
         cmd->common.prp2 = mr->iova + (iov[1].data - mr->buffer);
 
@@ -780,7 +780,7 @@ evpl_vfio_prepare_prplist(
 
     } else {
 
-        mr               = evpl_buffer_framework_private(iov[0].buffer, EVPL_FRAMEWORK_VFIO);
+        mr               = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
         cmd->common.prp1 = mr->iova + (iov[0].data - mr->buffer);
         cmd->common.prp2 = queue->prplist->iova + (cid << 12);
 
@@ -802,7 +802,7 @@ evpl_vfio_prepare_prplist(
                 continue;
             }
 
-            mr = evpl_buffer_framework_private(iov[i].buffer, EVPL_FRAMEWORK_VFIO);
+            mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[i]), EVPL_FRAMEWORK_VFIO);
 
             while (offset < iov[i].length) {
                 *prpc = mr->iova + (iov[i].data - mr->buffer) + offset;

@@ -922,7 +922,7 @@ evpl_iovec_reserve(
 
         iovec = &r_iovec[niovs++];
 
-        iovec->buffer = buffer;
+        iovec->private = buffer;
         iovec->data   = buffer->data + buffer->used + pad;
         iovec->length = chunk - pad;
 
@@ -953,7 +953,7 @@ evpl_iovec_commit(
 
         iovec = &iovecs[i];
 
-        buffer = iovec->buffer;
+        buffer = evpl_iovec_buffer(iovec);
 
         if (buffer) {
 
@@ -1004,7 +1004,7 @@ evpl_iovec_alloc_whole(
 
     r_iovec->data   = buffer->data;
     r_iovec->length = buffer->size;
-    r_iovec->buffer = buffer;
+    r_iovec->private = buffer;
 } /* evpl_iovec_alloc_whole */
 
 void
@@ -1023,7 +1023,7 @@ evpl_iovec_alloc_datagram(
 
     r_iovec->data   = buffer->data + buffer->used;
     r_iovec->length = size;
-    r_iovec->buffer = buffer;
+    r_iovec->private = buffer;
 
     buffer->used += size;
     atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
@@ -1390,7 +1390,7 @@ evpl_peekv(
         out         = &iovecs[niovs++];
         out->data   = cur->data;
         out->length = chunk;
-        out->buffer = cur->buffer;
+        out->private = cur->private;
 
         left -= chunk;
         cur   = evpl_iovec_ring_next(&bind->iovec_recv, cur);
@@ -1502,8 +1502,8 @@ evpl_readv(
 
         out->data   = cur->data;
         out->length = chunk;
-        out->buffer = cur->buffer;
-        atomic_fetch_add_explicit(&out->buffer->refcnt, 1, memory_order_relaxed)
+        out->private = cur->private;
+        atomic_fetch_add_explicit(&evpl_iovec_buffer(out)->refcnt, 1, memory_order_relaxed)
         ;
 
         left -= chunk;
@@ -1588,8 +1588,8 @@ evpl_recvv(
 
         out->data   = cur->data;
         out->length = chunk;
-        out->buffer = cur->buffer;
-        atomic_fetch_add_explicit(&out->buffer->refcnt, 1, memory_order_relaxed)
+        out->private = cur->private;
+        atomic_fetch_add_explicit(&evpl_iovec_buffer(out)->refcnt, 1, memory_order_relaxed)
         ;
 
         left -= chunk;

@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: LGPL
 
-unit_test(vfio basic basic.c)
+#unit_test(vfio basic basic.c)

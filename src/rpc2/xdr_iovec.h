@@ -16,10 +16,10 @@ typedef struct evpl_iovec xdr_iovec;
 
 #define xdr_iovec_copy_private(out, in) \
     {                                   \
-        (out)->__private = (in)->__private; \
+        (out)->private = (in)->private; \
     }
 
 #define xdr_iovec_set_private_null(out) \
     {                                   \
-        (out)->__private = NULL;          \
+        (out)->private = NULL;          \
     }

@@ -171,7 +171,7 @@ evpl_rpc2_iovec_skip(
         } else {
             outc->data   = inc->data + left;
             outc->length = inc->length - left;
-            outc->buffer = inc->buffer;
+            outc->private = inc->private;
             inc++;
             outc++;
             left = 0;
@@ -181,7 +181,7 @@ evpl_rpc2_iovec_skip(
     while (inc < in_iov + niov) {
         outc->data   = inc->data;
         outc->length = inc->length;
-        outc->buffer = inc->buffer;
+        outc->private = inc->private;
         inc++;
         outc++;
     }
@@ -395,7 +395,7 @@ evpl_rpc2_event(
 
                         segment_iov.data   = msg->read_chunk.iov->data + segment_offset;
                         segment_iov.length = read_list->entry.target.length;
-                        segment_iov.buffer = msg->read_chunk.iov->buffer;
+                        segment_iov.private = msg->read_chunk.iov->private;
 
                         evpl_rdma_read(evpl, msg->bind,
                                        read_list->entry.target.handle, read_list->entry.target.offset,
@@ -588,7 +588,7 @@ evpl_rpc2_send_reply(
                 if (target->length) {
                     segment_iov.data   = msg->write_chunk.iov->data + segment_offset;
                     segment_iov.length = target->length;
-                    segment_iov.buffer = msg->write_chunk.iov->buffer;
+                    segment_iov.private = msg->write_chunk.iov->private;
 
                     evpl_rpc2_abort_if(msg->write_chunk.niov > 1, "write_chunk.niov > 1 unsupported atm");
 
@@ -692,7 +692,7 @@ evpl_rpc2_send_reply(
 
         msg->reply_iov->data   = msg_iov[0].data;
         msg->reply_iov->length = offset;
-        msg->reply_iov->buffer = msg_iov[0].buffer;
+        msg->reply_iov->private = msg_iov[0].private;
         msg->reply_niov        = 1;
         msg->reply_length      = offset;
 
@@ -710,7 +710,7 @@ evpl_rpc2_send_reply(
 
             reply_segment_iov->data   = msg_iov[0].data + reply_offset;
             reply_segment_iov->length = reply_chunk->target[i].length;
-            reply_segment_iov->buffer = msg_iov[0].buffer;
+            reply_segment_iov->private = msg_iov[0].private;
 
             evpl_rdma_write(evpl, msg->bind,
                             reply_chunk->target[i].handle,

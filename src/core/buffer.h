@@ -116,7 +116,7 @@ evpl_iovec_memcpy(
 static inline void
 evpl_iovec_decref(struct evpl_iovec *iovec)
 {
-    struct evpl_buffer *buffer = iovec->buffer;
+    struct evpl_buffer *buffer = evpl_iovec_buffer(iovec);
 
     if (!buffer) {
         return;
@@ -129,7 +129,7 @@ evpl_iovec_decref(struct evpl_iovec *iovec)
 static inline void
 evpl_iovec_incref(struct evpl_iovec *iovec)
 {
-    struct evpl_buffer *buffer = iovec->buffer;
+    struct evpl_buffer *buffer = evpl_iovec_buffer(iovec);
 
     atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 

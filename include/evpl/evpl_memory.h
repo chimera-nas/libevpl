@@ -10,17 +10,13 @@
 
 struct evpl_buffer;
 
-#ifndef EVPL_INTERNAL
 struct evpl_iovec
 {
-    void *data;
-    unsigned int length;
-    unsigned int __pad;
-    unsigned long __private;
+    void           *data;
+    unsigned int    length;
+    unsigned int    pad;
+    void            *private; /* for internal use by livbevpl only */
 };
-#else  // ifndef EVPL_INTERNAL
-struct evpl_iovec;
-#endif // ifndef EVPL_INTERNAL
 
 int evpl_iovec_alloc(
     struct evpl *evpl,

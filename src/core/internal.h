@@ -7,19 +7,13 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-#define EVPL_INTERNAL      1
-struct evpl;
+#include "evpl/evpl.h"
+
+#define evpl_iovec_buffer(iov) ((struct evpl_buffer *) (iov)->private)
 
 #define NS_PER_S           (1000000000UL)
 
 #define EVPL_BVEC_EXTERNAL 0x01
-
-struct evpl_iovec {
-    void               *data;
-    unsigned int        length;
-    unsigned int        pad;
-    struct evpl_buffer *buffer;
-};
 
 struct evpl_config {
     unsigned int max_pending;

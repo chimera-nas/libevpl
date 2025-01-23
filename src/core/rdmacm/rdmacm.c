@@ -436,7 +436,7 @@ evpl_rdmacm_fill_srq(
 
         evpl_iovec_alloc_datagram(evpl, &req->iovec, size);
 
-        mrset = evpl_buffer_framework_private(req->iovec.buffer,
+        mrset = evpl_buffer_framework_private(evpl_iovec_buffer(&req->iovec),
                                               EVPL_FRAMEWORK_RDMACM);
 
         mr = mrset[dev->index];
@@ -1310,7 +1310,7 @@ evpl_rdmacm_flush_datagram(
 
             cur = evpl_iovec_ring_tail(&bind->iovec_send);
 
-            mrset = evpl_buffer_framework_private(cur->buffer,
+            mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
                                                   EVPL_FRAMEWORK_RDMACM);
 
             mr = mrset[rdmacm_id->devindex];
@@ -1319,7 +1319,7 @@ evpl_rdmacm_flush_datagram(
             sge[nsge].length = cur->length;
             sge[nsge].lkey   = mr->lkey;
 
-            sr->bufref[nsge] = cur->buffer;
+            sr->bufref[nsge] = evpl_iovec_buffer(cur);
 
             len += cur->length;
 
@@ -1409,7 +1409,7 @@ evpl_rdmacm_flush_stream(
                 break;
             }
 
-            mrset = evpl_buffer_framework_private(cur->buffer,
+            mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
                                                   EVPL_FRAMEWORK_RDMACM);
 
             mr = mrset[rdmacm_id->devindex];
@@ -1418,7 +1418,7 @@ evpl_rdmacm_flush_stream(
             sge[nsge].length = cur->length;
             sge[nsge].lkey   = mr->lkey;
 
-            sr->bufref[nsge] = cur->buffer;
+            sr->bufref[nsge] = evpl_iovec_buffer(cur);
 
             nsge++;
             sr->length += cur->length;
@@ -1572,7 +1572,7 @@ evpl_rdmacm_rdma_read(
 
         cur = &iov[i];
 
-        mrset = evpl_buffer_framework_private(cur->buffer,
+        mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
                                               EVPL_FRAMEWORK_RDMACM);
 
         mr = mrset[rdmacm_id->devindex];
@@ -1632,7 +1632,7 @@ evpl_rdmacm_rdma_write(
 
         cur = &iov[i];
 
-        mrset = evpl_buffer_framework_private(cur->buffer,
+        mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
                                               EVPL_FRAMEWORK_RDMACM);
 
         mr = mrset[rdmacm_id->devindex];
