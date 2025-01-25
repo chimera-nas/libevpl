@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 #include "core/internal.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/event.h"
 #include "core/buffer.h"
 #include "core/endpoint.h"
@@ -44,7 +44,7 @@ evpl_xlio_prepare_iov(
 
     iovec = &ring->iovec[pos];
 
-    buffer = iovec->buffer;
+    buffer = iovec->private;
 
     mrset = (struct ibv_mr **) evpl_buffer_framework_private(buffer,
                                                              EVPL_FRAMEWORK_XLIO);
@@ -61,7 +61,7 @@ evpl_xlio_prepare_iov(
 
         zc = evpl_xlio_alloc_zc(xlio);
 
-        zc->buffer = iovec->buffer;
+        zc->buffer = iovec->private;
         zc->length = iovec->length;
         atomic_fetch_add_explicit(&zc->buffer->refcnt, 1, memory_order_relaxed);
 
@@ -112,7 +112,7 @@ evpl_xlio_tcp_read(
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
             for (i = 0; i < niov; ++i) {
-                evpl_iovec_release(evpl, &iovec[i]);
+                evpl_iovec_release(&iovec[i]);
             }
 
         }

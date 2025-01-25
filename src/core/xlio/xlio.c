@@ -23,7 +23,7 @@
 
 #include "core/internal.h"
 #include "xlio.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/protocol.h"
 #include "core/evpl_shared.h"
 
@@ -131,7 +131,7 @@ evpl_xlio_cleanup(void *private_data)
 
 static void
 evpl_xlio_socket_event(
-    xlio_socket_t,
+    xlio_socket_t sock,
     uintptr_t userdata_sq,
     int       event,
     int       value)
@@ -179,7 +179,7 @@ evpl_xlio_socket_event(
 
 static void
 evpl_xlio_socket_completion(
-    xlio_socket_t,
+    xlio_socket_t sock,
     uintptr_t userdata_sq,
     uintptr_t userdata_op)
 {
@@ -200,7 +200,7 @@ evpl_xlio_socket_completion(
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
-    evpl_buffer_release(evpl, zc->buffer);
+    evpl_buffer_release(zc->buffer);
 
     --s->zc_pending;
 
@@ -268,7 +268,7 @@ evpl_xlio_socket_accept(
 
 static void
 evpl_xlio_socket_rx(
-    xlio_socket_t,
+    xlio_socket_t sock,
     uintptr_t        userdata_sq,
     void            *data,
     size_t           len,
@@ -289,7 +289,7 @@ evpl_xlio_socket_rx(
 
     iovec->data              = data;
     iovec->length            = len;
-    iovec->buffer            = buffer;
+    iovec->private           = buffer;
     bind->iovec_recv.length += len;
 
     s->readable = 1;

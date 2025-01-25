@@ -12,7 +12,7 @@
 #include <infiniband/verbs.h>
 
 #include "core/internal.h"
-#include "core/evpl.h"
+#include "evpl/evpl.h"
 #include "core/protocol.h"
 #include "core/endpoint.h"
 #include "core/event.h"
@@ -20,17 +20,17 @@
 
 #include "utlist.h"
 
-#define evpl_xlio_debug(...) evpl_debug("xlio", __VA_ARGS__)
-#define evpl_xlio_info(...)  evpl_info("xlio", __VA_ARGS__)
-#define evpl_xlio_error(...) evpl_error("xlio", __VA_ARGS__)
-#define evpl_xlio_fatal(...) evpl_fatal("xlio", __VA_ARGS__)
-#define evpl_xlio_abort(...) evpl_abort("xlio", __VA_ARGS__)
+#define evpl_xlio_debug(...) evpl_debug("xlio",__FILE__, __LINE__, __VA_ARGS__)
+#define evpl_xlio_info(...)  evpl_info("xlio", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_xlio_error(...) evpl_error("xlio", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_xlio_fatal(...) evpl_fatal("xlio", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_xlio_abort(...) evpl_abort("xlio", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_xlio_fatal_if(cond, ...) \
-        evpl_fatal_if(cond, "xlio", __VA_ARGS__)
+        evpl_fatal_if(cond, "xlio", __FILE__, __LINE__, __VA_ARGS__)
 
 #define evpl_xlio_abort_if(cond, ...) \
-        evpl_abort_if(cond, "xlio", __VA_ARGS__)
+        evpl_abort_if(cond, "xlio", __FILE__, __LINE__, __VA_ARGS__)
 
 #define EVPL_XLIO_MAX_PD 16
 

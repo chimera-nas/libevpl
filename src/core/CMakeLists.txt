@@ -36,7 +36,7 @@ endif()
 if (HAVE_RDMACM)
     set(CORE_SRC ${CORE_SRC} rdmacm/rdmacm.c rdmacm/rdmacm.h)
     add_subdirectory(rdmacm)
-    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} rdmacm)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} rdmacm ibverbs)
 endif()
 
 if (HAVE_XLIO)
