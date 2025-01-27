@@ -27,7 +27,7 @@ void evpl_core_remove(
     struct evpl_core  *evc,
     struct evpl_event *event);
 
-void evpl_core_wait(
+int evpl_core_wait(
     struct evpl_core *evc,
     int               max_msecs);
 

@@ -81,9 +81,6 @@ client_thread(void *arg)
             state->sent++;
             state->inflight++;
 
-            evpl_test_info("client sent sent %u recv %u value %u",
-                           state->sent, state->recv, state->value);
-
             state->value++;
 
         }

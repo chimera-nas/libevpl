@@ -10,11 +10,16 @@
 #include "evpl/evpl.h"
 #include "core/event.h"
 
-#define evpl_thread_debug(...) evpl_debug("thread", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_thread_info(...)  evpl_info("thread", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_thread_error(...) evpl_error("thread", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_thread_fatal(...) evpl_fatal("thread", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_thread_abort(...) evpl_abort("thread", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_thread_debug(...) evpl_debug("thread", __FILE__, __LINE__, \
+                                          __VA_ARGS__)
+#define evpl_thread_info(...)  evpl_info("thread", __FILE__, __LINE__, \
+                                         __VA_ARGS__)
+#define evpl_thread_error(...) evpl_error("thread", __FILE__, __LINE__, \
+                                          __VA_ARGS__)
+#define evpl_thread_fatal(...) evpl_fatal("thread", __FILE__, __LINE__, \
+                                          __VA_ARGS__)
+#define evpl_thread_abort(...) evpl_abort("thread", __FILE__, __LINE__, \
+                                          __VA_ARGS__)
 
 #define evpl_thread_fatal_if(cond, ...) \
         evpl_fatal_if(cond, "thread", __FILE__, __LINE__, __VA_ARGS__)
@@ -50,10 +55,9 @@ evpl_thread_event(
 
     rc = read(event->fd, &word, sizeof(word));
 
-    evpl_thread_abort_if(rc != sizeof(word),
-                         "Short read from thread eventfd");
-
-    evpl_event_mark_unreadable(event);
+    if (rc != sizeof(word)) {
+        evpl_event_mark_unreadable(event);
+    }
 
 } /* evpl_thread_event */
 
@@ -90,7 +94,7 @@ evpl_thread_function(void *ptr)
         evpl_thread->shutdown_callback(evpl_thread->private_data);
     }
 
-    evpl_remove_event(evpl, &evpl_thread->event);
+    //evpl_remove_event(evpl, &evpl_thread->event);
 
     evpl_destroy(evpl);
 
@@ -122,7 +126,7 @@ evpl_thread_create(
     evpl_thread->private_data      = private_data;
     evpl_thread->run               = 1;
 
-    evpl_thread->eventfd = eventfd(0, 0);
+    evpl_thread->eventfd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
 
     evpl_thread_abort_if(evpl_thread->eventfd < 0,
                          "Failed to create eventfd for thread");
@@ -140,6 +144,8 @@ evpl_thread_destroy(struct evpl_thread *evpl_thread)
     ssize_t  rc;
 
     evpl_thread->run = 0;
+
+    __sync_synchronize();
 
     rc = write(evpl_thread->eventfd, &word, sizeof(word));
 

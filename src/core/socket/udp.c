@@ -44,6 +44,10 @@ evpl_socket_udp_read(
     ssize_t                       res;
     int                           i, nmsg = s->config->max_datagram_batch;
 
+    if (unlikely(s->fd < 0)) {
+        return;
+    }
+
     datagrams = alloca(sizeof(struct evpl_socket_datagram * ) * nmsg);
     msgvecs   = alloca(sizeof(struct mmsghdr) * nmsg);
     sockaddrs = alloca(sizeof(struct sockaddr_storage) * nmsg);
@@ -76,11 +80,11 @@ evpl_socket_udp_read(
 
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
         }
         goto out;
     } else if (res == 0) {
-        evpl_defer(evpl, &bind->close_deferral);
+        evpl_close(evpl, bind);
         goto out;
     }
 
@@ -141,6 +145,10 @@ evpl_socket_udp_write(
     struct mmsghdr     *msgvec;
     ssize_t             res, total;
 
+    if (unlikely(s->fd < 0)) {
+        return;
+    }
+
     dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
     if (!dgram) {
@@ -183,7 +191,7 @@ evpl_socket_udp_write(
 
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
         }
         goto out;
     }
@@ -206,7 +214,7 @@ evpl_socket_udp_write(
         evpl_event_write_disinterest(event);
 
         if (bind->flags & EVPL_BIND_FINISH) {
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
         }
     }
 
@@ -248,6 +256,10 @@ evpl_socket_udp_bind(
 {
     struct evpl_socket     *s = evpl_bind_private(evbind);
     int                     flags, rc;
+
+    if (unlikely(s->fd < 0)) {
+        return;
+    }
 
 #if 0
     struct sockaddr_storage addr;
@@ -297,11 +309,12 @@ evpl_socket_udp_bind(
 } /* evpl_socket_udp_bind */
 
 struct evpl_protocol evpl_socket_udp = {
-    .id        = EVPL_DATAGRAM_SOCKET_UDP,
-    .connected = 0,
-    .stream    = 0,
-    .name      = "DATAGRAM_SOCKET_UDP",
-    .bind      = evpl_socket_udp_bind,
-    .close     = evpl_socket_close,
-    .flush     = evpl_socket_flush,
+    .id            = EVPL_DATAGRAM_SOCKET_UDP,
+    .connected     = 0,
+    .stream        = 0,
+    .name          = "DATAGRAM_SOCKET_UDP",
+    .bind          = evpl_socket_udp_bind,
+    .pending_close = evpl_socket_pending_close,
+    .close         = evpl_socket_close,
+    .flush         = evpl_socket_flush,
 };

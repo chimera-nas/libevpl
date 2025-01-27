@@ -73,37 +73,20 @@ client_thread(void *arg)
 
     bind = evpl_bind(evpl, proto, me, client_callback, state);
 
-    while (state->run) {
+    while (state->sent < total_bytes) {
 
-        evpl_test_info(
-            "client start loop sent %u recv %u sent_bytes %lu recv_bytes %lu total_bytes %lu",
-            state->sent_msg, state->recv_msg, state->sent,
-            state->recv, total_bytes);
+        length = (rand() % max_datagram) | 1;
 
-        if (state->recv == total_bytes &&
-            state->sent == total_bytes) {
-            evpl_finish(evpl, bind);
+        if (length > total_bytes - state->sent) {
+            length = total_bytes - state->sent;
         }
 
-        while ((state->sent_msg <= state->recv_msg ||
-                state->sent_msg - state->recv_msg < max_delta ||
-                state->recv == total_bytes) &&
-               state->sent < total_bytes) {
+        evpl_sendtoep(evpl, bind, them, buffer, length);
 
-            length = (rand() % max_datagram) | 1;
+        state->sent += length;
+        state->sent_msg++;
 
-            if (length > total_bytes - state->sent) {
-                length = total_bytes - state->sent;
-            }
-
-            evpl_sendtoep(evpl, bind, them, buffer, length);
-
-            state->sent += length;
-            state->sent_msg++;
-
-        }
-
-        evpl_wait(evpl, -1);
+        evpl_wait(evpl, 0);
     }
 
     evpl_destroy(evpl);

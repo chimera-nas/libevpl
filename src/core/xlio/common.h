@@ -20,7 +20,7 @@
 
 #include "utlist.h"
 
-#define evpl_xlio_debug(...) evpl_debug("xlio",__FILE__, __LINE__, __VA_ARGS__)
+#define evpl_xlio_debug(...) evpl_debug("xlio", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_xlio_info(...)  evpl_info("xlio", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_xlio_error(...) evpl_error("xlio", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_xlio_fatal(...) evpl_fatal("xlio", __FILE__, __LINE__, __VA_ARGS__)
@@ -184,8 +184,8 @@ evpl_xlio_buffer_alloc(
     return buffer;
 } // evpl_xlio_buffer_alloc
 
-static inline void
-evpl_xlio_close(
+static void
+evpl_xlio_pending_close(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
@@ -214,8 +214,15 @@ evpl_xlio_close(
 
         s->socket = 0;
     }
+} /* evpl_xlio_pending_close */
 
-} /* evpl_tcp_close_conn */
+static void
+evpl_xlio_close(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    /* nothing more to do */
+} /* evpl_xlio_close */
 
 static inline void
 evpl_xlio_socket_check_active(

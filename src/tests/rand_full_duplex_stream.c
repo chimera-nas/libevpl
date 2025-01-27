@@ -46,9 +46,6 @@ dispatch(
         return;
     }
 
-    evpl_test_info("dispatch sent_bytes %lu recv_bytes %lu total_bytes %lu",
-                   state->sent, state->recv, total_bytes);
-
     if (state->sent == total_bytes &&
         state->recv == total_bytes) {
         evpl_finish(evpl, state->bind);
@@ -74,8 +71,6 @@ dispatch(
 
         state->sent += length;
 
-        evpl_test_info("client sent_length %u sent %lu recv %lu",
-                       length, state->sent, state->recv);
     }
 
 } /* dispatch */
@@ -107,8 +102,7 @@ client_callback(
                 length = evpl_read(evpl, bind, state->buffer, max_xfer);
 
                 state->recv += length;
-                evpl_test_info("client recv_length %u sent %lu recv %lu",
-                               length, state->sent, state->recv);
+
             } while (length > 0);
 
             break;
@@ -154,13 +148,11 @@ client_thread(void *arg)
 
     pthread_cond_signal(&state->cond);
 
-    evpl_test_info("entering loop state->run %d", state->run);
     while (state->run) {
         evpl_wait(evpl, -1);
     }
 
-    evpl_test_info("exit loop state->run %d", state->run);
-
+    evpl_test_info("calling evpl destroy");
     evpl_destroy(evpl);
 
     free(state->buffer);

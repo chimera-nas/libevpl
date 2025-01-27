@@ -80,6 +80,10 @@ struct evpl_protocol {
      * Callbacks needed for all protocols
      */
 
+    void                   (*pending_close)(
+        struct evpl      *evpl,
+        struct evpl_bind *bind);
+
     void                   (*close)(
         struct evpl      *evpl,
         struct evpl_bind *bind);

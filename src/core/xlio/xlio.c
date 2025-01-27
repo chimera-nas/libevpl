@@ -132,9 +132,9 @@ evpl_xlio_cleanup(void *private_data)
 static void
 evpl_xlio_socket_event(
     xlio_socket_t sock,
-    uintptr_t userdata_sq,
-    int       event,
-    int       value)
+    uintptr_t     userdata_sq,
+    int           event,
+    int           value)
 {
     struct evpl_xlio_socket *s    = (struct evpl_xlio_socket *) userdata_sq;
     struct evpl_bind        *bind = evpl_private2bind(s);
@@ -168,11 +168,11 @@ evpl_xlio_socket_event(
             break;
         case XLIO_SOCKET_EVENT_CLOSED:
             evpl_xlio_debug("socket %p closed", s);
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
             break;
         case XLIO_SOCKET_EVENT_ERROR:
             evpl_xlio_debug("socket %p errored", s);
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
             break;
     } /* switch */
 } /* evpl_xlio_socket_event */
@@ -180,8 +180,8 @@ evpl_xlio_socket_event(
 static void
 evpl_xlio_socket_completion(
     xlio_socket_t sock,
-    uintptr_t userdata_sq,
-    uintptr_t userdata_op)
+    uintptr_t     userdata_sq,
+    uintptr_t     userdata_op)
 {
     struct evpl_xlio_socket *s    = (struct evpl_xlio_socket *) userdata_sq;
     struct evpl             *evpl = s->evpl;
@@ -268,7 +268,7 @@ evpl_xlio_socket_accept(
 
 static void
 evpl_xlio_socket_rx(
-    xlio_socket_t sock,
+    xlio_socket_t    sock,
     uintptr_t        userdata_sq,
     void            *data,
     size_t           len,
@@ -323,14 +323,14 @@ evpl_xlio_poll(
 
             if (res) {
                 s->closed = 1;
-                evpl_defer(evpl, &bind->close_deferral);
+                evpl_close(evpl, bind);
             }
 
             if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
                 s->write_interest = 0;
 
                 if (bind->flags & EVPL_BIND_FINISH) {
-                    evpl_defer(evpl, &bind->close_deferral);
+                    evpl_close(evpl, bind);
                 }
             }
         }

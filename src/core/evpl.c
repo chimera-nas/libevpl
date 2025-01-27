@@ -86,6 +86,7 @@ struct evpl {
     struct evpl_endpoint  *endpoints;
     struct evpl_config    *config;
     struct evpl_bind      *binds;
+    struct evpl_bind      *pending_close_binds;
 
     void                  *protocol_private[EVPL_NUM_PROTO];
     void                  *framework_private[EVPL_NUM_FRAMEWORK];
@@ -165,8 +166,10 @@ evpl_shared_init(struct evpl_config *config)
 
 #ifdef HAVE_VFIO
     if (config->vfio_enabled) {
-        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_VFIO, &evpl_framework_vfio);
-        evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_VFIO, &evpl_block_protocol_vfio);
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_VFIO, &
+                            evpl_framework_vfio);
+        evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_VFIO, &
+                                 evpl_block_protocol_vfio);
     }
 #endif /* ifdef HAVE_VFIO */
 
@@ -304,9 +307,10 @@ evpl_wait(
     int          max_msecs)
 {
     struct evpl_event    *event;
+    struct evpl_bind     *bind;
     struct evpl_deferral *deferral;
     struct evpl_poll     *poll;
-    int                   i;
+    int                   i, n;
     int                   msecs = max_msecs;
     struct timespec       now;
     uint64_t              elapsed;
@@ -334,40 +338,51 @@ evpl_wait(
         }
     }
 
-    if (!evpl->num_active_events &&
-        !evpl->num_active_deferrals &&
-        (msecs || evpl->num_events)) {
-        evpl_core_wait(&evpl->core, msecs);
+    if (evpl->pending_close_binds ||
+        evpl->num_active_events ||
+        evpl->num_active_deferrals) {
+        msecs = 0;
     }
 
-    while (evpl->num_active_events) {
-        for (i = 0; i < evpl->num_active_events; ++i) {
-            event = evpl->active_events[i];
+    if (evpl->num_events || evpl->pending_close_binds) {
 
-            if ((event->flags & EVPL_READ_READY) == EVPL_READ_READY) {
-                event->read_callback(evpl, event);
+        n = evpl_core_wait(&evpl->core, msecs);
+
+        if (evpl->pending_close_binds && n == 0) {
+            while (evpl->pending_close_binds) {
+                bind = evpl->pending_close_binds;
+                bind->protocol->close(evpl, bind);
+                evpl_bind_destroy(evpl, bind);
             }
+        }
+    }
 
-            if ((event->flags & EVPL_WRITE_READY) ==
-                EVPL_WRITE_READY) {
-                event->write_callback(evpl, event);
+    for (i = 0; i < evpl->num_active_events; ++i) {
+        event = evpl->active_events[i];
+
+        if ((event->flags & EVPL_READ_READY) == EVPL_READ_READY) {
+            event->read_callback(evpl, event);
+        }
+
+        if ((event->flags & EVPL_WRITE_READY) ==
+            EVPL_WRITE_READY) {
+            event->write_callback(evpl, event);
+        }
+
+        if ((event->flags & EVPL_ERROR) == EVPL_ERROR) {
+            event->error_callback(evpl, event);
+        }
+
+        if ((event->flags & EVPL_READ_READY) != EVPL_READ_READY &&
+            (event->flags & EVPL_WRITE_READY) != EVPL_WRITE_READY) {
+
+            event->flags &= ~EVPL_ACTIVE;
+
+            if (i + 1 < evpl->num_active_events) {
+                evpl->active_events[i] =
+                    evpl->active_events[evpl->num_active_events - 1];
             }
-
-            if ((event->flags & EVPL_ERROR) == EVPL_ERROR) {
-                event->error_callback(evpl, event);
-            }
-
-            if ((event->flags & EVPL_READ_READY) != EVPL_READ_READY &&
-                (event->flags & EVPL_WRITE_READY) != EVPL_WRITE_READY) {
-
-                event->flags &= ~EVPL_ACTIVE;
-
-                if (i + 1 < evpl->num_active_events) {
-                    evpl->active_events[i] =
-                        evpl->active_events[evpl->num_active_events - 1];
-                }
-                --evpl->num_active_events;
-            }
+            --evpl->num_active_events;
         }
     }
 
@@ -564,17 +579,6 @@ evpl_bind(
 } /* evpl_bind */
 
 void
-evpl_bind_close(
-    struct evpl      *evpl,
-    struct evpl_bind *bind)
-{
-    if (!(bind->flags & EVPL_BIND_CLOSED)) {
-        bind->flags |= EVPL_BIND_CLOSED;
-        bind->protocol->close(evpl, bind);
-    }
-} /* evpl_bind_close */
-
-void
 evpl_destroy(struct evpl *evpl)
 {
     struct evpl_framework *framework;
@@ -582,9 +586,21 @@ evpl_destroy(struct evpl *evpl)
     struct evpl_address   *address;
     int                    i;
 
+    /* Push any open binds into pending close state */
     while (evpl->binds) {
         bind = evpl->binds;
-        evpl_bind_close(evpl, bind);
+        bind->protocol->pending_close(evpl, bind);
+        bind->flags |= EVPL_BIND_PENDING_CLOSED;
+        DL_DELETE(evpl->binds, bind);
+        DL_APPEND(evpl->pending_close_binds, bind);
+    }
+
+    /* We are shutting down event context right after this,
+     * so we can just complete closing any pending close binds */
+    while (evpl->pending_close_binds) {
+        bind = evpl->pending_close_binds;
+        bind->protocol->close(evpl, bind);
+        evpl_bind_destroy(evpl, bind);
     }
 
     while (evpl->free_binds) {
@@ -641,7 +657,16 @@ evpl_bind_close_deferral(
 {
     struct evpl_bind *bind = private_data;
 
-    evpl_bind_close(evpl, bind);
+    evpl_core_abort_if(bind->flags & EVPL_BIND_CLOSED,
+                       "bind %p already closed", bind);
+
+    evpl_core_abort_if(!(bind->flags & EVPL_BIND_PENDING_CLOSED),
+                       "bind %p in close deferral but not pending close ", bind)
+    ;
+
+    DL_DELETE(evpl->binds, bind);
+    DL_APPEND(evpl->pending_close_binds, bind);
+    bind->protocol->pending_close(evpl, bind);
 } /* evpl_bind_close_deferral */
 
 static void
@@ -684,7 +709,8 @@ evpl_attach_framework(
 
     if (!evpl->framework_private[framework->id]) {
         evpl->framework_private[framework->id] =
-            framework->create(evpl, evpl_shared->framework_private[framework->id]);
+            framework->create(evpl, evpl_shared->framework_private[framework->id
+                              ]);
     }
 } /* evpl_attach_framework */
 
@@ -923,8 +949,8 @@ evpl_iovec_reserve(
         iovec = &r_iovec[niovs++];
 
         iovec->private = buffer;
-        iovec->data   = buffer->data + buffer->used + pad;
-        iovec->length = chunk - pad;
+        iovec->data    = buffer->data + buffer->used + pad;
+        iovec->length  = chunk - pad;
 
         left -= chunk - pad;
 
@@ -1002,8 +1028,8 @@ evpl_iovec_alloc_whole(
 
     buffer = evpl_buffer_alloc(evpl);
 
-    r_iovec->data   = buffer->data;
-    r_iovec->length = buffer->size;
+    r_iovec->data    = buffer->data;
+    r_iovec->length  = buffer->size;
     r_iovec->private = buffer;
 } /* evpl_iovec_alloc_whole */
 
@@ -1021,8 +1047,8 @@ evpl_iovec_alloc_datagram(
 
     buffer = evpl->datagram_buffer;
 
-    r_iovec->data   = buffer->data + buffer->used;
-    r_iovec->length = size;
+    r_iovec->data    = buffer->data + buffer->used;
+    r_iovec->length  = size;
     r_iovec->private = buffer;
 
     buffer->used += size;
@@ -1247,7 +1273,10 @@ evpl_close(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
-    evpl_defer(evpl, &bind->close_deferral);
+    if (!(bind->flags & EVPL_BIND_PENDING_CLOSED)) {
+        bind->flags |= EVPL_BIND_PENDING_CLOSED;
+        evpl_defer(evpl, &bind->close_deferral);
+    }
 } /* evpl_close */
 
 void
@@ -1259,7 +1288,7 @@ evpl_finish(
     bind->flags |= EVPL_BIND_FINISH;
 
     if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
-        evpl_defer(evpl, &bind->close_deferral);
+        evpl_close(evpl, bind);
     }
 
 } /* evpl_finish */
@@ -1277,6 +1306,9 @@ evpl_bind_destroy(
 {
     struct evpl_notify notify;
 
+    evpl_core_abort_if(!(bind->flags & EVPL_BIND_PENDING_CLOSED),
+                       "bind %p not pending closed at destroy", bind);
+
     if (bind->notify_callback) {
         notify.notify_type   = EVPL_NOTIFY_DISCONNECTED;
         notify.notify_status = 0;
@@ -1288,9 +1320,7 @@ evpl_bind_destroy(
     evpl_iovec_ring_clear(evpl, &bind->iovec_send);
     evpl_dgram_ring_clear(evpl, &bind->dgram_send);
 
-    DL_DELETE(evpl->binds, bind);
-
-    bind->flags = 0;
+    bind->flags |= EVPL_BIND_CLOSED;
 
     if (bind->local) {
         evpl_address_release(evpl, bind->local);
@@ -1299,7 +1329,7 @@ evpl_bind_destroy(
     if (bind->remote) {
         evpl_address_release(evpl, bind->remote);
     }
-
+    DL_DELETE(evpl->pending_close_binds, bind);
     DL_PREPEND(evpl->free_binds, bind);
 } /* evpl_bind_destroy */
 
@@ -1387,9 +1417,9 @@ evpl_peekv(
             chunk = left;
         }
 
-        out         = &iovecs[niovs++];
-        out->data   = cur->data;
-        out->length = chunk;
+        out          = &iovecs[niovs++];
+        out->data    = cur->data;
+        out->length  = chunk;
         out->private = cur->private;
 
         left -= chunk;
@@ -1500,10 +1530,11 @@ evpl_readv(
 
         out = &iovecs[niovs++];
 
-        out->data   = cur->data;
-        out->length = chunk;
+        out->data    = cur->data;
+        out->length  = chunk;
         out->private = cur->private;
-        atomic_fetch_add_explicit(&evpl_iovec_buffer(out)->refcnt, 1, memory_order_relaxed)
+        atomic_fetch_add_explicit(&evpl_iovec_buffer(out)->refcnt, 1,
+                                  memory_order_relaxed)
         ;
 
         left -= chunk;
@@ -1586,10 +1617,11 @@ evpl_recvv(
 
         out = &iovecs[niovs++];
 
-        out->data   = cur->data;
-        out->length = chunk;
+        out->data    = cur->data;
+        out->length  = chunk;
         out->private = cur->private;
-        atomic_fetch_add_explicit(&evpl_iovec_buffer(out)->refcnt, 1, memory_order_relaxed)
+        atomic_fetch_add_explicit(&evpl_iovec_buffer(out)->refcnt, 1,
+                                  memory_order_relaxed)
         ;
 
         left -= chunk;
@@ -1624,7 +1656,8 @@ evpl_rdma_read(
         return;
     }
 
-    protocol->rdma_read(evpl, bind, remote_key, remote_address, iov, niov, callback, private_data);
+    protocol->rdma_read(evpl, bind, remote_key, remote_address, iov, niov,
+                        callback, private_data);
 } /* evpl_rdma_read */
 
 void
@@ -1645,7 +1678,8 @@ evpl_rdma_write(
         return;
     }
 
-    protocol->rdma_write(evpl, bind, remote_key, remote_address, iov, niov, callback, private_data);
+    protocol->rdma_write(evpl, bind, remote_key, remote_address, iov, niov,
+                         callback, private_data);
 } /* evpl_rdma_write */
 
 int
@@ -1967,7 +2001,8 @@ evpl_block_open_device(
 
     evpl_attach_framework_shared(protocol->framework->id);
 
-    protocol_private_data = evpl_shared->framework_private[protocol->framework->id];
+    protocol_private_data = evpl_shared->framework_private[protocol->framework->
+                                                           id];
 
     blockdev = protocol->open_device(uri, protocol_private_data);
 

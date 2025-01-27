@@ -16,6 +16,7 @@ evpl_config_init(void)
     config->max_pending        = 16;
     config->max_poll_fd        = 16;
     config->max_num_iovec      = 16;
+    config->huge_pages         = 0;
     config->buffer_size        = 2 * 1024 * 1024;
     config->slab_size          = 1 * 1024 * 1024 * 1024;
     config->refcnt             = 1;
@@ -51,6 +52,14 @@ evpl_config_init(void)
 
     return config;
 } /* evpl_config_init */
+
+void
+evpl_config_set_huge_pages(
+    struct evpl_config *config,
+    int                 huge_pages)
+{
+    config->huge_pages = huge_pages;
+} /* evpl_config_set_huge_pages */
 
 void
 evpl_config_set_rdmacm_datagram_size_override(

@@ -26,7 +26,7 @@ evpl_allocator_create()
 
     pthread_mutex_init(&allocator->lock, NULL);
 
-    allocator->hugepages = 1;
+    allocator->hugepages = evpl_shared->config->huge_pages;
 
     return allocator;
 

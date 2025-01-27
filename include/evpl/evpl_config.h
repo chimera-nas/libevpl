@@ -6,7 +6,9 @@
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_config.h directly, include evpl/evpl.h instead"
-#endif
+#endif /* ifndef EVPL_INCLUDED */
+
+struct evpl_config;
 
 struct evpl_config *
 evpl_config_init(
@@ -15,6 +17,10 @@ evpl_config_init(
 void evpl_config_release(
     struct evpl_config *config);
 
+void evpl_config_set_huge_pages(
+    struct evpl_config *config,
+    int                 huge_pages);
+
 void evpl_config_set_rdmacm_datagram_size_override(
     struct evpl_config *config,
-    unsigned int size);
+    unsigned int        size);

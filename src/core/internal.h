@@ -20,6 +20,7 @@ struct evpl_config {
     unsigned int max_poll_fd;
     unsigned int max_num_iovec;
     unsigned int buffer_size;
+    unsigned int huge_pages;
     uint64_t     slab_size;
     unsigned int page_size;
     unsigned int max_datagram_size;
@@ -110,11 +111,16 @@ void evpl_abort(
             evpl_abort(__VA_ARGS__); \
         }
 
-#define evpl_core_debug(...)            evpl_debug("core", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_core_info(...)             evpl_info("core", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_core_error(...)            evpl_error("core", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_core_fatal(...)            evpl_fatal("core", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_core_abort(...)            evpl_abort("core", __FILE__, __LINE__, __VA_ARGS__)
+#define evpl_core_debug(...)            evpl_debug("core", __FILE__, __LINE__, \
+                                                   __VA_ARGS__)
+#define evpl_core_info(...)             evpl_info("core", __FILE__, __LINE__, \
+                                                  __VA_ARGS__)
+#define evpl_core_error(...)            evpl_error("core", __FILE__, __LINE__, \
+                                                   __VA_ARGS__)
+#define evpl_core_fatal(...)            evpl_fatal("core", __FILE__, __LINE__, \
+                                                   __VA_ARGS__)
+#define evpl_core_abort(...)            evpl_abort("core", __FILE__, __LINE__, \
+                                                   __VA_ARGS__)
 
 #define evpl_core_fatal_if(cond, ...) \
         evpl_fatal_if(cond, "core", __FILE__, __LINE__, __VA_ARGS__)

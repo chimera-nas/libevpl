@@ -40,7 +40,7 @@ evpl_check_conn(
         evpl_socket_fatal_if(rc, "Failed to get SO_ERROR from socket");
 
         if (err) {
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
         } else {
             notify.notify_type   = EVPL_NOTIFY_CONNECTED;
             notify.notify_status = 0;
@@ -64,6 +64,10 @@ evpl_socket_tcp_read(
     struct iovec        iov[2];
     ssize_t             res, total, remain;
     int                 length, niov, i;
+
+    if (unlikely(s->fd < 0)) {
+        return;
+    }
 
     evpl_check_conn(evpl, bind, s);
 
@@ -91,11 +95,11 @@ evpl_socket_tcp_read(
 
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
         }
         goto out;
     } else if (res == 0) {
-        evpl_defer(evpl, &bind->close_deferral);
+        evpl_close(evpl, bind);
         goto out;
     }
 
@@ -122,7 +126,7 @@ evpl_socket_tcp_read(
             }
 
             if (unlikely(length < 0)) {
-                evpl_defer(evpl, &bind->close_deferral);
+                evpl_close(evpl, bind);
                 goto out;
             }
 
@@ -170,6 +174,10 @@ evpl_socket_tcp_write(
     int                 niov;
     ssize_t             res, total;
 
+    if (unlikely(s->fd < 0)) {
+        return;
+    }
+
     iov = alloca(sizeof(struct iovec) * maxiov);
 
     evpl_check_conn(evpl, bind, s);
@@ -185,11 +193,11 @@ evpl_socket_tcp_write(
 
     if (res < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
         }
         goto out;
     } else if (res == 0) {
-        evpl_defer(evpl, &bind->close_deferral);
+        evpl_close(evpl, bind);
         goto out;
     }
 
@@ -213,7 +221,7 @@ evpl_socket_tcp_write(
         evpl_event_write_disinterest(event);
 
         if (bind->flags & EVPL_BIND_FINISH) {
-            evpl_defer(evpl, &bind->close_deferral);
+            evpl_close(evpl, bind);
         }
     }
 
@@ -231,7 +239,11 @@ evpl_socket_tcp_error(
     struct evpl_socket *s    = evpl_event_socket(event);
     struct evpl_bind   *bind = evpl_private2bind(s);
 
-    evpl_defer(evpl, &bind->close_deferral);
+    if (unlikely(s->fd < 0)) {
+        return;
+    }
+
+    evpl_close(evpl, bind);
 } /* evpl_error_tcp */
 
 void
@@ -384,12 +396,13 @@ evpl_socket_tcp_listen(
 } /* evpl_socket_tcp_listen */
 
 struct evpl_protocol evpl_socket_tcp = {
-    .id        = EVPL_STREAM_SOCKET_TCP,
-    .connected = 1,
-    .stream    = 1,
-    .name      = "STREAM_SOCKET_TCP",
-    .connect   = evpl_socket_tcp_connect,
-    .close     = evpl_socket_close,
-    .listen    = evpl_socket_tcp_listen,
-    .flush     = evpl_socket_flush,
+    .id            = EVPL_STREAM_SOCKET_TCP,
+    .connected     = 1,
+    .stream        = 1,
+    .name          = "STREAM_SOCKET_TCP",
+    .connect       = evpl_socket_tcp_connect,
+    .pending_close = evpl_socket_pending_close,
+    .close         = evpl_socket_close,
+    .listen        = evpl_socket_tcp_listen,
+    .flush         = evpl_socket_flush,
 };

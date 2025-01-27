@@ -54,7 +54,7 @@ evpl_core_add(
 
     rc = epoll_ctl(evc->fd, EPOLL_CTL_ADD, event->fd, &ev);
 
-    evpl_core_fatal_if(rc, "Failed to add file descriptor to epoll");
+    evpl_core_abort_if(rc, "Failed to add file descriptor to epoll");
 } /* evpl_core_add */
 
 void
@@ -70,12 +70,12 @@ evpl_core_remove(
 
     rc = epoll_ctl(evc->fd, EPOLL_CTL_DEL, event->fd, NULL);
 
-    evpl_core_fatal_if(rc, "Failed to add file descriptor to epoll");
+    evpl_core_abort_if(rc, "Failed to remove file descriptor from epoll");
 } /* evpl_core_add */
 
 
 
-void
+int
 evpl_core_wait(
     struct evpl_core *evc,
     int               max_msecs)
@@ -105,4 +105,6 @@ evpl_core_wait(
         }
 
     }
+
+    return n;
 } /* evpl_core_wait */

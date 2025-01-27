@@ -96,7 +96,7 @@ evpl_xlio_tcp_read(
             }
 
             if (unlikely(length < 0)) {
-                evpl_defer(evpl, &bind->close_deferral);
+                evpl_close(evpl, bind);
                 return;
             }
 
@@ -234,13 +234,14 @@ evpl_xlio_tcp_listen(
 
 extern struct evpl_framework evpl_framework_xlio;
 struct evpl_protocol         evpl_xlio_tcp = {
-    .id        = EVPL_STREAM_XLIO_TCP,
-    .connected = 1,
-    .stream    = 1,
-    .name      = "STREAM_XLIO_TCP",
-    .framework = &evpl_framework_xlio,
-    .connect   = evpl_xlio_tcp_connect,
-    .close     = evpl_xlio_close,
-    .listen    = evpl_xlio_tcp_listen,
-    .flush     = evpl_xlio_flush,
+    .id            = EVPL_STREAM_XLIO_TCP,
+    .connected     = 1,
+    .stream        = 1,
+    .name          = "STREAM_XLIO_TCP",
+    .framework     = &evpl_framework_xlio,
+    .connect       = evpl_xlio_tcp_connect,
+    .pending_close = evpl_xlio_pending_close,
+    .close         = evpl_xlio_close,
+    .listen        = evpl_xlio_tcp_listen,
+    .flush         = evpl_xlio_flush,
 };
