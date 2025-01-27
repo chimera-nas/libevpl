@@ -17,6 +17,10 @@ evpl_config_init(
 void evpl_config_release(
     struct evpl_config *config);
 
+void evpl_config_set_max_datagram_size(
+    struct evpl_config *config,
+    unsigned int        size);
+
 void evpl_config_set_huge_pages(
     struct evpl_config *config,
     int                 huge_pages);

@@ -54,6 +54,14 @@ evpl_config_init(void)
 } /* evpl_config_init */
 
 void
+evpl_config_set_max_datagram_size(
+    struct evpl_config *config,
+    unsigned int        size)
+{
+    config->max_datagram_size = size;
+} /* evpl_config_set_max_datagram_size */
+
+void
 evpl_config_set_huge_pages(
     struct evpl_config *config,
     int                 huge_pages)
