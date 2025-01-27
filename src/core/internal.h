@@ -132,6 +132,10 @@ void evpl_abort(
 #define unlikely(x)                     __builtin_expect(!!(x), 0)
 #endif // ifndef unlikely
 
+#ifndef likely
+#define likely(x)                       __builtin_expect(!!(x), 1)
+#endif // ifndef likely
+
 #define container_of(ptr, type, member) ({            \
         typeof(((type *) 0)->member) * __mptr = (ptr); \
         (type *) ((char *) __mptr - offsetof(type, member)); })

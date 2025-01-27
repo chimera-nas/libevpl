@@ -622,24 +622,26 @@ evpl_rdmacm_poll_cq(
 
                 rdmacm_id = sr->rdmacm_id;
 
-                bind = evpl_private2bind(rdmacm_id);
-
                 --rdmacm_id->active_sends;
 
-                if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
-                    notify.notify_type   = EVPL_NOTIFY_SENT;
-                    notify.notify_status = 0;
-                    notify.sent.bytes    = sr->length;
-                    notify.sent.msgs     = 1;
+                if (likely(rdmacm_id->id)) {
+                    bind = evpl_private2bind(rdmacm_id);
 
-                    bind->notify_callback(evpl, bind, &notify,
-                                          bind->private_data);
-                }
+                    if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
+                        notify.notify_type   = EVPL_NOTIFY_SENT;
+                        notify.notify_status = 0;
+                        notify.sent.bytes    = sr->length;
+                        notify.sent.msgs     = 1;
 
-                if (rdmacm_id->active_sends == 0 &&
-                    evpl_iovec_ring_is_empty(&bind->iovec_send)) {
-                    if (bind->flags & EVPL_BIND_FINISH) {
-                        evpl_close(evpl, bind);
+                        bind->notify_callback(evpl, bind, &notify,
+                                              bind->private_data);
+                    }
+
+                    if (rdmacm_id->active_sends == 0 &&
+                        evpl_iovec_ring_is_empty(&bind->iovec_send)) {
+                        if (bind->flags & EVPL_BIND_FINISH) {
+                            evpl_close(evpl, bind);
+                        }
                     }
                 }
 
@@ -1518,14 +1520,17 @@ evpl_rdmacm_pending_close(
 
     if (rdmacm_id->id) {
         rdma_destroy_id(rdmacm_id->id);
+        rdmacm_id->id = NULL;
     }
 
     if (rdmacm_id->resolve_id) {
         rdma_destroy_id(rdmacm_id->resolve_id);
+        rdmacm_id->resolve_id = NULL;
     }
 
     if (rdmacm_id->resolve_addr) {
         evpl_address_release(evpl, rdmacm_id->resolve_addr);
+        rdmacm_id->resolve_addr = NULL;
     }
 } /* evpl_rdmacm_pending_close */
 
