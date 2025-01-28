@@ -453,25 +453,38 @@ evpl_endpoint_create(
 } /* evpl_endpoint_create */
 
 void
-evpl_endpoint_close(
+__evpl_endpoint_close(
     struct evpl          *evpl,
-    struct evpl_endpoint *endpoint)
+    struct evpl_endpoint *endpoint,
+    int                   force)
 {
     struct evpl_address *addr;
 
     --endpoint->refcnt;
 
-    if (endpoint->refcnt == 0) {
+    if (endpoint->refcnt == 0 || force) {
 
         while (endpoint->addr) {
             addr = endpoint->addr;
             LL_DELETE(endpoint->addr, addr);
-            evpl_address_release(evpl, addr);
+            if (force) {
+                evpl_free(addr);
+            } else {
+                evpl_address_release(evpl, addr);
+            }
         }
 
         DL_DELETE(evpl->endpoints, endpoint);
         evpl_free(endpoint);
     }
+} /* __evpl_endpoint_close */
+
+void
+evpl_endpoint_close(
+    struct evpl          *evpl,
+    struct evpl_endpoint *endpoint)
+{
+    __evpl_endpoint_close(evpl, endpoint, 0);
 } /* evpl_endpoint_close */
 
 int
@@ -614,7 +627,7 @@ evpl_destroy(struct evpl *evpl)
     }
 
     while (evpl->endpoints) {
-        evpl_endpoint_close(evpl, evpl->endpoints);
+        __evpl_endpoint_close(evpl, evpl->endpoints, 1);
     }
 
     while (evpl->free_address) {
@@ -1190,11 +1203,9 @@ evpl_sendv(
                        "evpl_send provided iov %d bytes short of covering length of %d",
                        left, length);
 
-    if (!bind->protocol->stream) {
-        dgram       = evpl_dgram_ring_add(&bind->dgram_send);
-        dgram->niov = i;
-        dgram->addr = bind->remote;
-    }
+    dgram       = evpl_dgram_ring_add(&bind->dgram_send);
+    dgram->niov = i;
+    dgram->addr = bind->remote;
 
     evpl_defer(evpl, &bind->flush_deferral);
 

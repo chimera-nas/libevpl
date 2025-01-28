@@ -250,13 +250,14 @@ evpl_iovec_ring_iov(
     return niov;
 } // evpl_iovec_ring_iov
 
-static inline void
+static inline int
 evpl_iovec_ring_consume(
     struct evpl            *evpl,
     struct evpl_iovec_ring *ring,
     size_t                  length)
 {
     struct evpl_iovec *iovec;
+    int                n = 0;
 
     ring->length -= length;
 
@@ -268,6 +269,7 @@ evpl_iovec_ring_consume(
             length -= iovec->length;
             evpl_iovec_release(iovec);
             ring->tail = (ring->tail + 1) & ring->mask;
+            n++;
         } else {
             iovec->data   += length;
             iovec->length -= length;
@@ -276,6 +278,7 @@ evpl_iovec_ring_consume(
         }
     }
 
+    return n;
 } // evpl_iovec_ring_consume
 
 static inline int
@@ -293,7 +296,7 @@ evpl_iovec_ring_copyv(
         iovec = &ring->iovec[ring->tail];
 
         out[niov].private = iovec->private;
-        out[niov].data   = iovec->data;
+        out[niov].data    = iovec->data;
 
         if (left < iovec->length) {
             chunk = left;
@@ -354,10 +357,10 @@ evpl_iovec_ring_append(
     if (head && head->data + head->length == append->data) {
         head->length += length;
     } else {
-        head         = evpl_iovec_ring_add_new(ring);
-        head->data   = append->data;
+        head          = evpl_iovec_ring_add_new(ring);
+        head->data    = append->data;
         head->private = append->private;
-        head->length = length;
+        head->length  = length;
         evpl_iovec_incref(head);
     }
 

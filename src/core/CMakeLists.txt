@@ -42,7 +42,6 @@ endif()
 if (HAVE_XLIO)
     set(CORE_SRC ${CORE_SRC} xlio/xlio.c xlio/xlio.h xlio/tcp.c xlio/common.h)
     add_subdirectory(xlio)
-    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} xlio)
 endif()
 
 set(CORE_SRC ${CORE_SRC} thread/thread.c)

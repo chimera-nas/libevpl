@@ -171,7 +171,7 @@ evpl_socket_tcp_write(
     struct evpl_notify  notify;
     struct iovec       *iov;
     int                 maxiov = s->config->max_num_iovec;
-    int                 niov;
+    int                 niov, niov_sent, msg_sent = 0;
     ssize_t             res, total;
 
     if (unlikely(s->fd < 0)) {
@@ -201,7 +201,26 @@ evpl_socket_tcp_write(
         goto out;
     }
 
-    evpl_iovec_ring_consume(evpl, &bind->iovec_send, res);
+    niov_sent = evpl_iovec_ring_consume(evpl, &bind->iovec_send, res);
+
+    if (bind->segment_callback) {
+        while (niov_sent) {
+            struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+            if (!dgram) {
+                break;
+            }
+
+            if (dgram->niov > niov_sent) {
+                dgram->niov -= niov_sent;
+                break;
+            }
+
+            niov_sent -= dgram->niov;
+            msg_sent++;
+            evpl_dgram_ring_remove(&bind->dgram_send);
+        }
+    }
 
     if (res != total) {
         evpl_event_mark_unwritable(event);
@@ -211,7 +230,7 @@ evpl_socket_tcp_write(
         notify.notify_type   = EVPL_NOTIFY_SENT;
         notify.notify_status = 0;
         notify.sent.bytes    = res;
-        notify.sent.msgs     = 0;
+        notify.sent.msgs     = msg_sent;
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 

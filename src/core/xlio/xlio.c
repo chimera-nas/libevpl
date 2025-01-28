@@ -197,6 +197,20 @@ evpl_xlio_socket_completion(
         notify.notify_status = 0;
         notify.sent.bytes    = zc->length;
         notify.sent.msgs     = 0;
+
+        if (bind->segment_callback) {
+            struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+            if (dgram) {
+                if (dgram->niov > 1) {
+                    dgram->niov--;
+                } else {
+                    notify.sent.msgs = 1;
+                    evpl_dgram_ring_remove(&bind->dgram_send);
+                }
+            }
+        }
+
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
