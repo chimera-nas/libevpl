@@ -8,8 +8,7 @@
 #include "core/buffer.h"
 #include "core/iovec_ring.h"
 #include "core/dgram_ring.h"
-#include "core/event.h"
-#include "core/deferral.h"
+#include "evpl/evpl.h"
 
 #define EVPL_MAX_PRIVATE         4096
 

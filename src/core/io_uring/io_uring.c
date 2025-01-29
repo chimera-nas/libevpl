@@ -17,9 +17,7 @@
 
 #include "core/internal.h"
 #include "evpl/evpl.h"
-#include "core/event.h"
 #include "core/protocol.h"
-#include "core/deferral.h"
 #include "core/io_uring/io_uring.h"
 
 #define evpl_io_uring_debug(...) evpl_debug("io_uring", __FILE__, __LINE__, __VA_ARGS__)

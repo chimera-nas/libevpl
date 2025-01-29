@@ -8,7 +8,6 @@
 
 #include "core/internal.h"
 #include "evpl/evpl.h"
-#include "core/event.h"
 
 #define evpl_thread_debug(...) evpl_debug("thread", __FILE__, __LINE__, \
                                           __VA_ARGS__)

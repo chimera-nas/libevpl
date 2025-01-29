@@ -46,8 +46,7 @@ client_callback(
 
             evpl_test_info("client sent %u recv %u value %u",
                            state->sent, state->recv,
-                           *(uint32_t *) evpl_iovec_data(notify->recv_msg.iovec)
-                           )
+                           *(uint32_t *) notify->recv_msg.iovec[0].data);
             ;
 
             break;

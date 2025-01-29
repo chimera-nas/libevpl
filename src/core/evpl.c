@@ -27,11 +27,9 @@
 #include "evpl/evpl.h"
 #include "core/evpl_shared.h"
 #include "core/protocol.h"
-#include "core/event.h"
 #include "core/buffer.h"
 #include "core/bind.h"
 #include "core/endpoint.h"
-#include "core/poll.h"
 
 #ifdef HAVE_IO_URING
 #include "io_uring/io_uring.h"
@@ -1923,49 +1921,6 @@ evpl_address_release(
 
     LL_PREPEND(evpl->free_address, address);
 } /* evpl_address_release */
-
-struct evpl_uevent *
-evpl_add_uevent(
-    struct evpl           *evpl,
-    evpl_uevent_callback_t callback,
-    void                  *private_data)
-{
-    struct evpl_uevent *uevent;
-
-    uevent = evpl_zalloc(sizeof(*uevent));
-
-    evpl_deferral_init(&uevent->deferral, callback, private_data);
-    return uevent;
-} /* evpl_add_uevent */
-
-void
-evpl_arm_uevent(
-    struct evpl        *evpl,
-    struct evpl_uevent *uevent)
-{
-    evpl_defer(evpl, &uevent->deferral);
-} /* evpl_arm_uevent */
-
-void
-evpl_destroy_uevent(
-    struct evpl        *evpl,
-    struct evpl_uevent *uevent)
-{
-    evpl_remove_deferral(evpl, &uevent->deferral);
-    evpl_free(uevent);
-} /* evpl_destroy_uevent */
-
-const void *
-evpl_iovec_data(const struct evpl_iovec *iovec)
-{
-    return iovec->data;
-} // evpl_iovec_data
-
-unsigned int
-evpl_iovec_length(const struct evpl_iovec *iovec)
-{
-    return iovec->length;
-} /* evpl_iovec_length */
 
 void
 evpl_activity(struct evpl *evpl)

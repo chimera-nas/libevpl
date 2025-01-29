@@ -15,7 +15,6 @@
 
 #include "core/internal.h"
 #include "evpl/evpl.h"
-#include "core/event.h"
 #include "core/buffer.h"
 #include "core/endpoint.h"
 #include "core/bind.h"

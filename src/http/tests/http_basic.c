@@ -11,7 +11,7 @@
 
 #include "http/http.h"
 #include "evpl/evpl.h"
-#include "core/event.h"
+
 struct test_server {
     pthread_t thread;
     int       run;

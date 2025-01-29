@@ -10,7 +10,7 @@
 
 #include "core/epoll.h"
 #include "core/internal.h"
-#include "core/event.h"
+#include "evpl/evpl.h"
 
 int
 evpl_core_init(

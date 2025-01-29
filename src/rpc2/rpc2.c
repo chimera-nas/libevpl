@@ -5,7 +5,7 @@
 #define _GNU_SOURCE
 #include <time.h>
 
-#include "rpc2/rpc2.h"
+#include "evpl/evpl_rpc2.h"
 #include "core/internal.h"
 
 #include "uthash/utlist.h"
@@ -13,7 +13,7 @@
 #include "rpc2/common.h"
 #include "rpc2_xdr.h"
 #include "rpcrdma1_xdr.h"
-#include "rpc2/rpc2_program.h"
+#include "evpl/evpl_rpc2_program.h"
 #include "evpl/evpl.h"
 
 struct evpl_rpc2_server {

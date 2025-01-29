@@ -88,3 +88,5 @@ include_directories(include)
 
 add_subdirectory(ext)
 add_subdirectory(src)
+
+set(XDRZCC ${XDRZCC} PARENT_SCOPE)
