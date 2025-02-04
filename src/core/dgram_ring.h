@@ -6,6 +6,7 @@
 
 struct evpl_dgram {
     int                  niov;
+    int                  length;
     struct evpl_address *addr;
 };
 

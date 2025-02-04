@@ -24,6 +24,8 @@
 #include "core/endpoint.h"
 #include "core/evpl_shared.h"
 
+#define EVPL_RDMACM_MAX_INLINE 250
+
 extern struct evpl_shared *evpl_shared;
 
 #define evpl_rdmacm_debug(...) evpl_debug("rdmacm", __FILE__, __LINE__, \
@@ -247,14 +249,15 @@ evpl_rdmacm_create_qp(
         qp_attr.qp_type = IBV_QPT_RC;
     }
 
-    qp_attr.send_cq          = dev->cq;
-    qp_attr.recv_cq          = dev->cq;
-    qp_attr.srq              = dev->srq;
-    qp_attr.cap.max_send_wr  = evpl_shared->config->rdmacm_sq_size;
-    qp_attr.cap.max_recv_wr  = evpl_shared->config->rdmacm_sq_size;
-    qp_attr.cap.max_send_sge = evpl_shared->config->max_num_iovec;
-    qp_attr.cap.max_recv_sge = evpl_shared->config->max_num_iovec;
-    qp_attr.sq_sig_all       = 1;
+    qp_attr.send_cq             = dev->cq;
+    qp_attr.recv_cq             = dev->cq;
+    qp_attr.srq                 = dev->srq;
+    qp_attr.cap.max_send_wr     = evpl_shared->config->rdmacm_sq_size;
+    qp_attr.cap.max_recv_wr     = evpl_shared->config->rdmacm_sq_size;
+    qp_attr.cap.max_send_sge    = evpl_shared->config->max_num_iovec;
+    qp_attr.cap.max_recv_sge    = evpl_shared->config->max_num_iovec;
+    qp_attr.cap.max_inline_data = EVPL_RDMACM_MAX_INLINE;
+    qp_attr.sq_sig_all          = 1;
 
     qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND |
         IBV_QP_EX_WITH_RDMA_READ |
@@ -1350,11 +1353,11 @@ evpl_rdmacm_flush_datagram(
     struct ibv_qp_ex      *qp = rdmacm_id->qp;
     struct ibv_mr         *mr, **mrset;
     struct ibv_sge        *sge;
+    struct ibv_data_buf   *dbuf;
     struct evpl_rdmacm_ah *ah;
-    int                    nsge, rc;
-    uint64_t               len = 0;
+    int                    nsge, rc, send_inline;
 
-    if (!qp) {
+    if (unlikely(!qp)) {
         return;
     }
 
@@ -1382,36 +1385,59 @@ evpl_rdmacm_flush_datagram(
 
         sr->rdmacm_id = rdmacm_id;
 
-        nsge = 0;
+        if (dgram->length <= EVPL_RDMACM_MAX_INLINE) {
+            send_inline = 1;
 
-        sge = alloca(sizeof(struct ibv_sge) * dgram->niov);
+            nsge = 0;
 
+            dbuf = alloca(sizeof(struct ibv_data_buf) * dgram->niov);
 
-        len = 0;
-        while (nsge < dgram->niov) {
+            while (nsge < dgram->niov) {
 
-            cur = evpl_iovec_ring_tail(&bind->iovec_send);
+                cur = evpl_iovec_ring_tail(&bind->iovec_send);
 
-            mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
-                                                  EVPL_FRAMEWORK_RDMACM);
+                dbuf[nsge].addr   = cur->data;
+                dbuf[nsge].length = cur->length;
 
-            mr = mrset[rdmacm_id->devindex];
+                sr->bufref[nsge] = evpl_iovec_buffer(cur);
 
-            sge[nsge].addr   = (uint64_t) cur->data;
-            sge[nsge].length = cur->length;
-            sge[nsge].lkey   = mr->lkey;
+                nsge++;
 
-            sr->bufref[nsge] = evpl_iovec_buffer(cur);
+                evpl_iovec_ring_remove(&bind->iovec_send);
+            }
 
-            len += cur->length;
+        } else {
 
-            nsge++;
+            send_inline = 0;
 
-            evpl_iovec_ring_remove(&bind->iovec_send);
+            nsge = 0;
+
+            sge = alloca(sizeof(struct ibv_sge) * dgram->niov);
+
+            while (nsge < dgram->niov) {
+
+                cur = evpl_iovec_ring_tail(&bind->iovec_send);
+
+                mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
+                                                      EVPL_FRAMEWORK_RDMACM);
+
+                mr = mrset[rdmacm_id->devindex];
+
+                sge[nsge].addr   = (uint64_t) cur->data;
+                sge[nsge].length = cur->length;
+                sge[nsge].lkey   = mr->lkey;
+
+                sr->bufref[nsge] = evpl_iovec_buffer(cur);
+
+                nsge++;
+
+                evpl_iovec_ring_remove(&bind->iovec_send);
+            }
+
         }
 
         sr->nbufref = nsge;
-        sr->length  = len;
+        sr->length  = dgram->length;
 
         ibv_wr_start(qp);
 
@@ -1420,7 +1446,11 @@ evpl_rdmacm_flush_datagram(
 
         ibv_wr_send(qp);
 
-        ibv_wr_set_sge_list(qp, nsge, sge);
+        if (send_inline) {
+            ibv_wr_set_inline_data_list(qp, nsge, dbuf);
+        } else {
+            ibv_wr_set_sge_list(qp, nsge, sge);
+        }
 
         if (rdmacm_id->ud) {
             ah = evpl_address_private(dgram->addr, bind->protocol->id);
@@ -1442,8 +1472,8 @@ evpl_rdmacm_flush_datagram(
         ++rdmacm_id->active_sends;
     }
 
-    if (rdmacm_id->active_sends == 0 &&
-        evpl_iovec_ring_is_empty(&bind->iovec_send)) {
+    if (unlikely(rdmacm_id->active_sends == 0 &&
+                 evpl_iovec_ring_is_empty(&bind->iovec_send))) {
         if (bind->flags & EVPL_BIND_FINISH) {
             evpl_close(evpl, bind);
         }

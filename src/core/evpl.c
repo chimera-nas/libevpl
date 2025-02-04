@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: LGPL
 
+#define _GNU_SOURCE 1
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +12,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -1310,9 +1313,10 @@ evpl_sendv(
                        "evpl_send provided iov %d bytes short of covering length of %d",
                        left, length);
 
-    dgram       = evpl_dgram_ring_add(&bind->dgram_send);
-    dgram->niov = i;
-    dgram->addr = bind->remote;
+    dgram         = evpl_dgram_ring_add(&bind->dgram_send);
+    dgram->niov   = i;
+    dgram->length = length;
+    dgram->addr   = bind->remote;
 
     evpl_defer(evpl, &bind->flush_deferral);
 
@@ -1357,8 +1361,9 @@ evpl_sendtov(
 
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
-    dgram->niov = i;
-    dgram->addr = address;
+    dgram->niov   = i;
+    dgram->length = length;
+    dgram->addr   = address;
     dgram->addr->refcnt++;
 
     evpl_defer(evpl, &bind->flush_deferral);
