@@ -19,13 +19,13 @@ int                   port        = 8000;
 
 
 struct client_state {
-    int      run;
-    int      inflight;
-    int      depth;
-    int      sent;
-    int      recv;
-    int      niters;
-    uint32_t value;
+    int          inflight;
+    int          depth;
+    int          sent;
+    int          recv;
+    int          niters;
+    uint32_t     value;
+    struct evpl *server_evpl;
 };
 
 
@@ -39,15 +39,18 @@ client_callback(
     struct client_state *state = private_data;
 
     switch (notify->notify_type) {
+        case EVPL_NOTIFY_SENT:
+            evpl_test_info("sent %u msgs %u bytes", notify->sent.msgs,
+                           notify->sent.bytes);
+            state->inflight -= notify->sent.msgs;
+            break;
         case EVPL_NOTIFY_RECV_MSG:
 
             state->recv++;
-            state->inflight--;
 
             evpl_test_info("client sent %u recv %u value %u",
                            state->sent, state->recv,
                            *(uint32_t *) notify->recv_msg.iovec[0].data);
-            ;
 
             break;
     } /* switch */
@@ -62,14 +65,16 @@ client_thread(void *arg)
     struct evpl_bind     *bind;
     struct client_state  *state = arg;
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     me     = evpl_endpoint_create(evpl, address, port + 1);
     server = evpl_endpoint_create(evpl, address, port);
 
     bind = evpl_bind(evpl, proto, me, client_callback, state);
 
-    while (state->recv != state->niters) {
+    evpl_bind_request_send_notifications(evpl, bind);
+
+    while (state->sent < state->niters) {
 
         while (state->inflight < state->depth &&
                state->sent < state->niters) {
@@ -84,12 +89,12 @@ client_thread(void *arg)
 
         }
 
-        evpl_wait(evpl, -1);
+        evpl_continue(evpl);
     }
 
     evpl_test_debug("client completed iterations");
 
-    state->run = 0;
+    evpl_stop(state->server_evpl);
 
     evpl_destroy(evpl);
 
@@ -128,13 +133,12 @@ main(
     struct evpl_endpoint *me, *client;
     int                   rc, opt;
     struct client_state   state = {
-        .run      = 1,
         .inflight = 0,
         .depth    = 100,
         .sent     = 0,
         .recv     = 0,
         .niters   = 10000,
-        .value    = 1
+        .value    = 1,
     };
 
     while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {
@@ -161,7 +165,9 @@ main(
     }
 
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
+
+    state.server_evpl = evpl;
 
     me     = evpl_endpoint_create(evpl, address, port);
     client = evpl_endpoint_create(evpl, address, port + 1);
@@ -170,9 +176,7 @@ main(
 
     pthread_create(&thr, NULL, client_thread, &state);
 
-    while (state.run) {
-        evpl_wait(evpl, 1);
-    }
+    evpl_run(evpl);
 
     pthread_join(thr, NULL);
 

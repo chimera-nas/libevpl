@@ -41,7 +41,7 @@ evpl_socket_udp_read(
     struct evpl_address          *addr;
     struct iovec                 *iov;
     ssize_t                       res;
-    int                           i, nmsg = s->config->max_datagram_batch;
+    int                           i, nmsg = evpl_shared->config->max_datagram_batch;
 
     if (unlikely(s->fd < 0)) {
         return;
@@ -138,8 +138,8 @@ evpl_socket_udp_write(
     struct evpl_notify  notify;
     struct iovec       *iov;
     int                 nmsg = 0, nmsgleft, i;
-    int                 maxmsg = s->config->max_datagram_batch;
-    int                 maxiov = s->config->max_num_iovec;
+    int                 maxmsg = evpl_shared->config->max_datagram_batch;
+    int                 maxiov = evpl_shared->config->max_num_iovec;
     struct msghdr      *msghdr;
     struct mmsghdr     *msgvec;
     ssize_t             res, total;
@@ -210,7 +210,7 @@ evpl_socket_udp_write(
     }
 
     if (evpl_dgram_ring_is_empty(&bind->dgram_send)) {
-        evpl_event_write_disinterest(event);
+        evpl_event_write_disinterest(evpl, event);
 
         if (bind->flags & EVPL_BIND_FINISH) {
             evpl_close(evpl, bind);

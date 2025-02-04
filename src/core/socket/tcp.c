@@ -113,7 +113,7 @@ evpl_socket_tcp_read(
 
     if (bind->segment_callback) {
 
-        iovec = alloca(sizeof(struct evpl_iovec) * s->config->max_num_iovec);
+        iovec = alloca(sizeof(struct evpl_iovec) * evpl_shared->config->max_num_iovec);
 
         while (1) {
 
@@ -169,7 +169,7 @@ evpl_socket_tcp_write(
     struct evpl_bind   *bind = evpl_private2bind(s);
     struct evpl_notify  notify;
     struct iovec       *iov;
-    int                 maxiov = s->config->max_num_iovec;
+    int                 maxiov = evpl_shared->config->max_num_iovec;
     int                 niov, niov_sent, msg_sent = 0;
     ssize_t             res, total;
 
@@ -236,7 +236,7 @@ evpl_socket_tcp_write(
  out:
 
     if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
-        evpl_event_write_disinterest(event);
+        evpl_event_write_disinterest(evpl, event);
 
         if (bind->flags & EVPL_BIND_FINISH) {
             evpl_close(evpl, bind);
@@ -401,7 +401,7 @@ evpl_socket_tcp_listen(
     evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
                              errno));
 
-    rc = listen(s->fd, evpl_config(evpl)->max_pending);
+    rc = listen(s->fd, evpl_shared->config->max_pending);
 
     evpl_socket_fatal_if(rc, "Failed to listen on listener fd");
 

@@ -64,7 +64,7 @@ client_thread(void *arg)
     void                 *buffer;
     int                   length;
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     buffer = malloc(max_datagram);
 
@@ -86,7 +86,7 @@ client_thread(void *arg)
         state->sent += length;
         state->sent_msg++;
 
-        evpl_wait(evpl, 0);
+        evpl_continue(evpl);
     }
 
     evpl_destroy(evpl);

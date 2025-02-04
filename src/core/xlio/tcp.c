@@ -21,6 +21,9 @@
 #include "evpl/evpl.h"
 #include "core/endpoint.h"
 #include "core/protocol.h"
+#include "core/evpl_shared.h"
+
+extern struct evpl_shared *evpl_shared;
 
 #include "common.h"
 
@@ -81,7 +84,7 @@ evpl_xlio_tcp_read(
 
     if (bind->segment_callback) {
 
-        iovec = alloca(sizeof(struct evpl_iovec) * s->config->max_num_iovec);
+        iovec = alloca(sizeof(struct evpl_iovec) * evpl_shared->config->max_num_iovec);
 
         while (1) {
 

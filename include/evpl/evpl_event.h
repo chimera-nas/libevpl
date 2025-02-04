@@ -44,11 +44,13 @@ void evpl_event_read_interest(
     struct evpl       *evpl,
     struct evpl_event *event);
 void evpl_event_read_disinterest(
+    struct evpl       *evpl,
     struct evpl_event *event);
 void evpl_event_write_interest(
     struct evpl       *evpl,
     struct evpl_event *event);
 void evpl_event_write_disinterest(
+    struct evpl       *evpl,
     struct evpl_event *event);
 
 
@@ -93,20 +95,32 @@ evpl_remove_event(
 
 #define evpl_from_core(core) ((struct evpl *) core)
 
+typedef void (*evpl_poll_enter_callback_t)(
+    struct evpl *evpl,
+    void        *private_data);
+
+typedef void (*evpl_poll_exit_callback_t)(
+    struct evpl *evpl,
+    void        *private_data);
+
 typedef void (*evpl_poll_callback_t)(
     struct evpl *evpl,
     void        *private_data);
 
 struct evpl_poll {
-    evpl_poll_callback_t callback;
-    void                *private_data;
+    evpl_poll_enter_callback_t enter_callback;
+    evpl_poll_exit_callback_t  exit_callback;
+    evpl_poll_callback_t       callback;
+    void                      *private_data;
 };
 
 struct evpl_poll *
 evpl_add_poll(
-    struct evpl         *evpl,
-    evpl_poll_callback_t callback,
-    void                *private_data);
+    struct evpl               *evpl,
+    evpl_poll_enter_callback_t enter_callback,
+    evpl_poll_exit_callback_t  exit_callback,
+    evpl_poll_callback_t       callback,
+    void                      *private_data);
 
 void
 evpl_remove_poll(

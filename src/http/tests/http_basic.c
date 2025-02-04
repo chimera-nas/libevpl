@@ -90,7 +90,7 @@ server_function(void *ptr)
     struct evpl_http_agent  *agent;
     struct evpl_event        event;
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     event.fd            = server_ctx->eventfd;
     event.read_callback = server_wake;
@@ -110,7 +110,7 @@ server_function(void *ptr)
     server_ctx->run = 1;
 
     while (server_ctx->run) {
-        evpl_wait(evpl, -1);
+        evpl_continue(evpl);
     }
 
     evpl_http_server_destroy(agent, server);

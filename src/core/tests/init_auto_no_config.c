@@ -7,9 +7,12 @@
 #include "evpl/evpl.h"
 
 
-int main(int argc, char *argv[])
+int
+main(
+    int   argc,
+    char *argv[])
 {
-    evpl_init_auto(NULL);
+    evpl_init(NULL);
 
     return 0;
-}
+} /* main */

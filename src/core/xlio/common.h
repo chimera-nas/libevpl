@@ -97,7 +97,6 @@ struct evpl_xlio_socket {
 
     int                        listen;
     int                        connected;
-    const struct evpl_config  *config;
 };
 
 struct evpl_xlio {

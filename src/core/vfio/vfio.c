@@ -1038,7 +1038,7 @@ evpl_vfio_open_queue(
 
     evpl_deferral_init(&queue->ring_sq, evpl_vfio_defer_ring_sq, queue);
 
-    evpl_add_poll(evpl, evpl_vfio_poll_cq, queue);
+    evpl_add_poll(evpl, NULL, NULL, evpl_vfio_poll_cq, queue);
 
     return bqueue;
 } /* evpl_vfio_open_queue */

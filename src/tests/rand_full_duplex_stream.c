@@ -36,11 +36,10 @@ struct thread_state {
 
 void
 dispatch(
-    struct evpl *evpl,
-    void        *private_data)
+    struct evpl         *evpl,
+    struct thread_state *state)
 {
-    struct thread_state *state = private_data;
-    int                  length;
+    int length;
 
     if (!state->bind) {
         return;
@@ -89,7 +88,6 @@ client_callback(
         case EVPL_NOTIFY_CONNECTED:
             evpl_test_info("connected");
             state->bind = bind;
-            evpl_add_poll(evpl, dispatch, state);
             break;
         case EVPL_NOTIFY_DISCONNECTED:
             evpl_test_info("disconnected");
@@ -136,7 +134,7 @@ client_thread(void *arg)
 
     state->buffer = malloc(max_xfer);
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     ep = evpl_endpoint_create(evpl, address, port);
 
@@ -149,7 +147,8 @@ client_thread(void *arg)
     pthread_cond_signal(&state->cond);
 
     while (state->run) {
-        evpl_wait(evpl, -1);
+        dispatch(evpl, state);
+        evpl_continue(evpl);
     }
 
     evpl_test_info("calling evpl destroy");

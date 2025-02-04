@@ -70,7 +70,7 @@ client_thread(void *arg)
     struct evpl_bind     *bind;
     struct client_state  *state = arg;
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     server = evpl_endpoint_create(evpl, address, port);
 
@@ -93,7 +93,7 @@ client_thread(void *arg)
 
         }
 
-        evpl_wait(evpl, -1);
+        evpl_continue(evpl);
     }
 
     evpl_test_debug("client completed iterations");
@@ -193,7 +193,7 @@ main(
     }
 
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     me = evpl_endpoint_create(evpl, "0.0.0.0", port);
 
@@ -202,7 +202,7 @@ main(
     pthread_create(&thr, NULL, client_thread, &state);
 
     while (state.run) {
-        evpl_wait(evpl, 1);
+        evpl_continue(evpl);
     }
 
     pthread_join(thr, NULL);

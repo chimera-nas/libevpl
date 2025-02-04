@@ -19,13 +19,13 @@ int                   port        = 8000;
 
 
 struct client_state {
-    int      run;
-    int      inflight;
-    int      depth;
-    int      sent;
-    int      recv;
-    int      niters;
-    uint32_t value;
+    struct evpl *server_evpl;
+    int          inflight;
+    int          depth;
+    int          sent;
+    int          recv;
+    int          niters;
+    uint32_t     value;
 };
 
 int
@@ -53,9 +53,9 @@ client_callback(
             state->recv++;
             state->inflight--;
 
-            evpl_test_info("client sent %u recv %u value %u",
-                           state->sent, state->recv,
-                           *(uint32_t *) notify->recv_msg.iovec[0].data);
+            evpl_test_info("client received value %u. sent %u recv %u",
+                           *(uint32_t *) notify->recv_msg.iovec[0].data,
+                           state->sent, state->recv);
 
             break;
     } /* switch */
@@ -70,7 +70,7 @@ client_thread(void *arg)
     struct evpl_bind     *bind;
     struct client_state  *state = arg;
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     server = evpl_endpoint_create(evpl, address, port);
 
@@ -87,18 +87,21 @@ client_thread(void *arg)
             state->inflight++;
             state->sent++;
 
-            evpl_test_debug("client sent sent %u recv %u value %u",
-                            state->sent, state->recv, state->value);
+            evpl_test_debug("client sending value %u sent %u recv %u",
+                            state->value, state->sent, state->recv);
 
             state->value++;
         }
 
-        evpl_wait(evpl, -1);
+        evpl_test_debug("client continue sent %u recv %u",
+                        state->sent, state->recv);
+
+        evpl_continue(evpl);
     }
 
     evpl_test_debug("client completed iterations");
 
-    state->run = 0;
+    evpl_stop(state->server_evpl);
 
     evpl_destroy(evpl);
 
@@ -153,7 +156,6 @@ main(
     struct evpl_endpoint *me;
     int                   rc, opt;
     struct client_state   state = {
-        .run      = 1,
         .inflight = 0,
         .depth    = 100,
         .sent     = 0,
@@ -186,7 +188,9 @@ main(
     }
 
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
+
+    state.server_evpl = evpl;
 
     me = evpl_endpoint_create(evpl, "0.0.0.0", port);
 
@@ -194,9 +198,7 @@ main(
 
     pthread_create(&thr, NULL, client_thread, &state);
 
-    while (state.run) {
-        evpl_wait(evpl, -1);
-    }
+    evpl_run(evpl);
 
     pthread_join(thr, NULL);
 

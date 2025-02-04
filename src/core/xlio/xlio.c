@@ -354,8 +354,7 @@ evpl_xlio_poll(
             s->read_callback(evpl, s);
         }
 
-        if (s->closed ||  !(s->readable || (s->writable && s->write_interest)))
-        {
+        if (s->closed ||  !(s->readable || (s->writable && s->write_interest))) {
 
             s->active = 0;
 
@@ -477,7 +476,6 @@ evpl_xlio_socket_init(
     s->evpl      = evpl;
     s->listen    = listen;
     s->connected = connected;
-    s->config    = evpl_config(evpl);
 
     s->read_callback  = read_callback;
     s->write_callback = write_callback;
@@ -522,7 +520,7 @@ evpl_xlio_socket_init(
     }
 
     if (!xlio->poll) {
-        xlio->poll = evpl_add_poll(evpl, evpl_xlio_poll, xlio);
+        xlio->poll = evpl_add_poll(evpl, NULL, NULL, evpl_xlio_poll, xlio);
     }
 
     s->readable       = 0;

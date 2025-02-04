@@ -41,7 +41,7 @@ main(
     ftruncate(fd, 1024 * 1024 * 1024);
     close(fd);
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     bdev = evpl_block_open_device(EVPL_BLOCK_PROTOCOL_IO_URING, "test.img");
 
@@ -60,7 +60,7 @@ main(
     evpl_block_flush(evpl, bqueue, read_callback, &pending);
 
     while (pending) {
-        evpl_wait(evpl, -1);
+        evpl_continue(evpl);
     }
 
     evpl_iovec_release(&iov);

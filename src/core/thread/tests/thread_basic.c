@@ -36,12 +36,9 @@ main(
     struct evpl_thread *thread;
     int                 number = 42;
 
-    evpl_init(NULL);
-
-    thread = evpl_thread_create(thread_init, NULL, NULL, thread_destroy, -1,
+    thread = evpl_thread_create(NULL, thread_init, NULL, NULL, thread_destroy,
                                 &number);
 
     evpl_thread_destroy(thread);
 
-    evpl_cleanup();
 } /* main */

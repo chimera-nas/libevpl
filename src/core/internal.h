@@ -15,38 +15,45 @@
 
 #define EVPL_BVEC_EXTERNAL 0x01
 
-struct evpl_config {
-    unsigned int max_pending;
-    unsigned int max_poll_fd;
-    unsigned int max_num_iovec;
-    unsigned int buffer_size;
-    unsigned int huge_pages;
-    uint64_t     slab_size;
-    unsigned int page_size;
-    unsigned int max_datagram_size;
-    unsigned int max_datagram_batch;
-    unsigned int refcnt;
-    unsigned int iovec_ring_size;
-    unsigned int dgram_ring_size;
-    unsigned int resolve_timeout_ms;
+struct evpl_thread_config {
     unsigned int spin_ns;
-    unsigned int wait_ms;
+    int          wait_ms;
 
-    unsigned int io_uring_enabled;
+};
 
-    unsigned int rdmacm_enabled;
-    unsigned int rdmacm_cq_size;
-    unsigned int rdmacm_sq_size;
-    unsigned int rdmacm_datagram_size_override;
-    unsigned int rdmacm_srq_size;
-    unsigned int rdmacm_srq_min;
-    unsigned int rdmacm_srq_prefill;
-    unsigned int rdmacm_retry_count;
-    unsigned int rdmacm_rnr_retry_count;
+struct evpl_global_config {
 
-    unsigned int xlio_enabled;
+    struct evpl_thread_config thread_default;
 
-    unsigned int vfio_enabled;
+    unsigned int              max_pending;
+    unsigned int              max_poll_fd;
+    unsigned int              max_num_iovec;
+    unsigned int              buffer_size;
+    unsigned int              huge_pages;
+    uint64_t                  slab_size;
+    unsigned int              page_size;
+    unsigned int              max_datagram_size;
+    unsigned int              max_datagram_batch;
+    unsigned int              refcnt;
+    unsigned int              iovec_ring_size;
+    unsigned int              dgram_ring_size;
+    unsigned int              resolve_timeout_ms;
+
+    unsigned int              io_uring_enabled;
+
+    unsigned int              rdmacm_enabled;
+    unsigned int              rdmacm_cq_size;
+    unsigned int              rdmacm_sq_size;
+    unsigned int              rdmacm_datagram_size_override;
+    unsigned int              rdmacm_srq_size;
+    unsigned int              rdmacm_srq_min;
+    unsigned int              rdmacm_srq_prefill;
+    unsigned int              rdmacm_retry_count;
+    unsigned int              rdmacm_rnr_retry_count;
+
+    unsigned int              xlio_enabled;
+
+    unsigned int              vfio_enabled;
 };
 
 void * evpl_malloc(
@@ -168,6 +175,10 @@ evpl_ts_interval(
     return NS_PER_S * (end->tv_sec - start->tv_sec) + (end->tv_nsec - start->
                                                        tv_nsec);
 } // evpl_ts_interval
+
+void
+__evpl_init(
+    void);
 
 void evpl_activity(
     struct evpl *evpl);

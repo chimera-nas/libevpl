@@ -8,10 +8,13 @@
 #include "evpl/evpl.h"
 
 
-struct evpl_config *
-evpl_config_init(void)
+struct evpl_global_config *
+evpl_global_config_init(void)
 {
-    struct evpl_config *config = evpl_zalloc(sizeof(*config));
+    struct evpl_global_config *config = evpl_zalloc(sizeof(*config));
+
+    config->thread_default.spin_ns = 100000UL;
+    config->thread_default.wait_ms = -1;
 
     config->max_pending        = 16;
     config->max_poll_fd        = 16;
@@ -25,8 +28,6 @@ evpl_config_init(void)
     config->max_datagram_size  = 65536;
     config->max_datagram_batch = 16;
     config->resolve_timeout_ms = 5000;
-    config->spin_ns            = 100000000UL;
-    config->wait_ms            = 1;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 
@@ -39,8 +40,8 @@ evpl_config_init(void)
     config->rdmacm_enabled                = 1;
     config->rdmacm_cq_size                = 8192;
     config->rdmacm_sq_size                = 256;
-    config->rdmacm_srq_size               = 16384;
-    config->rdmacm_srq_min                = 4096;
+    config->rdmacm_srq_size               = 4096;
+    config->rdmacm_srq_min                = 256;
     config->rdmacm_datagram_size_override = 0;
     config->rdmacm_srq_prefill            = 0;
     config->rdmacm_retry_count            = 0;
@@ -54,25 +55,33 @@ evpl_config_init(void)
 } /* evpl_config_init */
 
 void
-evpl_config_set_max_datagram_size(
-    struct evpl_config *config,
-    unsigned int        size)
+evpl_global_config_set_max_datagram_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
 {
     config->max_datagram_size = size;
 } /* evpl_config_set_max_datagram_size */
 
 void
-evpl_config_set_huge_pages(
-    struct evpl_config *config,
-    int                 huge_pages)
+evpl_global_config_set_huge_pages(
+    struct evpl_global_config *config,
+    int                        huge_pages)
 {
     config->huge_pages = huge_pages;
-} /* evpl_config_set_huge_pages */
+} /* evpl_global_config_set_huge_pages */
 
 void
-evpl_config_set_rdmacm_datagram_size_override(
-    struct evpl_config *config,
-    unsigned int        size)
+evpl_global_config_set_rdmacm_srq_prefill(
+    struct evpl_global_config *config,
+    int                        prefill)
+{
+    config->rdmacm_srq_prefill = prefill;
+} /* evpl_global_config_set_rdmacm_srq_prefill */
+
+void
+evpl_global_config_set_rdmacm_datagram_size_override(
+    struct evpl_global_config *config,
+    unsigned int               size)
 {
     config->rdmacm_datagram_size_override = size;
-} /* evpl_config_set_rdmacm_datagram_size_override */
+} /* evpl_global_config_set_rdmacm_datagram_size_override */

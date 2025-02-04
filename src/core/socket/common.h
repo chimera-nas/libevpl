@@ -9,7 +9,9 @@
 
 #include "uthash/utlist.h"
 #include "evpl/evpl.h"
+#include "core/evpl_shared.h"
 
+extern struct evpl_shared *evpl_shared;
 #define evpl_socket_debug(...) evpl_debug("socket", __FILE__, __LINE__, \
                                           __VA_ARGS__)
 #define evpl_socket_info(...)  evpl_info("socket", __FILE__, __LINE__, \
@@ -36,7 +38,6 @@ struct evpl_socket {
     struct evpl_event            event;
     int                          fd;
     int                          connected;
-    const struct evpl_config    *config;
     struct evpl_socket_datagram *free_datagrams;
     struct evpl_iovec            recv1;
     struct evpl_iovec            recv2;
@@ -57,8 +58,7 @@ evpl_socket_datagram_alloc(
         LL_DELETE(s->free_datagrams, datagram);
     } else {
         datagram = evpl_zalloc(sizeof(*datagram));
-        evpl_iovec_alloc_datagram(evpl, &datagram->iovec, s->config->
-                                  max_datagram_size);
+        evpl_iovec_alloc_datagram(evpl, &datagram->iovec, evpl_shared->config->max_datagram_size);
     }
 
     return datagram;
@@ -79,8 +79,8 @@ evpl_socket_datagram_reload(
     struct evpl_socket          *s,
     struct evpl_socket_datagram *datagram)
 {
-    evpl_iovec_alloc_datagram(evpl, &datagram->iovec, s->config->
-                              max_datagram_size);
+    evpl_iovec_alloc_datagram(evpl, &datagram->iovec,
+                              evpl_shared->config->max_datagram_size);
 } // evpl_socket_msg_reload
 
 static inline void
@@ -94,7 +94,6 @@ evpl_socket_init(
 
     s->fd        = fd;
     s->connected = connected;
-    s->config    = evpl_config(evpl);
 
 
     flags = fcntl(s->fd, F_GETFL, 0);
@@ -116,8 +115,8 @@ evpl_socket_pending_close(
 {
     struct evpl_socket *s = evpl_bind_private(bind);
 
-    evpl_event_read_disinterest(&s->event);
-    evpl_event_write_disinterest(&s->event);
+    evpl_event_read_disinterest(evpl, &s->event);
+    evpl_event_write_disinterest(evpl, &s->event);
 
     close(s->fd);
 

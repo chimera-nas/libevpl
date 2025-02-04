@@ -14,6 +14,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/eventfd.h>
 
 #include "uthash/utlist.h"
 
@@ -58,36 +59,44 @@ pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
 struct evpl_shared *evpl_shared      = NULL;
 
 struct evpl {
-    struct evpl_core       core; /* must be first */
+    struct evpl_core          core;  /* must be first */
 
-    struct timespec        last_activity_ts;
-    uint64_t               activity;
-    uint64_t               last_activity;
+    struct timespec           last_activity_ts;
+    uint64_t                  activity;
+    uint64_t                  last_activity;
+    uint64_t                  poll_iterations;
 
-    struct evpl_poll      *poll;
-    int                    num_poll;
-    int                    max_poll;
+    struct evpl_poll         *poll;
+    int                       num_poll;
+    int                       max_poll;
 
-    struct evpl_event    **active_events;
-    int                    num_active_events;
-    int                    max_active_events;
-    int                    num_events;
+    int                       eventfd;
+    int                       running;
+    struct evpl_event         run_event;
 
-    struct evpl_deferral **active_deferrals;
-    int                    num_active_deferrals;
-    int                    max_active_deferrals;
+    struct evpl_event       **active_events;
+    int                       num_active_events;
+    int                       max_active_events;
+    int                       num_events;
+    int                       num_enabled_events;
+    int                       poll_mode;
 
-    struct evpl_buffer    *current_buffer;
-    struct evpl_buffer    *datagram_buffer;
-    struct evpl_bind      *free_binds;
-    struct evpl_address   *free_address;
-    struct evpl_endpoint  *endpoints;
-    struct evpl_config    *config;
-    struct evpl_bind      *binds;
-    struct evpl_bind      *pending_close_binds;
+    struct evpl_deferral    **active_deferrals;
+    int                       num_active_deferrals;
+    int                       max_active_deferrals;
 
-    void                  *protocol_private[EVPL_NUM_PROTO];
-    void                  *framework_private[EVPL_NUM_FRAMEWORK];
+    struct evpl_buffer       *current_buffer;
+    struct evpl_buffer       *datagram_buffer;
+    struct evpl_bind         *free_binds;
+    struct evpl_address      *free_address;
+    struct evpl_endpoint     *endpoints;
+    struct evpl_bind         *binds;
+    struct evpl_bind         *pending_close_binds;
+
+    struct evpl_thread_config config;
+
+    void                     *protocol_private[EVPL_NUM_PROTO];
+    void                     *framework_private[EVPL_NUM_FRAMEWORK];
 };
 
 static void
@@ -119,14 +128,14 @@ evpl_block_protocol_init(
 } /* evpl_block_protocol_init */
 
 static void
-evpl_shared_init(struct evpl_config *config)
+evpl_shared_init(struct evpl_global_config *config)
 {
     evpl_shared = evpl_zalloc(sizeof(*evpl_shared));
 
     pthread_mutex_init(&evpl_shared->lock, NULL);
 
     if (!config) {
-        config = evpl_config_init();
+        config = evpl_global_config_init();
     }
 
     evpl_shared->config = config;
@@ -191,17 +200,31 @@ evpl_set_log_fn(evpl_log_fn log_fn)
 } /* evpl_set_log_fn */
 
 void
-evpl_init_auto(struct evpl_config *config)
+evpl_cleanup()
+{
+    unsigned int i;
+
+    evpl_allocator_destroy(evpl_shared->allocator);
+
+    for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
+        if (evpl_shared->framework_private[i]) {
+            evpl_shared->framework[i]->cleanup(evpl_shared->framework_private[i]
+                                               );
+        }
+    }
+
+    evpl_global_config_release(evpl_shared->config);
+
+    evpl_free(evpl_shared);
+    evpl_shared = NULL;
+} /* evpl_cleanup */
+
+void
+evpl_init(struct evpl_global_config *config)
 {
     evpl_shared_init(config);
     atexit(evpl_cleanup);
 } /* evpl_init_auto */
-
-void
-evpl_init(struct evpl_config *config)
-{
-    evpl_shared_init(config);
-} /* evpl_init */
 
 static void
 evpl_init_once(void)
@@ -218,29 +241,15 @@ evpl_init_once(void)
 } /* evpl_init_once */
 
 void
-evpl_cleanup()
+__evpl_init(void)
 {
-    unsigned int i;
+    pthread_once(&evpl_shared_once, evpl_init_once);
+} /* __evpl_init */
 
-    evpl_allocator_destroy(evpl_shared->allocator);
-
-    for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
-        if (evpl_shared->framework_private[i]) {
-            evpl_shared->framework[i]->cleanup(evpl_shared->framework_private[i]
-                                               );
-        }
-    }
-
-    evpl_config_release(evpl_shared->config);
-
-    evpl_free(evpl_shared);
-    evpl_shared = NULL;
-} /* evpl_cleanup */
-
-static inline struct evpl_config *
+static inline struct evpl_global_config *
 evpl_get_config(void)
 {
-    struct evpl_config *config;
+    struct evpl_global_config *config;
 
     pthread_mutex_lock(&evpl_shared->lock);
     evpl_shared->config->refcnt++;
@@ -251,7 +260,7 @@ evpl_get_config(void)
 } /* evpl_get_config */
 
 void
-evpl_config_release(struct evpl_config *config)
+evpl_global_config_release(struct evpl_global_config *config)
 {
 
     if (!evpl_shared) {
@@ -273,12 +282,30 @@ evpl_config_release(struct evpl_config *config)
     pthread_mutex_unlock(&evpl_shared->lock);
 } /* evpl_release_config */
 
+static void
+evpl_stop_callback(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    uint64_t value;
+    ssize_t  rc;
+
+    rc = read(event->fd, &value, sizeof(value));
+
+    if (rc != sizeof(value)) {
+        evpl_event_mark_unreadable(event);
+        return;
+    }
+
+    evpl->running = 0;
+} /* evpl_stop_callback */
+
 struct evpl *
-evpl_create()
+evpl_create(struct evpl_thread_config *config)
 {
     struct evpl *evpl;
 
-    pthread_once(&evpl_shared_once, evpl_init_once);
+    __evpl_init();
 
     evpl = evpl_zalloc(sizeof(*evpl));
 
@@ -292,57 +319,94 @@ evpl_create()
                                                      evpl_deferral *));
     evpl->max_active_deferrals = 256;
 
-    evpl->config = evpl_get_config();
+    if (config) {
+        evpl->config = *config;
+    } else {
+        evpl->config = evpl_shared->config->thread_default;
+    }
 
     evpl_core_init(&evpl->core, 64);
+
+    evpl->running = 1;
+    evpl->eventfd = eventfd(0, EFD_NONBLOCK);
+
+    evpl->run_event.fd            = evpl->eventfd;
+    evpl->run_event.read_callback = evpl_stop_callback;
+
+    evpl_add_event(evpl, &evpl->run_event);
+
+    evpl_event_read_interest(evpl, &evpl->run_event);
 
     return evpl;
 } /* evpl_init */
 
 void
-evpl_wait(
-    struct evpl *evpl,
-    int          max_msecs)
+evpl_continue(struct evpl *evpl)
 {
     struct evpl_event    *event;
     struct evpl_bind     *bind;
     struct evpl_deferral *deferral;
     struct evpl_poll     *poll;
     int                   i, n;
-    int                   msecs = max_msecs;
+    int                   msecs = evpl->config.wait_ms;
     struct timespec       now;
     uint64_t              elapsed;
 
-    for (i = 0; i < evpl->num_poll; ++i) {
-        poll = &evpl->poll[i];
-        poll->callback(evpl, poll->private_data);
-    }
-
-    clock_gettime(CLOCK_MONOTONIC, &now);
-
-    if (evpl->activity != evpl->last_activity) {
-        evpl->last_activity    = evpl->activity;
-        evpl->last_activity_ts = now;
-        elapsed                = 0;
-    } else {
-        elapsed = evpl_ts_interval(&now, &evpl->last_activity_ts);
-    }
-
     if (evpl->num_poll) {
-        if (elapsed > evpl->config->spin_ns) {
-            msecs = evpl->config->wait_ms;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+
+        if (evpl->activity != evpl->last_activity) {
+            evpl->last_activity    = evpl->activity;
+            evpl->last_activity_ts = now;
+            elapsed                = 0;
         } else {
+            elapsed = evpl_ts_interval(&now, &evpl->last_activity_ts);
+        }
+
+
+        if (elapsed > evpl->config.spin_ns) {
+            if (evpl->poll_mode) {
+                for (i = 0; i < evpl->num_poll; ++i) {
+                    poll = &evpl->poll[i];
+                    if (poll->exit_callback) {
+                        poll->exit_callback(evpl, poll->private_data);
+                    }
+                }
+
+                evpl->poll_mode = 0;
+            }
+        } else {
+
+            if (!evpl->poll_mode) {
+                for (i = 0; i < evpl->num_poll; ++i) {
+                    poll = &evpl->poll[i];
+                    if (poll->enter_callback) {
+                        poll->enter_callback(evpl, poll->private_data);
+                    }
+                }
+
+                evpl->poll_mode       = 1;
+                evpl->poll_iterations = 0;
+            }
+
             msecs = 0;
         }
     }
 
-    if (evpl->pending_close_binds ||
-        evpl->num_active_events ||
-        evpl->num_active_deferrals) {
+    if (evpl->pending_close_binds || evpl->num_active_events || evpl->num_active_deferrals) {
         msecs = 0;
     }
 
-    if (evpl->num_events || evpl->pending_close_binds) {
+    if (evpl->poll_mode && evpl->poll_iterations < 100) {
+        for (i = 0; i < evpl->num_poll; ++i) {
+            poll = &evpl->poll[i];
+            poll->callback(evpl, poll->private_data);
+        }
+
+        evpl->poll_iterations++;
+
+    } else {
 
         n = evpl_core_wait(&evpl->core, msecs);
 
@@ -353,9 +417,11 @@ evpl_wait(
                 evpl_bind_destroy(evpl, bind);
             }
         }
+
+        evpl->poll_iterations = 0;
     }
 
-    for (i = 0; i < evpl->num_active_events; ++i) {
+    for (i = 0; i < evpl->num_active_events;) {
         event = evpl->active_events[i];
 
         if ((event->flags & EVPL_READ_READY) == EVPL_READ_READY) {
@@ -381,6 +447,8 @@ evpl_wait(
                     evpl->active_events[evpl->num_active_events - 1];
             }
             --evpl->num_active_events;
+        } else {
+            i++;
         }
     }
 
@@ -398,6 +466,25 @@ evpl_wait(
     }
 
 } /* evpl_wait */
+
+void
+evpl_run(struct evpl *evpl)
+{
+    while (evpl->running) {
+        evpl_continue(evpl);
+    }
+} /* evpl_run */
+
+void
+evpl_stop(struct evpl *evpl)
+{
+    uint64_t value = 1;
+
+    write(evpl->eventfd, &value, sizeof(value));
+} /* evpl_stop */
+
+
+
 
 struct evpl_bind *
 evpl_listen(
@@ -654,7 +741,8 @@ evpl_destroy(struct evpl *evpl)
 
     evpl_core_destroy(&evpl->core);
 
-    evpl_config_release(evpl->config);
+    close(evpl->eventfd);
+
     evpl_free(evpl->active_events);
     evpl_free(evpl->active_deferrals);
     evpl_free(evpl->poll);
@@ -748,18 +836,18 @@ evpl_bind_prepare(
 
         evpl_iovec_ring_alloc(
             &bind->iovec_send,
-            evpl->config->iovec_ring_size,
-            evpl->config->page_size);
+            evpl_shared->config->iovec_ring_size,
+            evpl_shared->config->page_size);
 
         evpl_dgram_ring_alloc(
             &bind->dgram_send,
-            evpl->config->dgram_ring_size,
-            evpl->config->page_size);
+            evpl_shared->config->dgram_ring_size,
+            evpl_shared->config->page_size);
 
         evpl_iovec_ring_alloc(
             &bind->iovec_recv,
-            evpl->config->iovec_ring_size,
-            evpl->config->page_size);
+            evpl_shared->config->iovec_ring_size,
+            evpl_shared->config->page_size);
 
         evpl_deferral_init(&bind->close_deferral,
                            evpl_bind_close_deferral, bind);
@@ -799,6 +887,10 @@ evpl_event_read_interest(
     struct evpl_event *event)
 {
 
+    if (!(event->flags & (EVPL_READ_INTEREST | EVPL_WRITE_INTEREST))) {
+        evpl->num_enabled_events++;
+    }
+
     event->flags |= EVPL_READ_INTEREST;
 
     if ((event->flags & EVPL_READ_READY) == EVPL_READ_READY &&
@@ -812,8 +904,15 @@ evpl_event_read_interest(
 } /* evpl_event_read_interest */
 
 void
-evpl_event_read_disinterest(struct evpl_event *event)
+evpl_event_read_disinterest(
+    struct evpl       *evpl,
+    struct evpl_event *event)
 {
+
+    if ((event->flags & (EVPL_READ_INTEREST | EVPL_WRITE_INTEREST)) == EVPL_READ_INTEREST) {
+        evpl->num_enabled_events--;
+    }
+
     event->flags &= ~EVPL_READ_INTEREST;
 } /* evpl_event_read_disinterest */
 
@@ -822,6 +921,10 @@ evpl_event_write_interest(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
+
+    if (!(event->flags & (EVPL_READ_INTEREST | EVPL_WRITE_INTEREST))) {
+        evpl->num_enabled_events++;
+    }
 
     event->flags |= EVPL_WRITE_INTEREST;
 
@@ -836,8 +939,14 @@ evpl_event_write_interest(
 } /* evpl_event_write_interest */
 
 void
-evpl_event_write_disinterest(struct evpl_event *event)
+evpl_event_write_disinterest(
+    struct evpl       *evpl,
+    struct evpl_event *event)
 {
+
+    if ((event->flags & (EVPL_READ_INTEREST | EVPL_WRITE_INTEREST)) == EVPL_WRITE_INTEREST) {
+        evpl->num_enabled_events--;
+    }
 
     event->flags &= ~EVPL_WRITE_INTEREST;
 
@@ -1065,7 +1174,7 @@ evpl_iovec_alloc_datagram(
     buffer->used += size;
     atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 
-    if (buffer->size - buffer->used < evpl->config->max_datagram_size) {
+    if (buffer->size - buffer->used < evpl_shared->config->max_datagram_size) {
         evpl_buffer_release(evpl->datagram_buffer);
         evpl->datagram_buffer = NULL;
     }
@@ -1301,12 +1410,6 @@ evpl_finish(
     }
 
 } /* evpl_finish */
-
-struct evpl_config *
-evpl_config(struct evpl *evpl)
-{
-    return evpl->config;
-} /* evpl_config */
 
 void
 evpl_bind_destroy(
@@ -1749,14 +1852,18 @@ evpl_remove_event(
 
 struct evpl_poll *
 evpl_add_poll(
-    struct evpl         *evpl,
-    evpl_poll_callback_t callback,
-    void                *private_data)
+    struct evpl               *evpl,
+    evpl_poll_enter_callback_t enter_callback,
+    evpl_poll_exit_callback_t  exit_callback,
+    evpl_poll_callback_t       callback,
+    void                      *private_data)
 {
     struct evpl_poll *poll = &evpl->poll[evpl->num_poll];
 
-    poll->callback     = callback;
-    poll->private_data = private_data;
+    poll->enter_callback = enter_callback;
+    poll->exit_callback  = exit_callback;
+    poll->callback       = callback;
+    poll->private_data   = private_data;
 
     ++evpl->num_poll;
 
@@ -1956,7 +2063,7 @@ evpl_block_open_device(
     struct evpl_block_device   *blockdev;
     void                       *protocol_private_data;
 
-    pthread_once(&evpl_shared_once, evpl_init_once);
+    __evpl_init();
 
     if (protocol_id >= EVPL_NUM_BLOCK_PROTOCOL) {
         return NULL;

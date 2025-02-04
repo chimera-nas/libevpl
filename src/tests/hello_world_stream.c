@@ -57,7 +57,7 @@ client_thread(void *arg)
     struct evpl_bind     *bind;
     int                   run = 1;
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     ep = evpl_endpoint_create(evpl, address, port);
 
@@ -67,8 +67,7 @@ client_thread(void *arg)
     evpl_send(evpl, bind, hello, hellolen);
 
     while (run) {
-
-        evpl_wait(evpl, -1);
+        evpl_continue(evpl);
     }
 
     evpl_destroy(evpl);
@@ -156,7 +155,7 @@ main(
     }
 
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     ep = evpl_endpoint_create(evpl, address, port);
 
@@ -165,7 +164,7 @@ main(
     pthread_create(&thr, NULL, client_thread, NULL);
 
     while (run) {
-        evpl_wait(evpl, -1);
+        evpl_continue(evpl);
     }
 
     pthread_join(thr, NULL);

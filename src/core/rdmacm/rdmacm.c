@@ -22,6 +22,9 @@
 #include "core/protocol.h"
 #include "core/bind.h"
 #include "core/endpoint.h"
+#include "core/evpl_shared.h"
+
+extern struct evpl_shared *evpl_shared;
 
 #define evpl_rdmacm_debug(...) evpl_debug("rdmacm", __FILE__, __LINE__, \
                                           __VA_ARGS__)
@@ -58,7 +61,6 @@ struct evpl_rdmacm_request {
 
 struct evpl_rdmacm_sr {
     struct evpl_rdmacm_id *rdmacm_id;
-    struct evpl_buffer    *bufref[32];
     int                    nbufref;
     uint64_t               length;
 
@@ -67,7 +69,10 @@ struct evpl_rdmacm_sr {
         void *private_data);
     void                  *private_data;
 
+    struct evpl_rdmacm_sr *prev;
     struct evpl_rdmacm_sr *next;
+
+    struct evpl_buffer    *bufref[32];
 };
 
 struct evpl_rdmacm_new_id {
@@ -122,11 +127,11 @@ struct evpl_rdmacm_device {
     int                         srq_min;
     int                         srq_fill;
     int                         index;
+    int                         num_qp;
 };
 
 struct evpl_rdmacm {
     struct rdma_event_channel   *event_channel;
-    struct evpl_config          *config;
     struct evpl_event            event;
     struct evpl_poll            *poll;
     struct evpl_rdmacm_id       *ids;
@@ -134,6 +139,7 @@ struct evpl_rdmacm {
     struct evpl_rdmacm_device   *devices;
     int                          num_devices;
     struct evpl_rdmacm_sr       *free_sr;
+    struct evpl_rdmacm_sr       *active_sr;
     pthread_mutex_t              mutex;
     int                          new_id_eventfd;
     struct evpl_event            new_id_event;
@@ -178,6 +184,8 @@ evpl_rdmacm_sr_alloc(struct evpl_rdmacm *rdmacm)
         sr = evpl_zalloc(sizeof(*sr));
     }
 
+    DL_APPEND(rdmacm->active_sr, sr);
+
     return sr;
 } /* evpl_rdmacm_sr_alloc */
 
@@ -186,6 +194,7 @@ evpl_rdmacm_sr_free(
     struct evpl_rdmacm    *rdmacm,
     struct evpl_rdmacm_sr *sr)
 {
+    DL_DELETE(rdmacm->active_sr, sr);
     LL_PREPEND(rdmacm->free_sr, sr);
 } /* evpl_rdmacm_sr_free */
 
@@ -223,6 +232,8 @@ evpl_rdmacm_create_qp(
 
     dev = evpl_rdmacm_map_device(rdmacm, rdmacm_id->id->verbs);
 
+    dev->num_qp++;
+
     rdmacm_id->dev      = dev;
     rdmacm_id->devindex = dev->index;
 
@@ -239,10 +250,10 @@ evpl_rdmacm_create_qp(
     qp_attr.send_cq          = dev->cq;
     qp_attr.recv_cq          = dev->cq;
     qp_attr.srq              = dev->srq;
-    qp_attr.cap.max_send_wr  = rdmacm->config->rdmacm_sq_size;
-    qp_attr.cap.max_recv_wr  = rdmacm->config->rdmacm_sq_size;
-    qp_attr.cap.max_send_sge = rdmacm->config->max_num_iovec;
-    qp_attr.cap.max_recv_sge = rdmacm->config->max_num_iovec;
+    qp_attr.cap.max_send_wr  = evpl_shared->config->rdmacm_sq_size;
+    qp_attr.cap.max_recv_wr  = evpl_shared->config->rdmacm_sq_size;
+    qp_attr.cap.max_send_sge = evpl_shared->config->max_num_iovec;
+    qp_attr.cap.max_recv_sge = evpl_shared->config->max_num_iovec;
     qp_attr.sq_sig_all       = 1;
 
     qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND |
@@ -294,7 +305,7 @@ evpl_rdmacm_event_callback(
         case RDMA_CM_EVENT_ADDR_RESOLVED:
 
             rc = rdma_resolve_route(cm_event->id,
-                                    rdmacm->config->resolve_timeout_ms);
+                                    evpl_shared->config->resolve_timeout_ms);
 
             evpl_rdmacm_abort_if(rc, "rdma_resolve_route error %s", strerror(
                                      errno));
@@ -307,8 +318,8 @@ evpl_rdmacm_event_callback(
 
             memset(&conn_param, 0, sizeof(conn_param));
             conn_param.private_data    = rdmacm_id;
-            conn_param.retry_count     = rdmacm->config->rdmacm_retry_count;
-            conn_param.rnr_retry_count = rdmacm->config->rdmacm_rnr_retry_count;
+            conn_param.retry_count     = evpl_shared->config->rdmacm_retry_count;
+            conn_param.rnr_retry_count = evpl_shared->config->rdmacm_rnr_retry_count;
 
             rc = rdma_connect(cm_event->id, &conn_param);
 
@@ -427,10 +438,10 @@ evpl_rdmacm_fill_srq(
     int                         rc;
     int                         size;
 
-    if (rdmacm->config->rdmacm_datagram_size_override) {
-        size = rdmacm->config->rdmacm_datagram_size_override;
+    if (evpl_shared->config->rdmacm_datagram_size_override) {
+        size = evpl_shared->config->rdmacm_datagram_size_override;
     } else {
-        size = rdmacm->config->max_datagram_size;
+        size = evpl_shared->config->max_datagram_size;
     }
 
     while (dev->srq_free_reqs) {
@@ -483,7 +494,8 @@ evpl_rdmacm_fill_all_srq(
 static void
 evpl_rdmacm_poll_cq(
     struct evpl               *evpl,
-    struct evpl_rdmacm_device *dev)
+    struct evpl_rdmacm_device *dev,
+    int                        drain)
 {
     struct evpl_rdmacm         *rdmacm = dev->rdmacm;
     struct evpl_rdmacm_id      *rdmacm_id;
@@ -670,7 +682,7 @@ evpl_rdmacm_poll_cq(
 
     evpl_rdmacm_fill_srq(evpl, rdmacm, dev);
 
-    if (n) {
+    if (drain && n) {
         goto again;
     }
 
@@ -699,7 +711,7 @@ evpl_rdmacm_comp_callback(
 
     evpl_rdmacm_abort_if(rc, "ibv_req_notify_cq error %s", strerror(errno));
 
-    evpl_rdmacm_poll_cq(evpl, dev);
+    evpl_rdmacm_poll_cq(evpl, dev, 0);
 
     ibv_ack_cq_events(dev->cq, 1);
 } /* evpl_rdmacm_comp_callback */
@@ -862,8 +874,8 @@ evpl_rdmacm_new_id_callback(
         evpl_rdmacm_create_qp(evpl, rdmacm, new_rdmacm_id);
 
         conn_param.private_data        = rdmacm;
-        conn_param.retry_count         = rdmacm->config->rdmacm_retry_count;
-        conn_param.rnr_retry_count     = rdmacm->config->rdmacm_rnr_retry_count;
+        conn_param.retry_count         = evpl_shared->config->rdmacm_retry_count;
+        conn_param.rnr_retry_count     = evpl_shared->config->rdmacm_rnr_retry_count;
         conn_param.responder_resources = cm_event->param.conn.initiator_depth;
         conn_param.initiator_depth     = cm_event->param.conn.initiator_depth;
 
@@ -897,6 +909,44 @@ evpl_rdmacm_new_id_callback(
 } /* evpl_rdmacm_new_id_callback */
 
 static void
+evpl_rdmacm_poll_enter(
+    struct evpl *evpl,
+    void        *arg)
+{
+    struct evpl_rdmacm        *rdmacm = arg;
+    struct evpl_rdmacm_device *dev;
+    int                        i;
+
+    for (i = 0; i < rdmacm->num_devices; ++i) {
+        dev = &rdmacm->devices[i];
+
+        evpl_event_read_disinterest(evpl, &dev->event);
+    }
+} /* evpl_rdmacm_poll_enter */
+
+static void
+evpl_rdmacm_poll_exit(
+    struct evpl *evpl,
+    void        *arg)
+{
+    struct evpl_rdmacm        *rdmacm = arg;
+    struct evpl_rdmacm_device *dev;
+    int                        i, rc;
+
+    for (i = 0; i < rdmacm->num_devices; ++i) {
+        dev = &rdmacm->devices[i];
+
+        evpl_event_read_interest(evpl, &dev->event);
+
+        rc = ibv_req_notify_cq(dev->cq, 0);
+
+        evpl_rdmacm_abort_if(rc, "ibv_req_notify_cq error %s", strerror(errno));
+
+        evpl_rdmacm_poll_cq(evpl, dev, 1);
+    }
+} /* evpl_rdmacm_poll_exit */
+
+static void
 evpl_rdmacm_poll(
     struct evpl *evpl,
     void        *arg)
@@ -907,7 +957,10 @@ evpl_rdmacm_poll(
 
     for (i = 0; i < rdmacm->num_devices; ++i) {
         dev = &rdmacm->devices[i];
-        evpl_rdmacm_poll_cq(evpl, dev);
+
+        if (dev->num_qp) {
+            evpl_rdmacm_poll_cq(evpl, dev, 1);
+        }
     }
 
 } /* evpl_rdmacm_poll */
@@ -928,7 +981,6 @@ evpl_rdmacm_create(
 
     rdmacm = evpl_zalloc(sizeof(*rdmacm));
 
-    rdmacm->config   = evpl_config(evpl);
     rdmacm->listener = &rdmacm_devices->listener;
 
     rdmacm->num_devices = rdmacm_devices->num_devices;
@@ -984,7 +1036,7 @@ evpl_rdmacm_create(
 
         memset(&cq_attr, 0, sizeof(cq_attr));
 
-        cq_attr.cqe           = rdmacm->config->rdmacm_cq_size;
+        cq_attr.cqe           = evpl_shared->config->rdmacm_cq_size;
         cq_attr.cq_context    = dev;
         cq_attr.channel       = dev->comp_channel;
         cq_attr.comp_vector   = 0;
@@ -1003,13 +1055,13 @@ evpl_rdmacm_create(
 
         memset(&srq_init_attr, 0, sizeof(srq_init_attr));
 
-        srq_init_attr.attr.max_wr  = rdmacm->config->rdmacm_srq_size;
+        srq_init_attr.attr.max_wr  = evpl_shared->config->rdmacm_srq_size;
         srq_init_attr.attr.max_sge = 1;
 
         dev->srq = ibv_create_srq(dev->pd, &srq_init_attr);
 
-        dev->srq_max = rdmacm->config->rdmacm_srq_size;
-        dev->srq_min = rdmacm->config->rdmacm_srq_min;
+        dev->srq_max = evpl_shared->config->rdmacm_srq_size;
+        dev->srq_min = evpl_shared->config->rdmacm_srq_min;
 
         dev->srq_reqs = evpl_zalloc(sizeof(struct evpl_rdmacm_request) *
                                     dev->srq_max);
@@ -1053,9 +1105,13 @@ evpl_rdmacm_create(
     evpl_add_event(evpl, &rdmacm->new_id_event);
     evpl_event_read_interest(evpl, &rdmacm->new_id_event);
 
-    rdmacm->poll = evpl_add_poll(evpl, evpl_rdmacm_poll, rdmacm);
+    rdmacm->poll = evpl_add_poll(evpl,
+                                 evpl_rdmacm_poll_enter,
+                                 evpl_rdmacm_poll_exit,
+                                 evpl_rdmacm_poll,
+                                 rdmacm);
 
-    if (rdmacm->config->rdmacm_srq_prefill) {
+    if (evpl_shared->config->rdmacm_srq_prefill) {
         evpl_rdmacm_fill_all_srq(evpl, rdmacm);
     }
 
@@ -1081,6 +1137,15 @@ evpl_rdmacm_destroy(
     evpl_remove_event(evpl, &rdmacm->event);
 
     rdma_destroy_event_channel(rdmacm->event_channel);
+
+    while (rdmacm->active_sr) {
+        sr = rdmacm->active_sr;
+        for (int i = 0; i < sr->nbufref; ++i) {
+            evpl_buffer_release(sr->bufref[i]);
+        }
+        DL_DELETE(rdmacm->active_sr, sr);
+        LL_PREPEND(rdmacm->free_sr, sr);
+    }
 
     for (i = 0; i < rdmacm->num_devices; ++i) {
         dev = &rdmacm->devices[i];
@@ -1145,10 +1210,10 @@ evpl_rdmacm_listen(
     if (!listener->started) {
         listener->started = 1;
         listener->thread  = evpl_thread_create(NULL,
+                                               NULL,
                                                evpl_rdmacm_listener_wake,
                                                NULL,
                                                NULL,
-                                               1000,
                                                listener);
     }
 
@@ -1195,7 +1260,7 @@ evpl_rdmacm_connect(
     evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
 
     rc = rdma_resolve_addr(rdmacm_id->id, NULL, bind->remote->addr,
-                           rdmacm->config->resolve_timeout_ms);
+                           evpl_shared->config->resolve_timeout_ms);
 
     evpl_rdmacm_abort_if(rc, "rdma_resolve_addr error %s", strerror(errno));
 } /* evpl_rdmacm_connect */
@@ -1266,7 +1331,7 @@ evpl_rdmacm_ud_resolve(
     address->refcnt++;
 
     rc = rdma_resolve_addr(rdmacm_id->resolve_id, NULL, address->addr,
-                           rdmacm_id->rdmacm->config->resolve_timeout_ms);
+                           evpl_shared->config->resolve_timeout_ms);
 
     evpl_rdmacm_abort_if(rc, "Failed to resolve rdmacm address");
 
@@ -1391,15 +1456,15 @@ evpl_rdmacm_flush_stream(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
-    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
-    struct evpl_config    *config    = rdmacm->config;
-    struct evpl_rdmacm_sr *sr;
-    struct evpl_iovec     *cur;
-    struct ibv_qp_ex      *qp = rdmacm_id->qp;
-    struct ibv_mr         *mr, **mrset;
-    struct ibv_sge        *sge;
-    int                    nsge, rc;
+    struct evpl_rdmacm_id     *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_rdmacm        *rdmacm    = rdmacm_id->rdmacm;
+    struct evpl_global_config *config    = evpl_shared->config;
+    struct evpl_rdmacm_sr     *sr;
+    struct evpl_iovec         *cur;
+    struct ibv_qp_ex          *qp = rdmacm_id->qp;
+    struct ibv_mr             *mr, **mrset;
+    struct ibv_sge            *sge;
+    int                        nsge, rc;
 
     if (!qp) {
         return;
@@ -1541,6 +1606,8 @@ evpl_rdmacm_close(
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
+
+    --rdmacm_id->dev->num_qp;
 
     if (rdmacm_id->qp) {
         HASH_DELETE(hh, rdmacm->ids, rdmacm_id);

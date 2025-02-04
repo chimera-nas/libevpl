@@ -143,10 +143,10 @@ evpl_allocator_create_slab(struct evpl_allocator *allocator)
 struct evpl_buffer *
 evpl_allocator_alloc(struct evpl_allocator *allocator)
 {
-    struct evpl_config *config = evpl_shared->config;
-    struct evpl_slab   *slab;
-    struct evpl_buffer *buffer;
-    void               *ptr;
+    struct evpl_global_config *config = evpl_shared->config;
+    struct evpl_slab          *slab;
+    struct evpl_buffer        *buffer;
+    void                      *ptr;
 
     pthread_mutex_lock(&allocator->lock);
 

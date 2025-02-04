@@ -19,11 +19,11 @@ int                   port        = 8000;
 
 
 struct client_state {
-    int      run;
-    int      sent;
-    int      recv;
-    int      niters;
-    uint32_t value;
+    int          sent;
+    int          recv;
+    int          niters;
+    uint32_t     value;
+    struct evpl *server_evpl;
 };
 
 void
@@ -57,7 +57,7 @@ client_thread(void *arg)
     struct evpl_bind     *bind;
     struct client_state  *state = arg;
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
 
     me = evpl_endpoint_create(evpl, address, port + 1);
 
@@ -65,7 +65,7 @@ client_thread(void *arg)
 
     bind = evpl_bind(evpl, proto, me, client_callback, state);
 
-    while (state->recv != state->niters) {
+    while (state->sent < state->niters) {
 
         if (state->sent == state->recv) {
 
@@ -80,12 +80,12 @@ client_thread(void *arg)
 
         }
 
-        evpl_wait(evpl, -1);
+        evpl_continue(evpl);
     }
 
     evpl_test_debug("client completed iterations");
 
-    state->run = 0;
+    evpl_stop(state->server_evpl);
 
     evpl_destroy(evpl);
 
@@ -123,7 +123,6 @@ main(
     struct evpl_endpoint *me, *client;
     int                   rc, opt;
     struct client_state   state = {
-        .run    = 1,
         .sent   = 0,
         .recv   = 0,
         .niters = 100,
@@ -154,7 +153,9 @@ main(
     }
 
 
-    evpl = evpl_create();
+    evpl = evpl_create(NULL);
+
+    state.server_evpl = evpl;
 
     me     = evpl_endpoint_create(evpl, address, port);
     client = evpl_endpoint_create(evpl, address, port + 1);
@@ -163,9 +164,7 @@ main(
 
     pthread_create(&thr, NULL, client_thread, &state);
 
-    while (state.run) {
-        evpl_wait(evpl, 1);
-    }
+    evpl_run(evpl);
 
     pthread_join(thr, NULL);
 
