@@ -295,7 +295,7 @@ evpl_socket_tcp_connect(
 
     evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
-    //evpl_event_write_interest(evpl, &s->event);
+    evpl_event_write_interest(evpl, &s->event);
 
 } /* evpl_socket_tcp_connect */
 

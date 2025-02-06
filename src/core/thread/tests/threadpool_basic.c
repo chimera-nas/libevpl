@@ -36,8 +36,7 @@ main(
     struct evpl_threadpool *threadpool;
     int                     number = 42;
 
-    threadpool = evpl_threadpool_create(NULL, 16, thread_init, NULL, NULL,
-                                        thread_destroy, &number);
+    threadpool = evpl_threadpool_create(NULL, 16, thread_init, thread_destroy, &number);
 
     evpl_threadpool_destroy(threadpool);
 } /* main */

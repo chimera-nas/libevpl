@@ -9,6 +9,12 @@
 
 #include "evpl/evpl.h"
 
+#if EVPL_MECH == epoll
+#include "core/epoll.h"
+#else /* if EVPL_MECH == epoll */
+#error No EVPL_MECH
+#endif /* if EVPL_MECH == epoll */
+
 #define evpl_iovec_buffer(iov) ((struct evpl_buffer *) (iov)->private)
 
 #define NS_PER_S           (1000000000UL)
@@ -47,6 +53,7 @@ struct evpl_global_config {
     unsigned int              rdmacm_datagram_size_override;
     unsigned int              rdmacm_srq_size;
     unsigned int              rdmacm_srq_min;
+    unsigned int              rdmacm_srq_batch;
     unsigned int              rdmacm_srq_prefill;
     unsigned int              rdmacm_retry_count;
     unsigned int              rdmacm_rnr_retry_count;
@@ -54,6 +61,48 @@ struct evpl_global_config {
     unsigned int              xlio_enabled;
 
     unsigned int              vfio_enabled;
+};
+
+
+struct evpl {
+    struct evpl_core          core;  /* must be first */
+
+    struct timespec           last_activity_ts;
+    uint64_t                  activity;
+    uint64_t                  last_activity;
+    uint64_t                  poll_iterations;
+
+    struct evpl_poll         *poll;
+    int                       num_poll;
+    int                       max_poll;
+
+    int                       eventfd;
+    int                       running;
+    struct evpl_event         run_event;
+
+    struct evpl_event       **active_events;
+    int                       num_active_events;
+    int                       max_active_events;
+    int                       num_events;
+    int                       num_enabled_events;
+    int                       poll_mode;
+
+    struct evpl_deferral    **active_deferrals;
+    int                       num_active_deferrals;
+    int                       max_active_deferrals;
+
+    struct evpl_buffer       *current_buffer;
+    struct evpl_buffer       *datagram_buffer;
+    struct evpl_bind         *free_binds;
+    struct evpl_address      *free_address;
+    struct evpl_endpoint     *endpoints;
+    struct evpl_bind         *binds;
+    struct evpl_bind         *pending_close_binds;
+
+    struct evpl_thread_config config;
+
+    void                     *protocol_private[EVPL_NUM_PROTO];
+    void                     *framework_private[EVPL_NUM_FRAMEWORK];
 };
 
 void * evpl_malloc(
@@ -180,7 +229,11 @@ void
 __evpl_init(
     void);
 
-void evpl_activity(
-    struct evpl *evpl);
+
+static inline void
+evpl_activity(struct evpl *evpl)
+{
+    evpl->activity++;
+} /* evpl_activity */
 
 #endif // ifndef FORCE_INLINE

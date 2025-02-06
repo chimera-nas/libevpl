@@ -42,6 +42,7 @@ evpl_global_config_init(void)
     config->rdmacm_sq_size                = 256;
     config->rdmacm_srq_size               = 4096;
     config->rdmacm_srq_min                = 256;
+    config->rdmacm_srq_batch              = 16;
     config->rdmacm_datagram_size_override = 0;
     config->rdmacm_srq_prefill            = 0;
     config->rdmacm_retry_count            = 0;

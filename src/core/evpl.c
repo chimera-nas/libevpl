@@ -22,11 +22,6 @@
 #include "uthash/utlist.h"
 
 #include "core/internal.h"
-#if EVPL_MECH == epoll
-#include "core/epoll.h"
-#else /* if EVPL_MECH == epoll */
-#error No EVPL_MECH
-#endif /* if EVPL_MECH == epoll */
 
 #include "evpl/evpl.h"
 #include "core/evpl_shared.h"
@@ -54,53 +49,8 @@
 #include "socket/udp.h"
 #include "socket/tcp.h"
 
-struct evpl_uevent {
-    struct evpl_deferral deferral;
-};
-
 pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
 struct evpl_shared *evpl_shared      = NULL;
-
-struct evpl {
-    struct evpl_core          core;  /* must be first */
-
-    struct timespec           last_activity_ts;
-    uint64_t                  activity;
-    uint64_t                  last_activity;
-    uint64_t                  poll_iterations;
-
-    struct evpl_poll         *poll;
-    int                       num_poll;
-    int                       max_poll;
-
-    int                       eventfd;
-    int                       running;
-    struct evpl_event         run_event;
-
-    struct evpl_event       **active_events;
-    int                       num_active_events;
-    int                       max_active_events;
-    int                       num_events;
-    int                       num_enabled_events;
-    int                       poll_mode;
-
-    struct evpl_deferral    **active_deferrals;
-    int                       num_active_deferrals;
-    int                       max_active_deferrals;
-
-    struct evpl_buffer       *current_buffer;
-    struct evpl_buffer       *datagram_buffer;
-    struct evpl_bind         *free_binds;
-    struct evpl_address      *free_address;
-    struct evpl_endpoint     *endpoints;
-    struct evpl_bind         *binds;
-    struct evpl_bind         *pending_close_binds;
-
-    struct evpl_thread_config config;
-
-    void                     *protocol_private[EVPL_NUM_PROTO];
-    void                     *framework_private[EVPL_NUM_FRAMEWORK];
-};
 
 static void
 evpl_framework_init(
@@ -473,6 +423,8 @@ evpl_continue(struct evpl *evpl)
 void
 evpl_run(struct evpl *evpl)
 {
+    evpl->running = 1;
+
     while (evpl->running) {
         evpl_continue(evpl);
     }
@@ -485,9 +437,6 @@ evpl_stop(struct evpl *evpl)
 
     write(evpl->eventfd, &value, sizeof(value));
 } /* evpl_stop */
-
-
-
 
 struct evpl_bind *
 evpl_listen(
@@ -696,12 +645,9 @@ evpl_destroy(struct evpl *evpl)
         DL_APPEND(evpl->pending_close_binds, bind);
     }
 
-    /* We are shutting down event context right after this,
-     * so we can just complete closing any pending close binds */
+    /* Pump events until we have no pending close binds */
     while (evpl->pending_close_binds) {
-        bind = evpl->pending_close_binds;
-        bind->protocol->close(evpl, bind);
-        evpl_bind_destroy(evpl, bind);
+        evpl_continue(evpl);
     }
 
     while (evpl->free_binds) {
@@ -2033,12 +1979,6 @@ evpl_address_release(
 
     LL_PREPEND(evpl->free_address, address);
 } /* evpl_address_release */
-
-void
-evpl_activity(struct evpl *evpl)
-{
-    evpl->activity++;
-} /* evpl_activity */
 
 void
 evpl_bind_get_local_address(

@@ -101,6 +101,8 @@ struct evpl_rdmacm_listen_id {
 
 struct evpl_rdmacm_listener {
     int                           started;
+    int                           eventfd;
+    struct evpl_event             event;
     struct evpl_thread           *thread;
     pthread_mutex_t               mutex;
     struct evpl_rdmacm_listen_id *listen_ids;
@@ -437,8 +439,8 @@ evpl_rdmacm_fill_srq(
 {
     struct evpl_rdmacm_request *req;
     struct ibv_mr             **mrset, *mr;
-    struct ibv_recv_wr          wr, *bad_wr;
-    int                         rc;
+    struct ibv_recv_wr         *wrs, *wr, *bad_wr;
+    int                         rc, i, batch;
     int                         size;
 
     if (evpl_shared->config->rdmacm_datagram_size_override) {
@@ -447,7 +449,22 @@ evpl_rdmacm_fill_srq(
         size = evpl_shared->config->max_datagram_size;
     }
 
-    while (dev->srq_free_reqs) {
+    batch = evpl_shared->config->rdmacm_srq_batch;
+
+    if (dev->srq_max - dev->srq_fill < batch) {
+        batch = dev->srq_max - dev->srq_fill;
+    }
+
+    wrs = alloca(sizeof(struct ibv_recv_wr) * batch);
+    wr  = NULL;
+
+    for (i = 0; i < batch; i++) {
+
+        if (wr) {
+            wr->next = &wrs[i];
+        }
+
+        wr = &wrs[i];
 
         req = dev->srq_free_reqs;
         LL_DELETE(dev->srq_free_reqs, req);
@@ -465,18 +482,19 @@ evpl_rdmacm_fill_srq(
         req->sge.length = req->iovec.length;
         req->sge.lkey   = mr->lkey;
 
-        wr.wr_id = (uint64_t) req;
-        wr.next  = NULL;
+        wr->wr_id = (uint64_t) req;
+        wr->next  = NULL;
 
-        wr.sg_list = &req->sge;
-        wr.num_sge = 1;
-
-        rc = ibv_post_srq_recv(dev->srq, &wr, &bad_wr);
-
-        evpl_rdmacm_abort_if(rc, "ibv_post_srq_recv error %s", strerror(rc));
-
-        ++dev->srq_fill;
+        wr->sg_list = &req->sge;
+        wr->num_sge = 1;
     }
+
+    rc = ibv_post_srq_recv(dev->srq, &wrs[0], &bad_wr);
+
+    evpl_rdmacm_abort_if(rc, "ibv_post_srq_recv error %s", strerror(rc));
+
+    dev->srq_fill += batch;
+
 } /* evpl_rdmacm_fill_srq */
 
 void
@@ -489,7 +507,9 @@ evpl_rdmacm_fill_all_srq(
 
     for (i = 0; i < rdmacm->num_devices; ++i) {
         dev = &rdmacm->devices[i];
-        evpl_rdmacm_fill_srq(evpl, rdmacm, dev);
+        while (dev->srq_fill < dev->srq_max) {
+            evpl_rdmacm_fill_srq(evpl, rdmacm, dev);
+        }
     }
 } /* evpl_rdmacm_fill_all_srq */
 
@@ -652,8 +672,8 @@ evpl_rdmacm_poll_cq(
                                               bind->private_data);
                     }
 
-                    if (rdmacm_id->active_sends == 0 &&
-                        evpl_iovec_ring_is_empty(&bind->iovec_send)) {
+                    if (unlikely(rdmacm_id->active_sends == 0 &&
+                                 evpl_iovec_ring_is_empty(&bind->iovec_send))) {
                         if (bind->flags & EVPL_BIND_FINISH) {
                             evpl_close(evpl, bind);
                         }
@@ -679,11 +699,14 @@ evpl_rdmacm_poll_cq(
         } /* switch */
 
 
-    } while (n < 16 && ibv_next_poll(cq) == 0);
+    } while (n < 64 && ibv_next_poll(cq) == 0);
 
     ibv_end_poll(cq);
 
-    evpl_rdmacm_fill_srq(evpl, rdmacm, dev);
+    while (dev->srq_fill < dev->srq_max &&
+           dev->srq_max - dev->srq_fill >= evpl_shared->config->rdmacm_srq_batch) {
+        evpl_rdmacm_fill_srq(evpl, rdmacm, dev);
+    }
 
     if (drain && n) {
         goto again;
@@ -722,14 +745,25 @@ evpl_rdmacm_comp_callback(
 
 static void
 evpl_rdmacm_listener_wake(
-    struct evpl *evpl,
-    void        *arg)
+    struct evpl       *evpl,
+    struct evpl_event *event)
 {
-    struct evpl_rdmacm_listener  *listener = arg;
+    struct evpl_rdmacm_listener  *listener = container_of(event,
+                                                          struct evpl_rdmacm_listener,
+                                                          event);
     struct evpl_rdmacm           *rdmacm;
     struct evpl_rdmacm_id        *rdmacm_id;
     struct evpl_rdmacm_listen_id *listen_id, *tmp;
     int                           rc;
+    uint64_t                      word;
+    ssize_t                       len;
+
+    len = read(listener->eventfd, &word, sizeof(word));
+
+    if (len != sizeof(word)) {
+        evpl_event_mark_unreadable(event);
+        return;
+    }
 
     evpl_attach_framework(evpl, EVPL_FRAMEWORK_RDMACM);
 
@@ -772,8 +806,9 @@ evpl_rdmacm_listener_wake(
 void *
 evpl_rdmacm_init()
 {
-    struct evpl_rdmacm_devices *devices;
-    int                         i;
+    struct evpl_rdmacm_devices  *devices;
+    struct evpl_rdmacm_listener *listener;
+    int                          i;
 
 
     devices = evpl_zalloc(sizeof(*devices));
@@ -789,11 +824,37 @@ evpl_rdmacm_init()
                              "Failed to create parent protection domain for rdma device");
     }
 
-    pthread_mutex_init(&devices->listener.mutex, NULL);
-    devices->listener.started = 0;
+    listener = &devices->listener;
+
+    pthread_mutex_init(&listener->mutex, NULL);
+
+    listener->started = 0;
+
+    listener->eventfd = eventfd(0, EFD_NONBLOCK);
+
+    evpl_rdmacm_abort_if(listener->eventfd < 0,
+                         "Failed to create eventfd for rdma listener");
 
     return devices;
 } /* evpl_rdmacm_init */
+
+void *
+evpl_rdmacm_listener_init(
+    struct evpl *evpl,
+    void        *arg)
+{
+    struct evpl_rdmacm_listener *listener = arg;
+
+    listener->event.fd            = listener->eventfd;
+    listener->event.read_callback = evpl_rdmacm_listener_wake;
+
+    evpl_add_event(evpl, &listener->event);
+
+    evpl_event_read_interest(evpl, &listener->event);
+
+    return NULL;
+
+} /* evpl_rdmacm_listener_init */
 
 void
 evpl_rdmacm_cleanup(void *private_data)
@@ -804,6 +865,8 @@ evpl_rdmacm_cleanup(void *private_data)
     if (devices->listener.started) {
         evpl_thread_destroy(devices->listener.thread);
     }
+
+    close(devices->listener.eventfd);
 
     for (i = 0; i < devices->num_devices; ++i) {
         ibv_dealloc_pd(devices->pd[i]);
@@ -1193,6 +1256,7 @@ evpl_rdmacm_listen(
     struct evpl_rdmacm_listen_id     *listen_id;
     struct evpl_rdmacm_listen_member *listen_member;
     struct evpl_rdmacm_id            *rdmacm_id = evpl_bind_private(bind);
+    uint64_t                          word      = 1;
 
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
@@ -1213,9 +1277,7 @@ evpl_rdmacm_listen(
     if (!listener->started) {
         listener->started = 1;
         listener->thread  = evpl_thread_create(NULL,
-                                               NULL,
-                                               evpl_rdmacm_listener_wake,
-                                               NULL,
+                                               evpl_rdmacm_listener_init,
                                                NULL,
                                                listener);
     }
@@ -1229,7 +1291,7 @@ evpl_rdmacm_listen(
         memcpy(&listen_id->addr, bind->local->addr, bind->local->addrlen);
         HASH_ADD(hh, listener->listen_ids, addr, listen_id->addrlen, listen_id);
 
-        evpl_thread_wake(listener->thread);
+        write(listener->eventfd, &word, sizeof(word));
     }
 
     DL_APPEND(listen_id->members, listen_member);
