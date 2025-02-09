@@ -48,6 +48,7 @@ struct evpl_global_config {
     unsigned int              io_uring_enabled;
 
     unsigned int              rdmacm_enabled;
+    unsigned int              rdmacm_tos;
     unsigned int              rdmacm_cq_size;
     unsigned int              rdmacm_sq_size;
     unsigned int              rdmacm_datagram_size_override;

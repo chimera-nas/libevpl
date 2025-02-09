@@ -281,6 +281,20 @@ evpl_rdmacm_create_qp(
 } /* evpl_rdmacm_create_qp */
 
 static void
+evpl_rdmacm_set_options(struct rdma_cm_id *id)
+{
+    int rc;
+
+    if (evpl_shared->config->rdmacm_tos) {
+        uint8_t tos = evpl_shared->config->rdmacm_tos;
+        rc = rdma_set_option(id, RDMA_OPTION_ID, RDMA_OPTION_ID_TOS, &tos, sizeof(tos));
+
+        evpl_rdmacm_abort_if(rc, "rdma_set_option error %s", strerror(errno));
+    }
+} /* evpl_rdmacm_set_options */
+
+
+static void
 evpl_rdmacm_event_callback(
     struct evpl       *evpl,
     struct evpl_event *event)
@@ -333,6 +347,7 @@ evpl_rdmacm_event_callback(
             break;
         case RDMA_CM_EVENT_CONNECT_REQUEST:
 
+            evpl_rdmacm_set_options(cm_event->id);
 
             if (!rdmacm_id->ud) {
 
@@ -1324,6 +1339,8 @@ evpl_rdmacm_connect(
 
     evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
 
+    evpl_rdmacm_set_options(rdmacm_id->id);
+
     rc = rdma_resolve_addr(rdmacm_id->id, NULL, bind->remote->addr,
                            evpl_shared->config->resolve_timeout_ms);
 
@@ -1648,6 +1665,8 @@ evpl_rdmacm_bind(
                         RDMA_PS_UDP);
 
     evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
+
+    evpl_rdmacm_set_options(rdmacm_id->id);
 
     rc = rdma_create_id(rdmacm->event_channel, &rdmacm_id->resolve_id,
                         rdmacm_id,

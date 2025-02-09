@@ -65,7 +65,15 @@ evpl_http_request_add_datav(
     size_t                    niov);
 
 void
+evpl_http_server_set_response_length(
+    struct evpl_http_request *request,
+    uint64_t                  content_length);
+
+void
+evpl_http_server_set_response_chunked(
+    struct evpl_http_request *request);
+
+void
 evpl_http_server_dispatch_default(
     struct evpl_http_request *request,
-    int                       status,
-    uint64_t                  content_length);
+    int                       status);

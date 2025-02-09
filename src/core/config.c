@@ -38,15 +38,16 @@ evpl_global_config_init(void)
     config->io_uring_enabled = 1;
 
     config->rdmacm_enabled                = 1;
+    config->rdmacm_tos                    = 0;
     config->rdmacm_cq_size                = 8192;
     config->rdmacm_sq_size                = 256;
-    config->rdmacm_srq_size               = 4096;
+    config->rdmacm_srq_size               = 8192;
     config->rdmacm_srq_min                = 256;
     config->rdmacm_srq_batch              = 16;
     config->rdmacm_datagram_size_override = 0;
     config->rdmacm_srq_prefill            = 0;
-    config->rdmacm_retry_count            = 0;
-    config->rdmacm_rnr_retry_count        = 0;
+    config->rdmacm_retry_count            = 4;
+    config->rdmacm_rnr_retry_count        = 4;
 
     config->xlio_enabled = 0;
 
@@ -70,6 +71,14 @@ evpl_global_config_set_huge_pages(
 {
     config->huge_pages = huge_pages;
 } /* evpl_global_config_set_huge_pages */
+
+void
+evpl_global_config_set_rdmacm_tos(
+    struct evpl_global_config *config,
+    uint8_t                    tos)
+{
+    config->rdmacm_tos = tos;
+} /* evpl_global_config_set_rdmacm_tos */
 
 void
 evpl_global_config_set_rdmacm_srq_prefill(

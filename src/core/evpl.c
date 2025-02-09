@@ -250,7 +250,6 @@ evpl_stop_callback(
         return;
     }
 
-    evpl->running = 0;
 } /* evpl_stop_callback */
 
 struct evpl *
@@ -434,6 +433,10 @@ void
 evpl_stop(struct evpl *evpl)
 {
     uint64_t value = 1;
+
+    evpl->running = 0;
+
+    __sync_synchronize();
 
     write(evpl->eventfd, &value, sizeof(value));
 } /* evpl_stop */
@@ -723,6 +726,10 @@ evpl_bind_flush_deferral(
     void        *private_data)
 {
     struct evpl_bind *conn = private_data;
+
+    if (unlikely(evpl->running == 0)) {
+        return;
+    }
 
     if (conn->protocol->flush) {
         conn->protocol->flush(evpl, conn);

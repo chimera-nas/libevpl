@@ -51,17 +51,19 @@ server_notify(
         case EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE:
             fprintf(stderr, "notify request complete\n");
             evpl_http_request_add_header(request, "MyHeader", "MyValue");
-
-            evpl_iovec_alloc(evpl, 11, 0, 1, &iov);
-
-            strncpy(iov.data, "hello world", 11);
-            iov.length = 11;
-            evpl_http_server_set_response_length(request, 11);
-            evpl_http_request_add_datav(request, &iov, 1);
+            evpl_http_server_set_response_chunked(request);
             evpl_http_server_dispatch_default(request, 200);
             break;
         case EVPL_HTTP_NOTIFY_WANT_DATA:
             fprintf(stderr, "notify want data\n");
+
+            evpl_iovec_alloc(evpl, 11, 0, 1, &iov);
+            strncpy(iov.data, "hello world", 11);
+            iov.length = 11;
+
+            evpl_http_request_add_datav(request, &iov, 1);
+            evpl_http_request_add_datav(request, NULL, 0);
+
             break;
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
             fprintf(stderr, "notify response complete\n");
@@ -148,6 +150,34 @@ write_callback(
     return total_size;
 } /* write_callback */
 
+static size_t      total_sent = 0;
+static const char *chunks[]   = {
+    "This is the first chunk of data",
+    "Here comes the second chunk",
+    "And finally, the third chunk"
+};
+static size_t      num_chunks = 3;
+
+static size_t
+read_callback(
+    char  *buffer,
+    size_t size,
+    size_t nitems,
+    void  *userdata)
+{
+    size_t chunk_index = total_sent;
+
+    if (chunk_index >= num_chunks) {
+        return 0;  // Signal end of data
+    }
+
+    size_t to_copy = strlen(chunks[chunk_index]);
+    memcpy(buffer, chunks[chunk_index], to_copy);
+    total_sent++;
+
+    return to_copy;
+} /* read_callback */
+
 int
 main(
     int   argc,
@@ -180,8 +210,13 @@ main(
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
 
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "hello world");
+    // Set up chunked transfer
+    curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+    curl_easy_setopt(curl, CURLOPT_READFUNCTION, read_callback);
+    curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, -1L);  // Required for chunked transfer
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
+
+    total_sent = 0;  // Reset counter before sending
 
     res = curl_easy_perform(curl);
 

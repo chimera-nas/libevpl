@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_config.h directly, include evpl/evpl.h instead"
 #endif /* ifndef EVPL_INCLUDED */
@@ -25,6 +27,10 @@ void evpl_global_config_set_max_datagram_size(
 void evpl_global_config_set_huge_pages(
     struct evpl_global_config *config,
     int                        huge_pages);
+
+void evpl_global_config_set_rdmacm_tos(
+    struct evpl_global_config *config,
+    uint8_t                    tos);
 
 void evpl_global_config_set_rdmacm_datagram_size_override(
     struct evpl_global_config *config,
