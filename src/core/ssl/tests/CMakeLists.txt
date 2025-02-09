@@ -1,0 +1,1 @@
+unit_test_bin(ssl hello_world_stream_tcp hello_world_stream -r STREAM_SOCKET_TCP_SSL)

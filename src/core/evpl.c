@@ -49,6 +49,10 @@
 #include "xlio/xlio.h"
 #endif /* ifdef HAVE_XLIO */
 
+#ifdef HAVE_SSL
+#include "ssl/ssl.h"
+#endif /* ifdef HAVE_SSL */
+
 #include "socket/udp.h"
 #include "socket/tcp.h"
 
@@ -182,6 +186,11 @@ evpl_shared_init(struct evpl_config *config)
     }
 
 #endif /* ifdef HAVE_XLIO */
+
+#ifdef HAVE_SSL
+    evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_SSL, &evpl_framework_ssl);
+    evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TCP_SSL, &evpl_tcp_ssl);
+#endif /* ifdef HAVE_SSL */
 
 } /* evpl_shared_init */
 

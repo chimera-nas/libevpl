@@ -44,6 +44,12 @@ if (HAVE_XLIO)
     add_subdirectory(xlio)
 endif()
 
+if (HAVE_SSL)
+    set(CORE_SRC ${CORE_SRC} ssl/ssl.c ssl/ssl.h)
+    add_subdirectory(ssl)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} ssl)
+endif()
+
 set(CORE_SRC ${CORE_SRC} thread/thread.c)
 add_subdirectory(thread)
 

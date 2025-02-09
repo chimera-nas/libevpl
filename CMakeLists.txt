@@ -81,6 +81,17 @@ else()
     message(STATUS "xlio library not found.")
 endif()
 
+find_library(SSL_LIB NAMES ssl crypto)
+
+if (SSL_LIB)
+    message(STATUS "SSL library ${SSL_LIB}")
+    include_directories(${SSL_INCLUDE_DIR})
+    add_definitions(-DHAVE_SSL)
+    set(HAVE_SSL 1)
+else()
+    message(STATUS "ssl library not found.")
+endif()
+
 add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
 
 include_directories(3rdparty)

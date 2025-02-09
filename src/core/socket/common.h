@@ -5,10 +5,13 @@
 #pragma once
 
 #include <netinet/tcp.h> // For TCP_NODELAY
-
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "uthash/utlist.h"
 #include "evpl/evpl.h"
+#include "core/event.h"
+#include "core/bind.h"
 
 #define evpl_socket_debug(...) evpl_debug("socket", __FILE__, __LINE__, \
                                           __VA_ARGS__)
