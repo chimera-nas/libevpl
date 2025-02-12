@@ -256,8 +256,8 @@ evpl_rdmacm_create_qp(
     qp_attr.srq                 = dev->srq;
     qp_attr.cap.max_send_wr     = evpl_shared->config->rdmacm_sq_size;
     qp_attr.cap.max_recv_wr     = evpl_shared->config->rdmacm_sq_size;
-    qp_attr.cap.max_send_sge    = evpl_shared->config->max_num_iovec;
-    qp_attr.cap.max_recv_sge    = evpl_shared->config->max_num_iovec;
+    qp_attr.cap.max_send_sge    = evpl_shared->config->rdmacm_max_sge;
+    qp_attr.cap.max_recv_sge    = evpl_shared->config->rdmacm_max_sge;
     qp_attr.cap.max_inline_data = EVPL_RDMACM_MAX_INLINE;
     qp_attr.sq_sig_all          = 1;
 
@@ -1275,6 +1275,7 @@ evpl_rdmacm_listen(
     struct evpl_rdmacm_id            *rdmacm_id = evpl_bind_private(bind);
     uint64_t                          word      = 1;
     int                               rc;
+
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
     listener = rdmacm->listener;

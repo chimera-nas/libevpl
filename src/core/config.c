@@ -39,6 +39,7 @@ evpl_global_config_init(void)
 
     config->rdmacm_enabled                = 1;
     config->rdmacm_tos                    = 0;
+    config->rdmacm_max_sge                = 31;
     config->rdmacm_cq_size                = 8192;
     config->rdmacm_sq_size                = 256;
     config->rdmacm_srq_size               = 8192;
