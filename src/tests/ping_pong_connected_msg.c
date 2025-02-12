@@ -74,7 +74,7 @@ client_thread(void *arg)
 
     server = evpl_endpoint_create(evpl, address, port);
 
-    bind = evpl_connect(evpl, proto, server, client_callback,
+    bind = evpl_connect(evpl, proto, NULL, server, client_callback,
                         test_segment_callback, state);
 
     while (state->recv != state->niters) {

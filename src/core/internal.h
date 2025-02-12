@@ -87,6 +87,7 @@ struct evpl {
     int                       num_events;
     int                       num_enabled_events;
     int                       poll_mode;
+    int                       force_poll_mode;
 
     struct evpl_deferral    **active_deferrals;
     int                       num_active_deferrals;

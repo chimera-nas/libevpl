@@ -1115,13 +1115,17 @@ evpl_vfio_open_device(
 
     evpl_vfio_abort_if(rc < 0, "Failed to get VFIO region info");
 
-    pread(dev->fd, region_config, sizeof(region_config), memory_region.offset);
+    rc = pread(dev->fd, region_config, sizeof(region_config), memory_region.offset);
+
+    evpl_vfio_abort_if(rc != sizeof(region_config), "Failed to read VFIO region config");
 
     cmd = (uint16_t *) (region_config + PCI_COMMAND);
 
     *cmd |= PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY | PCI_COMMAND_INTX_DISABLE;
 
-    pwrite(dev->fd, cmd, sizeof(*cmd), memory_region.offset + PCI_COMMAND);
+    rc = pwrite(dev->fd, cmd, sizeof(*cmd), memory_region.offset + PCI_COMMAND);
+
+    evpl_vfio_abort_if(rc != sizeof(*cmd), "Failed to write VFIO region config");
 
     for (u8 = region_config[PCI_CAPABILITY_LIST] ; u8 ; u8 = region_config[u8 + 1]) {
         if (region_config[u8] == PCI_CAP_ID_MSIX) {

@@ -141,7 +141,7 @@ client_thread(void *arg)
     if (state->index == 0) {
         evpl_listen(evpl, proto, ep, accept_callback, state);
     } else {
-        evpl_connect(evpl, proto, ep, client_callback, NULL, state);
+        evpl_connect(evpl, proto, NULL, ep, client_callback, NULL, state);
     }
 
     pthread_cond_signal(&state->cond);

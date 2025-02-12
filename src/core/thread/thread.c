@@ -30,6 +30,7 @@ extern struct evpl_shared *evpl_shared;
 
 struct evpl_thread {
     pthread_t                       thread;
+    int                             running;
     struct evpl_thread_config       config;
     struct evpl                    *evpl;
     evpl_thread_init_callback_t     init_callback;
@@ -74,6 +75,9 @@ evpl_thread_function(void *ptr)
             evpl_thread->private_data);
     }
 
+    __sync_synchronize();
+    evpl_thread->running = 1;
+
     evpl_run(evpl);
 
     if (evpl_thread->shutdown_callback) {
@@ -117,7 +121,7 @@ evpl_thread_create(
 void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
-    while (!evpl_thread->evpl) {
+    while (!evpl_thread->running) {
         /* Just in case the thread is still initializing */
         __sync_synchronize();
     }

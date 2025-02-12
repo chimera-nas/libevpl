@@ -368,7 +368,9 @@ evpl_rdmacm_event_callback(
                 LL_PREPEND(listen_member->rdmacm->new_ids, new_id);
                 pthread_mutex_unlock(&listen_member->rdmacm->mutex);
 
-                write(listen_member->rdmacm->new_id_eventfd, &one, sizeof(one));
+                rc = write(listen_member->rdmacm->new_id_eventfd, &one, sizeof(one));
+
+                evpl_rdmacm_abort_if(rc != sizeof(one), "write error %s", strerror(errno));
 
                 pthread_mutex_unlock(&listener->mutex);
 
@@ -1272,7 +1274,7 @@ evpl_rdmacm_listen(
     struct evpl_rdmacm_listen_member *listen_member;
     struct evpl_rdmacm_id            *rdmacm_id = evpl_bind_private(bind);
     uint64_t                          word      = 1;
-
+    int                               rc;
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
     listener = rdmacm->listener;
@@ -1306,7 +1308,8 @@ evpl_rdmacm_listen(
         memcpy(&listen_id->addr, bind->local->addr, bind->local->addrlen);
         HASH_ADD(hh, listener->listen_ids, addr, listen_id->addrlen, listen_id);
 
-        write(listener->eventfd, &word, sizeof(word));
+        rc = write(listener->eventfd, &word, sizeof(word));
+        evpl_rdmacm_abort_if(rc != sizeof(word), "write error %s", strerror(errno));
     }
 
     DL_APPEND(listen_id->members, listen_member);

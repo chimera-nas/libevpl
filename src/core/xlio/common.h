@@ -260,6 +260,42 @@ evpl_xlio_flush(
 
 } /* evpl_xlio_udp_flush */
 
+
+static inline void
+evpl_xlio_send_completion(
+    struct evpl             *evpl,
+    struct evpl_xlio_socket *s,
+    int                      length)
+{
+    struct evpl_bind  *bind = evpl_private2bind(s);
+    struct evpl_notify notify;
+    int                msg_sent = 0;
+
+
+    if (bind->segment_callback) {
+        struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+        if (dgram) {
+            --dgram->niov;
+
+            if (dgram->niov == 0) {
+                msg_sent++;
+                evpl_dgram_ring_remove(&bind->dgram_send);
+            }
+        }
+    }
+
+    if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
+
+        notify.notify_type   = EVPL_NOTIFY_SENT;
+        notify.notify_status = 0;
+        notify.sent.bytes    = length;
+        notify.sent.msgs     = msg_sent;
+
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
+    }
+} /* evpl_xlio_send_completion */
+
 void
 evpl_xlio_socket_init(
     struct evpl               *evpl,

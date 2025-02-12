@@ -56,6 +56,8 @@ evpl_xlio_prepare_iov(
 
     if (iovec->length <= 64) {
         send_attr->flags |= XLIO_SOCKET_SEND_FLAG_INLINE;
+
+        evpl_xlio_send_completion(evpl, s, iovec->length);
     } else {
         send_attr->flags = 0;
 
@@ -174,11 +176,18 @@ evpl_xlio_tcp_connect(
     evpl_xlio_abort_if(rc, "Failed to create XLIO tcp socket: %s", strerror(
                            errno));
 
+
+    if (bind->local) {
+        rc = xlio->extra->xlio_socket_bind(s->socket, bind->local->addr, bind->local->addrlen);
+
+        evpl_xlio_abort_if(rc < 0, "Failed to bind tcp socket: socket %p rc %d %s", s->socket, rc, strerror(errno));
+    }
+
     rc = xlio->extra->xlio_socket_connect(s->socket, bind->remote->addr, bind->
                                           remote->addrlen);
 
     evpl_xlio_abort_if(rc < 0,
-                       "Failed to connect tcp socket: %s", strerror(errno));
+                       "Failed to connect tcp socket: socket %p rc %d %s", s->socket, rc, strerror(errno));
 
     evpl_xlio_socket_init(evpl, xlio, s, 0, 0,
                           evpl_xlio_tcp_read,

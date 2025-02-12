@@ -18,7 +18,7 @@ evpl_global_config_init(void)
 
     config->max_pending        = 16;
     config->max_poll_fd        = 16;
-    config->max_num_iovec      = 16;
+    config->max_num_iovec      = 128;
     config->huge_pages         = 0;
     config->buffer_size        = 2 * 1024 * 1024;
     config->slab_size          = 1 * 1024 * 1024 * 1024;
@@ -49,7 +49,7 @@ evpl_global_config_init(void)
     config->rdmacm_retry_count            = 4;
     config->rdmacm_rnr_retry_count        = 4;
 
-    config->xlio_enabled = 0;
+    config->xlio_enabled = 1;
 
     config->vfio_enabled = 1;
 

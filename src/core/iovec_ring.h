@@ -161,7 +161,7 @@ evpl_iovec_ring_add(
 {
     struct evpl_iovec *res;
 
-    if (evpl_iovec_ring_is_full(ring)) {
+    if (unlikely(evpl_iovec_ring_is_full(ring))) {
         evpl_iovec_ring_resize(ring);
     }
 
@@ -180,7 +180,7 @@ evpl_iovec_ring_add_new(struct evpl_iovec_ring *ring)
 {
     struct evpl_iovec *res;
 
-    if (evpl_iovec_ring_is_full(ring)) {
+    if (unlikely(evpl_iovec_ring_is_full(ring))) {
         evpl_iovec_ring_resize(ring);
     }
 

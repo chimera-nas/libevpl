@@ -54,7 +54,7 @@ server_notify(
 
             evpl_iovec_alloc(evpl, 11, 0, 1, &iov);
 
-            strncpy(iov.data, "hello world", 11);
+            memcpy(iov.data, "hello world", 11);
             iov.length = 11;
             evpl_http_server_set_response_length(request, 11);
             evpl_http_request_add_datav(request, &iov, 1);

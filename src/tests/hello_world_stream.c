@@ -61,7 +61,7 @@ client_thread(void *arg)
 
     ep = evpl_endpoint_create(evpl, address, port);
 
-    bind = evpl_connect(evpl, proto, ep, client_callback, NULL, &run);
+    bind = evpl_connect(evpl, proto, NULL, ep, client_callback, NULL, &run);
 
 
     evpl_send(evpl, bind, hello, hellolen);

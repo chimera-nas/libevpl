@@ -576,7 +576,8 @@ struct evpl_bind *
 evpl_connect(
     struct evpl            *evpl,
     enum evpl_protocol_id   protocol_id,
-    struct evpl_endpoint   *endpoint,
+    struct evpl_endpoint   *local_endpoint,
+    struct evpl_endpoint   *remote_endpoint,
     evpl_notify_callback_t  notify_callback,
     evpl_segment_callback_t segment_callback,
     void                   *private_data)
@@ -584,15 +585,20 @@ evpl_connect(
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
-    if (!endpoint->addr) {
-        evpl_endpoint_resolve(evpl, endpoint);
+    if (local_endpoint && !local_endpoint->addr) {
+        evpl_endpoint_resolve(evpl, local_endpoint);
+    }
+
+    if (!remote_endpoint->addr) {
+        evpl_endpoint_resolve(evpl, remote_endpoint);
     }
 
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
-    bind = evpl_bind_prepare(evpl, protocol, NULL,
-                             endpoint->addr);
+    bind = evpl_bind_prepare(evpl, protocol,
+                             local_endpoint ? local_endpoint->addr : NULL,
+                             remote_endpoint->addr);
     bind->notify_callback  = notify_callback;
     bind->segment_callback = segment_callback;
     bind->private_data     = private_data;

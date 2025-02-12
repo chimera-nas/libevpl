@@ -71,15 +71,16 @@ evpl_xlio_init()
 
     setenv("XLIO_TRACELEVEL", "2", 0);
     setenv("XLIO_FORK", "0", 0);
+    setenv("XLIO_TSO", "1", 0);
+    setenv("XLIO_LRO", "1", 0);
     setenv("XLIO_MEM_ALLOC_TYPE", "ANON", 0);
-    setenv("XLIO_SOCKETXTREME", "1", 1);
 
     snprintf(tmp, sizeof(tmp), "%lu", evpl_shared->config->slab_size);
     setenv("XLIO_MEMORY_LIMIT", tmp, 1);
 
     pthread_mutex_init(&api->pd_lock, NULL);
 
-    api->hdl = dlopen("/opt/nvidia/lib/libxlio.so", RTLD_LAZY);
+    api->hdl = dlopen("/usr/local/lib/libxlio.so", RTLD_LAZY);
 
     evpl_xlio_abort_if(!api->hdl, "Failed to dynamically load XLIO library");
 
@@ -96,8 +97,7 @@ evpl_xlio_init()
                        api->extra->magic != XLIO_MAGIC_NUMBER,
                        "XLIO xEtra API does not match header");
 
-    needed_caps = XLIO_EXTRA_API_SOCKETXTREME_POLL |
-        XLIO_EXTRA_API_GET_SOCKET_RINGS_NUM;
+    needed_caps = 0;
 
     evpl_xlio_abort_if((api->extra->cap_mask & needed_caps) != needed_caps,
                        "XLIO is missing socketxtreme capabilities");
@@ -119,12 +119,6 @@ void
 evpl_xlio_cleanup(void *private_data)
 {
     struct evpl_xlio_api *api = private_data;
-
-    //xlio_exit_fptr_t      exit_fn;
-
-    //exit_fn = (xlio_exit_fptr_t) dlsym(api->hdl, "xlio_exit");
-
-    //exit_fn();
 
     evpl_free(api);
 } /* evpl_xlio_cleanup */
@@ -151,7 +145,6 @@ evpl_xlio_socket_event(
 
     switch (event) {
         case XLIO_SOCKET_EVENT_ESTABLISHED:
-            evpl_xlio_debug("socket %p established", s);
             notify.notify_type   = EVPL_NOTIFY_CONNECTED;
             notify.notify_status = 0;
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
@@ -159,19 +152,16 @@ evpl_xlio_socket_event(
             evpl_xlio_socket_check_active(xlio, s);
             break;
         case XLIO_SOCKET_EVENT_TERMINATED:
-            evpl_xlio_debug("socket %p terminated", s);
             s->writable = 0;
             s->readable = 0;
             s->closed   = 1;
             evpl_xlio_socket_check_active(xlio, s);
-            evpl_bind_destroy(evpl, bind);
+            //evpl_close(evpl, bind);
             break;
         case XLIO_SOCKET_EVENT_CLOSED:
-            evpl_xlio_debug("socket %p closed", s);
             evpl_close(evpl, bind);
             break;
         case XLIO_SOCKET_EVENT_ERROR:
-            evpl_xlio_debug("socket %p errored", s);
             evpl_close(evpl, bind);
             break;
     } /* switch */
@@ -186,33 +176,11 @@ evpl_xlio_socket_completion(
     struct evpl_xlio_socket *s    = (struct evpl_xlio_socket *) userdata_sq;
     struct evpl             *evpl = s->evpl;
     struct evpl_xlio        *xlio;
-    struct evpl_bind        *bind = evpl_private2bind(s);
-    struct evpl_xlio_zc     *zc   = (struct evpl_xlio_zc *) userdata_op;
-    struct evpl_notify       notify;
+    struct evpl_xlio_zc     *zc = (struct evpl_xlio_zc *) userdata_op;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
-        notify.notify_type   = EVPL_NOTIFY_SENT;
-        notify.notify_status = 0;
-        notify.sent.bytes    = zc->length;
-        notify.sent.msgs     = 0;
-
-        if (bind->segment_callback) {
-            struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
-
-            if (dgram) {
-                if (dgram->niov > 1) {
-                    dgram->niov--;
-                } else {
-                    notify.sent.msgs = 1;
-                    evpl_dgram_ring_remove(&bind->dgram_send);
-                }
-            }
-        }
-
-        bind->notify_callback(evpl, bind, &notify, bind->private_data);
-    }
+    evpl_xlio_send_completion(evpl, s, zc->length);
 
     evpl_buffer_release(zc->buffer);
 
@@ -421,9 +389,10 @@ evpl_xlio_destroy(
 
     if (xlio->poll) {
         evpl_remove_poll(evpl, xlio->poll);
+        evpl->force_poll_mode = 0;
     }
 
-    xlio->extra->xlio_poll_group_destroy(xlio->poll_group);
+    //xlio->extra->xlio_poll_group_destroy(xlio->poll_group);
 
     evpl_free(xlio->active_sockets);
     evpl_free(xlio);
@@ -439,8 +408,6 @@ evpl_xlio_attach_pd(
     struct ibv_pd       **cur_pd;
     int                   i;
 
-    evpl_xlio_debug("attaching xlio pd %p", pd);
-
     pthread_mutex_lock(&api->pd_lock);
 
     for (i = 0, cur_pd = api->pd; *cur_pd; i++, cur_pd++) {
@@ -451,7 +418,6 @@ evpl_xlio_attach_pd(
 
     if (*cur_pd != pd) {
         *cur_pd = pd;
-        evpl_xlio_debug("pd %p is new, reregistering\n", pd);
         evpl_allocator_reregister(evpl_shared->allocator);
     }
 
@@ -520,7 +486,8 @@ evpl_xlio_socket_init(
     }
 
     if (!xlio->poll) {
-        xlio->poll = evpl_add_poll(evpl, NULL, NULL, evpl_xlio_poll, xlio);
+        xlio->poll            = evpl_add_poll(evpl, NULL, NULL, evpl_xlio_poll, xlio);
+        evpl->force_poll_mode = 1;
     }
 
     s->readable       = 0;
@@ -549,10 +516,7 @@ evpl_xlio_register(
     struct ibv_pd       **pd;
     int                   i;
 
-    evpl_xlio_debug("evpl_xlio_register buffer %p size %d entry", buffer, size);
-
     if (buffer_private) {
-        evpl_xlio_debug("using existing buffer_private");
         mrset = (struct ibv_mr **) buffer_private;
     } else {
         mrset = evpl_zalloc(sizeof(struct ibv_mr *) * EVPL_XLIO_MAX_PD);
@@ -563,9 +527,6 @@ evpl_xlio_register(
         if (mrset[i]) {
             continue;
         }
-
-        evpl_xlio_debug("creating mr for %p length %d on pd %p",
-                        buffer, size, *pd);
 
         mrset[i] = ibv_reg_mr(*pd, buffer, size,
                               //0);
