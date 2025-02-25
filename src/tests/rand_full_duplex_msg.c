@@ -68,8 +68,8 @@ client_thread(void *arg)
 
     buffer = malloc(max_datagram);
 
-    me   = evpl_endpoint_create(evpl, address, port + state->index);
-    them = evpl_endpoint_create(evpl, address, port + !state->index);
+    me   = evpl_endpoint_create(address, port + state->index);
+    them = evpl_endpoint_create(address, port + !state->index);
 
     bind = evpl_bind(evpl, proto, me, client_callback, state);
 

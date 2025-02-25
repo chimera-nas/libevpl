@@ -92,7 +92,7 @@ evpl_socket_udp_read(
         datagram = datagrams[i];
         msghdr   = &msgvecs[i].msg_hdr;
 
-        addr = evpl_address_alloc(evpl);
+        addr = evpl_address_alloc();
 
         memcpy(addr->addr, msghdr->msg_name,  msghdr->msg_namelen);
         addr->addrlen = msghdr->msg_namelen;
@@ -111,7 +111,7 @@ evpl_socket_udp_read(
 
         evpl_iovec_release(&datagram->iovec);
         evpl_socket_datagram_reload(evpl, s, datagram);
-        evpl_address_release(evpl, addr);
+        evpl_address_release(addr);
 
     }
 
@@ -200,7 +200,7 @@ evpl_socket_udp_write(
     while (nmsgleft) {
         dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
-        evpl_address_release(evpl, dgram->addr);
+        evpl_address_release(dgram->addr);
 
         evpl_iovec_ring_consumev(evpl, &bind->iovec_send, dgram->niov);
 

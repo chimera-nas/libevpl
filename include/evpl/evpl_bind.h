@@ -8,6 +8,7 @@
 #error "Do not include evpl_bind.h directly, include evpl/evpl.h instead"
 #endif /* ifndef EVPL_INCLUDED */
 
+struct evpl_listener;
 struct evpl_bind;
 
 struct iovec;
@@ -46,22 +47,37 @@ typedef int (*evpl_segment_callback_t)(
     struct evpl_bind *bind,
     void             *private_data);
 
-typedef void (*evpl_accept_callback_t)(
+typedef void (*evpl_attach_callback_t)(
     struct evpl             *evpl,
-    struct evpl_bind        *listen_bind,
-    struct evpl_bind        *accepted_bind,
+    struct evpl_bind        *bind,
     evpl_notify_callback_t  *notify_callback,
     evpl_segment_callback_t *segment_callback,
     void                   **conn_private_data,
     void                    *private_data);
 
-struct evpl_bind *
-evpl_listen(
+struct evpl_listener *
+evpl_listener_create(
+    void);
+
+void
+evpl_listener_destroy(
+    struct evpl_listener *listener);
+
+void evpl_listener_attach(
     struct evpl           *evpl,
-    enum evpl_protocol_id  protocol,
-    struct evpl_endpoint  *endpoint,
-    evpl_accept_callback_t accept_callback,
+    struct evpl_listener  *listener,
+    evpl_attach_callback_t attach_callback,
     void                  *private_data);
+
+void evpl_listener_detach(
+    struct evpl          *evpl,
+    struct evpl_listener *listener);
+
+void
+evpl_listen(
+    struct evpl_listener *listener,
+    enum evpl_protocol_id protocol,
+    struct evpl_endpoint *endpoint);
 
 struct evpl_bind *
 evpl_connect(

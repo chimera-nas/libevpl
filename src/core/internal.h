@@ -65,47 +65,95 @@ struct evpl_global_config {
     unsigned int              vfio_enabled;
 };
 
+typedef void (*evpl_accept_callback_t)(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct evpl_address *remote_addr,
+    void                *accepted,
+    void                *private_data);
 
 struct evpl {
-    struct evpl_core          core;  /* must be first */
+    struct evpl_core             core; /* must be first */
 
-    struct timespec           last_activity_ts;
-    uint64_t                  activity;
-    uint64_t                  last_activity;
-    uint64_t                  poll_iterations;
+    struct timespec              last_activity_ts;
+    uint64_t                     activity;
+    uint64_t                     last_activity;
+    uint64_t                     poll_iterations;
 
-    struct evpl_poll         *poll;
-    int                       num_poll;
-    int                       max_poll;
+    struct evpl_poll            *poll;
+    int                          num_poll;
+    int                          max_poll;
 
-    int                       eventfd;
-    int                       running;
-    struct evpl_event         run_event;
+    int                          eventfd;
+    int                          running;
+    struct evpl_event            run_event;
 
-    struct evpl_event       **active_events;
-    int                       num_active_events;
-    int                       max_active_events;
-    int                       num_events;
-    int                       num_enabled_events;
-    int                       poll_mode;
-    int                       force_poll_mode;
+    pthread_mutex_t              lock;
+    struct evpl_connect_request *connect_requests;
 
-    struct evpl_deferral    **active_deferrals;
-    int                       num_active_deferrals;
-    int                       max_active_deferrals;
+    struct evpl_event          **active_events;
+    int                          num_active_events;
+    int                          max_active_events;
+    int                          num_events;
+    int                          num_enabled_events;
+    int                          poll_mode;
+    int                          force_poll_mode;
 
-    struct evpl_buffer       *current_buffer;
-    struct evpl_buffer       *datagram_buffer;
-    struct evpl_bind         *free_binds;
-    struct evpl_address      *free_address;
-    struct evpl_endpoint     *endpoints;
-    struct evpl_bind         *binds;
-    struct evpl_bind         *pending_close_binds;
+    struct evpl_deferral       **active_deferrals;
+    int                          num_active_deferrals;
+    int                          max_active_deferrals;
 
-    struct evpl_thread_config config;
+    struct evpl_buffer          *current_buffer;
+    struct evpl_buffer          *datagram_buffer;
+    struct evpl_bind            *free_binds;
+    struct evpl_bind            *binds;
+    struct evpl_bind            *pending_close_binds;
 
-    void                     *protocol_private[EVPL_NUM_PROTO];
-    void                     *framework_private[EVPL_NUM_FRAMEWORK];
+    struct evpl_thread_config    config;
+
+    void                        *protocol_private[EVPL_NUM_PROTO];
+    void                        *framework_private[EVPL_NUM_FRAMEWORK];
+};
+
+struct evpl_listen_request {
+    enum evpl_protocol_id protocol_id;
+    struct evpl_address        *address;
+    struct evpl_listen_request *prev;
+    struct evpl_listen_request *next;
+};
+
+struct evpl_listener_binding {
+    struct evpl           *evpl;
+    evpl_attach_callback_t attach_callback;
+    void                  *private_data;
+};
+
+struct evpl_connect_request {
+    struct evpl_address         *local_address;
+    struct evpl_address         *remote_address;
+    struct evpl_protocol        *protocol;
+    evpl_attach_callback_t       attach_callback;
+    void                        *accepted;
+    void                        *private_data;
+    struct evpl_connect_request *prev;
+    struct evpl_connect_request *next;
+};
+
+struct evpl_listener {
+    struct evpl_thread           *thread;
+    int                           eventfd;
+    int                           running;
+    struct evpl_event             event;
+    struct evpl_bind            **binds;
+    int                           num_binds;
+    int                           max_binds;
+    struct evpl_listen_request   *requests;
+    struct evpl_listener_binding *attached;
+    int                           num_attached;
+    int                           max_attached;
+    int                           rotor;
+    pthread_mutex_t               lock;
+
 };
 
 void * evpl_malloc(

@@ -53,8 +53,8 @@ client_thread(void *arg)
 
     evpl = evpl_create(NULL);
 
-    me     = evpl_endpoint_create(evpl, address, port + 1);
-    server = evpl_endpoint_create(evpl, address, port);
+    me     = evpl_endpoint_create(address, port + 1);
+    server = evpl_endpoint_create(address, port);
 
     bind = evpl_bind(evpl, proto, me, client_callback, &run);
 
@@ -85,7 +85,7 @@ server_callback(
             evpl_test_info("server received '%s'",
                            notify->recv_msg.iovec[0].data);
 
-            client = evpl_endpoint_create(evpl, address, port + 1);
+            client = evpl_endpoint_create(address, port + 1);
 
             evpl_sendtoep(evpl, bind, client, hello, hellolen);
 
@@ -137,7 +137,7 @@ main(
 
     evpl = evpl_create(NULL);
 
-    ep = evpl_endpoint_create(evpl, address, port);
+    ep = evpl_endpoint_create(address, port);
 
     evpl_bind(evpl, proto, ep, server_callback, &run);
 

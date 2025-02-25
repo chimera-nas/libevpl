@@ -81,7 +81,7 @@ evpl_thread_function(void *ptr)
     evpl_run(evpl);
 
     if (evpl_thread->shutdown_callback) {
-        evpl_thread->shutdown_callback(evpl_thread->private_data);
+        evpl_thread->shutdown_callback(evpl, evpl_thread->private_data);
     }
 
     evpl_destroy(evpl);

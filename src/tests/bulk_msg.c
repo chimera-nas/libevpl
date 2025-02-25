@@ -67,8 +67,8 @@ client_thread(void *arg)
 
     evpl = evpl_create(NULL);
 
-    me     = evpl_endpoint_create(evpl, address, port + 1);
-    server = evpl_endpoint_create(evpl, address, port);
+    me     = evpl_endpoint_create(address, port + 1);
+    server = evpl_endpoint_create(address, port);
 
     bind = evpl_bind(evpl, proto, me, client_callback, state);
 
@@ -169,8 +169,8 @@ main(
 
     state.server_evpl = evpl;
 
-    me     = evpl_endpoint_create(evpl, address, port);
-    client = evpl_endpoint_create(evpl, address, port + 1);
+    me     = evpl_endpoint_create(address, port);
+    client = evpl_endpoint_create(address, port + 1);
 
     evpl_bind(evpl, proto, me, server_callback, client);
 

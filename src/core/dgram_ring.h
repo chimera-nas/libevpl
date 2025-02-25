@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "core/endpoint.h"
+
 struct evpl_dgram {
     int                  niov;
     int                  length;

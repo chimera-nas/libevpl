@@ -112,8 +112,7 @@ client_callback(
 void
 accept_callback(
     struct evpl             *evpl,
-    struct evpl_bind        *listen_bind,
-    struct evpl_bind        *accepted_bind,
+    struct evpl_bind        *bind,
     evpl_notify_callback_t  *notify_callback,
     evpl_segment_callback_t *segment_callback,
     void                   **conn_private_data,
@@ -130,16 +129,21 @@ client_thread(void *arg)
 {
     struct evpl          *evpl;
     struct evpl_endpoint *ep;
+    struct evpl_listener *listener;
     struct thread_state  *state = arg;
 
     state->buffer = malloc(max_xfer);
 
     evpl = evpl_create(NULL);
 
-    ep = evpl_endpoint_create(evpl, address, port);
+    ep = evpl_endpoint_create(address, port);
+
+    listener = evpl_listener_create();
+
+    evpl_listener_attach(evpl, listener, accept_callback, state);
 
     if (state->index == 0) {
-        evpl_listen(evpl, proto, ep, accept_callback, state);
+        evpl_listen(listener, proto, ep);
     } else {
         evpl_connect(evpl, proto, NULL, ep, client_callback, NULL, state);
     }

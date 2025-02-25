@@ -74,6 +74,8 @@ evpl_xlio_init()
     setenv("XLIO_TSO", "1", 0);
     setenv("XLIO_LRO", "1", 0);
     setenv("XLIO_MEM_ALLOC_TYPE", "ANON", 0);
+    setenv("XLIO_RING_ALLOCATION_LOGIC_RX", "10", 0);
+    setenv("XLIO_RING_ALLOCATION_LOGIC_TX", "10", 0);
 
     snprintf(tmp, sizeof(tmp), "%lu", evpl_shared->config->slab_size);
     setenv("XLIO_MEMORY_LIMIT", tmp, 1);
@@ -156,7 +158,6 @@ evpl_xlio_socket_event(
             s->readable = 0;
             s->closed   = 1;
             evpl_xlio_socket_check_active(xlio, s);
-            //evpl_close(evpl, bind);
             break;
         case XLIO_SOCKET_EVENT_CLOSED:
             evpl_close(evpl, bind);
@@ -195,13 +196,17 @@ evpl_xlio_socket_accept(
     xlio_socket_t parent,
     uintptr_t     parent_userdata_sq)
 {
-    struct evpl             *evpl;
-    struct evpl_xlio        *xlio;
-    struct evpl_bind        *listen_bind;
-    struct evpl_xlio_socket *s, *ls;
-    struct evpl_bind        *new_bind;
-    struct evpl_address     *srcaddr;
-    struct evpl_notify       notify;
+    struct evpl                      *evpl;
+    struct evpl_xlio                 *xlio;
+    struct evpl_bind                 *listen_bind;
+    struct evpl_xlio_socket          *ls;
+    struct evpl_address              *srcaddr;
+    struct evpl_xlio_accepted_socket *accepted_socket;
+    int                               rc;
+
+    accepted_socket = evpl_zalloc(sizeof(*accepted_socket));
+
+    accepted_socket->socket = sock;
 
     ls = (struct evpl_xlio_socket *) parent_userdata_sq;
 
@@ -211,41 +216,16 @@ evpl_xlio_socket_accept(
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    srcaddr = evpl_address_alloc(evpl);
+    srcaddr = evpl_address_alloc();
 
-    xlio->extra->xlio_socket_getpeername(sock, srcaddr->addr, &srcaddr->addrlen)
-    ;
+    xlio->extra->xlio_socket_getpeername(sock, srcaddr->addr, &srcaddr->addrlen);
 
-    new_bind = evpl_bind_prepare(evpl,
-                                 listen_bind->protocol,
-                                 listen_bind->local, srcaddr);
+    rc = xlio->extra->xlio_socket_detach_group(sock);
 
-    --srcaddr->refcnt;
+    evpl_xlio_abort_if(rc, "Failed to detach socket from group");
 
-    s = evpl_bind_private(new_bind);
+    listen_bind->accept_callback(evpl, listen_bind, srcaddr, accepted_socket, listen_bind->private_data);
 
-    s->evpl   = evpl;
-    s->socket = sock;
-
-    evpl_xlio_socket_init(evpl, xlio, s, 0, 1,
-                          ls->read_callback,
-                          ls->write_callback);
-
-    xlio->extra->xlio_socket_update(s->socket, 0, (uintptr_t) s);
-
-    listen_bind->accept_callback(
-        evpl,
-        listen_bind,
-        new_bind,
-        &new_bind->notify_callback,
-        &new_bind->segment_callback,
-        &new_bind->private_data,
-        listen_bind->private_data);
-
-    notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-    notify.notify_status = 0;
-
-    new_bind->notify_callback(evpl, new_bind, &notify, new_bind->private_data);
 } /* evpl_xlio_socket_accept */
 
 static void

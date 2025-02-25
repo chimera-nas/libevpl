@@ -17,7 +17,8 @@ typedef void *(*evpl_thread_init_callback_t)(
     void        *private_data);
 
 typedef void (*evpl_thread_shutdown_callback_t)(
-    void *private_data);
+    struct evpl *evpl,
+    void        *private_data);
 
 
 struct evpl_thread *

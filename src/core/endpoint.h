@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include "evpl/evpl.h"
+#include <stdatomic.h>
 
 struct addrinfo;
 
@@ -14,7 +15,7 @@ struct evpl_address {
     struct sockaddr        *addr;
     socklen_t               addrlen;
     struct evpl_address    *next;
-    int                     refcnt;
+    atomic_int              refcnt;
     void                   *framework_private[EVPL_NUM_FRAMEWORK];
     struct sockaddr_storage sa;
 };
@@ -22,30 +23,34 @@ struct evpl_address {
 struct evpl_endpoint {
     char                  address[256];
     int                   port;
-    int                   refcnt;
-    struct evpl_address  *addr;
+    struct timespec       last_resolved;
+    struct evpl_address  *resolved_addr;
+    pthread_rwlock_t      lock;
     struct evpl_endpoint *prev;
     struct evpl_endpoint *next;
 };
 
-int
+struct evpl_address *
 evpl_endpoint_resolve(
-    struct evpl          *evpl,
     struct evpl_endpoint *endpoint);
 
 struct evpl_address *
 evpl_address_alloc(
-    struct evpl *evpl);
+    void);
 
 struct evpl_address *
 evpl_address_init(
-    struct evpl     *evpl,
     struct sockaddr *addr,
     socklen_t        addrlen);
 
+static inline void
+evpl_address_incref(struct evpl_address *address)
+{
+    atomic_fetch_add(&address->refcnt, 1);
+} /* evpl_address_incref */
+
 void
 evpl_address_release(
-    struct evpl         *evpl,
     struct evpl_address *address);
 
 static inline void *

@@ -106,6 +106,11 @@ struct evpl_protocol {
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
+    void                   (*attach)(
+        struct evpl      *evpl,
+        struct evpl_bind *bind,
+        void             *accepted);
+
     /*
      * Callbacks for non-connection-oriented protocols
      */

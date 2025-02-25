@@ -155,7 +155,13 @@ evpl_set_log_fn(evpl_log_fn log_fn)
 void
 evpl_cleanup()
 {
-    unsigned int i;
+    struct evpl_endpoint *endpoint;
+    unsigned int          i;
+
+    while (evpl_shared->endpoints) {
+        endpoint = evpl_shared->endpoints;
+        evpl_endpoint_close(endpoint);
+    }
 
     evpl_allocator_destroy(evpl_shared->allocator);
 
@@ -236,12 +242,15 @@ evpl_global_config_release(struct evpl_global_config *config)
 } /* evpl_release_config */
 
 static void
-evpl_stop_callback(
+evpl_ipc_callback(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    uint64_t value;
-    ssize_t  rc;
+    struct evpl_connect_request *request;
+    struct evpl_bind            *new_bind;
+    struct evpl_notify           notify;
+    uint64_t                     value;
+    ssize_t                      rc;
 
     rc = read(event->fd, &value, sizeof(value));
 
@@ -249,6 +258,38 @@ evpl_stop_callback(
         evpl_event_mark_unreadable(event);
         return;
     }
+
+    pthread_mutex_lock(&evpl->lock);
+
+    while (evpl->connect_requests) {
+
+        request = evpl->connect_requests;
+        DL_DELETE(evpl->connect_requests, request);
+
+        new_bind = evpl_bind_prepare(evpl,
+                                     request->protocol,
+                                     request->local_address,
+                                     request->remote_address);
+
+        request->attach_callback(evpl,
+                                 new_bind,
+                                 &new_bind->notify_callback,
+                                 &new_bind->segment_callback,
+                                 &new_bind->private_data,
+                                 request->private_data);
+
+        request->protocol->attach(evpl, new_bind, request->accepted);
+
+        notify.notify_type   = EVPL_NOTIFY_CONNECTED;
+        notify.notify_status = 0;
+
+        new_bind->notify_callback(evpl, new_bind, &notify,
+                                  new_bind->private_data);
+
+        evpl_free(request);
+    }
+
+    pthread_mutex_unlock(&evpl->lock);
 
 } /* evpl_stop_callback */
 
@@ -260,6 +301,8 @@ evpl_create(struct evpl_thread_config *config)
     __evpl_init();
 
     evpl = evpl_zalloc(sizeof(*evpl));
+
+    pthread_mutex_init(&evpl->lock, NULL);
 
     evpl->poll     = evpl_calloc(256, sizeof(struct evpl_poll));
     evpl->max_poll = 256;
@@ -283,7 +326,7 @@ evpl_create(struct evpl_thread_config *config)
     evpl->eventfd = eventfd(0, EFD_NONBLOCK);
 
     evpl->run_event.fd            = evpl->eventfd;
-    evpl->run_event.read_callback = evpl_stop_callback;
+    evpl->run_event.read_callback = evpl_ipc_callback;
 
     evpl_add_event(evpl, &evpl->run_event);
 
@@ -441,104 +484,323 @@ evpl_stop(struct evpl *evpl)
     write(evpl->eventfd, &value, sizeof(value));
 } /* evpl_stop */
 
-struct evpl_bind *
-evpl_listen(
-    struct evpl           *evpl,
-    enum evpl_protocol_id  protocol_id,
-    struct evpl_endpoint  *endpoint,
-    evpl_accept_callback_t accept_callback,
-    void                  *private_data)
+static void
+evpl_listener_accept(
+    struct evpl         *evpl,
+    struct evpl_bind    *listen_bind,
+    struct evpl_address *remote_address,
+    void                *accepted,
+    void                *private_data)
 {
-    struct evpl_bind *bind;
+    struct evpl_listener         *listener = private_data;
+    struct evpl_listener_binding *binding;
+    struct evpl_connect_request  *request;
+    uint64_t                      one = 1;
+    int                           rc;
 
-    if (!endpoint->addr) {
-        evpl_endpoint_resolve(evpl, endpoint);
+    pthread_mutex_lock(&listener->lock);
+
+    binding = &listener->attached[listener->rotor];
+
+    listener->rotor++;
+
+    if (listener->rotor >= listener->num_attached) {
+        listener->rotor = 0;
     }
 
-    bind = evpl_bind_prepare(evpl,
-                             evpl_shared->protocol[protocol_id],
-                             endpoint->addr,
-                             NULL);
+    request = evpl_zalloc(sizeof(struct evpl_connect_request));
 
-    evpl_core_abort_if(!bind->protocol->listen,
-                       "evpl_listen called with non-connection oriented protocol");
+    request->local_address   = listen_bind->local;
+    request->remote_address  = remote_address;
+    request->protocol        = listen_bind->protocol;
+    request->attach_callback = binding->attach_callback;
+    request->accepted        = accepted;
+    request->private_data    = binding->private_data;
 
-    bind->accept_callback = accept_callback;
-    bind->private_data    = private_data;
+    pthread_mutex_lock(&binding->evpl->lock);
+    DL_APPEND(binding->evpl->connect_requests, request);
+    pthread_mutex_unlock(&binding->evpl->lock);
 
-    bind->protocol->listen(evpl, bind);
+    rc = write(binding->evpl->eventfd, &one, sizeof(one));
 
-    return bind;
+    evpl_core_abort_if(rc != sizeof(one),
+                       "evpl_listener_accept: write failed");
+
+    pthread_mutex_unlock(&listener->lock);
+} /* evpl_listener_accept */
+
+static void
+evpl_listener_callback(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    struct evpl_listener       *listener = container_of(event, struct evpl_listener, event);
+    struct evpl_listen_request *request;
+    struct evpl_bind           *bind, **new_binds;
+    uint64_t                    value;
+    ssize_t                     len;
+
+    len = read(listener->eventfd, &value, sizeof(value));
+
+    if (len != sizeof(value)) {
+        evpl_event_mark_unreadable(event);
+        return;
+    }
+
+    pthread_mutex_lock(&listener->lock);
+
+    while (listener->requests) {
+        request = listener->requests;
+        DL_DELETE(listener->requests, request);
+
+        bind = evpl_bind_prepare(evpl,
+                                 evpl_shared->protocol[request->protocol_id],
+                                 request->address,
+                                 NULL);
+
+        evpl_core_abort_if(!bind->protocol->listen,
+                           "evpl_listen called with non-connection oriented protocol");
+
+        bind->accept_callback = evpl_listener_accept;
+        bind->private_data    = listener;
+
+        bind->protocol->listen(evpl, bind);
+
+        if (listener->num_binds >= listener->max_binds) {
+            listener->max_binds *= 2;
+
+            new_binds = evpl_calloc(listener->max_binds, sizeof(struct evpl_bind *));
+
+            memcpy(new_binds, listener->binds, listener->num_binds * sizeof(struct evpl_bind *));
+
+            evpl_free(listener->binds);
+
+            listener->binds = new_binds;
+        }
+
+        listener->binds[listener->num_binds++] = bind;
+
+        evpl_free(request);
+
+    }
+
+    pthread_mutex_unlock(&listener->lock);
+
+} /* evpl_listener_callback */
+
+static void *
+evpl_listener_init(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct evpl_listener *listener = private_data;
+
+    listener->eventfd = eventfd(0, EFD_NONBLOCK);
+
+    listener->event.fd            = listener->eventfd;
+    listener->event.read_callback = evpl_listener_callback;
+
+    evpl_add_event(evpl, &listener->event);
+
+    evpl_event_read_interest(evpl, &listener->event);
+
+    __sync_synchronize();
+
+    listener->running = 1;
+
+    return listener;
+
+} /* evpl_listener_init */
+
+struct evpl_listener *
+evpl_listener_create(void)
+{
+    struct evpl_listener *listener;
+
+    __evpl_init();
+
+    listener = evpl_zalloc(sizeof(*listener));
+
+    pthread_mutex_init(&listener->lock, NULL);
+
+    listener->thread = evpl_thread_create(NULL, evpl_listener_init, NULL, listener);
+
+    listener->max_binds = 64;
+    listener->binds     = evpl_calloc(listener->max_binds, sizeof(struct evpl_bind *));
+
+    listener->max_attached = 64;
+    listener->attached     = evpl_calloc(listener->max_attached, sizeof(struct evpl *));
+
+    while (!listener->running) {
+        __sync_synchronize();
+    }
+
+    return listener;
+} /* evpl_listener_create */
+
+void
+evpl_listener_destroy(struct evpl_listener *listener)
+{
+
+    evpl_core_abort_if(listener->num_attached,
+                       "evpl_listener_destroy called with attached evpl contexts");
+
+    pthread_mutex_destroy(&listener->lock);
+    evpl_free(listener->binds);
+    evpl_free(listener->attached);
+    evpl_free(listener);
+} /* evpl_listener_destroy */
+
+void
+evpl_listener_attach(
+    struct evpl           *evpl,
+    struct evpl_listener  *listener,
+    evpl_attach_callback_t attach_callback,
+    void                  *private_data)
+{
+    struct evpl_listener_binding *binding, *new_attached;
+
+    pthread_mutex_lock(&listener->lock);
+
+    if (listener->num_attached >= listener->max_attached) {
+        listener->max_attached *= 2;
+
+        new_attached = evpl_zalloc(sizeof(struct evpl_listener_binding) * listener->max_attached);
+
+        memcpy(new_attached, listener->attached, listener->num_attached * sizeof(struct evpl_listener_binding));
+
+        evpl_free(listener->attached);
+
+        listener->attached = new_attached;
+    }
+
+    binding = &listener->attached[listener->num_attached++];
+
+    binding->evpl            = evpl;
+    binding->attach_callback = attach_callback;
+    binding->private_data    = private_data;
+
+    pthread_mutex_unlock(&listener->lock);
+} /* evpl_listener_attach */
+
+void
+evpl_listener_detach(
+    struct evpl          *evpl,
+    struct evpl_listener *listener)
+{
+    pthread_mutex_lock(&listener->lock);
+
+    for (int i = 0; i < listener->num_attached; i++) {
+        if (listener->attached[i].evpl == evpl) {
+            if (i + 1 < listener->num_attached) {
+                listener->attached[i] = listener->attached[listener->num_attached - 1];
+            }
+            listener->num_attached--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&listener->lock);
+} /* evpl_listener_detach */
+
+void
+evpl_listen(
+    struct evpl_listener *listener,
+    enum evpl_protocol_id protocol_id,
+    struct evpl_endpoint *endpoint)
+{
+    uint64_t                    value = 1;
+    int                         rc;
+    struct evpl_listen_request *request;
+
+    request = evpl_zalloc(sizeof(*request));
+
+    request->protocol_id = protocol_id;
+    request->address     = evpl_endpoint_resolve(endpoint);
+
+    pthread_mutex_lock(&listener->lock);
+    DL_APPEND(listener->requests, request);
+    pthread_mutex_unlock(&listener->lock);
+
+    rc = write(listener->eventfd, &value, sizeof(value));
+
+    evpl_core_abort_if(rc != sizeof(value),
+                       "evpl_listen: write to eventfd failed");
+
 } /* evpl_listen */
 
 struct evpl_endpoint *
 evpl_endpoint_create(
-    struct evpl *evpl,
-    const char  *address,
-    int          port)
+    const char *address,
+    int         port)
 {
     struct evpl_endpoint *ep;
 
+    __evpl_init();
+
     ep = evpl_zalloc(sizeof(*ep));
 
-    ep->port   = port;
-    ep->refcnt = 1;
+    ep->port = port;
     strncpy(ep->address, address, sizeof(ep->address) - 1);
 
-    ep->addr = NULL;
+    pthread_rwlock_init(&ep->lock, NULL);
 
-    DL_APPEND(evpl->endpoints, ep);
+    pthread_mutex_lock(&evpl_shared->lock);
+    DL_APPEND(evpl_shared->endpoints, ep);
+    pthread_mutex_unlock(&evpl_shared->lock);
 
     return ep;
 } /* evpl_endpoint_create */
 
 void
-__evpl_endpoint_close(
-    struct evpl          *evpl,
-    struct evpl_endpoint *endpoint,
-    int                   force)
+evpl_endpoint_close(struct evpl_endpoint *endpoint)
 {
-    struct evpl_address *addr;
+    pthread_rwlock_wrlock(&endpoint->lock);
 
-    --endpoint->refcnt;
+    pthread_mutex_lock(&evpl_shared->lock);
+    DL_DELETE(evpl_shared->endpoints, endpoint);
+    pthread_mutex_unlock(&evpl_shared->lock);
 
-    if (endpoint->refcnt == 0 || force) {
-
-        while (endpoint->addr) {
-            addr = endpoint->addr;
-            LL_DELETE(endpoint->addr, addr);
-            if (force) {
-                evpl_free(addr);
-            } else {
-                evpl_address_release(evpl, addr);
-            }
-        }
-
-        DL_DELETE(evpl->endpoints, endpoint);
-        evpl_free(endpoint);
+    if (endpoint->resolved_addr) {
+        evpl_address_release(endpoint->resolved_addr);
     }
-} /* __evpl_endpoint_close */
 
-void
-evpl_endpoint_close(
-    struct evpl          *evpl,
-    struct evpl_endpoint *endpoint)
-{
-    __evpl_endpoint_close(evpl, endpoint, 0);
+    pthread_rwlock_unlock(&endpoint->lock);
+
+    evpl_free(endpoint);
 } /* evpl_endpoint_close */
 
-int
-evpl_endpoint_resolve(
-    struct evpl          *evpl,
-    struct evpl_endpoint *endpoint)
+struct evpl_address *
+evpl_endpoint_resolve(struct evpl_endpoint *endpoint)
 {
     char                 port_str[8];
-    struct addrinfo      hints, *ai, *p;
-    struct evpl_address *cur, *last = NULL;
-    int                  rc;
+    struct addrinfo      hints, *ai, *p, **pp;
+    struct evpl_address *addr;
+    struct timespec      now;
+    uint64_t             age_ms;
+    int                  rc, i, n;
 
-    if (endpoint->addr) {
-        return 0;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    pthread_rwlock_rdlock(&endpoint->lock);
+
+    if (likely(endpoint->resolved_addr)) {
+        age_ms = (now.tv_sec - endpoint->last_resolved.tv_sec) * 1000 +
+            (now.tv_nsec - endpoint->last_resolved.tv_nsec) / 1000000;
+
+        if (likely(age_ms <= evpl_shared->config->resolve_timeout_ms)) {
+            addr = endpoint->resolved_addr;
+            evpl_address_incref(addr);
+            pthread_rwlock_unlock(&endpoint->lock);
+            return addr;
+        }
+    }
+
+    pthread_rwlock_unlock(&endpoint->lock);
+    pthread_rwlock_wrlock(&endpoint->lock);
+
+    if (endpoint->resolved_addr) {
+        evpl_address_release(endpoint->resolved_addr);
     }
 
     snprintf(port_str, sizeof(port_str), "%d", endpoint->port);
@@ -551,25 +813,41 @@ evpl_endpoint_resolve(
     rc = getaddrinfo(endpoint->address, port_str, &hints, &ai);
 
     if (unlikely(rc < 0)) {
-        return rc;
+        pthread_rwlock_unlock(&endpoint->lock);
+        return NULL;
     }
+
+    n = 0;
 
     for (p = ai; p != NULL; p = p->ai_next) {
+        n++;
+    }
 
-        cur = evpl_address_init(evpl, p->ai_addr, p->ai_addrlen);
+    if (n) {
+        pp = alloca(n * sizeof(struct addrinfo *));
 
-        if (last) {
-            last->next = cur;
-        } else {
-            endpoint->addr = cur;
+        for (p = ai, i = 0; p != NULL; p = p->ai_next, i++) {
+            pp[i] = p;
         }
 
-        last = cur;
+        p = pp[rand() % n];
+
+        addr = evpl_address_init(p->ai_addr, p->ai_addrlen);
+
+        endpoint->resolved_addr = addr;
+        endpoint->last_resolved = now;
+
+        evpl_address_incref(addr);
+
+    } else {
+        addr = NULL;
     }
+
+    pthread_rwlock_unlock(&endpoint->lock);
 
     freeaddrinfo(ai);
 
-    return 0;
+    return addr;
 } /* evpl_endpoint_resolve */
 
 struct evpl_bind *
@@ -585,20 +863,12 @@ evpl_connect(
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
-    if (local_endpoint && !local_endpoint->addr) {
-        evpl_endpoint_resolve(evpl, local_endpoint);
-    }
-
-    if (!remote_endpoint->addr) {
-        evpl_endpoint_resolve(evpl, remote_endpoint);
-    }
-
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
     bind = evpl_bind_prepare(evpl, protocol,
-                             local_endpoint ? local_endpoint->addr : NULL,
-                             remote_endpoint->addr);
+                             local_endpoint ? evpl_endpoint_resolve(local_endpoint) : NULL,
+                             evpl_endpoint_resolve(remote_endpoint));
     bind->notify_callback  = notify_callback;
     bind->segment_callback = segment_callback;
     bind->private_data     = private_data;
@@ -619,15 +889,11 @@ evpl_bind(
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
-    if (!endpoint->addr) {
-        evpl_endpoint_resolve(evpl, endpoint);
-    }
-
     evpl_core_abort_if(!protocol->bind,
                        "Called evpl_bind with connection oriented protocol");
 
-    bind = evpl_bind_prepare(evpl, protocol, endpoint->addr,
-                             NULL);
+    bind = evpl_bind_prepare(evpl, protocol, evpl_endpoint_resolve(endpoint), NULL);
+
     bind->notify_callback  = callback;
     bind->segment_callback = NULL;
     bind->private_data     = private_data;
@@ -642,7 +908,6 @@ evpl_destroy(struct evpl *evpl)
 {
     struct evpl_framework *framework;
     struct evpl_bind      *bind;
-    struct evpl_address   *address;
     int                    i;
 
     /* Push any open binds into pending close state */
@@ -667,16 +932,6 @@ evpl_destroy(struct evpl *evpl)
         evpl_iovec_ring_free(&bind->iovec_recv);
         evpl_dgram_ring_free(&bind->dgram_send);
         evpl_free(bind);
-    }
-
-    while (evpl->endpoints) {
-        __evpl_endpoint_close(evpl, evpl->endpoints, 1);
-    }
-
-    while (evpl->free_address) {
-        address = evpl->free_address;
-        LL_DELETE(evpl->free_address, address);
-        evpl_free(address);
     }
 
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
@@ -827,16 +1082,8 @@ evpl_bind_prepare(
 
     bind->protocol = protocol;
     bind->local    = local;
+    bind->remote   = remote;
 
-    if (local) {
-        local->refcnt++;
-    }
-
-    bind->remote = remote;
-
-    if (remote) {
-        remote->refcnt++;
-    }
 
     memset(bind + 1, 0, EVPL_MAX_PRIVATE);
 
@@ -1323,7 +1570,6 @@ evpl_sendtov(
     dgram->niov   = i;
     dgram->length = length;
     dgram->addr   = address;
-    dgram->addr->refcnt++;
 
     evpl_defer(evpl, &bind->flush_deferral);
 
@@ -1342,12 +1588,7 @@ evpl_sendtoepv(
     int                   nbufvecs,
     int                   length)
 {
-    if (!endpoint->addr) {
-        evpl_endpoint_resolve(evpl, endpoint);
-    }
-
-    evpl_sendtov(evpl, bind, endpoint->addr, iovecs, nbufvecs, length);
-
+    evpl_sendtov(evpl, bind, evpl_endpoint_resolve(endpoint), iovecs, nbufvecs, length);
 } /* evpl_sendtoepv */
 
 void
@@ -1399,11 +1640,11 @@ evpl_bind_destroy(
     bind->flags |= EVPL_BIND_CLOSED;
 
     if (bind->local) {
-        evpl_address_release(evpl, bind->local);
+        evpl_address_release(bind->local);
     }
 
     if (bind->remote) {
-        evpl_address_release(evpl, bind->remote);
+        evpl_address_release(bind->remote);
     }
     DL_DELETE(evpl->pending_close_binds, bind);
     DL_PREPEND(evpl->free_binds, bind);
@@ -1933,31 +2174,25 @@ evpl_protocol_is_stream(enum evpl_protocol_id id)
 } /* evpl_protocol_is_stream */
 
 struct evpl_address *
-evpl_address_alloc(struct evpl *evpl)
+evpl_address_alloc(void)
 {
     struct evpl_address *address;
 
-    if (evpl->free_address) {
-        address = evpl->free_address;
-        LL_DELETE(evpl->free_address, address);
-    } else {
-        address = evpl_zalloc(sizeof(*address));
-    }
+    address = evpl_zalloc(sizeof(*address));
 
-    address->addr   = (struct sockaddr *) &address->sa;
-    address->refcnt = 1;
-    address->next   = NULL;
+    address->addr = (struct sockaddr *) &address->sa;
+    atomic_init(&address->refcnt, 1);
+    address->next = NULL;
 
     return address;
 } /* evpl_address_alloc */
 
 struct evpl_address *
 evpl_address_init(
-    struct evpl     *evpl,
     struct sockaddr *addr,
     socklen_t        addrlen)
 {
-    struct evpl_address *ea = evpl_address_alloc(evpl);
+    struct evpl_address *ea = evpl_address_alloc();
 
     ea->addrlen = addrlen;
     memcpy(ea->addr, addr, addrlen);
@@ -1967,15 +2202,11 @@ evpl_address_init(
 } /* evpl_address_init */
 
 void
-evpl_address_release(
-    struct evpl         *evpl,
-    struct evpl_address *address)
+evpl_address_release(struct evpl_address *address)
 {
     int i;
 
-    address->refcnt--;
-
-    if (address->refcnt) {
+    if (atomic_fetch_sub(&address->refcnt, 1) > 1) {
         return;
     }
 
@@ -1990,7 +2221,7 @@ evpl_address_release(
             evpl_shared->framework_private[i]);
     }
 
-    LL_PREPEND(evpl->free_address, address);
+    evpl_free(address);
 } /* evpl_address_release */
 
 void

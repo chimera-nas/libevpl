@@ -111,6 +111,10 @@ struct evpl_xlio {
     int                       max_active_sockets;
 };
 
+struct evpl_xlio_accepted_socket {
+    xlio_socket_t socket;
+};
+
 static inline void
 evpl_xlio_buffer_free(struct evpl_buffer *buffer)
 {

@@ -76,7 +76,7 @@ client_thread(void *arg)
 
     evpl = evpl_create(NULL);
 
-    ep = evpl_endpoint_create(evpl, address, port);
+    ep = evpl_endpoint_create(address, port);
 
     bind = evpl_connect(evpl, proto, NULL, ep, client_callback, NULL, state);
 
@@ -101,7 +101,7 @@ client_thread(void *arg)
 
     state->run = 0;
 
-    evpl_endpoint_close(evpl, ep);
+    evpl_endpoint_close(ep);
 
     evpl_destroy(evpl);
 
@@ -141,7 +141,6 @@ server_callback(
 void
 accept_callback(
     struct evpl             *evpl,
-    struct evpl_bind        *listen_bind,
     struct evpl_bind        *accepted_bind,
     evpl_notify_callback_t  *notify_callback,
     evpl_segment_callback_t *segment_callback,
@@ -158,6 +157,7 @@ main(
 {
     pthread_t             thr;
     struct evpl          *evpl;
+    struct evpl_listener *listener;
     struct evpl_endpoint *ep;
     int                   rc, opt;
     struct client_state   state = {
@@ -194,9 +194,13 @@ main(
 
     evpl = evpl_create(NULL);
 
-    ep = evpl_endpoint_create(evpl, "0.0.0.0", port);
+    ep = evpl_endpoint_create("0.0.0.0", port);
 
-    evpl_listen(evpl, proto, ep, accept_callback, NULL);
+    listener = evpl_listener_create();
+
+    evpl_listener_attach(evpl, listener, accept_callback, &state);
+
+    evpl_listen(listener, proto, ep);
 
     pthread_create(&thr, NULL, client_thread, &state);
 

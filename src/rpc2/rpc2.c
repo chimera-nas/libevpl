@@ -19,7 +19,7 @@
 struct evpl_rpc2_server {
     int                        protocol;
     struct evpl_rpc2_agent    *agent;
-    struct evpl_bind          *bind;
+    struct evpl_listener      *listener;
     struct evpl_rpc2_program **programs;
     struct evpl_rpc2_metric  **metrics;
     int                        nprograms;
@@ -471,8 +471,7 @@ evpl_rpc2_event(
 static void
 evpl_rpc2_accept(
     struct evpl             *evpl,
-    struct evpl_bind        *listen_bind,
-    struct evpl_bind        *accepted_bind,
+    struct evpl_bind        *bind,
     evpl_notify_callback_t  *notify_callback,
     evpl_segment_callback_t *segment_callback,
     void                   **conn_private_data,
@@ -765,12 +764,14 @@ evpl_rpc2_listen(
             );
     }
 
-    server->bind = evpl_listen(
-        agent->evpl,
+    server->listener = evpl_listener_create();
+
+    evpl_listener_attach(agent->evpl, server->listener, evpl_rpc2_accept, server);
+
+    evpl_listen(
+        server->listener,
         protocol,
-        endpoint,
-        evpl_rpc2_accept,
-        server);
+        endpoint);
 
     return server;
 } /* evpl_rpc2_listen */

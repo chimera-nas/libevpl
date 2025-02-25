@@ -101,6 +101,7 @@ struct evpl_http_conn {
 
 struct evpl_http_server {
     struct evpl_http_agent       *agent;
+    struct evpl_listener         *listener;
     struct evpl_bind             *bind;
     void                         *private_data;
     evpl_http_dispatch_callback_t dispatch_callback;
@@ -745,8 +746,7 @@ evpl_http_server_flush(
 static void
 evpl_http_accept(
     struct evpl             *evpl,
-    struct evpl_bind        *listen_bind,
-    struct evpl_bind        *accepted_bind,
+    struct evpl_bind        *bind,
     evpl_notify_callback_t  *notify_callback,
     evpl_segment_callback_t *segment_callback,
     void                   **conn_private_data,
@@ -759,7 +759,7 @@ evpl_http_accept(
     http_conn->server    = server;
     http_conn->is_server = 1;
     http_conn->agent     = server->agent;
-    http_conn->bind      = accepted_bind;
+    http_conn->bind      = bind;
     *notify_callback     = evpl_http_event;
     *segment_callback    = NULL;
     *conn_private_data   = http_conn;
@@ -783,12 +783,14 @@ evpl_http_listen(
     server->agent             = agent;
     server->private_data      = private_data;
     server->dispatch_callback = dispatch_callback;
-    server->bind              = evpl_listen(
-        agent->evpl,
+    server->listener          = evpl_listener_create();
+
+    evpl_listener_attach(agent->evpl, server->listener, evpl_http_accept, server);
+
+    evpl_listen(
+        server->listener,
         EVPL_STREAM_SOCKET_TCP,
-        endpoint,
-        evpl_http_accept,
-        server);
+        endpoint);
 
     return server;
 } /* evpl_http_listen */

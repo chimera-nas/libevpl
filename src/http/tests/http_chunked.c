@@ -104,7 +104,7 @@ server_function(void *ptr)
 
     agent = evpl_http_init(evpl);
 
-    endpoint = evpl_endpoint_create(evpl, "0.0.0.0", 80);
+    endpoint = evpl_endpoint_create("0.0.0.0", 80);
 
     server = evpl_http_listen(agent, endpoint, server_dispatch, NULL);
 

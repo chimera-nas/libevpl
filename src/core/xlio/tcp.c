@@ -241,6 +241,40 @@ evpl_xlio_tcp_listen(
 
 } /* evpl_xlio_tcp_listen */
 
+void
+evpl_xlio_tcp_attach(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *accepted)
+{
+    struct evpl_xlio                 *xlio;
+    struct evpl_xlio_accepted_socket *accepted_socket = (struct evpl_xlio_accepted_socket *) accepted;
+    xlio_socket_t                     sock            = accepted_socket->socket;
+    struct evpl_xlio_socket          *s               = evpl_bind_private(bind);
+    int                               rc;
+
+    xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
+
+    s->evpl   = evpl;
+    s->socket = sock;
+
+    rc = xlio->extra->xlio_socket_attach_group(sock, xlio->poll_group);
+
+    evpl_xlio_abort_if(rc, "Failed to attach socket to group");
+
+    rc = xlio->extra->xlio_socket_update(s->socket, 0, (uintptr_t) s);
+
+    evpl_xlio_abort_if(rc, "Failed to update socket");
+
+    evpl_xlio_socket_init(evpl, xlio, s, 0, 1,
+                          evpl_xlio_tcp_read,
+                          evpl_xlio_tcp_write);
+
+    s->readable = 1;
+
+    evpl_free(accepted_socket);
+} /* evpl_rdmacm_attach */
+
 extern struct evpl_framework evpl_framework_xlio;
 struct evpl_protocol         evpl_xlio_tcp = {
     .id            = EVPL_STREAM_XLIO_TCP,
@@ -252,5 +286,6 @@ struct evpl_protocol         evpl_xlio_tcp = {
     .pending_close = evpl_xlio_pending_close,
     .close         = evpl_xlio_close,
     .listen        = evpl_xlio_tcp_listen,
+    .attach        = evpl_xlio_tcp_attach,
     .flush         = evpl_xlio_flush,
 };

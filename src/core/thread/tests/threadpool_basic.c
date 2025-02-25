@@ -21,7 +21,9 @@ thread_init(
 } /* thread_init */
 
 void
-thread_destroy(void *private_data)
+thread_destroy(
+    struct evpl *evpl,
+    void        *private_data)
 {
     int *number = private_data;
 

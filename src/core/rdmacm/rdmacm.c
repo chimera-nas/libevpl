@@ -77,42 +77,10 @@ struct evpl_rdmacm_sr {
     struct evpl_buffer    *bufref[32];
 };
 
-struct evpl_rdmacm_new_id {
-    struct rdma_cm_event             *event;
-    struct evpl_rdmacm_listen_member *listen_member;
-    struct evpl_rdmacm_new_id        *next;
-};
-
-struct evpl_rdmacm_listen_member {
-    struct evpl_rdmacm               *rdmacm;
-    struct evpl_bind                 *bind;
-    struct evpl_rdmacm_listen_member *prev;
-    struct evpl_rdmacm_listen_member *next;
-};
-
-struct evpl_rdmacm_listen_id {
-    struct sockaddr_storage           addr;
-    unsigned int                      addrlen;
-    struct evpl_rdmacm_id            *rdmacm_id;
-    struct evpl_rdmacm_listen_member *members;
-    struct UT_hash_handle             hh;
-};
-
-
-struct evpl_rdmacm_listener {
-    int                           started;
-    int                           eventfd;
-    struct evpl_event             event;
-    struct evpl_thread           *thread;
-    pthread_mutex_t               mutex;
-    struct evpl_rdmacm_listen_id *listen_ids;
-};
-
 struct evpl_rdmacm_devices {
-    struct ibv_context        **context;
-    struct ibv_pd             **pd;
-    int                         num_devices;
-    struct evpl_rdmacm_listener listener;
+    struct ibv_context **context;
+    struct ibv_pd      **pd;
+    int                  num_devices;
 };
 
 struct evpl_rdmacm_device {
@@ -144,10 +112,6 @@ struct evpl_rdmacm {
     int                          num_devices;
     struct evpl_rdmacm_sr       *free_sr;
     struct evpl_rdmacm_sr       *active_sr;
-    pthread_mutex_t              mutex;
-    int                          new_id_eventfd;
-    struct evpl_event            new_id_event;
-    struct evpl_rdmacm_new_id   *new_ids;
 };
 
 #define evpl_event_rdmacm(eventp) \
@@ -156,6 +120,10 @@ struct evpl_rdmacm {
 #define evpl_event_rdmacm_device(eventp) \
         container_of((eventp), struct evpl_rdmacm_device, event)
 
+struct evpl_rdmacm_accepted_id {
+    struct rdma_cm_id     *id;
+    struct rdma_conn_param conn_param;
+};
 
 struct evpl_rdmacm_id {
     struct evpl_rdmacm           *rdmacm;
@@ -299,19 +267,17 @@ evpl_rdmacm_event_callback(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    struct evpl_rdmacm               *rdmacm = evpl_event_rdmacm(event);
-    struct evpl_rdmacm_id            *rdmacm_id;
-    struct evpl_bind                 *bind;
-    struct evpl_rdmacm_listener      *listener;
-    struct evpl_rdmacm_listen_id     *listen_id;
-    struct evpl_rdmacm_listen_member *listen_member;
-    struct evpl_rdmacm_ah            *ah;
-    struct rdma_cm_event             *cm_event;
-    struct rdma_conn_param            conn_param;
-    struct evpl_notify                notify;
-    int                               rc;
-    struct evpl_rdmacm_new_id        *new_id;
-    const uint64_t                    one = 1;
+    struct evpl_rdmacm             *rdmacm = evpl_event_rdmacm(event);
+    struct evpl_rdmacm_id          *rdmacm_id;
+    struct evpl_bind               *bind;
+    struct evpl_bind               *listen_bind;
+    struct evpl_address            *remote_addr;
+    struct evpl_rdmacm_accepted_id *accepted_id;
+    struct evpl_rdmacm_ah          *ah;
+    struct rdma_cm_event           *cm_event;
+    struct rdma_conn_param          conn_param;
+    struct evpl_notify              notify;
+    int                             rc;
 
     if (rdma_get_cm_event(rdmacm->event_channel, &cm_event)) {
         evpl_event_mark_unreadable(event);
@@ -351,30 +317,21 @@ evpl_rdmacm_event_callback(
 
             if (!rdmacm_id->ud) {
 
-                listener = rdmacm->listener;
+                listen_bind = evpl_private2bind(rdmacm_id);
 
-                listen_id = rdmacm_id->listen_id;
+                remote_addr = evpl_address_init(&cm_event->id->route.addr.src_addr,
+                                                sizeof(cm_event->id->route.addr.src_addr));
 
-                new_id        = evpl_zalloc(sizeof(*new_id));
-                new_id->event = cm_event;
+                accepted_id             = evpl_zalloc(sizeof(*accepted_id));
+                accepted_id->id         = cm_event->id;
+                accepted_id->conn_param = cm_event->param.conn;
 
-                pthread_mutex_lock(&listener->mutex);
-                listen_member = listen_id->members;
-                DL_DELETE(listen_id->members, listen_member);
-                DL_APPEND(listen_id->members, listen_member);
-
-                pthread_mutex_lock(&listen_member->rdmacm->mutex);
-                new_id->listen_member = listen_member;
-                LL_PREPEND(listen_member->rdmacm->new_ids, new_id);
-                pthread_mutex_unlock(&listen_member->rdmacm->mutex);
-
-                rc = write(listen_member->rdmacm->new_id_eventfd, &one, sizeof(one));
-
-                evpl_rdmacm_abort_if(rc != sizeof(one), "write error %s", strerror(errno));
-
-                pthread_mutex_unlock(&listener->mutex);
-
-                cm_event = NULL;
+                listen_bind->accept_callback(
+                    evpl,
+                    listen_bind,
+                    remote_addr,
+                    accepted_id,
+                    listen_bind->private_data);
 
             } else {
                 /* XXX why is this necessary? */
@@ -405,7 +362,7 @@ evpl_rdmacm_event_callback(
                 evpl_address_set_private(rdmacm_id->resolve_addr,
                                          bind->protocol->id,  ah);
 
-                evpl_address_release(evpl, rdmacm_id->resolve_addr);
+                evpl_address_release(rdmacm_id->resolve_addr);
                 rdmacm_id->resolve_addr = NULL;
 
             } else {
@@ -759,73 +716,11 @@ evpl_rdmacm_comp_callback(
     ibv_ack_cq_events(dev->cq, 1);
 } /* evpl_rdmacm_comp_callback */
 
-
-static void
-evpl_rdmacm_listener_wake(
-    struct evpl       *evpl,
-    struct evpl_event *event)
-{
-    struct evpl_rdmacm_listener  *listener = container_of(event,
-                                                          struct evpl_rdmacm_listener,
-                                                          event);
-    struct evpl_rdmacm           *rdmacm;
-    struct evpl_rdmacm_id        *rdmacm_id;
-    struct evpl_rdmacm_listen_id *listen_id, *tmp;
-    int                           rc;
-    uint64_t                      word;
-    ssize_t                       len;
-
-    len = read(listener->eventfd, &word, sizeof(word));
-
-    if (len != sizeof(word)) {
-        evpl_event_mark_unreadable(event);
-        return;
-    }
-
-    evpl_attach_framework(evpl, EVPL_FRAMEWORK_RDMACM);
-
-    rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
-
-    pthread_mutex_lock(&listener->mutex);
-
-    HASH_ITER(hh, listener->listen_ids, listen_id, tmp)
-    {
-
-        if (listen_id->rdmacm_id) {
-            continue;
-        }
-
-        rdmacm_id = evpl_zalloc(sizeof(*rdmacm_id));
-
-        listen_id->rdmacm_id = rdmacm_id;
-
-        rdmacm_id->listen_id = listen_id;
-
-        rc = rdma_create_id(rdmacm->event_channel, &rdmacm_id->id, rdmacm_id,
-                            RDMA_PS_TCP);
-
-        evpl_rdmacm_abort_if(rc, "rdma_create_id listen error %s", strerror(rc))
-        ;
-
-        rc = rdma_bind_addr(rdmacm_id->id, (struct sockaddr *) &listen_id->addr)
-        ;
-
-        evpl_rdmacm_abort_if(rc, "Failed to bind to address: %s", strerror(errno
-                                                                           ));
-
-        rdma_listen(rdmacm_id->id, 64);
-
-    }
-
-    pthread_mutex_unlock(&listener->mutex);
-} /* evpl_rdmacm_listener_wake */
-
 void *
 evpl_rdmacm_init()
 {
-    struct evpl_rdmacm_devices  *devices;
-    struct evpl_rdmacm_listener *listener;
-    int                          i;
+    struct evpl_rdmacm_devices *devices;
+    int                         i;
 
 
     devices = evpl_zalloc(sizeof(*devices));
@@ -841,49 +736,14 @@ evpl_rdmacm_init()
                              "Failed to create parent protection domain for rdma device");
     }
 
-    listener = &devices->listener;
-
-    pthread_mutex_init(&listener->mutex, NULL);
-
-    listener->started = 0;
-
-    listener->eventfd = eventfd(0, EFD_NONBLOCK);
-
-    evpl_rdmacm_abort_if(listener->eventfd < 0,
-                         "Failed to create eventfd for rdma listener");
-
     return devices;
 } /* evpl_rdmacm_init */
-
-void *
-evpl_rdmacm_listener_init(
-    struct evpl *evpl,
-    void        *arg)
-{
-    struct evpl_rdmacm_listener *listener = arg;
-
-    listener->event.fd            = listener->eventfd;
-    listener->event.read_callback = evpl_rdmacm_listener_wake;
-
-    evpl_add_event(evpl, &listener->event);
-
-    evpl_event_read_interest(evpl, &listener->event);
-
-    return NULL;
-
-} /* evpl_rdmacm_listener_init */
 
 void
 evpl_rdmacm_cleanup(void *private_data)
 {
     struct evpl_rdmacm_devices *devices = private_data;
     int                         i;
-
-    if (devices->listener.started) {
-        evpl_thread_destroy(devices->listener.thread);
-    }
-
-    close(devices->listener.eventfd);
 
     for (i = 0; i < devices->num_devices; ++i) {
         ibv_dealloc_pd(devices->pd[i]);
@@ -894,102 +754,6 @@ evpl_rdmacm_cleanup(void *private_data)
     evpl_free(devices);
 
 } /* evpl_rdmacm_cleanup */
-
-static void
-evpl_rdmacm_new_id_callback(
-    struct evpl       *evpl,
-    struct evpl_event *event)
-{
-    struct evpl_rdmacm               *rdmacm = evpl_framework_private(evpl,
-                                                                      EVPL_FRAMEWORK_RDMACM);
-    struct evpl_rdmacm_listen_member *listen_member;
-    struct evpl_rdmacm_new_id        *new_id;
-    struct evpl_address              *remote_addr;
-    struct evpl_rdmacm_id            *new_rdmacm_id;
-    struct rdma_cm_event             *cm_event;
-    struct evpl_bind                 *listen_bind, *bind;
-    uint64_t                          value;
-    int                               rc;
-    struct rdma_conn_param            conn_param;
-
-    rc = read(event->fd, &value, sizeof(value));
-
-    if (rc != sizeof(value)) {
-        evpl_event_mark_unreadable(event);
-        return;
-    }
-
-    pthread_mutex_lock(&rdmacm->mutex);
-
-    while (rdmacm->new_ids) {
-
-        new_id = rdmacm->new_ids;
-        LL_DELETE(rdmacm->new_ids, new_id);
-
-        listen_member = new_id->listen_member;
-
-        listen_bind = listen_member->bind;
-
-        cm_event = new_id->event;
-
-        memset(&conn_param, 0, sizeof(conn_param));
-
-        remote_addr = evpl_address_init(evpl,
-                                        &cm_event->id->route.addr.
-                                        src_addr,
-                                        sizeof(cm_event->id->route.addr.
-                                               src_addr));
-
-        bind = evpl_bind_prepare(evpl,
-                                 listen_bind->protocol,
-                                 listen_bind->local,
-                                 remote_addr);
-
-        --remote_addr->refcnt;
-
-        new_rdmacm_id = evpl_bind_private(bind);
-
-        new_rdmacm_id->rdmacm      = rdmacm;
-        new_rdmacm_id->stream      = listen_bind->protocol->stream;
-        new_rdmacm_id->id          = cm_event->id;
-        new_rdmacm_id->id->context = new_rdmacm_id;
-
-        evpl_rdmacm_create_qp(evpl, rdmacm, new_rdmacm_id);
-
-        conn_param.private_data        = rdmacm;
-        conn_param.retry_count         = evpl_shared->config->rdmacm_retry_count;
-        conn_param.rnr_retry_count     = evpl_shared->config->rdmacm_rnr_retry_count;
-        conn_param.responder_resources = cm_event->param.conn.initiator_depth;
-        conn_param.initiator_depth     = cm_event->param.conn.initiator_depth;
-
-        listen_bind->accept_callback(
-            evpl,
-            listen_bind,
-            bind,
-            &bind->notify_callback,
-            &bind->segment_callback,
-            &bind->private_data,
-            listen_bind->private_data);
-
-
-        rc = rdma_migrate_id(cm_event->id, rdmacm->event_channel);
-
-        evpl_rdmacm_abort_if(rc, "rdma_migrate_id error %s", strerror(errno));
-
-        rc = rdma_accept(cm_event->id, &conn_param);
-
-        evpl_rdmacm_abort_if(rc, "rdma_accept error %s", strerror(errno));
-
-        evpl_free(new_id);
-
-        rdma_ack_cm_event(cm_event);
-
-    } /* evpl_rdmacm_new_id_callback */
-
-    pthread_mutex_unlock(&rdmacm->mutex);
-
-
-} /* evpl_rdmacm_new_id_callback */
 
 static void
 evpl_rdmacm_poll_enter(
@@ -1063,8 +827,6 @@ evpl_rdmacm_create(
     int                                flags, rc, i, j;
 
     rdmacm = evpl_zalloc(sizeof(*rdmacm));
-
-    rdmacm->listener = &rdmacm_devices->listener;
 
     rdmacm->num_devices = rdmacm_devices->num_devices;
 
@@ -1175,19 +937,6 @@ evpl_rdmacm_create(
     evpl_add_event(evpl, &rdmacm->event);
     evpl_event_read_interest(evpl, &rdmacm->event);
 
-    pthread_mutex_init(&rdmacm->mutex, NULL);
-
-    rdmacm->new_id_eventfd = eventfd(0, EFD_NONBLOCK);
-
-    evpl_rdmacm_abort_if(rdmacm->new_id_eventfd < 0,
-                         "Failed to create eventfd for new id");
-
-    rdmacm->new_id_event.fd            = rdmacm->new_id_eventfd;
-    rdmacm->new_id_event.read_callback = evpl_rdmacm_new_id_callback;
-
-    evpl_add_event(evpl, &rdmacm->new_id_event);
-    evpl_event_read_interest(evpl, &rdmacm->new_id_event);
-
     rdmacm->poll = evpl_add_poll(evpl,
                                  evpl_rdmacm_poll_enter,
                                  evpl_rdmacm_poll_exit,
@@ -1213,11 +962,6 @@ evpl_rdmacm_destroy(
     int                         i, j;
 
     evpl_remove_poll(evpl, rdmacm->poll);
-
-    evpl_remove_event(evpl, &rdmacm->new_id_event);
-    close(rdmacm->new_id_eventfd);
-
-    evpl_remove_event(evpl, &rdmacm->event);
 
     rdma_destroy_event_channel(rdmacm->event_channel);
 
@@ -1264,58 +1008,71 @@ evpl_rdmacm_destroy(
 } /* evpl_rdmacm_destroy */
 
 void
+evpl_rdmacm_attach(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *accepted)
+{
+    struct evpl_rdmacm             *rdmacm;
+    struct evpl_rdmacm_id          *rdmacm_id   = evpl_bind_private(bind);
+    struct evpl_rdmacm_accepted_id *accepted_id = accepted;
+    struct rdma_conn_param          conn_param;
+    int                             rc;
+
+    rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
+
+    rc = rdma_migrate_id(accepted_id->id, rdmacm->event_channel);
+
+    evpl_rdmacm_abort_if(rc, "rdma_migrate_id error %s", strerror(errno));
+
+    rdmacm_id->rdmacm      = rdmacm;
+    rdmacm_id->stream      = rdmacm_id->stream;
+    rdmacm_id->id          = accepted_id->id;
+    rdmacm_id->id->context = rdmacm_id;
+
+    evpl_rdmacm_create_qp(evpl, rdmacm, rdmacm_id);
+
+    memset(&conn_param, 0, sizeof(conn_param));
+    conn_param.private_data        = rdmacm;
+    conn_param.retry_count         = evpl_shared->config->rdmacm_retry_count;
+    conn_param.rnr_retry_count     = evpl_shared->config->rdmacm_rnr_retry_count;
+    conn_param.responder_resources = accepted_id->conn_param.initiator_depth;
+    conn_param.initiator_depth     = accepted_id->conn_param.responder_resources;
+
+    rc = rdma_accept(accepted_id->id, &conn_param);
+
+    evpl_rdmacm_abort_if(rc, "rdma_accept error %s", strerror(errno));
+
+    evpl_free(accepted_id);
+} /* evpl_rdmacm_attach */
+
+void
 evpl_rdmacm_listen(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
-    struct evpl_rdmacm               *rdmacm;
-    struct evpl_rdmacm_listener      *listener;
-    struct evpl_rdmacm_listen_id     *listen_id;
-    struct evpl_rdmacm_listen_member *listen_member;
-    struct evpl_rdmacm_id            *rdmacm_id = evpl_bind_private(bind);
-    uint64_t                          word      = 1;
-    int                               rc;
+    struct evpl_rdmacm    *rdmacm;
+    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    int                    rc;
+
+    rdmacm_id->stream = bind->protocol->stream;
+    rdmacm_id->ud     = 0;
+
+    rdmacm_id->resolve_id = NULL;
 
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
-    listener = rdmacm->listener;
-
     evpl_rdmacm_fill_all_srq(evpl, rdmacm);
 
-    listen_member         = evpl_zalloc(sizeof(*listen_member));
-    listen_member->rdmacm = rdmacm;
-    listen_member->bind   = bind;
+    rc = rdma_create_id(rdmacm->event_channel, &rdmacm_id->id, rdmacm_id, RDMA_PS_TCP);
 
-    rdmacm_id->stream     = bind->protocol->stream;
-    rdmacm_id->ud         = 0;
-    rdmacm_id->resolve_id = NULL;
+    evpl_rdmacm_abort_if(rc, "rdma_create_id listen error %s", strerror(rc));
 
-    pthread_mutex_lock(&listener->mutex);
+    rc = rdma_bind_addr(rdmacm_id->id, bind->local->addr);
 
-    if (!listener->started) {
-        listener->started = 1;
-        listener->thread  = evpl_thread_create(NULL,
-                                               evpl_rdmacm_listener_init,
-                                               NULL,
-                                               listener);
-    }
+    evpl_rdmacm_abort_if(rc, "Failed to bind to address: %s", strerror(errno));
 
-    HASH_FIND(hh, listener->listen_ids, bind->local->addr, bind->local->addrlen,
-              listen_id);
-
-    if (!listen_id) {
-        listen_id          = evpl_zalloc(sizeof(*listen_id));
-        listen_id->addrlen = bind->local->addrlen;
-        memcpy(&listen_id->addr, bind->local->addr, bind->local->addrlen);
-        HASH_ADD(hh, listener->listen_ids, addr, listen_id->addrlen, listen_id);
-
-        rc = write(listener->eventfd, &word, sizeof(word));
-        evpl_rdmacm_abort_if(rc != sizeof(word), "write error %s", strerror(errno));
-    }
-
-    DL_APPEND(listen_id->members, listen_member);
-
-    pthread_mutex_unlock(&listener->mutex);
+    rdma_listen(rdmacm_id->id, 64);
 
 } /* evpl_rdmacm_listen */
 
@@ -1414,7 +1171,7 @@ evpl_rdmacm_ud_resolve(
 
     rdmacm_id->resolve_addr = address;
 
-    address->refcnt++;
+    evpl_address_incref(address);
 
     rc = rdma_resolve_addr(rdmacm_id->resolve_id, NULL, address->addr,
                            evpl_shared->config->resolve_timeout_ms);
@@ -1541,7 +1298,7 @@ evpl_rdmacm_flush_datagram(
             ibv_wr_set_ud_addr(qp, ah->ahset[rdmacm_id->devindex],
                                ah->qp_num, ah->qkey);
 
-            evpl_address_release(evpl, dgram->addr);
+            evpl_address_release(dgram->addr);
         }
 
         rc = ibv_wr_complete(qp);
@@ -1709,7 +1466,7 @@ evpl_rdmacm_pending_close(
     }
 
     if (rdmacm_id->resolve_addr) {
-        evpl_address_release(evpl, rdmacm_id->resolve_addr);
+        evpl_address_release(rdmacm_id->resolve_addr);
         rdmacm_id->resolve_addr = NULL;
     }
 } /* evpl_rdmacm_pending_close */
@@ -1887,6 +1644,7 @@ struct evpl_protocol  evpl_rdmacm_rc_datagram = {
     .name          = "DATAGRAM_RDMACM_RC",
     .framework     = &evpl_framework_rdmacm,
     .listen        = evpl_rdmacm_listen,
+    .attach        = evpl_rdmacm_attach,
     .connect       = evpl_rdmacm_connect,
     .pending_close = evpl_rdmacm_pending_close,
     .close         = evpl_rdmacm_close,
@@ -1902,6 +1660,7 @@ struct evpl_protocol  evpl_rdmacm_rc_stream = {
     .name          = "STREAM_RDMACM_RC",
     .framework     = &evpl_framework_rdmacm,
     .listen        = evpl_rdmacm_listen,
+    .attach        = evpl_rdmacm_attach,
     .connect       = evpl_rdmacm_connect,
     .pending_close = evpl_rdmacm_pending_close,
     .close         = evpl_rdmacm_close,

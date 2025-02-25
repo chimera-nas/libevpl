@@ -300,21 +300,48 @@ evpl_socket_tcp_connect(
 } /* evpl_socket_tcp_connect */
 
 void
+evpl_socket_tcp_attach(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    void             *accepted)
+{
+    struct evpl_socket          *s               = evpl_bind_private(bind);
+    struct evpl_accepted_socket *accepted_socket = accepted;
+    int                          fd              = accepted_socket->fd;
+    int                          rc, yes = 1;
+
+    evpl_free(accepted_socket);
+
+    evpl_socket_init(evpl, s, fd, 1);
+
+    rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+    evpl_socket_abort_if(rc, "Failed to set TCP_QUICKACK on socket");
+
+    s->event.fd             = fd;
+    s->event.read_callback  = evpl_socket_tcp_read;
+    s->event.write_callback = evpl_socket_tcp_write;
+    s->event.error_callback = evpl_socket_tcp_error;
+
+    evpl_add_event(evpl, &s->event);
+    evpl_event_read_interest(evpl, &s->event);
+
+} /* evpl_attach_tcp */
+
+void
 evpl_accept_tcp(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    struct evpl_socket  *ls          = evpl_event_socket(event);
-    struct evpl_bind    *listen_bind = evpl_private2bind(ls);
-    struct evpl_socket  *s;
-    struct evpl_bind    *new_bind;
-    struct evpl_address *remote_addr;
-    struct evpl_notify   notify;
-    int                  fd, rc, yes = 1;
+    struct evpl_socket          *ls          = evpl_event_socket(event);
+    struct evpl_bind            *listen_bind = evpl_private2bind(ls);
+    struct evpl_address         *remote_addr;
+    struct evpl_accepted_socket *accepted_socket;
+    int                          fd;
 
     while (1) {
 
-        remote_addr = evpl_address_alloc(evpl);
+        remote_addr = evpl_address_alloc();
 
         remote_addr->addrlen = sizeof(remote_addr->sa);
 
@@ -326,43 +353,11 @@ evpl_accept_tcp(
             return;
         }
 
-        new_bind = evpl_bind_prepare(evpl,
-                                     listen_bind->protocol,
-                                     listen_bind->local, remote_addr);
+        accepted_socket = evpl_zalloc(sizeof(*accepted_socket));
 
-        --remote_addr->refcnt;
-        s = evpl_bind_private(new_bind);
+        accepted_socket->fd = fd;
 
-        evpl_socket_init(evpl, s, fd, 1);
-
-        rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-        evpl_socket_abort_if(rc, "Failed to set TCP_QUICKACK on socket");
-
-        s->connected            = 1;
-        s->event.fd             = fd;
-        s->event.read_callback  = evpl_socket_tcp_read;
-        s->event.write_callback = evpl_socket_tcp_write;
-        s->event.error_callback = evpl_socket_tcp_error;
-
-        evpl_add_event(evpl, &s->event);
-        evpl_event_read_interest(evpl, &s->event);
-
-        listen_bind->accept_callback(
-            evpl,
-            listen_bind,
-            new_bind,
-            &new_bind->notify_callback,
-            &new_bind->segment_callback,
-            &new_bind->private_data,
-            listen_bind->private_data);
-
-        notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-        notify.notify_status = 0;
-
-        new_bind->notify_callback(evpl, new_bind, &notify,
-                                  new_bind->private_data);
-
+        listen_bind->accept_callback(evpl, listen_bind, remote_addr, accepted_socket, listen_bind->private_data);
     }
 
 } /* evpl_accept_tcp */
@@ -382,11 +377,6 @@ evpl_socket_tcp_listen(
                          strerror(errno));
 
     rc = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
-
-    evpl_socket_abort_if(rc < 0, "Failed to set socket options: %s", strerror(
-                             errno));
-
-    rc = setsockopt(s->fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(int));
 
     evpl_socket_abort_if(rc < 0, "Failed to set socket options: %s", strerror(
                              errno));
@@ -422,5 +412,6 @@ struct evpl_protocol evpl_socket_tcp = {
     .pending_close = evpl_socket_pending_close,
     .close         = evpl_socket_close,
     .listen        = evpl_socket_tcp_listen,
+    .attach        = evpl_socket_tcp_attach,
     .flush         = evpl_socket_flush,
 };

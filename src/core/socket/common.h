@@ -34,6 +34,10 @@ struct evpl_socket_datagram {
     struct evpl_socket_datagram *next;
 };
 
+struct evpl_accepted_socket {
+    int fd;
+};
+
 struct evpl_socket {
     struct evpl_event            event;
     int                          fd;
@@ -139,6 +143,15 @@ evpl_socket_close(
     if (s->recv2.length) {
         evpl_iovec_release(&s->recv2);
         s->recv2.length = 0;
+    }
+
+    if (bind->protocol->id == EVPL_DATAGRAM_SOCKET_UDP) {
+        struct evpl_dgram *dgram;
+
+        while ((dgram = evpl_dgram_ring_tail(&bind->dgram_send)) != NULL) {
+            evpl_address_release(dgram->addr);
+            evpl_dgram_ring_remove(&bind->dgram_send);
+        }
     }
 
     while (s->free_datagrams) {
