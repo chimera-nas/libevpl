@@ -28,6 +28,27 @@ struct client_state {
     uint32_t value;
 };
 
+void
+client_send(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct client_state *state)
+{
+    while (state->inflight < state->depth &&
+           state->sent < state->niters) {
+
+        evpl_send(evpl, bind, &state->value, sizeof(state->value));
+
+        state->sent++;
+        state->inflight++;
+
+        evpl_test_debug("client sent sent %u recv %u value %u",
+                        state->sent, state->recv, state->value);
+
+        state->value++;
+
+    }
+} /* client_send */
 
 void
 client_callback(
@@ -55,6 +76,8 @@ client_callback(
 
                 evpl_test_info("client received sent %u recv %u value %u",
                                state->sent, state->recv, value);
+
+                client_send(evpl, bind, state);
             }
 
             break;
@@ -76,23 +99,9 @@ client_thread(void *arg)
 
     bind = evpl_connect(evpl, proto, NULL, server, client_callback, NULL, state);
 
+    client_send(evpl, bind, state);
+
     while (state->recv != state->niters) {
-
-        while (state->inflight < state->depth &&
-               state->sent < state->niters) {
-
-            evpl_send(evpl, bind, &state->value, sizeof(state->value));
-
-            state->sent++;
-            state->inflight++;
-
-            evpl_test_debug("client sent sent %u recv %u value %u",
-                            state->sent, state->recv, state->value);
-
-            state->value++;
-
-        }
-
         evpl_continue(evpl);
     }
 

@@ -40,6 +40,11 @@ main(
 
     thread = evpl_thread_create(NULL, thread_init, thread_destroy, &number);
 
+    evpl_test_info("thread created, now destroying");
+
     evpl_thread_destroy(thread);
 
+    evpl_test_info("thread destroyed");
+
+    return 0;
 } /* main */

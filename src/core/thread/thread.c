@@ -30,7 +30,9 @@ extern struct evpl_shared *evpl_shared;
 
 struct evpl_thread {
     pthread_t                       thread;
-    int                             running;
+    pthread_mutex_t                 lock;
+    pthread_cond_t                  cond;
+    int                             ready;
     struct evpl_thread_config       config;
     struct evpl                    *evpl;
     evpl_thread_init_callback_t     init_callback;
@@ -75,8 +77,10 @@ evpl_thread_function(void *ptr)
             evpl_thread->private_data);
     }
 
-    __sync_synchronize();
-    evpl_thread->running = 1;
+    pthread_mutex_lock(&evpl_thread->lock);
+    evpl_thread->ready = 1;
+    pthread_cond_signal(&evpl_thread->cond);
+    pthread_mutex_unlock(&evpl_thread->lock);
 
     evpl_run(evpl);
 
@@ -112,8 +116,19 @@ evpl_thread_create(
     evpl_thread->shutdown_callback = shutdown_function;
     evpl_thread->private_data      = private_data;
 
+    pthread_mutex_init(&evpl_thread->lock, NULL);
+    pthread_cond_init(&evpl_thread->cond, NULL);
+
     pthread_create(&evpl_thread->thread, NULL,
                    evpl_thread_function, evpl_thread);
+
+    pthread_mutex_lock(&evpl_thread->lock);
+
+    while (!evpl_thread->ready) {
+        pthread_cond_wait(&evpl_thread->cond, &evpl_thread->lock);
+    }
+
+    pthread_mutex_unlock(&evpl_thread->lock);
 
     return evpl_thread;
 } /* evpl_thread_create */
@@ -121,11 +136,6 @@ evpl_thread_create(
 void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
-    while (!evpl_thread->running) {
-        /* Just in case the thread is still initializing */
-        __sync_synchronize();
-    }
-
     evpl_stop(evpl_thread->evpl);
 
     pthread_join(evpl_thread->thread, NULL);

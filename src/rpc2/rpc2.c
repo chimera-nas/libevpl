@@ -17,32 +17,32 @@
 #include "evpl/evpl.h"
 
 struct evpl_rpc2_server {
-    int                        protocol;
-    struct evpl_rpc2_agent    *agent;
     struct evpl_listener      *listener;
+    int                        protocol;
     struct evpl_rpc2_program **programs;
-    struct evpl_rpc2_metric  **metrics;
     int                        nprograms;
-    void                      *private_data;
 };
 
-struct evpl_rpc2_agent {
-    struct evpl          *evpl;
-    struct evpl_rpc2_msg *free_msg;
+struct evpl_rpc2_thread {
+    struct evpl              *evpl;
+    struct evpl_rpc2_server  *server;
+    struct evpl_rpc2_msg     *free_msg;
+    struct evpl_rpc2_metric **metrics;
+    void                     *private_data;
 };
 
 static struct evpl_rpc2_msg *
-evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
+evpl_rpc2_msg_alloc(struct evpl_rpc2_thread *thread)
 {
     struct evpl_rpc2_msg *msg;
 
-    if (agent->free_msg) {
-        msg = agent->free_msg;
-        LL_DELETE(agent->free_msg, msg);
+    if (thread->free_msg) {
+        msg = thread->free_msg;
+        LL_DELETE(thread->free_msg, msg);
     } else {
-        msg        = evpl_zalloc(sizeof(*msg));
-        msg->dbuf  = xdr_dbuf_alloc(128 * 1024);
-        msg->agent = agent;
+        msg         = evpl_zalloc(sizeof(*msg));
+        msg->dbuf   = xdr_dbuf_alloc(128 * 1024);
+        msg->thread = thread;
     }
 
     xdr_dbuf_reset(msg->dbuf);
@@ -60,8 +60,8 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_agent *agent)
 
 static inline void
 evpl_rpc2_msg_free(
-    struct evpl_rpc2_agent *agent,
-    struct evpl_rpc2_msg   *msg)
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_msg    *msg)
 {
     int i;
 
@@ -77,7 +77,7 @@ evpl_rpc2_msg_free(
         evpl_iovec_release(&msg->write_chunk.iov[i]);
     }
 
-    LL_PREPEND(agent->free_msg, msg);
+    LL_PREPEND(thread->free_msg, msg);
 } /* evpl_rpc2_msg_free */
 
 static FORCE_INLINE uint32_t
@@ -125,32 +125,6 @@ rpc2_segment_callback(
 
     return (hdr & 0x7FFFFFFF) + 4;
 } /* rpc2_segment_callback */
-
-struct evpl_rpc2_agent *
-evpl_rpc2_init(struct evpl *evpl)
-{
-    struct evpl_rpc2_agent *agent;
-
-    agent = evpl_zalloc(sizeof(*agent));
-
-    agent->evpl = evpl;
-
-    return agent;
-} /* evpl_rpc2_agent_init */
-
-void
-evpl_rpc2_destroy(struct evpl_rpc2_agent *agent)
-{
-    struct evpl_rpc2_msg *msg;
-
-    while (agent->free_msg) {
-        msg = agent->free_msg;
-        LL_DELETE(agent->free_msg, msg);
-        xdr_dbuf_free(msg->dbuf);
-        evpl_free(msg);
-    }
-    evpl_free(agent);
-} /* evpl_rpc2_agent_destroy */
 
 static inline int
 evpl_rpc2_iovec_skip(
@@ -221,7 +195,7 @@ evpl_rpc2_send_reply_error(
 
     evpl_sendv(evpl, msg->bind, &reply_iov, 1, reply_len);
 
-    evpl_rpc2_msg_free(msg->agent, msg);
+    evpl_rpc2_msg_free(msg->thread, msg);
 
     return 0;
 } /* evpl_rpc2_send_reply_error */
@@ -230,9 +204,9 @@ static void
 evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
 {
     struct evpl_rpc2_conn    *conn    = msg->conn;
-    struct evpl_rpc2_agent   *agent   = msg->agent;
-    struct evpl              *evpl    = agent->evpl;
-    struct evpl_rpc2_server  *server  = conn->server;
+    struct evpl_rpc2_thread  *thread  = msg->thread;
+    struct evpl              *evpl    = thread->evpl;
+    struct evpl_rpc2_server  *server  = thread->server;
     struct rpc_msg           *rpc_msg = msg->rpc_msg;
     struct evpl_rpc2_program *program;
     int                       i;
@@ -253,7 +227,7 @@ evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
                     program->version == rpc_msg->body.cbody.vers) {
 
                     msg->program = program;
-                    msg->metric  = &server->metrics[i][msg->proc];
+                    msg->metric  = &thread->metrics[i][msg->proc];
                     break;
                 }
             }
@@ -269,7 +243,7 @@ evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
             }
 
             error = program->call_dispatch(evpl, conn, msg, msg->req_iov, msg->req_niov, msg->request_length,
-                                           server->private_data);
+                                           thread->private_data);
 
             if (unlikely(error)) {
                 abort();
@@ -305,8 +279,8 @@ evpl_rpc2_event(
     void               *private_data)
 {
     struct evpl_rpc2_conn   *rpc2_conn = private_data;
+    struct evpl_rpc2_thread *thread    = rpc2_conn->thread;
     struct evpl_rpc2_server *server    = rpc2_conn->server;
-    struct evpl_rpc2_agent  *agent     = server->agent;
     struct rpc_msg          *rpc_msg;
     struct rdma_msg         *rdma_msg;
     struct evpl_rpc2_msg    *msg;
@@ -336,7 +310,7 @@ evpl_rpc2_event(
             break;
         case EVPL_NOTIFY_RECV_MSG:
 
-            msg = evpl_rpc2_msg_alloc(agent);
+            msg = evpl_rpc2_msg_alloc(thread);
 
             clock_gettime(CLOCK_MONOTONIC, &msg->timestamp);
 
@@ -477,13 +451,12 @@ evpl_rpc2_accept(
     void                   **conn_private_data,
     void                    *private_data)
 {
-    struct evpl_rpc2_server *server = private_data;
+    struct evpl_rpc2_thread *thread = private_data;
     struct evpl_rpc2_conn   *rpc2_conn;
 
-    rpc2_conn            = evpl_zalloc(sizeof(*rpc2_conn));
-    rpc2_conn->server    = server;
-    rpc2_conn->is_server = 1;
-    rpc2_conn->agent     = server->agent;
+    rpc2_conn         = evpl_zalloc(sizeof(*rpc2_conn));
+    rpc2_conn->thread = thread;
+    rpc2_conn->server = thread->server;
 
     *notify_callback   = evpl_rpc2_event;
     *segment_callback  = rpc2_segment_callback;
@@ -494,8 +467,8 @@ evpl_rpc2_accept(
 static void
 evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
 {
-    struct evpl_rpc2_agent *agent = msg->agent;
-    struct evpl            *evpl  = agent->evpl;
+    struct evpl_rpc2_thread *thread = msg->thread;
+    struct evpl             *evpl   = thread->evpl;
 
     evpl_sendv(
         evpl,
@@ -505,7 +478,7 @@ evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
         msg->reply_length);
 
 
-    evpl_rpc2_msg_free(agent, msg);
+    evpl_rpc2_msg_free(thread, msg);
 } /* evpl_rpc2_dispatch_reply */
 
 static void
@@ -735,55 +708,78 @@ evpl_rpc2_send_reply(
 } /* evpl_rpc2_send_reply */
 
 struct evpl_rpc2_server *
-evpl_rpc2_listen(
-    struct evpl_rpc2_agent    *agent,
-    int                        protocol,
-    struct evpl_endpoint      *endpoint,
+evpl_rpc2_init(
     struct evpl_rpc2_program **programs,
-    int                        nprograms,
-    void                      *private_data)
+    int                        nprograms)
 {
     struct evpl_rpc2_server *server;
 
     server = evpl_zalloc(sizeof(*server));
 
-    server->agent        = agent;
-    server->protocol     = protocol;
-    server->private_data = private_data;
-    server->programs     = evpl_zalloc(nprograms * sizeof(*programs));
-    server->nprograms    = nprograms;
-    memcpy(server->programs, programs, nprograms * sizeof(*programs));
+    server->listener = evpl_listener_create();
 
-    server->metrics = evpl_zalloc(nprograms * sizeof(*server->metrics));
+    server->programs  = evpl_zalloc(nprograms * sizeof(*programs));
+    server->nprograms = nprograms;
+    memcpy(server->programs, programs, nprograms * sizeof(*programs));
 
     for (int i = 0; i < nprograms; i++) {
         server->programs[i]->reply_dispatch = evpl_rpc2_send_reply;
-
-        server->metrics[i] = evpl_zalloc(
-            (server->programs[i]->maxproc + 1) * sizeof(struct evpl_rpc2_metric)
-            );
     }
-
-    server->listener = evpl_listener_create();
-
-    evpl_listener_attach(agent->evpl, server->listener, evpl_rpc2_accept, server);
-
-    evpl_listen(
-        server->listener,
-        protocol,
-        endpoint);
 
     return server;
 } /* evpl_rpc2_listen */
 
 void
-evpl_rpc2_server_destroy(
-    struct evpl_rpc2_agent  *agent,
-    struct evpl_rpc2_server *server)
+evpl_rpc2_start(
+    struct evpl_rpc2_server *server,
+    int                      protocol,
+    struct evpl_endpoint    *endpoint)
+{
+    server->protocol = protocol;
+
+    evpl_listen(
+        server->listener,
+        protocol,
+        endpoint);
+} /* evpl_rpc2_start */
+
+struct evpl_rpc2_thread *
+evpl_rpc2_attach(
+    struct evpl             *evpl,
+    struct evpl_rpc2_server *server,
+    void                    *private_data)
+{
+    struct evpl_rpc2_thread *thread;
+
+    thread = evpl_zalloc(sizeof(*thread));
+
+    thread->evpl         = evpl;
+    thread->server       = server;
+    thread->private_data = private_data;
+    thread->metrics      = evpl_zalloc(server->nprograms * sizeof(*thread->metrics));
+
+    for (int i = 0; i < server->nprograms; i++) {
+        thread->metrics[i] = evpl_zalloc(
+            (server->programs[i]->maxproc + 1) * sizeof(struct evpl_rpc2_metric)
+            );
+    }
+
+    evpl_listener_attach(thread->evpl, server->listener, evpl_rpc2_accept, thread);
+
+    return thread;
+
+} /* evpl_rpc2_attach */
+
+void
+evpl_rpc2_detach(struct evpl_rpc2_thread *thread)
 {
     int                       i, j;
+    struct evpl_rpc2_server  *server = thread->server;
     struct evpl_rpc2_program *program;
     struct evpl_rpc2_metric  *shared_metric, *thread_metric;
+    struct evpl_rpc2_msg     *msg;
+
+    evpl_listener_detach(thread->evpl, thread->server->listener);
 
     for (i = 0; i < server->nprograms; i++) {
 
@@ -794,7 +790,7 @@ evpl_rpc2_server_destroy(
         for (j = 0; j <= program->maxproc; j++) {
 
             shared_metric = &program->metrics[j];
-            thread_metric = &server->metrics[i][j];
+            thread_metric = &thread->metrics[i][j];
 
             if (thread_metric->total_calls == 0) {
                 continue;
@@ -817,32 +813,26 @@ evpl_rpc2_server_destroy(
     }
 
     for (i = 0; i < server->nprograms; i++) {
-        evpl_free(server->metrics[i]);
+        evpl_free(thread->metrics[i]);
     }
 
-    evpl_free(server->metrics);
+    while (thread->free_msg) {
+        msg = thread->free_msg;
+        LL_DELETE(thread->free_msg, msg);
+        xdr_dbuf_free(msg->dbuf);
+        evpl_free(msg);
+    }
+
+    evpl_free(thread->metrics);
+    evpl_free(thread);
+
+} /* evpl_rpc2_detach */
+
+void
+evpl_rpc2_destroy(struct evpl_rpc2_server *server)
+{
+    evpl_listener_destroy(server->listener);
+
     evpl_free(server->programs);
     evpl_free(server);
 } /* evpl_rpc2_server_destroy */
-
-struct evpl_bind *
-evpl_rpc2_connect(
-    struct evpl_rpc2_agent       *agent,
-    int                           protocol,
-    struct evpl_endpoint         *endpoint,
-    evpl_rpc2_dispatch_callback_t dispatch_callback,
-    void                         *private_data)
-{
-    struct evpl_rpc2_conn *conn;
-
-    conn = evpl_zalloc(sizeof(*conn));
-
-    conn->is_server = 0;
-    conn->agent     = agent;
-
-    return evpl_connect(agent->evpl, protocol, NULL, endpoint,
-                        evpl_rpc2_event,
-                        rpc2_segment_callback,
-                        conn);
-
-} /* evpl_rpc2_connect */

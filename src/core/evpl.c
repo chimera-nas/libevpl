@@ -325,6 +325,9 @@ evpl_create(struct evpl_thread_config *config)
     evpl->running = 1;
     evpl->eventfd = eventfd(0, EFD_NONBLOCK);
 
+    evpl_core_abort_if(evpl->eventfd < 0,
+                       "evpl_create: eventfd failed");
+
     evpl->run_event.fd            = evpl->eventfd;
     evpl->run_event.read_callback = evpl_ipc_callback;
 
@@ -465,8 +468,6 @@ evpl_continue(struct evpl *evpl)
 void
 evpl_run(struct evpl *evpl)
 {
-    evpl->running = 1;
-
     while (evpl->running) {
         evpl_continue(evpl);
     }
@@ -476,12 +477,18 @@ void
 evpl_stop(struct evpl *evpl)
 {
     uint64_t value = 1;
+    ssize_t  len;
+
+    evpl_core_assert(evpl->running);
 
     evpl->running = 0;
 
     __sync_synchronize();
 
-    write(evpl->eventfd, &value, sizeof(value));
+    len = write(evpl->eventfd, &value, sizeof(value));
+
+    evpl_core_abort_if(len != sizeof(value),
+                       "evpl_stop: write to eventfd failed");
 } /* evpl_stop */
 
 static void
@@ -516,6 +523,8 @@ evpl_listener_accept(
     request->attach_callback = binding->attach_callback;
     request->accepted        = accepted;
     request->private_data    = binding->private_data;
+
+    evpl_address_incref(request->local_address);
 
     pthread_mutex_lock(&binding->evpl->lock);
     DL_APPEND(binding->evpl->connect_requests, request);
@@ -580,8 +589,10 @@ evpl_listener_callback(
 
         listener->binds[listener->num_binds++] = bind;
 
-        evpl_free(request);
-
+        pthread_mutex_lock(&request->lock);
+        request->complete = 1;
+        pthread_cond_signal(&request->cond);
+        pthread_mutex_unlock(&request->lock);
     }
 
     pthread_mutex_unlock(&listener->lock);
@@ -715,6 +726,9 @@ evpl_listen(
 
     request = evpl_zalloc(sizeof(*request));
 
+    pthread_mutex_init(&request->lock, NULL);
+    pthread_cond_init(&request->cond, NULL);
+
     request->protocol_id = protocol_id;
     request->address     = evpl_endpoint_resolve(endpoint);
 
@@ -726,6 +740,16 @@ evpl_listen(
 
     evpl_core_abort_if(rc != sizeof(value),
                        "evpl_listen: write to eventfd failed");
+
+    pthread_mutex_lock(&request->lock);
+
+    while (!request->complete) {
+        pthread_cond_wait(&request->cond, &request->lock);
+    }
+
+    pthread_mutex_unlock(&request->lock);
+
+    evpl_free(request);
 
 } /* evpl_listen */
 
@@ -1084,7 +1108,6 @@ evpl_bind_prepare(
     bind->local    = local;
     bind->remote   = remote;
 
-
     memset(bind + 1, 0, EVPL_MAX_PRIVATE);
 
     return bind;
@@ -1395,12 +1418,9 @@ evpl_buffer_release(struct evpl_buffer *buffer)
 {
     int refset;
 
-    evpl_core_abort_if(atomic_load_explicit(&buffer->refcnt,
-                                            memory_order_relaxed) == 0,
-                       "Released buffer %p with zero refcnt", buffer);
+    refset = atomic_fetch_sub_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 
-    refset = atomic_fetch_sub_explicit(&buffer->refcnt, 1, memory_order_relaxed)
-    ;
+    evpl_core_abort_if(refset < 0, "refcnt underflow for buffer %p", buffer);
 
     if (refset == 1) {
         if (buffer->external1) {

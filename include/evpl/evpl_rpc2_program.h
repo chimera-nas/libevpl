@@ -47,7 +47,7 @@ struct evpl_rpc2_msg {
     struct rdma_msg            *rdma_msg;
     xdr_dbuf                   *dbuf;
     struct evpl_bind           *bind;
-    struct evpl_rpc2_agent     *agent;
+    struct evpl_rpc2_thread    *thread;
     struct evpl_rpc2_conn      *conn;
     struct evpl_rpc2_metric    *metric;
     struct evpl_rpc2_program   *program;

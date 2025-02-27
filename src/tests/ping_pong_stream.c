@@ -54,6 +54,14 @@ client_callback(
                     evpl_test_info("client received %u sent %u recv %u", value,
                                    state->sent, state->recv);
 
+                    evpl_send(evpl, bind, &state->value, sizeof(state->value));
+
+                    state->value++;
+                    state->sent++;
+
+                    evpl_test_debug("client sent sent %u recv %u",
+                                    state->sent, state->recv);
+
                 }
             } while (length > 0);
 
@@ -80,20 +88,15 @@ client_thread(void *arg)
 
     bind = evpl_connect(evpl, proto, NULL, ep, client_callback, NULL, state);
 
+    evpl_send(evpl, bind, &state->value, sizeof(state->value));
+
+    state->value++;
+    state->sent++;
+
+    evpl_test_debug("client sent sent %u recv %u",
+                    state->sent, state->recv);
+
     while (state->recv != state->niters) {
-
-        if (state->sent == state->recv) {
-
-            evpl_send(evpl, bind, &state->value, sizeof(state->value));
-
-            state->value++;
-            state->sent++;
-
-            evpl_test_debug("client sent sent %u recv %u",
-                            state->sent, state->recv);
-
-        }
-
         evpl_continue(evpl);
     }
 
@@ -130,6 +133,7 @@ server_callback(
             length = evpl_recv(evpl, bind, &value, sizeof(value));
 
             if (length == sizeof(value)) {
+                evpl_test_info("server received %u, responding", value);
                 evpl_send(evpl, bind, &value, sizeof(value));
             }
 

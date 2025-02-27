@@ -117,6 +117,9 @@ struct evpl {
 
 struct evpl_listen_request {
     enum evpl_protocol_id protocol_id;
+    pthread_mutex_t             lock;
+    pthread_cond_t              cond;
+    int                         complete;
     struct evpl_address        *address;
     struct evpl_listen_request *prev;
     struct evpl_listen_request *next;
@@ -218,6 +221,16 @@ void evpl_abort(
             evpl_abort(__VA_ARGS__); \
         }
 
+
+#if defined(EVPL_ASSERT)
+#define evpl_assert(module, file, line, cond) \
+        if (!(cond)) { \
+            evpl_abort(module, file, line, "assertion failed: " #cond); \
+        }
+#else // if defined(EVPL_ASSERT)
+#define evpl_assert(module, cond)
+#endif // if defined(EVPL_ASSERT)
+
 #define evpl_core_debug(...)            evpl_debug("core", __FILE__, __LINE__, \
                                                    __VA_ARGS__)
 #define evpl_core_info(...)             evpl_info("core", __FILE__, __LINE__, \
@@ -234,6 +247,8 @@ void evpl_abort(
 
 #define evpl_core_abort_if(cond, ...) \
         evpl_abort_if(cond, "core", __FILE__, __LINE__, __VA_ARGS__)
+
+#define evpl_core_assert(cond)          evpl_assert("core", __FILE__, __LINE__, cond)
 
 #ifndef unlikely
 #define unlikely(x)                     __builtin_expect(!!(x), 0)
