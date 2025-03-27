@@ -142,7 +142,7 @@ evpl_io_uring_complete(
     rc = read(ctx->eventfd, &value, sizeof(value));
 
     if (rc != sizeof(value)) {
-        evpl_event_mark_unreadable(&ctx->event);
+        evpl_event_mark_unreadable(evpl, &ctx->event);
         return;
     }
 
@@ -209,10 +209,8 @@ evpl_io_uring_create(
 
     io_uring_register_eventfd(&ctx->ring, ctx->eventfd);
 
-    ctx->event.fd            = ctx->eventfd;
-    ctx->event.read_callback = evpl_io_uring_complete;
-
-    evpl_add_event(evpl, &ctx->event);
+    evpl_add_event(evpl, &ctx->event, ctx->eventfd,
+                   evpl_io_uring_complete, NULL, NULL);
 
     evpl_event_read_interest(evpl, &ctx->event);
 

@@ -99,6 +99,13 @@ struct evpl {
     int                          poll_mode;
     int                          force_poll_mode;
 
+    struct evpl_doorbell        *doorbells;
+
+
+    struct evpl_timer          **timers;
+    int                          num_timers;
+    int                          max_timers;
+
     struct evpl_deferral       **active_deferrals;
     int                          num_active_deferrals;
     int                          max_active_deferrals;
@@ -144,9 +151,8 @@ struct evpl_connect_request {
 
 struct evpl_listener {
     struct evpl_thread           *thread;
-    int                           eventfd;
     int                           running;
-    struct evpl_event             event;
+    struct evpl_doorbell          doorbell;
     struct evpl_bind            **binds;
     int                           num_binds;
     int                           max_binds;
@@ -282,7 +288,7 @@ void evpl_iovec_alloc_datagram(
     struct evpl_iovec *r_iovec,
     int                size);
 
-static uint64_t
+static inline int64_t
 evpl_ts_interval(
     const struct timespec *end,
     const struct timespec *start)
@@ -290,6 +296,25 @@ evpl_ts_interval(
     return NS_PER_S * (end->tv_sec - start->tv_sec) + (end->tv_nsec - start->
                                                        tv_nsec);
 } // evpl_ts_interval
+
+static inline int
+evpl_ts_compare(
+    const struct timespec *a,
+    const struct timespec *b)
+{
+    if (a->tv_sec == b->tv_sec) {
+        if (a->tv_nsec < b->tv_nsec) {
+            return -1;
+        } else if (a->tv_nsec > b->tv_nsec) {
+            return 1;
+        }
+        return 0;
+    } else if (a->tv_sec < b->tv_sec) {
+        return -1;
+    } else {
+        return 1;
+    }
+} // evpl_ts_compare
 
 void
 __evpl_init(

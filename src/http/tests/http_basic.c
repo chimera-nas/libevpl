@@ -29,7 +29,7 @@ server_wake(
     res = read(event->fd, &value, sizeof(value));
 
     if (res != sizeof(value)) {
-        evpl_event_mark_unreadable(event);
+        evpl_event_mark_unreadable(evpl, event);
     }
 
 } /* server_wake */
@@ -93,10 +93,8 @@ server_function(void *ptr)
 
     evpl = evpl_create(NULL);
 
-    event.fd            = server_ctx->eventfd;
-    event.read_callback = server_wake;
-
-    evpl_add_event(evpl, &event);
+    evpl_add_event(evpl, &event, server_ctx->eventfd,
+                   server_wake, NULL, NULL);
 
     evpl_event_read_interest(evpl, &event);
 

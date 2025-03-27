@@ -155,7 +155,7 @@ evpl_socket_tcp_read(
  out:
 
     if (res < total) {
-        evpl_event_mark_unreadable(event);
+        evpl_event_mark_unreadable(evpl, event);
     }
 
 } /* evpl_read_tcp */
@@ -222,7 +222,7 @@ evpl_socket_tcp_write(
     }
 
     if (res != total) {
-        evpl_event_mark_unwritable(event);
+        evpl_event_mark_unwritable(evpl, event);
     }
 
     if (res && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
@@ -244,7 +244,7 @@ evpl_socket_tcp_write(
     }
 
     if (res != total) {
-        evpl_event_mark_unwritable(event);
+        evpl_event_mark_unwritable(evpl, event);
     }
 
 } /* evpl_write_tcp */
@@ -288,12 +288,11 @@ evpl_socket_tcp_connect(
 
     evpl_socket_abort_if(rc, "Failed to set TCP_QUICKACK on socket");
 
-    s->event.fd             = s->fd;
-    s->event.read_callback  = evpl_socket_tcp_read;
-    s->event.write_callback = evpl_socket_tcp_write;
-    s->event.error_callback = evpl_socket_tcp_error;
+    evpl_add_event(evpl, &s->event, s->fd,
+                   evpl_socket_tcp_read,
+                   evpl_socket_tcp_write,
+                   evpl_socket_tcp_error);
 
-    evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
     evpl_event_write_interest(evpl, &s->event);
 
@@ -318,12 +317,11 @@ evpl_socket_tcp_attach(
 
     evpl_socket_abort_if(rc, "Failed to set TCP_QUICKACK on socket");
 
-    s->event.fd             = fd;
-    s->event.read_callback  = evpl_socket_tcp_read;
-    s->event.write_callback = evpl_socket_tcp_write;
-    s->event.error_callback = evpl_socket_tcp_error;
+    evpl_add_event(evpl, &s->event, fd,
+                   evpl_socket_tcp_read,
+                   evpl_socket_tcp_write,
+                   evpl_socket_tcp_error);
 
-    evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
 
 } /* evpl_attach_tcp */
@@ -348,7 +346,7 @@ evpl_accept_tcp(
         fd = accept(ls->fd, remote_addr->addr, &remote_addr->addrlen);
 
         if (fd < 0) {
-            evpl_event_mark_unreadable(event);
+            evpl_event_mark_unreadable(evpl, event);
             evpl_free(remote_addr);
             return;
         }
@@ -395,10 +393,9 @@ evpl_socket_tcp_listen(
 
     evpl_socket_fatal_if(rc, "Failed to listen on listener fd");
 
-    s->event.fd            = s->fd;
-    s->event.read_callback = evpl_accept_tcp;
+    evpl_add_event(evpl, &s->event, s->fd,
+                   evpl_accept_tcp, NULL, NULL);
 
-    evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
 
 } /* evpl_socket_tcp_listen */

@@ -276,11 +276,10 @@ evpl_rdmacm_event_callback(
     struct evpl_rdmacm_ah          *ah;
     struct rdma_cm_event           *cm_event;
     struct rdma_conn_param          conn_param;
-    struct evpl_notify              notify;
     int                             rc;
 
     if (rdma_get_cm_event(rdmacm->event_channel, &cm_event)) {
-        evpl_event_mark_unreadable(event);
+        evpl_event_mark_unreadable(evpl, event);
         return;
     }
 
@@ -365,11 +364,6 @@ evpl_rdmacm_event_callback(
                 evpl_address_release(rdmacm_id->resolve_addr);
                 rdmacm_id->resolve_addr = NULL;
 
-            } else {
-
-                notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-                notify.notify_status = 0;
-                bind->notify_callback(evpl, bind, &notify, bind->private_data);
             }
 
             evpl_defer(evpl, &bind->flush_deferral);
@@ -703,7 +697,7 @@ evpl_rdmacm_comp_callback(
     rc = ibv_get_cq_event(dev->comp_channel, &ev_cq, &ev_ctx);
 
     if (rc) {
-        evpl_event_mark_unreadable(event);
+        evpl_event_mark_unreadable(evpl, event);
         return;
     }
 
@@ -858,10 +852,9 @@ evpl_rdmacm_create(
 
         evpl_rdmacm_abort_if(rc == -1, "fcntl(F_SETFL, O_NONBLOCK) failed");
 
-        dev->event.fd            = dev->comp_channel->fd;
-        dev->event.read_callback = evpl_rdmacm_comp_callback;
+        evpl_add_event(evpl, &dev->event, dev->comp_channel->fd,
+                       evpl_rdmacm_comp_callback, NULL, NULL);
 
-        evpl_add_event(evpl, &dev->event);
         evpl_event_read_interest(evpl, &dev->event);
 
         memset(&td_attr, 0, sizeof(td_attr));
@@ -931,10 +924,9 @@ evpl_rdmacm_create(
 
     evpl_rdmacm_abort_if(rc == -1, "fcntl(F_SETFL, O_NONBLOCK) failed");
 
-    rdmacm->event.fd            = rdmacm->event_channel->fd;
-    rdmacm->event.read_callback = evpl_rdmacm_event_callback;
+    evpl_add_event(evpl, &rdmacm->event, rdmacm->event_channel->fd,
+                   evpl_rdmacm_event_callback, NULL, NULL);
 
-    evpl_add_event(evpl, &rdmacm->event);
     evpl_event_read_interest(evpl, &rdmacm->event);
 
     rdmacm->poll = evpl_add_poll(evpl,

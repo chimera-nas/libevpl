@@ -56,7 +56,7 @@ evpl_thread_event(
     rc = read(event->fd, &word, sizeof(word));
 
     if (rc != sizeof(word)) {
-        evpl_event_mark_unreadable(event);
+        evpl_event_mark_unreadable(evpl, event);
     }
 
 } /* evpl_thread_event */

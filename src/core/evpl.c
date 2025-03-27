@@ -255,7 +255,7 @@ evpl_ipc_callback(
     rc = read(event->fd, &value, sizeof(value));
 
     if (rc != sizeof(value)) {
-        evpl_event_mark_unreadable(event);
+        evpl_event_mark_unreadable(evpl, event);
         return;
     }
 
@@ -314,6 +314,10 @@ evpl_create(struct evpl_thread_config *config)
                                                      evpl_deferral *));
     evpl->max_active_deferrals = 256;
 
+    evpl->max_timers = 256;
+    evpl->num_timers = 0;
+    evpl->timers     = evpl_calloc(evpl->max_timers, sizeof(struct evpl_timer *));
+
     if (config) {
         evpl->config = *config;
     } else {
@@ -328,15 +332,106 @@ evpl_create(struct evpl_thread_config *config)
     evpl_core_abort_if(evpl->eventfd < 0,
                        "evpl_create: eventfd failed");
 
-    evpl->run_event.fd            = evpl->eventfd;
-    evpl->run_event.read_callback = evpl_ipc_callback;
-
-    evpl_add_event(evpl, &evpl->run_event);
+    evpl_add_event(evpl, &evpl->run_event, evpl->eventfd,
+                   evpl_ipc_callback, NULL, NULL);
 
     evpl_event_read_interest(evpl, &evpl->run_event);
 
     return evpl;
 } /* evpl_init */
+
+
+static void
+evpl_timer_heap_up(
+    struct evpl *evpl,
+    int          i)
+{
+    struct evpl_timer *tmp;
+
+    while (i > 0) {
+        int parent = (i - 1) / 2;
+
+        if (evpl_ts_compare(&evpl->timers[parent]->deadline, &evpl->timers[i]->deadline) < 0) {
+            break;
+        }
+
+        tmp                  = evpl->timers[i];
+        evpl->timers[i]      = evpl->timers[parent];
+        evpl->timers[parent] = tmp;
+        i                    = parent;
+    }
+
+} /* evpl_timer_heap_up */
+
+static int
+evpl_timer_heap_down(
+    struct evpl *evpl,
+    int          i)
+{
+    int                min_child, child;
+    struct evpl_timer *tmp;
+
+    while (1) {
+        min_child = -1;
+
+        child = 2 * i + 1;
+        if (child < evpl->num_timers) {
+            min_child = child;
+        }
+
+        child = 2 * i + 2;
+        if (child < evpl->num_timers &&
+            evpl_ts_compare(&evpl->timers[child]->deadline, &evpl->timers[min_child]->deadline) < 0) {
+            min_child = child;
+        }
+
+        if (min_child == -1 ||
+            evpl_ts_compare(&evpl->timers[i]->deadline, &evpl->timers[min_child]->deadline) < 0) {
+            break;
+        }
+
+        tmp                     = evpl->timers[i];
+        evpl->timers[i]         = evpl->timers[min_child];
+        evpl->timers[min_child] = tmp;
+        i                       = min_child;
+    }
+
+    return i;
+} /* evpl_timer_heap_down */
+
+
+
+static inline void
+evpl_pop_timer(struct evpl *evpl)
+{
+
+    if (evpl->num_timers > 1) {
+        evpl->timers[0] = evpl->timers[evpl->num_timers - 1];
+    }
+    evpl->num_timers--;
+
+    evpl_timer_heap_down(evpl, 0);
+
+} /* evpl_pop_timer */
+
+
+static void
+evpl_timer_insert(
+    struct evpl       *evpl,
+    struct evpl_timer *timer)
+{
+    int i;
+
+    clock_gettime(CLOCK_MONOTONIC, &timer->deadline);
+    timer->deadline.tv_sec  += timer->interval / 1000000;
+    timer->deadline.tv_nsec += (timer->interval % 1000000) * 1000;
+
+    evpl->timers[evpl->num_timers] = timer;
+
+    i = evpl->num_timers++;
+
+    evpl_timer_heap_up(evpl, i);
+} /* evpl_timer_insert */
 
 void
 evpl_continue(struct evpl *evpl)
@@ -345,14 +440,41 @@ evpl_continue(struct evpl *evpl)
     struct evpl_bind     *bind;
     struct evpl_deferral *deferral;
     struct evpl_poll     *poll;
+    struct evpl_timer    *timer;
     int                   i, n;
     int                   msecs = evpl->config.wait_ms;
     struct timespec       now;
     uint64_t              elapsed;
+    int64_t               remain;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    if (evpl->num_timers) {
+
+        do {
+            timer = evpl->timers[0];
+
+            remain = evpl_ts_interval(&timer->deadline, &now);
+
+            if (remain > 0) {
+                remain /= 1000000;
+
+                if (remain < msecs || msecs == -1) {
+                    msecs = remain;
+                    break;
+                }
+            }
+
+            timer->callback(evpl, timer);
+
+            evpl_pop_timer(evpl);
+
+            evpl_timer_insert(evpl, timer);
+
+        } while (evpl->num_timers);
+    }
 
     if (evpl->num_poll) {
-
-        clock_gettime(CLOCK_MONOTONIC, &now);
 
         if (evpl->activity != evpl->last_activity) {
             evpl->last_activity    = evpl->activity;
@@ -405,6 +527,7 @@ evpl_continue(struct evpl *evpl)
         evpl->poll_iterations++;
 
     } else {
+
 
         n = evpl_core_wait(&evpl->core, msecs);
 
@@ -540,21 +663,12 @@ evpl_listener_accept(
 
 static void
 evpl_listener_callback(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell)
 {
-    struct evpl_listener       *listener = container_of(event, struct evpl_listener, event);
+    struct evpl_listener       *listener = container_of(doorbell, struct evpl_listener, doorbell);
     struct evpl_listen_request *request;
     struct evpl_bind           *bind, **new_binds;
-    uint64_t                    value;
-    ssize_t                     len;
-
-    len = read(listener->eventfd, &value, sizeof(value));
-
-    if (len != sizeof(value)) {
-        evpl_event_mark_unreadable(event);
-        return;
-    }
 
     pthread_mutex_lock(&listener->lock);
 
@@ -606,14 +720,7 @@ evpl_listener_init(
 {
     struct evpl_listener *listener = private_data;
 
-    listener->eventfd = eventfd(0, EFD_NONBLOCK);
-
-    listener->event.fd            = listener->eventfd;
-    listener->event.read_callback = evpl_listener_callback;
-
-    evpl_add_event(evpl, &listener->event);
-
-    evpl_event_read_interest(evpl, &listener->event);
+    evpl_add_doorbell(evpl, &listener->doorbell, evpl_listener_callback);
 
     __sync_synchronize();
 
@@ -640,7 +747,7 @@ evpl_listener_create(void)
     listener->binds     = evpl_calloc(listener->max_binds, sizeof(struct evpl_bind *));
 
     listener->max_attached = 64;
-    listener->attached     = evpl_calloc(listener->max_attached, sizeof(struct evpl *));
+    listener->attached     = evpl_calloc(listener->max_attached, sizeof(struct evpl_listener_binding));
 
     while (!listener->running) {
         __sync_synchronize();
@@ -720,8 +827,6 @@ evpl_listen(
     enum evpl_protocol_id protocol_id,
     struct evpl_endpoint *endpoint)
 {
-    uint64_t                    value = 1;
-    int                         rc;
     struct evpl_listen_request *request;
 
     request = evpl_zalloc(sizeof(*request));
@@ -736,10 +841,7 @@ evpl_listen(
     DL_APPEND(listener->requests, request);
     pthread_mutex_unlock(&listener->lock);
 
-    rc = write(listener->eventfd, &value, sizeof(value));
-
-    evpl_core_abort_if(rc != sizeof(value),
-                       "evpl_listen: write to eventfd failed");
+    evpl_ring_doorbell(&listener->doorbell);
 
     pthread_mutex_lock(&request->lock);
 
@@ -982,6 +1084,7 @@ evpl_destroy(struct evpl *evpl)
 
     evpl_free(evpl->active_events);
     evpl_free(evpl->active_deferrals);
+    evpl_free(evpl->timers);
     evpl_free(evpl->poll);
     evpl_free(evpl);
 } /* evpl_destroy */
@@ -1118,7 +1221,7 @@ evpl_event_read_interest(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-
+    evpl_core_assert(evpl == event->owner);
     if (!(event->flags & (EVPL_READ_INTEREST | EVPL_WRITE_INTEREST))) {
         evpl->num_enabled_events++;
     }
@@ -1140,7 +1243,7 @@ evpl_event_read_disinterest(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-
+    evpl_core_assert(evpl == event->owner);
     if ((event->flags & (EVPL_READ_INTEREST | EVPL_WRITE_INTEREST)) == EVPL_READ_INTEREST) {
         evpl->num_enabled_events--;
     }
@@ -1153,6 +1256,7 @@ evpl_event_write_interest(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
+    evpl_core_assert(evpl == event->owner);
 
     if (!(event->flags & (EVPL_READ_INTEREST | EVPL_WRITE_INTEREST))) {
         evpl->num_enabled_events++;
@@ -1175,7 +1279,7 @@ evpl_event_write_disinterest(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-
+    evpl_core_assert(evpl == event->owner);
     if ((event->flags & (EVPL_READ_INTEREST | EVPL_WRITE_INTEREST)) == EVPL_WRITE_INTEREST) {
         evpl->num_enabled_events--;
     }
@@ -1189,6 +1293,8 @@ evpl_event_mark_readable(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
+    evpl_core_assert(evpl == event->owner);
+
     event->flags |= EVPL_READABLE;
 
     if ((event->flags & EVPL_READ_READY) == EVPL_READ_READY &&
@@ -1201,8 +1307,12 @@ evpl_event_mark_readable(
 } /* evpl_event_mark_readable */
 
 void
-evpl_event_mark_unreadable(struct evpl_event *event)
+evpl_event_mark_unreadable(
+    struct evpl       *evpl,
+    struct evpl_event *event)
 {
+    evpl_core_assert(evpl == event->owner);
+
     event->flags &= ~EVPL_READABLE;
 } /* evpl_event_mark_unreadable */
 
@@ -1211,6 +1321,7 @@ evpl_event_mark_writable(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
+    evpl_core_assert(evpl == event->owner);
 
     event->flags |= EVPL_WRITABLE;
 
@@ -1225,8 +1336,12 @@ evpl_event_mark_writable(
 } /* evpl_event_mark_writable */
 
 void
-evpl_event_mark_unwritable(struct evpl_event *event)
+evpl_event_mark_unwritable(
+    struct evpl       *evpl,
+    struct evpl_event *event)
 {
+    evpl_core_assert(evpl == event->owner);
+
     event->flags &= ~EVPL_WRITABLE;
 } /* evpl_event_mark_unwritable */
 
@@ -1235,6 +1350,8 @@ evpl_event_mark_error(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
+    evpl_core_assert(evpl == event->owner);
+
     event->flags |= EVPL_ERROR;
 
     if (!(event->flags & EVPL_ACTIVE)) {
@@ -2059,18 +2176,139 @@ evpl_framework_private(
 
 void
 evpl_add_event(
+    struct evpl                *evpl,
+    struct evpl_event          *event,
+    int                         fd,
+    evpl_event_read_callback_t  read_callback,
+    evpl_event_write_callback_t write_callback,
+    evpl_event_error_callback_t error_callback)
+{
+    event->owner          = evpl;
+    event->fd             = fd;
+    event->flags          = 0;
+    event->read_callback  = read_callback;
+    event->write_callback = write_callback;
+    event->error_callback = error_callback;
+
+    evpl_core_add(&evpl->core, event);
+
+    evpl->num_events++;
+} /* evpl_add_event */
+
+static void
+evpl_event_user_callback(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    evpl_core_add(&evpl->core, event);
-    evpl->num_events++;
-} /* evpl_add_event */
+    struct evpl_doorbell *doorbell = container_of(event, struct evpl_doorbell, event);
+
+    uint64_t              word;
+    ssize_t               len;
+
+    len = read(event->fd, &word, sizeof(word));
+
+    if (len != sizeof(word)) {
+        evpl_event_mark_unreadable(evpl, event);
+        return;
+    }
+
+    doorbell->callback(evpl, doorbell);
+} /* evpl_event_user_callback */
+
+void
+evpl_add_doorbell(
+    struct evpl             *evpl,
+    struct evpl_doorbell    *doorbell,
+    evpl_doorbell_callback_t callback)
+{
+    struct evpl_event *event = &doorbell->event;
+
+    evpl_add_event(evpl, event, eventfd(0, EFD_NONBLOCK),
+                   evpl_event_user_callback, NULL, NULL);
+
+    evpl_event_read_interest(evpl, event);
+
+    doorbell->callback = callback;
+
+    DL_APPEND(evpl->doorbells, doorbell);
+
+} /* evpl_add_event_user */
+
+void
+evpl_remove_doorbell(
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell)
+{
+    pthread_mutex_lock(&evpl->lock);
+    DL_DELETE(evpl->doorbells, doorbell);
+    pthread_mutex_unlock(&evpl->lock);
+
+    evpl_remove_event(evpl, &doorbell->event);
+
+    close(doorbell->event.fd);
+} /* evpl_remove_doorbell */
+
+void
+evpl_remove_timer(
+    struct evpl       *evpl,
+    struct evpl_timer *timer)
+{
+    int i;
+
+    for (i = 0; i < evpl->num_timers; i++) {
+        if (evpl->timers[i] == timer) {
+            break;
+        }
+    }
+
+    if (i >= evpl->num_timers) {
+        return;
+    }
+
+    evpl->num_timers--;
+
+    if (i == evpl->num_timers) {
+        return;
+    }
+
+    evpl->timers[i] = evpl->timers[evpl->num_timers];
+
+    i = evpl_timer_heap_down(evpl, i);
+
+    evpl_timer_heap_up(evpl, i);
+} /* evpl_timer_remove */
+
+void
+evpl_add_timer(
+    struct evpl          *evpl,
+    struct evpl_timer    *timer,
+    evpl_timer_callback_t callback,
+    uint64_t              interval_us)
+{
+    timer->callback = callback;
+    timer->interval = interval_us;
+
+    evpl_timer_insert(evpl, timer);
+} /* evpl_add_timer */
+
+void
+evpl_ring_doorbell(struct evpl_doorbell *doorbell)
+{
+    uint64_t word = 1;
+    ssize_t  len;
+
+    len = write(doorbell->event.fd, &word, sizeof(word));
+
+    evpl_core_abort_if(len != sizeof(word), "failed to write to doorbell fd");
+} /* evpl_ring_doorbell */
 
 void
 evpl_remove_event(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
+    evpl_core_assert(evpl == event->owner);
+
     evpl_core_remove(&evpl->core, event);
     evpl->num_events--;
 } /* evpl_remove_event */
@@ -2262,6 +2500,11 @@ evpl_bind_get_remote_address(
     evpl_address_get_address(bind->remote, str, len);
 } /* evpl_bind_get_remote_address */
 
+enum evpl_protocol_id
+evpl_bind_get_protocol(struct evpl_bind *bind)
+{
+    return bind->protocol->id;
+} /* evpl_bind_get_protocol */
 
 struct evpl_block_device *
 evpl_block_open_device(

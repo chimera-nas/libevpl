@@ -742,76 +742,54 @@ evpl_vfio_prepare_prplist(
     int                      niov)
 {
     struct evpl_vfio_mr *mr;
-    uint64_t             offset, *prpe, *prpc;
-    int                  i;
-    uint64_t             total_len = 0;
+    uint64_t            *prpe, *prpc, prpv, end, total_len = 0;
+    int                  i, j = 0;
 
-    if (niov == 1 && iov[0].length <= 4096) {
+    mr               = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
+    cmd->common.prp1 = 0;
+    cmd->common.prp2 = 0;
 
-        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
+    prpe = (uint64_t *) (queue->prplist->buffer + (cid << 12));
+    prpc = prpe;
 
-        cmd->common.prp1 = mr->iova + (iov[0].data - mr->buffer);
-        cmd->common.prp2 = 0;
+    for (i = 0; i < niov; ++i) {
 
-        cmd->nlb = (iov[0].length >> device->sector_shift) - 1;
+        total_len += iov[i].length;
 
-    } else if (niov == 1 && iov[0].length <= 8192) {
+        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[i]), EVPL_FRAMEWORK_VFIO);
 
-        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
+        prpv = mr->iova + (iov[i].data - mr->buffer);
+        end  = prpv + iov[i].length;
 
-        cmd->common.prp1 = mr->iova + (iov[0].data - mr->buffer);
-        cmd->common.prp2 = mr->iova + (iov[0].data - mr->buffer) + 4096;
-
-        cmd->nlb = (iov[0].length >> device->sector_shift) - 1;
-
-    } else if (niov == 2 && iov[0].length <= 4096 && iov[1].length <= 4096) {
-
-        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
-
-        cmd->common.prp1 = mr->iova + (iov[0].data - mr->buffer);
-
-        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[1]), EVPL_FRAMEWORK_VFIO);
-
-        cmd->common.prp2 = mr->iova + (iov[1].data - mr->buffer);
-
-        cmd->nlb = ((iov[0].length + iov[1].length) >> device->sector_shift) - 1;
-
-    } else {
-
-        mr               = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
-        cmd->common.prp1 = mr->iova + (iov[0].data - mr->buffer);
-        cmd->common.prp2 = queue->prplist->iova + (cid << 12);
-
-        offset = iov[0].length;
-
-        if (offset > 4096) {
-            offset = 4096;
-        }
-
-        prpe = (uint64_t *) (queue->prplist->buffer + (cid << 12));
-        prpc = prpe;
-
-        for (i = 0; i < niov; ++i) {
-
-            total_len += iov[i].length;
-
-            if (iov[i].length <= offset) {
-                offset -= iov[i].length;
-                continue;
-            }
-
-            mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[i]), EVPL_FRAMEWORK_VFIO);
-
-            while (offset < iov[i].length) {
-                *prpc = mr->iova + (iov[i].data - mr->buffer) + offset;
+        while (prpv < end) {
+            if (j == 0) {
+                cmd->common.prp1 = prpv;
+            } else if (j == 1) {
+                cmd->common.prp2 = prpv;
+            } else if (j == 2) {
+                *prpc = cmd->common.prp2;
                 prpc++;
-                offset += iov[i].length < 4096 ? iov[i].length : 4096;
+                cmd->common.prp2 = queue->prplist->iova + (cid << 12);
+
+                *prpc = prpv;
+                prpc++;
+
+            } else {
+                *prpc = prpv;
+                prpc++;
+            }
+
+            j++;
+
+            if (prpv & 4095) {
+                prpv += 4096 - (prpv & 4095);
+            } else {
+                prpv += 4096;
             }
         }
+    } /* evpl_vfio_prepare_prplist */
 
-        cmd->nlb = (total_len >> device->sector_shift) - 1;
-    }
-
+    cmd->nlb = (total_len >> device->sector_shift) - 1;
 } /* evpl_vfio_prepare_prplist */
 
 static void
@@ -982,7 +960,7 @@ evpl_vfio_event_callback(
     len = read(event->fd, &value, sizeof(value));
 
     if (len != sizeof(value)) {
-        evpl_event_mark_unreadable(event);
+        evpl_event_mark_unreadable(evpl, event);
         return;
     }
 
@@ -1028,11 +1006,8 @@ evpl_vfio_open_queue(
     bqueue->write        = evpl_vfio_write;
     bqueue->flush        = evpl_vfio_flush;
 
-
-    queue->event.fd            = queue->eventfd;
-    queue->event.read_callback = evpl_vfio_event_callback;
-
-    evpl_add_event(evpl, &queue->event);
+    evpl_add_event(evpl, &queue->event, queue->eventfd,
+                   evpl_vfio_event_callback, NULL, NULL);
 
     evpl_event_read_interest(evpl, &queue->event);
 

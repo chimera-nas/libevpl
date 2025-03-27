@@ -121,7 +121,7 @@ evpl_socket_udp_read(
     }
 
     if (res < nmsg) {
-        evpl_event_mark_unreadable(event);
+        evpl_event_mark_unreadable(evpl, event);
     }
 
 } /* evpl_socket_udp_read */
@@ -235,7 +235,7 @@ evpl_socket_udp_write(
  out:
 
     if (res != nmsg) {
-        evpl_event_mark_unwritable(event);
+        evpl_event_mark_unwritable(evpl, event);
     }
 
 } /* evpl_socket_udp_write */
@@ -298,12 +298,11 @@ evpl_socket_udp_bind(
 
     evpl_socket_init(evpl, s, s->fd, 0);
 
-    s->event.fd             = s->fd;
-    s->event.read_callback  = evpl_socket_udp_read;
-    s->event.write_callback = evpl_socket_udp_write;
-    s->event.error_callback = evpl_socket_udp_error;
+    evpl_add_event(evpl, &s->event, s->fd,
+                   evpl_socket_udp_read,
+                   evpl_socket_udp_write,
+                   evpl_socket_udp_error);
 
-    evpl_add_event(evpl, &s->event);
     evpl_event_read_interest(evpl, &s->event);
 } /* evpl_socket_udp_bind */
 

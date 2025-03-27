@@ -5,7 +5,7 @@
 #pragma once
 
 #include <stdint.h>
-
+#include <evpl/evpl.h>
 struct xdr_dbuf;
 
 struct evpl;
@@ -18,6 +18,7 @@ struct evpl_iovec;
 struct evpl_rpc2_program;
 
 struct evpl_rpc2_conn {
+    enum evpl_protocol_id protocol;
     struct evpl_rpc2_thread *thread;
     struct evpl_rpc2_server *server;
     struct evpl_rpc2_msg    *recv_msg;

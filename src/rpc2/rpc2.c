@@ -18,7 +18,6 @@
 
 struct evpl_rpc2_server {
     struct evpl_listener      *listener;
-    int                        protocol;
     struct evpl_rpc2_program **programs;
     int                        nprograms;
 };
@@ -280,7 +279,6 @@ evpl_rpc2_event(
 {
     struct evpl_rpc2_conn   *rpc2_conn = private_data;
     struct evpl_rpc2_thread *thread    = rpc2_conn->thread;
-    struct evpl_rpc2_server *server    = rpc2_conn->server;
     struct rpc_msg          *rpc_msg;
     struct rdma_msg         *rdma_msg;
     struct evpl_rpc2_msg    *msg;
@@ -294,7 +292,7 @@ evpl_rpc2_event(
     struct evpl_iovec        segment_iov;
     char                     addr_str[80], addr_str_local[80];
 
-    rdma = (server->protocol == EVPL_DATAGRAM_RDMACM_RC);
+    rdma = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -309,6 +307,8 @@ evpl_rpc2_event(
             free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:
+
+            evpl_rpc2_debug("evpl_rpc2_event: EVPL_NOTIFY_RECV_MSG rdma %d", rdma);
 
             msg = evpl_rpc2_msg_alloc(thread);
 
@@ -454,9 +454,10 @@ evpl_rpc2_accept(
     struct evpl_rpc2_thread *thread = private_data;
     struct evpl_rpc2_conn   *rpc2_conn;
 
-    rpc2_conn         = evpl_zalloc(sizeof(*rpc2_conn));
-    rpc2_conn->thread = thread;
-    rpc2_conn->server = thread->server;
+    rpc2_conn           = evpl_zalloc(sizeof(*rpc2_conn));
+    rpc2_conn->thread   = thread;
+    rpc2_conn->server   = thread->server;
+    rpc2_conn->protocol = evpl_bind_get_protocol(bind);
 
     *notify_callback   = evpl_rpc2_event;
     *segment_callback  = rpc2_segment_callback;
@@ -735,8 +736,6 @@ evpl_rpc2_start(
     int                      protocol,
     struct evpl_endpoint    *endpoint)
 {
-    server->protocol = protocol;
-
     evpl_listen(
         server->listener,
         protocol,

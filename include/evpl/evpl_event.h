@@ -5,7 +5,7 @@
 #pragma once
 
 #include <stdint.h>
-
+#include <time.h>
 #include "evpl/evpl.h"
 
 struct evpl_listener;
@@ -33,11 +33,37 @@ typedef void (*evpl_event_error_callback_t)(
 #define EVPL_WRITE_READY    (EVPL_WRITABLE | EVPL_WRITE_INTEREST)
 
 struct evpl_event {
+    struct evpl                *owner;
     int                         fd;
     unsigned int                flags;
     evpl_event_read_callback_t  read_callback;
     evpl_event_write_callback_t write_callback;
     evpl_event_error_callback_t error_callback;
+};
+
+struct evpl_doorbell;
+
+typedef void (*evpl_doorbell_callback_t)(
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell);
+
+struct evpl_doorbell {
+    struct evpl_event        event;
+    evpl_doorbell_callback_t callback;
+    struct evpl_doorbell    *prev;
+    struct evpl_doorbell    *next;
+};
+
+struct evpl_timer;
+
+typedef void (*evpl_timer_callback_t)(
+    struct evpl       *evpl,
+    struct evpl_timer *timer);
+
+struct evpl_timer {
+    evpl_timer_callback_t callback;
+    uint64_t              interval;
+    struct timespec       deadline;
 };
 
 void evpl_event_read_interest(
@@ -59,6 +85,7 @@ void evpl_event_mark_readable(
     struct evpl_event *event);
 
 void evpl_event_mark_unreadable(
+    struct evpl       *evpl,
     struct evpl_event *event);
 
 void evpl_event_mark_writable(
@@ -66,6 +93,7 @@ void evpl_event_mark_writable(
     struct evpl_event *event);
 
 void evpl_event_mark_unwritable(
+    struct evpl       *evpl,
     struct evpl_event *event);
 
 void evpl_event_mark_error(
@@ -80,8 +108,39 @@ void evpl_accept(
 
 void
 evpl_add_event(
+    struct evpl                *evpl,
+    struct evpl_event          *event,
+    int                         fd,
+    evpl_event_read_callback_t  read_callback,
+    evpl_event_write_callback_t write_callback,
+    evpl_event_error_callback_t error_callback);
+
+void
+evpl_add_doorbell(
+    struct evpl             *evpl,
+    struct evpl_doorbell    *doorbell,
+    evpl_doorbell_callback_t callback);
+
+void
+evpl_remove_doorbell(
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell);
+
+void
+evpl_ring_doorbell(
+    struct evpl_doorbell *doorbell);
+
+void
+evpl_add_timer(
+    struct evpl          *evpl,
+    struct evpl_timer    *timer,
+    evpl_timer_callback_t callback,
+    uint64_t              interval_us);
+
+void
+evpl_remove_timer(
     struct evpl       *evpl,
-    struct evpl_event *event);
+    struct evpl_timer *timer);
 
 void
 evpl_remove_event(

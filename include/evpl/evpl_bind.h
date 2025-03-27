@@ -205,3 +205,6 @@ void evpl_bind_get_remote_address(
     struct evpl_bind *bind,
     char             *str,
     int               len);
+
+enum evpl_protocol_id evpl_bind_get_protocol(
+    struct evpl_bind *bind);
