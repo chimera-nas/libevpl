@@ -234,7 +234,7 @@ void evpl_abort(
             evpl_abort(module, file, line, "assertion failed: " #cond); \
         }
 #else // if defined(EVPL_ASSERT)
-#define evpl_assert(module, cond)
+#define evpl_assert(module, file, line, cond)
 #endif // if defined(EVPL_ASSERT)
 
 #define evpl_core_debug(...)            evpl_debug("core", __FILE__, __LINE__, \

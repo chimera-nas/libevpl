@@ -319,8 +319,8 @@ evpl_rdmacm_event_callback(
 
                 listen_bind = evpl_private2bind(rdmacm_id);
 
-                remote_addr = evpl_address_init(&cm_event->id->route.addr.src_addr,
-                                                sizeof(cm_event->id->route.addr.src_addr));
+                remote_addr = evpl_address_init(&cm_event->id->route.addr.dst_addr,
+                                                sizeof(cm_event->id->route.addr.dst_addr));
 
                 accepted_id             = evpl_zalloc(sizeof(*accepted_id));
                 accepted_id->id         = cm_event->id;
@@ -1043,7 +1043,7 @@ evpl_rdmacm_attach(
     conn_param.retry_count         = evpl_shared->config->rdmacm_retry_count;
     conn_param.rnr_retry_count     = evpl_shared->config->rdmacm_rnr_retry_count;
     conn_param.responder_resources = accepted_id->conn_param.initiator_depth;
-    conn_param.initiator_depth     = accepted_id->conn_param.responder_resources;
+    conn_param.initiator_depth     = accepted_id->conn_param.initiator_depth;//responder_resources;
 
     rc = rdma_accept(accepted_id->id, &conn_param);
 
