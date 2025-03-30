@@ -30,11 +30,11 @@ add_custom_command(
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 set_source_files_properties(
-    ${RPC2_XDR_C} PROPERTIES COMPILE_OPTIONS -Wno-unused
+    ${RPC2_XDR_C} PROPERTIES COMPILE_OPTIONS "-Wno-unused;-Wno-format-truncation"
 )
 
 set_source_files_properties(
-    ${RPCRDMA1_XDR_C} PROPERTIES COMPILE_OPTIONS -Wno-unused
+    ${RPCRDMA1_XDR_C} PROPERTIES COMPILE_OPTIONS "-Wno-unused;-Wno-format-truncation"
 )
 
 add_library(evpl_rpc2 SHARED rpc2.c ${RPC2_XDR_C} ${RPC2_XDR_H} ${RPCRDMA1_XDR_C} ${RPCRDMA1_XDR_H} custom_dump.c)
