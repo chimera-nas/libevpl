@@ -271,6 +271,7 @@ evpl_rdmacm_event_callback(
     struct evpl_rdmacm_id          *rdmacm_id;
     struct evpl_bind               *bind;
     struct evpl_bind               *listen_bind;
+    struct evpl_notify              notify;
     struct evpl_address            *remote_addr;
     struct evpl_rdmacm_accepted_id *accepted_id;
     struct evpl_rdmacm_ah          *ah;
@@ -364,6 +365,12 @@ evpl_rdmacm_event_callback(
                 evpl_address_release(rdmacm_id->resolve_addr);
                 rdmacm_id->resolve_addr = NULL;
 
+            } else {
+                notify.notify_type   = EVPL_NOTIFY_CONNECTED;
+                notify.notify_status = 0;
+
+                bind->notify_callback(evpl, bind, &notify,
+                                      bind->private_data);
             }
 
             evpl_defer(evpl, &bind->flush_deferral);
@@ -889,7 +896,9 @@ evpl_rdmacm_create(
         evpl_rdmacm_abort_if(!dev->cq,
                              "Failed to create completion queue for rdma device");
 
-        ibv_req_notify_cq(dev->cq, 0);
+        rc = ibv_req_notify_cq(dev->cq, 0);
+
+        evpl_rdmacm_abort_if(rc, "ibv_req_notify_cq error %s", strerror(errno));
 
         memset(&srq_init_attr, 0, sizeof(srq_init_attr));
 
@@ -897,6 +906,9 @@ evpl_rdmacm_create(
         srq_init_attr.attr.max_sge = 1;
 
         dev->srq = ibv_create_srq(dev->pd, &srq_init_attr);
+
+        evpl_rdmacm_abort_if(!dev->srq,
+                             "Failed to create shared receive queue for rdma device");
 
         dev->srq_max = evpl_shared->config->rdmacm_srq_size;
         dev->srq_min = evpl_shared->config->rdmacm_srq_min;
@@ -1012,6 +1024,8 @@ evpl_rdmacm_attach(
     int                             rc;
 
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
+
+    evpl_rdmacm_fill_all_srq(evpl, rdmacm);
 
     rc = rdma_migrate_id(accepted_id->id, rdmacm->event_channel);
 

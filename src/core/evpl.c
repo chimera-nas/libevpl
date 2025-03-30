@@ -248,7 +248,6 @@ evpl_ipc_callback(
 {
     struct evpl_connect_request *request;
     struct evpl_bind            *new_bind;
-    struct evpl_notify           notify;
     uint64_t                     value;
     ssize_t                      rc;
 
@@ -279,12 +278,6 @@ evpl_ipc_callback(
                                  request->private_data);
 
         request->protocol->attach(evpl, new_bind, request->accepted);
-
-        notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-        notify.notify_status = 0;
-
-        new_bind->notify_callback(evpl, new_bind, &notify,
-                                  new_bind->private_data);
 
         evpl_free(request);
     }

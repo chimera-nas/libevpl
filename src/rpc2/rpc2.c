@@ -308,8 +308,6 @@ evpl_rpc2_event(
             break;
         case EVPL_NOTIFY_RECV_MSG:
 
-            evpl_rpc2_debug("evpl_rpc2_event: EVPL_NOTIFY_RECV_MSG rdma %d", rdma);
-
             msg = evpl_rpc2_msg_alloc(thread);
 
             clock_gettime(CLOCK_MONOTONIC, &msg->timestamp);

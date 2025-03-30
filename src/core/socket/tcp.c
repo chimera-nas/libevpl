@@ -306,7 +306,8 @@ evpl_socket_tcp_attach(
 {
     struct evpl_socket          *s               = evpl_bind_private(bind);
     struct evpl_accepted_socket *accepted_socket = accepted;
-    int                          fd              = accepted_socket->fd;
+    struct evpl_notify           notify;
+    int                          fd = accepted_socket->fd;
     int                          rc, yes = 1;
 
     evpl_free(accepted_socket);
@@ -323,6 +324,10 @@ evpl_socket_tcp_attach(
                    evpl_socket_tcp_error);
 
     evpl_event_read_interest(evpl, &s->event);
+
+    notify.notify_type   = EVPL_NOTIFY_CONNECTED;
+    notify.notify_status = 0;
+    bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
 } /* evpl_attach_tcp */
 
