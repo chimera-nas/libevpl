@@ -96,3 +96,13 @@ evpl_global_config_set_rdmacm_datagram_size_override(
 {
     config->rdmacm_datagram_size_override = size;
 } /* evpl_global_config_set_rdmacm_datagram_size_override */
+
+void
+evpl_global_config_set_spin_ns(
+    struct evpl_global_config *config,
+    uint64_t                   ns)
+{
+    config->thread_default.spin_ns = ns;
+} /* evpl_global_config_set_spin_ns */
+
+

@@ -578,7 +578,7 @@ evpl_rpc2_send_reply(
         }
 
         if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
-            if (rpc_len + length > 2048) {
+            if (rpc_len + length > 512) {
                 reduce = 1;
 
                 rdma_msg.rdma_body.proc                   = RDMA_NOMSG;

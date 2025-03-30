@@ -20,6 +20,10 @@ evpl_global_config_init(
 void evpl_global_config_release(
     struct evpl_global_config *config);
 
+void evpl_global_config_set_spin_ns(
+    struct evpl_global_config *config,
+    uint64_t                   ns);
+
 void evpl_global_config_set_max_datagram_size(
     struct evpl_global_config *config,
     unsigned int               size);
