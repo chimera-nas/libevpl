@@ -41,18 +41,6 @@ struct evpl_event {
     evpl_event_error_callback_t error_callback;
 };
 
-struct evpl_timer;
-
-typedef void (*evpl_timer_callback_t)(
-    struct evpl       *evpl,
-    struct evpl_timer *timer);
-
-struct evpl_timer {
-    evpl_timer_callback_t callback;
-    uint64_t              interval;
-    struct timespec       deadline;
-};
-
 void evpl_accept(
     struct evpl      *evpl,
     struct evpl_bind *bind,

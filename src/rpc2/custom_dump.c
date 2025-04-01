@@ -7,7 +7,7 @@
 
 #include "common.h"
 
-void
+SYMBOL_EXPORT void
 dump_output(
     const char *format,
     ...)

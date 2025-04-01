@@ -19,7 +19,8 @@
 
 
 extern evpl_log_fn EvplLog;
-void
+
+SYMBOL_EXPORT void
 evpl_set_log_fn(evpl_log_fn log_fn)
 {
     EvplLog = log_fn;

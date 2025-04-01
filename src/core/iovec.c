@@ -18,7 +18,7 @@ evpl_iovec_addref(struct evpl_iovec *iovec)
 } /* evpl_iovec_addref */
 
 
-int
+SYMBOL_EXPORT int
 evpl_iovec_reserve(
     struct evpl       *evpl,
     unsigned int       length,
@@ -75,7 +75,7 @@ evpl_iovec_reserve(
     return niovs;
 } /* evpl_iovec_reserve */
 
-void
+SYMBOL_EXPORT void
 evpl_iovec_commit(
     struct evpl       *evpl,
     unsigned int       alignment,

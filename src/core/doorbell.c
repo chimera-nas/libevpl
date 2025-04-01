@@ -57,6 +57,12 @@ evpl_remove_doorbell(
     close(doorbell->event.fd);
 } /* evpl_remove_doorbell */
 
+SYMBOL_EXPORT int
+evpl_doorbell_fd(struct evpl_doorbell *doorbell)
+{
+    return doorbell->event.fd;
+} /* evpl_doorbell_fd */
+
 SYMBOL_EXPORT void
 evpl_ring_doorbell(struct evpl_doorbell *doorbell)
 {

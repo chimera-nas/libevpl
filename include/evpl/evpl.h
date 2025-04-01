@@ -13,6 +13,7 @@
 #include <evpl/evpl_endpoint.h>
 #include <evpl/evpl_deferral.h>
 #include <evpl/evpl_doorbell.h>
+#include <evpl/evpl_timer.h>
 #include <evpl/evpl_bind.h>
 #include <evpl/evpl_block.h>
 #include <evpl/evpl_thread.h>

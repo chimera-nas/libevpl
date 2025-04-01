@@ -213,7 +213,7 @@ evpl_bind_destroy(
     DL_PREPEND(evpl->free_binds, bind);
 } /* evpl_bind_destroy */
 
-void
+SYMBOL_EXPORT void
 evpl_bind_get_local_address(
     struct evpl_bind *bind,
     char             *str,
@@ -222,7 +222,7 @@ evpl_bind_get_local_address(
     evpl_address_get_address(bind->local, str, len);
 } /* evpl_bind_get_local_address */
 
-void
+SYMBOL_EXPORT void
 evpl_bind_get_remote_address(
     struct evpl_bind *bind,
     char             *str,
@@ -231,7 +231,7 @@ evpl_bind_get_remote_address(
     evpl_address_get_address(bind->remote, str, len);
 } /* evpl_bind_get_remote_address */
 
-enum evpl_protocol_id
+SYMBOL_EXPORT enum evpl_protocol_id
 evpl_bind_get_protocol(struct evpl_bind *bind)
 {
     return bind->protocol->id;

@@ -28,6 +28,10 @@ evpl_remove_doorbell(
     struct evpl          *evpl,
     struct evpl_doorbell *doorbell);
 
+int
+evpl_doorbell_fd(
+    struct evpl_doorbell *doorbell);
+
 void
 evpl_ring_doorbell(
     struct evpl_doorbell *doorbell);

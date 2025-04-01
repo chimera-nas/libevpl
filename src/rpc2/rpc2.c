@@ -707,7 +707,7 @@ evpl_rpc2_send_reply(
     return 0;
 } /* evpl_rpc2_send_reply */
 
-struct evpl_rpc2_server *
+SYMBOL_EXPORT struct evpl_rpc2_server *
 evpl_rpc2_init(
     struct evpl_rpc2_program **programs,
     int                        nprograms)
@@ -729,7 +729,7 @@ evpl_rpc2_init(
     return server;
 } /* evpl_rpc2_listen */
 
-void
+SYMBOL_EXPORT void
 evpl_rpc2_start(
     struct evpl_rpc2_server *server,
     int                      protocol,
@@ -741,7 +741,7 @@ evpl_rpc2_start(
         endpoint);
 } /* evpl_rpc2_start */
 
-struct evpl_rpc2_thread *
+SYMBOL_EXPORT struct evpl_rpc2_thread *
 evpl_rpc2_attach(
     struct evpl             *evpl,
     struct evpl_rpc2_server *server,
@@ -768,7 +768,7 @@ evpl_rpc2_attach(
 
 } /* evpl_rpc2_attach */
 
-void
+SYMBOL_EXPORT void
 evpl_rpc2_detach(struct evpl_rpc2_thread *thread)
 {
     int                       i, j;
@@ -826,7 +826,7 @@ evpl_rpc2_detach(struct evpl_rpc2_thread *thread)
 
 } /* evpl_rpc2_detach */
 
-void
+SYMBOL_EXPORT void
 evpl_rpc2_destroy(struct evpl_rpc2_server *server)
 {
     evpl_listener_destroy(server->listener);
