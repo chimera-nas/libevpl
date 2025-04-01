@@ -13,13 +13,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "core/internal.h"
-#include "evpl/evpl.h"
-#include "core/buffer.h"
+#include "core/allocator.h"
 #include "core/endpoint.h"
 #include "core/bind.h"
 #include "core/protocol.h"
-
+#include "core/event_fn.h"
+#include "core/evpl.h"
 #include "core/socket/common.h"
 #include "core/socket/tcp.h"
 
@@ -141,7 +140,7 @@ evpl_socket_tcp_read(
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
             for (i = 0; i < niov; ++i) {
-                evpl_iovec_release(&iovec[i]);
+                evpl_iovec_decref(&iovec[i]);
             }
 
         }

@@ -15,8 +15,8 @@
 
 #include "uthash/utlist.h"
 
-#include "core/internal.h"
-#include "evpl/evpl.h"
+#include "core/event_fn.h"
+#include "core/evpl.h"
 #include "core/protocol.h"
 #include "core/io_uring/io_uring.h"
 

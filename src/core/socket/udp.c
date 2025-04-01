@@ -16,13 +16,13 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "core/internal.h"
+#include "core/evpl.h"
 #include "evpl/evpl.h"
-#include "core/buffer.h"
+#include "core/allocator.h"
 #include "core/endpoint.h"
 #include "core/bind.h"
 #include "core/protocol.h"
-
+#include "core/event_fn.h"
 #include "core/socket/common.h"
 #include "core/socket/udp.h"
 
@@ -109,7 +109,7 @@ evpl_socket_udp_read(
 
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
-        evpl_iovec_release(&datagram->iovec);
+        evpl_iovec_decref(&datagram->iovec);
         evpl_socket_datagram_reload(evpl, s, datagram);
         evpl_address_release(addr);
 

@@ -4,8 +4,7 @@
 
 #pragma once
 
-#include "core/internal.h"
-
+#include "core/logging.h"
 #define evpl_test_debug(...) evpl_debug("test", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_test_info(...)  evpl_info("test", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_test_error(...) evpl_error("test", __FILE__, __LINE__, __VA_ARGS__)

@@ -7,19 +7,19 @@
 #include <stdlib.h>
 #include <stddef.h>
 
+#define EVPL_INTERNAL 1
+#include "event.h"
+#include "doorbell.h"
+#include "macros.h"
+#include "logging.h"
 #include "evpl/evpl.h"
+
 
 #if EVPL_MECH == epoll
 #include "core/epoll.h"
 #else /* if EVPL_MECH == epoll */
 #error No EVPL_MECH
 #endif /* if EVPL_MECH == epoll */
-
-#define evpl_iovec_buffer(iov) ((struct evpl_buffer *) (iov)->private)
-
-#define NS_PER_S           (1000000000UL)
-
-#define EVPL_BVEC_EXTERNAL 0x01
 
 struct evpl_thread_config {
     unsigned int spin_ns;
@@ -178,144 +178,6 @@ void * evpl_valloc(
 void evpl_free(
     void *p);
 
-#define EVPL_LOG_NONE  0
-#define EVPL_LOG_DEBUG 1
-#define EVPL_LOG_INFO  2
-#define EVPL_LOG_ERROR 3
-#define EVPL_LOG_FATAL 4
-
-void evpl_debug(
-    const char *mod,
-    const char *srcfile,
-    int         lineno,
-    const char *fmt,
-    ...);
-void evpl_info(
-    const char *mod,
-    const char *srcfile,
-    int         lineno,
-    const char *fmt,
-    ...);
-void evpl_error(
-    const char *mod,
-    const char *srcfile,
-    int         lineno,
-    const char *fmt,
-    ...);
-void evpl_fatal(
-    const char *mod,
-    const char *srcfile,
-    int         lineno,
-    const char *fmt,
-    ...);
-void evpl_abort(
-    const char *mod,
-    const char *srcfile,
-    int         lineno,
-    const char *fmt,
-    ...);
-
-#define evpl_fatal_if(cond, ...) \
-        if (cond)                    \
-        {                            \
-            evpl_fatal(__VA_ARGS__); \
-        }
-
-#define evpl_abort_if(cond, ...) \
-        if (cond)                    \
-        {                            \
-            evpl_abort(__VA_ARGS__); \
-        }
-
-
-#if defined(EVPL_ASSERT)
-#define evpl_assert(module, file, line, cond) \
-        if (!(cond)) { \
-            evpl_abort(module, file, line, "assertion failed: " #cond); \
-        }
-#else // if defined(EVPL_ASSERT)
-#define evpl_assert(module, file, line, cond)
-#endif // if defined(EVPL_ASSERT)
-
-#define evpl_core_debug(...)            evpl_debug("core", __FILE__, __LINE__, \
-                                                   __VA_ARGS__)
-#define evpl_core_info(...)             evpl_info("core", __FILE__, __LINE__, \
-                                                  __VA_ARGS__)
-#define evpl_core_error(...)            evpl_error("core", __FILE__, __LINE__, \
-                                                   __VA_ARGS__)
-#define evpl_core_fatal(...)            evpl_fatal("core", __FILE__, __LINE__, \
-                                                   __VA_ARGS__)
-#define evpl_core_abort(...)            evpl_abort("core", __FILE__, __LINE__, \
-                                                   __VA_ARGS__)
-
-#define evpl_core_fatal_if(cond, ...) \
-        evpl_fatal_if(cond, "core", __FILE__, __LINE__, __VA_ARGS__)
-
-#define evpl_core_abort_if(cond, ...) \
-        evpl_abort_if(cond, "core", __FILE__, __LINE__, __VA_ARGS__)
-
-#define evpl_core_assert(cond)          evpl_assert("core", __FILE__, __LINE__, cond)
-
-#ifndef unlikely
-#define unlikely(x)                     __builtin_expect(!!(x), 0)
-#endif // ifndef unlikely
-
-#ifndef likely
-#define likely(x)                       __builtin_expect(!!(x), 1)
-#endif // ifndef likely
-
-#define container_of(ptr, type, member) ({            \
-        typeof(((type *) 0)->member) * __mptr = (ptr); \
-        (type *) ((char *) __mptr - offsetof(type, member)); })
-
-#ifndef FORCE_INLINE
-#define FORCE_INLINE __attribute__((always_inline)) inline
-
-/* Allocate a iovec representing an entire evpl_buffer
- * guaranteed to be contiguous
- */
-
-void evpl_iovec_alloc_whole(
-    struct evpl       *evpl,
-    struct evpl_iovec *r_iovec);
-
-/*
- * Allocate a iovec to hold one datagram of maximal size
- * guaranteed to be contiguous
- */
-void evpl_iovec_alloc_datagram(
-    struct evpl       *evpl,
-    struct evpl_iovec *r_iovec,
-    int                size);
-
-static inline int64_t
-evpl_ts_interval(
-    const struct timespec *end,
-    const struct timespec *start)
-{
-    return NS_PER_S * (end->tv_sec - start->tv_sec) + (end->tv_nsec - start->
-                                                       tv_nsec);
-} // evpl_ts_interval
-
-static inline int
-evpl_ts_compare(
-    const struct timespec *a,
-    const struct timespec *b)
-{
-    if (a->tv_sec == b->tv_sec) {
-        if (a->tv_nsec < b->tv_nsec) {
-            return -1;
-        } else if (a->tv_nsec > b->tv_nsec) {
-            return 1;
-        }
-        return 0;
-    } else if (a->tv_sec < b->tv_sec) {
-        return -1;
-    } else {
-        return 1;
-    }
-} // evpl_ts_compare
-
 void
 __evpl_init(
     void);
@@ -327,4 +189,3 @@ evpl_activity(struct evpl *evpl)
     evpl->activity++;
 } /* evpl_activity */
 
-#endif // ifndef FORCE_INLINE

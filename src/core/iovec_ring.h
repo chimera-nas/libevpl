@@ -7,9 +7,8 @@
 #include <string.h>
 #include <sys/uio.h>
 
-#include "core/internal.h"
-#include "evpl/evpl.h"
-#include "core/buffer.h"
+#include "core/evpl.h"
+#include "core/iovec.h"
 
 struct evpl_iovec_ring {
     struct evpl_iovec *iovec;
@@ -212,7 +211,7 @@ evpl_iovec_ring_clear(
 
     while (ring->tail != ring->head) {
         iovec = &ring->iovec[ring->tail];
-        evpl_iovec_release(iovec);
+        evpl_iovec_decref(iovec);
         ring->tail = (ring->tail + 1) & ring->mask;
     }
 
@@ -278,7 +277,7 @@ evpl_iovec_ring_consume(
         evpl_core_assert(((struct evpl_buffer *) iovec->private)->refcnt > 0);
 
         if (iovec->length <= length) {
-            evpl_iovec_release(iovec);
+            evpl_iovec_decref(iovec);
             length    -= iovec->length;
             ring->tail = (ring->tail + 1) & ring->mask;
             n++;
@@ -347,7 +346,7 @@ evpl_iovec_ring_consumev(
 
         ring->length -= iovec->length;
 
-        evpl_iovec_release(iovec);
+        evpl_iovec_decref(iovec);
         ring->tail = (ring->tail + 1) & ring->mask;
 
         niov--;

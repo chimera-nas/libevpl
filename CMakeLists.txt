@@ -83,6 +83,7 @@ else()
 endif()
 
 add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
+add_definitions(-fvisibility=hidden)
 
 include_directories(3rdparty)
 include_directories(include)

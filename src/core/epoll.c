@@ -9,8 +9,8 @@
 #include <errno.h>
 
 #include "core/epoll.h"
-#include "core/internal.h"
-#include "evpl/evpl.h"
+#include "core/event_fn.h"
+#include "core/evpl.h"
 
 int
 evpl_core_init(

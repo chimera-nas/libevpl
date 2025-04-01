@@ -13,25 +13,17 @@
 #include "evpl/evpl.h"
 
 struct test_server {
-    pthread_t thread;
-    int       run;
-    int       eventfd;
+    pthread_t            thread;
+    int                  run;
+    struct evpl_doorbell doorbell;
 };
 
 static void
 server_wake(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell)
 {
-    uint64_t value;
-    ssize_t  res;
-
-    res = read(event->fd, &value, sizeof(value));
-
-    if (res != sizeof(value)) {
-        evpl_event_mark_unreadable(evpl, event);
-    }
-
+    /* do nothing */
 } /* server_wake */
 
 static void
@@ -89,14 +81,10 @@ server_function(void *ptr)
     struct evpl             *evpl;
     struct evpl_endpoint    *endpoint;
     struct evpl_http_agent  *agent;
-    struct evpl_event        event;
 
     evpl = evpl_create(NULL);
 
-    evpl_add_event(evpl, &event, server_ctx->eventfd,
-                   server_wake, NULL, NULL);
-
-    evpl_event_read_interest(evpl, &event);
+    evpl_add_doorbell(evpl, &server_ctx->doorbell, server_wake);
 
     agent = evpl_http_init(evpl);
 
@@ -157,8 +145,7 @@ main(
     CURLcode           res;
     long               http_code = 0;
 
-    server.run     = 0;
-    server.eventfd = eventfd(0, EFD_NONBLOCK);
+    server.run = 0;
 
     pthread_create(&server.thread, NULL, server_function, &server);
 
@@ -194,11 +181,10 @@ main(
 
     server.run = 0;
     __sync_synchronize();
-    uint64_t value = 1;
-    write(server.eventfd, &value, sizeof(value));
+
+    evpl_ring_doorbell(&server.doorbell);
 
     pthread_join(server.thread, NULL);
-    close(server.eventfd);
 
     return (res == CURLE_OK && http_code == 200) ? 0 : 1;
 } /* main */

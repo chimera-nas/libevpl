@@ -17,7 +17,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "core/internal.h"
+#include "core/evpl.h"
 #include "evpl/evpl.h"
 #include "core/endpoint.h"
 #include "core/protocol.h"
@@ -114,7 +114,7 @@ evpl_xlio_tcp_read(
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
 
             for (i = 0; i < niov; ++i) {
-                evpl_iovec_release(&iovec[i]);
+                evpl_iovec_decref(&iovec[i]);
             }
 
         }

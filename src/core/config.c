@@ -3,12 +3,16 @@
 // SPDX-License-Identifier: LGPL
 
 #include <unistd.h>
+#include <pthread.h>
 
-#include "core/internal.h"
+#include "core/evpl.h"
+#include "core/evpl_shared.h"
 #include "evpl/evpl.h"
+#include "core/macros.h"
 
+extern struct evpl_shared *evpl_shared;
 
-struct evpl_global_config *
+SYMBOL_EXPORT struct evpl_global_config *
 evpl_global_config_init(void)
 {
     struct evpl_global_config *config = evpl_zalloc(sizeof(*config));
@@ -57,7 +61,31 @@ evpl_global_config_init(void)
     return config;
 } /* evpl_config_init */
 
-void
+
+SYMBOL_EXPORT void
+evpl_global_config_release(struct evpl_global_config *config)
+{
+
+    if (!evpl_shared) {
+        evpl_free(config);
+        return;
+    }
+
+    pthread_mutex_lock(&evpl_shared->lock);
+
+    evpl_core_abort_if(config->refcnt == 0,
+                       "config refcnt %d", config->refcnt);
+
+    config->refcnt--;
+
+    if (config->refcnt == 0) {
+        evpl_free(config);
+    }
+
+    pthread_mutex_unlock(&evpl_shared->lock);
+} /* evpl_release_config */
+
+SYMBOL_EXPORT void
 evpl_global_config_set_max_datagram_size(
     struct evpl_global_config *config,
     unsigned int               size)
@@ -65,7 +93,7 @@ evpl_global_config_set_max_datagram_size(
     config->max_datagram_size = size;
 } /* evpl_config_set_max_datagram_size */
 
-void
+SYMBOL_EXPORT void
 evpl_global_config_set_huge_pages(
     struct evpl_global_config *config,
     int                        huge_pages)
@@ -73,7 +101,7 @@ evpl_global_config_set_huge_pages(
     config->huge_pages = huge_pages;
 } /* evpl_global_config_set_huge_pages */
 
-void
+SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_tos(
     struct evpl_global_config *config,
     uint8_t                    tos)
@@ -81,7 +109,7 @@ evpl_global_config_set_rdmacm_tos(
     config->rdmacm_tos = tos;
 } /* evpl_global_config_set_rdmacm_tos */
 
-void
+SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_srq_prefill(
     struct evpl_global_config *config,
     int                        prefill)
@@ -89,7 +117,7 @@ evpl_global_config_set_rdmacm_srq_prefill(
     config->rdmacm_srq_prefill = prefill;
 } /* evpl_global_config_set_rdmacm_srq_prefill */
 
-void
+SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_datagram_size_override(
     struct evpl_global_config *config,
     unsigned int               size)
@@ -97,7 +125,7 @@ evpl_global_config_set_rdmacm_datagram_size_override(
     config->rdmacm_datagram_size_override = size;
 } /* evpl_global_config_set_rdmacm_datagram_size_override */
 
-void
+SYMBOL_EXPORT void
 evpl_global_config_set_spin_ns(
     struct evpl_global_config *config,
     uint64_t                   ns)

@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "core/internal.h"
+#include "core/evpl.h"
 
 #define evpl_rpc2_debug(...) evpl_debug("rpc2", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_rpc2_info(...)  evpl_info("rpc2", __FILE__, __LINE__, __VA_ARGS__)

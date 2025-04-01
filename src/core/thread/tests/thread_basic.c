@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: LGPL
 
+#include <stddef.h>
+
 #include "core/test_log.h"
 #include "evpl/evpl.h"
 

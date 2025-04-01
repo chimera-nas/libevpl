@@ -4,6 +4,14 @@
 
 #pragma once
 
+#include <pthread.h>
+
+#define EVPL_INTERNAL 1
+
+#include "evpl/evpl.h"
+#include "protocol.h"
+#include "allocator.h"
+
 struct evpl_allocator;
 
 struct evpl_shared {
@@ -16,3 +24,23 @@ struct evpl_shared {
     struct evpl_protocol       *protocol[EVPL_NUM_PROTO];
     struct evpl_block_protocol *block_protocol[EVPL_NUM_BLOCK_PROTOCOL];
 };
+
+extern struct evpl_shared *evpl_shared;
+
+
+static inline void
+evpl_attach_framework_shared(enum evpl_framework_id framework_id)
+{
+    struct evpl_framework *framework = evpl_shared->framework[framework_id];
+
+    pthread_mutex_lock(&evpl_shared->lock);
+
+    if (!evpl_shared->framework_private[framework->id]) {
+
+        evpl_shared->framework_private[framework->id] = framework->init();
+
+        evpl_allocator_reregister(evpl_shared->allocator);
+    }
+
+    pthread_mutex_unlock(&evpl_shared->lock);
+} /* evpl_attach_framework_shared */

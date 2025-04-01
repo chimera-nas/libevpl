@@ -4,11 +4,10 @@
 
 #pragma once
 
-#include "core/internal.h"
-#include "core/buffer.h"
+#include "core/allocator.h"
 #include "core/iovec_ring.h"
 #include "core/dgram_ring.h"
-#include "evpl/evpl.h"
+#include "core/evpl.h"
 
 #define EVPL_MAX_PRIVATE         4096
 

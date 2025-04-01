@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "core/internal.h"
+#include "core/evpl.h"
 #include "evpl/evpl.h"
 #include "core/iovec_ring.h"
 #include "http.h"
@@ -211,7 +211,7 @@ evpl_http_request_free(
     LL_PREPEND(agent->free_requests, request);
 } /* evpl_http_request_free */
 
-struct evpl_http_agent *
+SYMBOL_EXPORT struct evpl_http_agent *
 evpl_http_init(struct evpl *evpl)
 {
     struct evpl_http_agent *agent;
@@ -223,7 +223,7 @@ evpl_http_init(struct evpl *evpl)
     return agent;
 } /* evpl_http_init */
 
-void
+SYMBOL_EXPORT void
 evpl_http_destroy(struct evpl_http_agent *agent)
 {
     struct evpl_http_request        *request;
@@ -769,7 +769,7 @@ evpl_http_accept(
 
 } /* evpl_http_accept */
 
-struct evpl_http_server *
+SYMBOL_EXPORT struct evpl_http_server *
 evpl_http_listen(
     struct evpl_http_agent       *agent,
     struct evpl_endpoint         *endpoint,
@@ -795,7 +795,7 @@ evpl_http_listen(
     return server;
 } /* evpl_http_listen */
 
-void
+SYMBOL_EXPORT void
 evpl_http_server_destroy(
     struct evpl_http_agent  *agent,
     struct evpl_http_server *server)
@@ -803,7 +803,7 @@ evpl_http_server_destroy(
     evpl_free(server);
 } /* evpl_http_server_destroy */
 
-void
+SYMBOL_EXPORT void
 evpl_http_request_add_header(
     struct evpl_http_request *request,
     const char               *name,
@@ -826,7 +826,7 @@ evpl_http_request_add_header(
 
 } /* evpl_http_request_add_header */
 
-void
+SYMBOL_EXPORT void
 evpl_http_request_add_datav(
     struct evpl_http_request *request,
     struct evpl_iovec        *iov,
@@ -850,7 +850,7 @@ evpl_http_request_add_datav(
     }
 } /* evpl_http_request_add_datav */
 
-void
+SYMBOL_EXPORT void
 evpl_http_server_set_response_length(
     struct evpl_http_request *request,
     uint64_t                  content_length)
@@ -859,13 +859,13 @@ evpl_http_server_set_response_length(
     request->response_left   = content_length;
 } /* evpl_http_server_set_response_length */
 
-void
+SYMBOL_EXPORT void
 evpl_http_server_set_response_chunked(struct evpl_http_request *request)
 {
     request->response_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
 } /* evpl_http_server_set_response_chunked */
 
-void
+SYMBOL_EXPORT void
 evpl_http_server_dispatch_default(
     struct evpl_http_request *request,
     int                       status)

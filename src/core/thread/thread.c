@@ -6,9 +6,11 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
-#include "core/internal.h"
+#include "core/evpl.h"
 #include "evpl/evpl.h"
 #include "core/evpl_shared.h"
+#include "core/event_fn.h"
+
 extern struct evpl_shared *evpl_shared;
 
 #define evpl_thread_debug(...) evpl_debug("thread", __FILE__, __LINE__, \
@@ -93,7 +95,7 @@ evpl_thread_function(void *ptr)
     return NULL;
 } /* evpl_thread_function */
 
-struct evpl_thread *
+SYMBOL_EXPORT struct evpl_thread *
 evpl_thread_create(
     struct evpl_thread_config      *config,
     evpl_thread_init_callback_t     init_function,
@@ -133,7 +135,7 @@ evpl_thread_create(
     return evpl_thread;
 } /* evpl_thread_create */
 
-void
+SYMBOL_EXPORT void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
     evpl_stop(evpl_thread->evpl);
@@ -143,7 +145,7 @@ evpl_thread_destroy(struct evpl_thread *evpl_thread)
     evpl_free(evpl_thread);
 } /* evpl_thread_destroy */
 
-struct evpl_threadpool *
+SYMBOL_EXPORT struct evpl_threadpool *
 evpl_threadpool_create(
     struct evpl_thread_config      *config,
     int                             nthreads,
@@ -169,7 +171,7 @@ evpl_threadpool_create(
     return threadpool;
 } /* evpl_threadpool_create */
 
-void
+SYMBOL_EXPORT void
 evpl_threadpool_destroy(struct evpl_threadpool *threadpool)
 {
     int i;

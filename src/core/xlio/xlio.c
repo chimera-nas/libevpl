@@ -21,12 +21,12 @@
 
 
 
-#include "core/internal.h"
+#include "core/evpl.h"
 #include "xlio.h"
 #include "evpl/evpl.h"
 #include "core/protocol.h"
 #include "core/evpl_shared.h"
-
+#include "core/poll.h"
 extern struct evpl_shared *evpl_shared;
 
 #include "common.h"

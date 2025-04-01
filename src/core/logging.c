@@ -7,12 +7,23 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <time.h>
 #include <sys/types.h>
 
-#include "core/internal.h"
+#include "logging.h"
+#include "macros.h"
+
 #include "evpl/evpl.h"
+
+
+extern evpl_log_fn EvplLog;
+void
+evpl_set_log_fn(evpl_log_fn log_fn)
+{
+    EvplLog = log_fn;
+} /* evpl_set_log_fn */
 
 static const char *level_string[] = {
     "none",
@@ -58,7 +69,7 @@ evpl_vlog(
 
 evpl_log_fn EvplLog = evpl_vlog;
 
-void
+SYMBOL_EXPORT void
 evpl_debug(
     const char *mod,
     const char *srcfile,
@@ -73,7 +84,7 @@ evpl_debug(
     va_end(argp);
 } /* evpl_debug */
 
-void
+SYMBOL_EXPORT void
 evpl_info(
     const char *mod,
     const char *srcfile,
@@ -88,7 +99,7 @@ evpl_info(
     va_end(argp);
 } /* evpl_info */
 
-void
+SYMBOL_EXPORT void
 evpl_error(
     const char *mod,
     const char *srcfile,
@@ -103,7 +114,7 @@ evpl_error(
     va_end(argp);
 } /* evpl_error */
 
-void
+SYMBOL_EXPORT void
 evpl_fatal(
     const char *mod,
     const char *srcfile,
@@ -120,7 +131,7 @@ evpl_fatal(
     exit(1);
 } /* evpl_fatal */
 
-void
+SYMBOL_EXPORT void
 evpl_abort(
     const char *mod,
     const char *srcfile,
@@ -137,64 +148,3 @@ evpl_abort(
     abort();
 } /* evpl_abort */
 
-
-void *
-evpl_malloc(unsigned int size)
-{
-    void *p = malloc(size);
-
-    if (!p) {
-        evpl_core_fatal("Failed to allocate %u bytes\n", size);
-    }
-
-    return p;
-} /* evpl_malloc */
-
-void *
-evpl_zalloc(unsigned int size)
-{
-    void *p = calloc(1, size);
-
-    if (!p) {
-        evpl_core_fatal("Failed to allocate %u bytes\n", size);
-    }
-
-    return p;
-} /* evpl_zalloc */
-
-void *
-evpl_calloc(
-    unsigned int n,
-    unsigned int size)
-{
-    void *p = calloc(n, size);
-
-    if (!p) {
-        evpl_core_fatal("Failed to allocate %u chunks of %u bytes\n", n, size);
-    }
-
-    return p;
-} /* evpl_calloc */
-
-void *
-evpl_valloc(
-    unsigned int size,
-    unsigned int alignment)
-{
-    void  *p;
-    size_t padded_size = (size + alignment - 1) & ~(alignment - 1);
-
-    p = aligned_alloc(alignment, padded_size);
-
-    if (!p) {
-        evpl_core_fatal("Failed to allocate %u bytes\n", size);
-    }
-
-    return p;
-} /* evpl_valloc */
-
-void
-evpl_free(void *p)
-{
-    free(p);
-} /* evpl_free */

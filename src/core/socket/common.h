@@ -136,12 +136,12 @@ evpl_socket_close(
     struct evpl_socket_datagram *datagram;
 
     if (s->recv1.length) {
-        evpl_iovec_release(&s->recv1);
+        evpl_iovec_decref(&s->recv1);
         s->recv1.length = 0;
     }
 
     if (s->recv2.length) {
-        evpl_iovec_release(&s->recv2);
+        evpl_iovec_decref(&s->recv2);
         s->recv2.length = 0;
     }
 
@@ -157,7 +157,7 @@ evpl_socket_close(
     while (s->free_datagrams) {
         datagram = s->free_datagrams;
         LL_DELETE(s->free_datagrams, datagram);
-        evpl_iovec_release(&datagram->iovec);
+        evpl_iovec_decref(&datagram->iovec);
         evpl_free(datagram);
     }
 

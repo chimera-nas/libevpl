@@ -16,14 +16,14 @@
 #include "uthash/uthash.h"
 #include "uthash/utlist.h"
 
+#include "core/evpl.h"
 #include "core/rdmacm/rdmacm.h"
-#include "core/internal.h"
-#include "evpl/evpl.h"
 #include "core/protocol.h"
 #include "core/bind.h"
 #include "core/endpoint.h"
 #include "core/evpl_shared.h"
-
+#include "core/event_fn.h"
+#include "core/poll.h"
 #define EVPL_RDMACM_MAX_INLINE 250
 
 extern struct evpl_shared *evpl_shared;
@@ -580,7 +580,7 @@ evpl_rdmacm_poll_cq(
                 HASH_FIND(hh, rdmacm->ids, &qp_num, sizeof(qp_num), rdmacm_id);
 
                 if (unlikely(!rdmacm_id)) {
-                    evpl_iovec_release(&req->iovec);
+                    evpl_iovec_decref(&req->iovec);
                 } else if (rdmacm_id->stream) {
 
                     bind = evpl_private2bind(rdmacm_id);
@@ -613,7 +613,7 @@ evpl_rdmacm_poll_cq(
                     bind->notify_callback(evpl, bind, &notify,
                                           bind->private_data);
 
-                    evpl_iovec_release(&req->iovec);
+                    evpl_iovec_decref(&req->iovec);
 
                 }
 
@@ -989,7 +989,7 @@ evpl_rdmacm_destroy(
             req = &dev->srq_reqs[j];
 
             if (req->used) {
-                evpl_iovec_release(&req->iovec);
+                evpl_iovec_decref(&req->iovec);
             }
         }
 

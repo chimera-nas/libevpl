@@ -11,11 +11,11 @@
 #include <mellanox/xlio_extra.h>
 #include <infiniband/verbs.h>
 
-#include "core/internal.h"
+#include "core/evpl.h"
 #include "evpl/evpl.h"
 #include "core/protocol.h"
 #include "core/endpoint.h"
-#include "core/buffer.h"
+#include "core/allocator.h"
 #include "core/bind.h"
 
 #include "uthash/utlist.h"

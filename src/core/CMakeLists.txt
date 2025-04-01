@@ -4,9 +4,25 @@
 
 set(CORE_SRC
     evpl.c
+    allocator.c
     buffer.c
+    iovec.c
     config.c
-    internal.c
+    protocol.c
+    address.c
+    endpoint.c
+    bind.c
+    logging.c
+    memory.c
+    doorbell.c
+    listen.c
+    timer.c
+    deferral.c
+    block.c
+    poll.c
+    send.c
+    recv.c
+    rdma.c
 )
 
 if (EVPL_MECH STREQUAL "epoll") 

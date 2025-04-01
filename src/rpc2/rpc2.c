@@ -5,8 +5,8 @@
 #define _GNU_SOURCE
 #include <time.h>
 
+#include "core/evpl.h"
 #include "evpl/evpl_rpc2.h"
-#include "core/internal.h"
 
 #include "uthash/utlist.h"
 
@@ -15,6 +15,7 @@
 #include "rpcrdma1_xdr.h"
 #include "evpl/evpl_rpc2_program.h"
 #include "evpl/evpl.h"
+#include "core/timing.h"
 
 struct evpl_rpc2_server {
     struct evpl_listener      *listener;
