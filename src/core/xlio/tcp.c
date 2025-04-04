@@ -55,7 +55,7 @@ evpl_xlio_prepare_iov(
     iov->iov_len  = iovec->length;
 
     if (iovec->length <= 64) {
-        send_attr->flags |= XLIO_SOCKET_SEND_FLAG_INLINE;
+        send_attr->flags = XLIO_SOCKET_SEND_FLAG_INLINE;
 
         evpl_xlio_send_completion(evpl, s, iovec->length);
     } else {

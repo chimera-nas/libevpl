@@ -111,6 +111,8 @@ evpl_xlio_init()
 
     rc = api->extra->xlio_init_ex(&init_attr);
 
+    evpl_xlio_abort_if(rc, "Failed to initialize XLIO");
+
     return api;
 } /* evpl_xlio_init */
 
