@@ -662,8 +662,8 @@ evpl_vfio_get_features(
     evpl_vfio_complete_callback_t callback,
     void                         *arg)
 {
-    int                             cid = device->adminq->sq_tail;
-    struct nvme_admin_get_features *cmd = &device->adminq->sq[cid].get_features;
+    int                             cid;
+    struct nvme_admin_get_features *cmd;
 
     cid = evpl_vfio_alloc_cid(device->adminq, callback, arg);
     cmd = &device->adminq->sq[cid].get_features;
@@ -746,7 +746,6 @@ evpl_vfio_prepare_prplist(
     uint64_t            *prpe, *prpc, prpv, end, total_len = 0;
     int                  i, j = 0;
 
-    mr               = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
     cmd->common.prp1 = 0;
     cmd->common.prp2 = 0;
 

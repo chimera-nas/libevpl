@@ -25,12 +25,16 @@ void evpl_error(
     int         lineno,
     const char *fmt,
     ...);
+
+__attribute__((noreturn))
 void evpl_fatal(
     const char *mod,
     const char *srcfile,
     int         lineno,
     const char *fmt,
     ...);
+
+__attribute__((noreturn))
 void evpl_abort(
     const char *mod,
     const char *srcfile,

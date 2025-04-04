@@ -91,4 +91,6 @@ include_directories(include)
 add_subdirectory(ext)
 add_subdirectory(src)
 
-set(XDRZCC ${XDRZCC} PARENT_SCOPE)
+if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    set(XDRZCC ${XDRZCC} PARENT_SCOPE)
+endif()

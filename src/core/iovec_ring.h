@@ -67,13 +67,14 @@ evpl_iovec_ring_check(const struct evpl_iovec_ring *ring)
                        ring->length, bytes);
 } // evpl_iovec_ring_check
 
-
 static inline void
 evpl_iovec_ring_resize(struct evpl_iovec_ring *ring)
 {
     int                new_size  = ring->size << 1;
     struct evpl_iovec *new_iovec = evpl_valloc(
         new_size * sizeof(struct evpl_iovec), ring->alignment);
+
+    evpl_core_assert(ring->iovec);
 
     if (ring->head > ring->tail) {
         memcpy(new_iovec, &ring->iovec[ring->tail], (ring->head - ring->tail) *
@@ -185,12 +186,10 @@ evpl_iovec_ring_add_new(struct evpl_iovec_ring *ring)
 
     res = &ring->iovec[ring->head];
 
-
     ring->head = (ring->head + 1) & ring->mask;
 
     return res;
 } // evpl_iovec_ring_add
-
 
 static inline void
 evpl_iovec_ring_remove(struct evpl_iovec_ring *ring)
@@ -219,7 +218,6 @@ evpl_iovec_ring_clear(
     ring->tail   = 0;
     ring->length = 0;
 } // evpl_iovec_ring_clear
-
 
 static inline int
 evpl_iovec_ring_iov(
@@ -331,7 +329,6 @@ evpl_iovec_ring_copyv(
     return niov;
 } // evpl_iovec_ring_copyv
 
-
 static inline void
 evpl_iovec_ring_consumev(
     struct evpl            *evpl,
@@ -350,7 +347,6 @@ evpl_iovec_ring_consumev(
         ring->tail = (ring->tail + 1) & ring->mask;
 
         niov--;
-
     }
 } // evpl_iovec_ring_consumev
 

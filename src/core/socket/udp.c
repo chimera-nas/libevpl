@@ -87,6 +87,8 @@ evpl_socket_udp_read(
         goto out;
     }
 
+    evpl_core_assert(res <= nmsg);
+
     for (i = 0; i < res; ++i) {
 
         datagram = datagrams[i];

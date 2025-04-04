@@ -62,7 +62,7 @@ evpl_vlog(
                    tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec, ts.tv_nsec);
 
     bp += vsnprintf(bp, (buf + sizeof(buf)) - bp, fmt, argp);
-    bp += snprintf(bp, (buf + sizeof(buf)) - bp,
+    snprintf(bp, (buf + sizeof(buf)) - bp,
                    "\" process=%lu thread=%lu level=%s module=%s file=\"%s:%d\"\n",
                    pid, tid, level, mod, srcfile, lineno);
     fprintf(stderr, "%s", buf);

@@ -26,7 +26,7 @@ evpl_iovec_reserve(
     unsigned int       max_iovecs,
     struct evpl_iovec *r_iovec)
 {
-    struct evpl_buffer *buffer = evpl->current_buffer;
+    struct evpl_buffer *buffer;
     int                 pad, left = length, chunk;
     int                 niovs = 0;
     struct evpl_iovec  *iovec;
