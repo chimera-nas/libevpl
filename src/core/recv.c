@@ -89,10 +89,10 @@ evpl_peekv(
             chunk = left;
         }
 
-        out          = &iovecs[niovs++];
-        out->data    = cur->data;
-        out->length  = chunk;
-        out->private = cur->private;
+        out               = &iovecs[niovs++];
+        out->data         = cur->data;
+        out->length       = chunk;
+        out->private_data = cur->private_data;
 
         left -= chunk;
         cur   = evpl_iovec_ring_next(&bind->iovec_recv, cur);
@@ -203,9 +203,9 @@ evpl_readv(
 
         out = &iovecs[niovs++];
 
-        out->data    = cur->data;
-        out->length  = chunk;
-        out->private = cur->private;
+        out->data         = cur->data;
+        out->length       = chunk;
+        out->private_data = cur->private_data;
         atomic_fetch_add_explicit(&evpl_iovec_buffer(out)->refcnt, 1,
                                   memory_order_relaxed)
         ;
@@ -290,9 +290,9 @@ evpl_recvv(
 
         out = &iovecs[niovs++];
 
-        out->data    = cur->data;
-        out->length  = chunk;
-        out->private = cur->private;
+        out->data         = cur->data;
+        out->length       = chunk;
+        out->private_data = cur->private_data;
         atomic_fetch_add_explicit(&evpl_iovec_buffer(out)->refcnt, 1,
                                   memory_order_relaxed)
         ;

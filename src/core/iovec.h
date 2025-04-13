@@ -7,7 +7,7 @@
 #include "core/iovec.h"
 #include "evpl/evpl.h"
 
-#define evpl_iovec_buffer(iov) ((struct evpl_buffer *) (iov)->private)
+#define evpl_iovec_buffer(iov) ((struct evpl_buffer *) (iov)->private_data)
 
 
 /* Allocate a iovec representing an entire evpl_buffer

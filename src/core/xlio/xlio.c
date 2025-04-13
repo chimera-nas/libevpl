@@ -253,7 +253,7 @@ evpl_xlio_socket_rx(
 
     iovec->data              = data;
     iovec->length            = len;
-    iovec->private           = buffer;
+    iovec->private_data      = buffer;
     bind->iovec_recv.length += len;
 
     s->readable = 1;

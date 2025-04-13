@@ -44,7 +44,7 @@ evpl_xlio_prepare_iov(
 
     iovec = &ring->iovec[pos];
 
-    buffer = iovec->private;
+    buffer = iovec->private_data;
 
     mrset = (struct ibv_mr **) evpl_buffer_framework_private(buffer,
                                                              EVPL_FRAMEWORK_XLIO);
@@ -63,7 +63,7 @@ evpl_xlio_prepare_iov(
 
         zc = evpl_xlio_alloc_zc(xlio);
 
-        zc->buffer = iovec->private;
+        zc->buffer = iovec->private_data;
         zc->length = iovec->length;
         atomic_fetch_add_explicit(&zc->buffer->refcnt, 1, memory_order_relaxed);
 

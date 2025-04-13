@@ -143,9 +143,9 @@ evpl_rpc2_iovec_skip(
             left -= inc->length;
             inc++;
         } else {
-            outc->data    = inc->data + left;
-            outc->length  = inc->length - left;
-            outc->private = inc->private;
+            outc->data         = inc->data + left;
+            outc->length       = inc->length - left;
+            outc->private_data = inc->private_data;
             inc++;
             outc++;
             left = 0;
@@ -153,9 +153,9 @@ evpl_rpc2_iovec_skip(
     }
 
     while (inc < in_iov + niov) {
-        outc->data    = inc->data;
-        outc->length  = inc->length;
-        outc->private = inc->private;
+        outc->data         = inc->data;
+        outc->length       = inc->length;
+        outc->private_data = inc->private_data;
         inc++;
         outc++;
     }
@@ -366,9 +366,9 @@ evpl_rpc2_event(
 
                     while (read_list) {
 
-                        segment_iov.data    = msg->read_chunk.iov->data + segment_offset;
-                        segment_iov.length  = read_list->entry.target.length;
-                        segment_iov.private = msg->read_chunk.iov->private;
+                        segment_iov.data         = msg->read_chunk.iov->data + segment_offset;
+                        segment_iov.length       = read_list->entry.target.length;
+                        segment_iov.private_data = msg->read_chunk.iov->private_data;
 
                         evpl_rdma_read(evpl, msg->bind,
                                        read_list->entry.target.handle, read_list->entry.target.offset,
@@ -558,9 +558,9 @@ evpl_rpc2_send_reply(
                 }
 
                 if (target->length) {
-                    segment_iov.data    = msg->write_chunk.iov->data + segment_offset;
-                    segment_iov.length  = target->length;
-                    segment_iov.private = msg->write_chunk.iov->private;
+                    segment_iov.data         = msg->write_chunk.iov->data + segment_offset;
+                    segment_iov.length       = target->length;
+                    segment_iov.private_data = msg->write_chunk.iov->private_data;
 
                     evpl_rpc2_abort_if(msg->write_chunk.niov > 1, "write_chunk.niov > 1 unsupported atm");
 
@@ -662,11 +662,11 @@ evpl_rpc2_send_reply(
 
         xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
 
-        msg->reply_iov->data    = msg_iov[0].data;
-        msg->reply_iov->length  = offset;
-        msg->reply_iov->private = msg_iov[0].private;
-        msg->reply_niov         = 1;
-        msg->reply_length       = offset;
+        msg->reply_iov->data         = msg_iov[0].data;
+        msg->reply_iov->length       = offset;
+        msg->reply_iov->private_data = msg_iov[0].private_data;
+        msg->reply_niov              = 1;
+        msg->reply_length            = offset;
 
         msg_iov[0].data   += offset;
         msg_iov[0].length -= offset;
@@ -680,9 +680,9 @@ evpl_rpc2_send_reply(
             }
             xdr_dbuf_alloc_space(reply_segment_iov, sizeof(*reply_segment_iov), msg->dbuf);
 
-            reply_segment_iov->data    = msg_iov[0].data + reply_offset;
-            reply_segment_iov->length  = reply_chunk->target[i].length;
-            reply_segment_iov->private = msg_iov[0].private;
+            reply_segment_iov->data         = msg_iov[0].data + reply_offset;
+            reply_segment_iov->length       = reply_chunk->target[i].length;
+            reply_segment_iov->private_data = msg_iov[0].private_data;
 
             evpl_rdma_write(evpl, msg->bind,
                             reply_chunk->target[i].handle,

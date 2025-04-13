@@ -59,9 +59,9 @@ evpl_iovec_reserve(
 
         iovec = &r_iovec[niovs++];
 
-        iovec->private = buffer;
-        iovec->data    = buffer->data + buffer->used + pad;
-        iovec->length  = chunk - pad;
+        iovec->private_data = buffer;
+        iovec->data         = buffer->data + buffer->used + pad;
+        iovec->length       = chunk - pad;
 
         left -= chunk - pad;
 
@@ -139,9 +139,9 @@ evpl_iovec_alloc_whole(
 
     buffer = evpl_buffer_alloc(evpl);
 
-    r_iovec->data    = buffer->data;
-    r_iovec->length  = buffer->size;
-    r_iovec->private = buffer;
+    r_iovec->data         = buffer->data;
+    r_iovec->length       = buffer->size;
+    r_iovec->private_data = buffer;
 } /* evpl_iovec_alloc_whole */
 
 void
@@ -158,9 +158,9 @@ evpl_iovec_alloc_datagram(
 
     buffer = evpl->datagram_buffer;
 
-    r_iovec->data    = buffer->data + buffer->used;
-    r_iovec->length  = size;
-    r_iovec->private = buffer;
+    r_iovec->data         = buffer->data + buffer->used;
+    r_iovec->length       = size;
+    r_iovec->private_data = buffer;
 
     buffer->used += size;
     atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);

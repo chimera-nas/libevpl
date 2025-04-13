@@ -12,10 +12,10 @@ struct evpl_buffer;
 
 struct evpl_iovec
 {
-    void           *data;
-    unsigned int    length;
-    unsigned int    pad;
-    void            *private; /* for internal use by livbevpl only */
+    void *data;
+    unsigned int length;
+    unsigned int pad;
+    void *private_data; /* for internal use by livbevpl only */
 };
 
 int evpl_iovec_alloc(
@@ -40,7 +40,6 @@ void evpl_iovec_commit(
 
 void evpl_iovec_release(
     struct evpl_iovec *iovec);
-
 
 const void *
 evpl_iovec_data(
