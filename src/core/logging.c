@@ -63,8 +63,8 @@ evpl_vlog(
 
     bp += vsnprintf(bp, (buf + sizeof(buf)) - bp, fmt, argp);
     snprintf(bp, (buf + sizeof(buf)) - bp,
-                   "\" process=%lu thread=%lu level=%s module=%s file=\"%s:%d\"\n",
-                   pid, tid, level, mod, srcfile, lineno);
+             "\" process=%lu thread=%lu level=%s module=%s file=\"%s:%d\"\n",
+             pid, tid, level, mod, srcfile, lineno);
     fprintf(stderr, "%s", buf);
 } /* evpl_vlog */
 

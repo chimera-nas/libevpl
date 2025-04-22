@@ -9,7 +9,7 @@
 #include "core/evpl.h"
 #include "evpl/evpl.h"
 #include "core/iovec_ring.h"
-#include "http.h"
+#include "evpl/evpl_http.h"
 #include "uthash/utlist.h"
 
 #define evpl_http_debug(...) evpl_debug("http", __FILE__, __LINE__, __VA_ARGS__)
@@ -23,16 +23,6 @@
 
 #define evpl_http_abort_if(cond, ...) \
         evpl_abort_if(cond, "http", __FILE__, __LINE__, __VA_ARGS__)
-
-enum evpl_http_request_type {
-    EVPL_HTTP_REQUEST_TYPE_UNKNOWN,
-    EVPL_HTTP_REQUEST_TYPE_GET,
-    EVPL_HTTP_REQUEST_TYPE_HEAD,
-    EVPL_HTTP_REQUEST_TYPE_POST,
-    EVPL_HTTP_REQUEST_TYPE_PUT,
-    EVPL_HTTP_REQUEST_TYPE_DELETE,
-
-};
 
 enum evpl_http_request_state {
     EVPL_HTTP_REQUEST_STATE_INIT,
@@ -124,6 +114,10 @@ evpl_http_response_status_string(int status)
     switch (status) {
         case 200:
             return "OK";
+        case 400:
+            return "Bad Request";
+        case 500:
+            return "Internal Server Error";
         case 404:
             return "Not Found";
         default:
@@ -300,7 +294,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
     struct evpl_http_request        *request;
     struct evpl_http_request_header *header;
     struct evpl                     *evpl = agent->evpl;
-    char                             line[256];
+    char                             line[4096];
     int                              rc;
     char                            *token, *saveptr;
 
@@ -472,6 +466,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                                          agent,
                                          request,
                                          EVPL_HTTP_NOTIFY_RECEIVE_DATA,
+                                         request->request_type,
+                                         request->uri,
                                          server->private_data);
             }
 
@@ -485,6 +481,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                                              agent,
                                              request,
                                              EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
+                                             request->request_type,
+                                             request->uri,
                                              server->private_data);
                 }
             }
@@ -548,12 +546,16 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                                              agent,
                                              request,
                                              EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
+                                             request->request_type,
+                                             request->uri,
                                              server->private_data);
                 } else if (received) {
                     request->notify_callback(evpl,
                                              agent,
                                              request,
                                              EVPL_HTTP_NOTIFY_RECEIVE_DATA,
+                                             request->request_type,
+                                             request->uri,
                                              server->private_data);
                 }
             }
@@ -681,6 +683,8 @@ evpl_http_server_flush(
                                          agent,
                                          request,
                                          EVPL_HTTP_NOTIFY_WANT_DATA,
+                                         request->request_type,
+                                         request->uri,
                                          server->private_data);
                 break;
             }
@@ -735,6 +739,8 @@ evpl_http_server_flush(
                                          agent,
                                          request,
                                          EVPL_HTTP_NOTIFY_WANT_DATA,
+                                         request->request_type,
+                                         request->uri,
                                          server->private_data);
                 break;
             }

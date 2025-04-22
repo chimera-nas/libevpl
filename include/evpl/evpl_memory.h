@@ -6,48 +6,59 @@
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_memory.h directly, include evpl/evpl.h instead"
-#endif
+#endif /* ifndef EVPL_INCLUDED */
 
 struct evpl_buffer;
 
-struct evpl_iovec
-{
-    void *data;
+struct evpl_iovec {
+    void        *data;
     unsigned int length;
     unsigned int pad;
-    void *private_data; /* for internal use by livbevpl only */
+    void        *private_data; /* for internal use by livbevpl only */
 };
 
 int evpl_iovec_alloc(
-    struct evpl *evpl,
-    unsigned int length,
-    unsigned int alignment,
-    unsigned int max_iovecs,
+    struct evpl       *evpl,
+    unsigned int       length,
+    unsigned int       alignment,
+    unsigned int       max_iovecs,
     struct evpl_iovec *r_iovec);
 
 int evpl_iovec_reserve(
-    struct evpl *evpl,
-    unsigned int length,
-    unsigned int alignment,
-    unsigned int max_vec,
+    struct evpl       *evpl,
+    unsigned int       length,
+    unsigned int       alignment,
+    unsigned int       max_vec,
     struct evpl_iovec *r_iovec);
 
 void evpl_iovec_commit(
-    struct evpl *evpl,
-    unsigned int alignment,
+    struct evpl       *evpl,
+    unsigned int       alignment,
     struct evpl_iovec *iovecs,
-    int niovs);
+    int                niovs);
 
 void evpl_iovec_release(
     struct evpl_iovec *iovec);
 
-const void *
-evpl_iovec_data(
-    const struct evpl_iovec *iovec);
+static inline const void *
+evpl_iovec_data(const struct evpl_iovec *iovec)
+{
+    return iovec->data;
+} /* evpl_iovec_data */
 
-unsigned int
-evpl_iovec_length(
-    const struct evpl_iovec *iovec);
+static inline unsigned int
+evpl_iovec_length(const struct evpl_iovec *iovec)
+{
+    return iovec->length;
+} /* evpl_iovec_length */
+
+static inline void
+evpl_iovec_set_length(
+    struct evpl_iovec *iovec,
+    unsigned int       length)
+{
+    iovec->length = length;
+} /* evpl_iovec_set_length */
 
 void evpl_iovec_addref(
     struct evpl_iovec *iovec);

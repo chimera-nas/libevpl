@@ -1,3 +1,6 @@
 [submodule "ext/xdrzcc"]
 	path = ext/xdrzcc
 	url = https://github.com/chimera-nas/xdrzcc.git
+[submodule "ext/prometheus-c"]
+	path = ext/prometheus-c
+	url = git@github.com:chimera-nas/prometheus-c.git

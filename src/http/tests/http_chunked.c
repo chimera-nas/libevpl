@@ -9,8 +9,8 @@
 #include <pthread.h>
 #include <curl/curl.h>
 
-#include "http/http.h"
 #include "evpl/evpl.h"
+#include "evpl/evpl_http.h"
 
 struct test_server {
     pthread_t            thread;
@@ -28,11 +28,13 @@ server_wake(
 
 static void
 server_notify(
-    struct evpl               *evpl,
-    struct evpl_http_agent    *agent,
-    struct evpl_http_request  *request,
-    enum evpl_http_notify_type notify_type,
-    void                      *private_data)
+    struct evpl                *evpl,
+    struct evpl_http_agent     *agent,
+    struct evpl_http_request   *request,
+    enum evpl_http_notify_type  notify_type,
+    enum evpl_http_request_type request_type,
+    const char                 *uri,
+    void                       *private_data)
 {
     struct evpl_iovec iov;
 

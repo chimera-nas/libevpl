@@ -1,8 +1,6 @@
-// SPDX-FileCopyrightText: 2025 Ben Jarvis
-//
-// SPDX-License-Identifier: LGPL
-
 #pragma once
+
+#include <evpl/evpl.h>
 
 struct evpl;
 struct evpl_http_agent;
@@ -26,12 +24,23 @@ enum evpl_http_notify_type {
     EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE,
 };
 
+enum evpl_http_request_type {
+    EVPL_HTTP_REQUEST_TYPE_UNKNOWN,
+    EVPL_HTTP_REQUEST_TYPE_GET,
+    EVPL_HTTP_REQUEST_TYPE_HEAD,
+    EVPL_HTTP_REQUEST_TYPE_POST,
+    EVPL_HTTP_REQUEST_TYPE_PUT,
+    EVPL_HTTP_REQUEST_TYPE_DELETE,
+
+};
 typedef void (*evpl_http_notify_callback_t)(
-    struct evpl               *evpl,
-    struct evpl_http_agent    *agent,
-    struct evpl_http_request  *request,
-    enum evpl_http_notify_type notify_type,
-    void                      *private_data);
+    struct evpl                *evpl,
+    struct evpl_http_agent     *agent,
+    struct evpl_http_request   *request,
+    enum evpl_http_notify_type  notify_type,
+    enum evpl_http_request_type request_type,
+    const char                 *uri,
+    void                       *private_data);
 
 typedef void (*evpl_http_dispatch_callback_t)(
     struct evpl                 *evpl,
