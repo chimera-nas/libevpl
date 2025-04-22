@@ -17,6 +17,8 @@
 #include "evpl/evpl.h"
 #include "core/timing.h"
 
+#include "prometheus-c.h"
+
 struct evpl_rpc2_server {
     struct evpl_listener      *listener;
     struct evpl_rpc2_program **programs;
@@ -24,11 +26,11 @@ struct evpl_rpc2_server {
 };
 
 struct evpl_rpc2_thread {
-    struct evpl              *evpl;
-    struct evpl_rpc2_server  *server;
-    struct evpl_rpc2_msg     *free_msg;
-    struct evpl_rpc2_metric **metrics;
-    void                     *private_data;
+    struct evpl                            *evpl;
+    struct evpl_rpc2_server                *server;
+    struct evpl_rpc2_msg                   *free_msg;
+    struct prometheus_histogram_instance ***metrics;
+    void                                   *private_data;
 };
 
 static struct evpl_rpc2_msg *
@@ -227,7 +229,7 @@ evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
                     program->version == rpc_msg->body.cbody.vers) {
 
                     msg->program = program;
-                    msg->metric  = &thread->metrics[i][msg->proc];
+                    msg->metric  = thread->metrics[i][msg->proc];
                     break;
                 }
             }
@@ -505,7 +507,6 @@ evpl_rpc2_send_reply(
     int                   msg_niov,
     int                   length)
 {
-    struct evpl_rpc2_metric *metric = msg->metric;
     struct evpl_iovec        iov, reply_iov;
     int                      reply_len, reply_niov, offset, rpc_len;
     uint32_t                 hdr, segment_offset, write_left, left, chunk, reply_offset;
@@ -645,16 +646,7 @@ evpl_rpc2_send_reply(
 
     elapsed = evpl_ts_interval(&now, &msg->timestamp);
 
-    metric->total_latency += elapsed;
-    metric->total_calls++;
-
-    if (elapsed < metric->min_latency || metric->min_latency == 0) {
-        metric->min_latency = elapsed;
-    }
-
-    if (elapsed > metric->max_latency) {
-        metric->max_latency = elapsed;
-    }
+    prometheus_histogram_sample(msg->metric, elapsed);
 
     if (reduce) {
 
@@ -747,7 +739,9 @@ evpl_rpc2_attach(
     struct evpl_rpc2_server *server,
     void                    *private_data)
 {
-    struct evpl_rpc2_thread *thread;
+    struct evpl_rpc2_thread  *thread;
+    struct evpl_rpc2_program *program;
+    int                       i, j;
 
     thread = evpl_zalloc(sizeof(*thread));
 
@@ -756,10 +750,19 @@ evpl_rpc2_attach(
     thread->private_data = private_data;
     thread->metrics      = evpl_zalloc(server->nprograms * sizeof(*thread->metrics));
 
-    for (int i = 0; i < server->nprograms; i++) {
+    for (i = 0; i < server->nprograms; i++) {
+
+        program = server->programs[i];
+
         thread->metrics[i] = evpl_zalloc(
-            (server->programs[i]->maxproc + 1) * sizeof(struct evpl_rpc2_metric)
+            (program->maxproc + 1) * sizeof(struct prometheus_histogram_instance *)
             );
+
+        for (j = 0; j <= program->maxproc; j++) {
+            if (program->metrics[j]) {
+                thread->metrics[i][j] = prometheus_histogram_series_create_instance(program->metrics[j]);
+            }
+        }
     }
 
     evpl_listener_attach(thread->evpl, server->listener, evpl_rpc2_accept, thread);
@@ -774,40 +777,17 @@ evpl_rpc2_detach(struct evpl_rpc2_thread *thread)
     int                       i, j;
     struct evpl_rpc2_server  *server = thread->server;
     struct evpl_rpc2_program *program;
-    struct evpl_rpc2_metric  *shared_metric, *thread_metric;
     struct evpl_rpc2_msg     *msg;
 
     evpl_listener_detach(thread->evpl, thread->server->listener);
 
     for (i = 0; i < server->nprograms; i++) {
-
         program = server->programs[i];
-
-        pthread_mutex_lock(&program->metrics_lock);
-
         for (j = 0; j <= program->maxproc; j++) {
-
-            shared_metric = &program->metrics[j];
-            thread_metric = &thread->metrics[i][j];
-
-            if (thread_metric->total_calls == 0) {
-                continue;
-            }
-
-            shared_metric->total_latency += thread_metric->total_latency;
-            shared_metric->total_calls   += thread_metric->total_calls;
-
-            if (thread_metric->min_latency < shared_metric->min_latency ||
-                shared_metric->min_latency == 0) {
-                shared_metric->min_latency = thread_metric->min_latency;
-            }
-
-            if (thread_metric->max_latency > shared_metric->max_latency) {
-                shared_metric->max_latency = thread_metric->max_latency;
+            if (thread->metrics[i][j]) {
+                prometheus_histogram_series_destroy_instance(program->metrics[j], thread->metrics[i][j]);
             }
         }
-
-        pthread_mutex_unlock(&program->metrics_lock);
     }
 
     for (i = 0; i < server->nprograms; i++) {
