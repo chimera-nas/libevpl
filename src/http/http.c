@@ -61,6 +61,7 @@ struct evpl_http_request {
     enum evpl_http_request_transfer_encoding request_transfer_encoding;
     enum evpl_http_request_transfer_encoding response_transfer_encoding;
     evpl_http_notify_callback_t              notify_callback;
+    void                                    *notify_data;
     uint64_t                                 request_length;
     uint64_t                                 request_left;
     uint64_t                                 request_chunk_left;
@@ -68,6 +69,7 @@ struct evpl_http_request {
     uint64_t                                 response_left;
     uint64_t                                 request_flags;
     int                                      status;
+    int                                      uri_len;
     struct evpl_http_conn                   *conn;
     struct evpl_iovec_ring                   send_ring;
     struct evpl_iovec_ring                   recv_ring;
@@ -92,7 +94,6 @@ struct evpl_http_conn {
 struct evpl_http_server {
     struct evpl_http_agent       *agent;
     struct evpl_listener         *listener;
-    struct evpl_bind             *bind;
     void                         *private_data;
     evpl_http_dispatch_callback_t dispatch_callback;
 };
@@ -112,14 +113,88 @@ static const char *
 evpl_http_response_status_string(int status)
 {
     switch (status) {
+        case 100:
+            return "Continue";
+        case 101:
+            return "Switching Protocols";
         case 200:
             return "OK";
+        case 201:
+            return "Created";
+        case 202:
+            return "Accepted";
+        case 203:
+            return "Non-Authoritative Information";
+        case 204:
+            return "No Content";
+        case 205:
+            return "Reset Content";
+        case 206:
+            return "Partial Content";
+        case 300:
+            return "Multiple Choices";
+        case 301:
+            return "Moved Permanently";
+        case 302:
+            return "Found";
+        case 303:
+            return "See Other";
+        case 304:
+            return "Not Modified";
+        case 305:
+            return "Use Proxy";
+        case 307:
+            return "Temporary Redirect";
         case 400:
             return "Bad Request";
-        case 500:
-            return "Internal Server Error";
+        case 401:
+            return "Unauthorized";
+        case 402:
+            return "Payment Required";
+        case 403:
+            return "Forbidden";
         case 404:
             return "Not Found";
+        case 405:
+            return "Method Not Allowed";
+        case 406:
+            return "Not Acceptable";
+        case 407:
+            return "Proxy Authentication Required";
+        case 408:
+            return "Request Timeout";
+        case 409:
+            return "Conflict";
+        case 410:
+            return "Gone";
+        case 411:
+            return "Length Required";
+        case 412:
+            return "Precondition Failed";
+        case 413:
+            return "Payload Too Large";
+        case 414:
+            return "URI Too Long";
+        case 415:
+            return "Unsupported Media Type";
+        case 416:
+            return "Range Not Satisfiable";
+        case 417:
+            return "Expectation Failed";
+        case 426:
+            return "Upgrade Required";
+        case 500:
+            return "Internal Server Error";
+        case 501:
+            return "Not Implemented";
+        case 502:
+            return "Bad Gateway";
+        case 503:
+            return "Service Unavailable";
+        case 504:
+            return "Gateway Timeout";
+        case 505:
+            return "HTTP Version Not Supported";
         default:
             return "Unknown";
     } /* switch */
@@ -285,6 +360,29 @@ evpl_http_parse_line(
     return -1;
 } /* evpl_http_parse_line */
 
+static inline int
+evpl_copy_string(
+    char       *dst,
+    const char *src,
+    int         maxlen)
+{
+    const char *sp = src;
+    char       *dp = dst;
+
+    while (*sp) {
+
+        if (unlikely(dp - dst >= maxlen - 1)) {
+            return -1;
+        }
+
+        *dp++ = *sp++;
+    }
+
+    *dp = '\0';
+
+    return dp - dst;
+} /* evpl_copy_string */
+
 static void
 evpl_http_server_handle_data(struct evpl_http_conn *conn)
 {
@@ -350,7 +448,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             return;
         }
 
-        strncpy(request->uri, token, sizeof(request->uri) - 1);
+        request->uri_len = evpl_copy_string(request->uri, token, sizeof(request->uri));
 
         token = strtok_r(NULL, " \t", &saveptr);
 
@@ -395,6 +493,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
 
             server->dispatch_callback(evpl, agent, request,
                                       &request->notify_callback,
+                                      &request->notify_data,
                                       server->private_data);
         } else {
             header = evpl_http_request_header_alloc(agent);
@@ -461,13 +560,14 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                 evpl_iovec_ring_add(&request->recv_ring, &iov);
             }
 
-            if (request->notify_callback) {
+            if (request->notify_callback && evpl_iovec_ring_elements(&request->recv_ring) > 0) {
                 request->notify_callback(evpl,
                                          agent,
                                          request,
                                          EVPL_HTTP_NOTIFY_RECEIVE_DATA,
                                          request->request_type,
                                          request->uri,
+                                         request->notify_data,
                                          server->private_data);
             }
 
@@ -483,6 +583,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                                              EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
                                              request->request_type,
                                              request->uri,
+                                             request->notify_data,
                                              server->private_data);
                 }
             }
@@ -548,6 +649,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                                              EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
                                              request->request_type,
                                              request->uri,
+                                             request->notify_data,
                                              server->private_data);
                 } else if (received) {
                     request->notify_callback(evpl,
@@ -556,6 +658,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                                              EVPL_HTTP_NOTIFY_RECEIVE_DATA,
                                              request->request_type,
                                              request->uri,
+                                             request->notify_data,
                                              server->private_data);
                 }
             }
@@ -656,6 +759,7 @@ evpl_http_server_flush(
 
     DL_FOREACH_SAFE(conn->pending_requests, request, tmp)
     {
+
         if (!(request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_READY)) {
             break;
         }
@@ -676,6 +780,14 @@ evpl_http_server_flush(
             }
 
             if (request->response_left == 0) {
+                request->notify_callback(evpl,
+                                         agent,
+                                         request,
+                                         EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE,
+                                         request->request_type,
+                                         request->uri,
+                                         request->notify_data,
+                                         server->private_data);
                 DL_DELETE(conn->pending_requests, request);
                 evpl_http_request_free(conn->agent, request);
             } else {
@@ -685,6 +797,7 @@ evpl_http_server_flush(
                                          EVPL_HTTP_NOTIFY_WANT_DATA,
                                          request->request_type,
                                          request->uri,
+                                         request->notify_data,
                                          server->private_data);
                 break;
             }
@@ -741,6 +854,7 @@ evpl_http_server_flush(
                                          EVPL_HTTP_NOTIFY_WANT_DATA,
                                          request->request_type,
                                          request->uri,
+                                         request->notify_data,
                                          server->private_data);
                 break;
             }
@@ -776,9 +890,9 @@ evpl_http_accept(
 } /* evpl_http_accept */
 
 SYMBOL_EXPORT struct evpl_http_server *
-evpl_http_listen(
+evpl_http_attach(
     struct evpl_http_agent       *agent,
-    struct evpl_endpoint         *endpoint,
+    struct evpl_listener         *listener,
     evpl_http_dispatch_callback_t dispatch_callback,
     void                         *private_data)
 {
@@ -787,16 +901,11 @@ evpl_http_listen(
     server = evpl_zalloc(sizeof(*server));
 
     server->agent             = agent;
+    server->listener          = listener;
     server->private_data      = private_data;
     server->dispatch_callback = dispatch_callback;
-    server->listener          = evpl_listener_create();
 
-    evpl_listener_attach(agent->evpl, server->listener, evpl_http_accept, server);
-
-    evpl_listen(
-        server->listener,
-        EVPL_STREAM_SOCKET_TCP,
-        endpoint);
+    evpl_listener_attach(agent->evpl, listener, evpl_http_accept, server);
 
     return server;
 } /* evpl_http_listen */
@@ -806,8 +915,15 @@ evpl_http_server_destroy(
     struct evpl_http_agent  *agent,
     struct evpl_http_server *server)
 {
+    evpl_listener_detach(agent->evpl, server->listener);
     evpl_free(server);
 } /* evpl_http_server_destroy */
+
+SYMBOL_EXPORT enum evpl_http_request_type
+evpl_http_request_type(struct evpl_http_request *request)
+{
+    return request->request_type;
+} /* evpl_http_request_type */
 
 SYMBOL_EXPORT void
 evpl_http_request_add_header(
@@ -836,7 +952,7 @@ SYMBOL_EXPORT void
 evpl_http_request_add_datav(
     struct evpl_http_request *request,
     struct evpl_iovec        *iov,
-    size_t                    niov)
+    int                       niov)
 {
     int i;
 
@@ -884,3 +1000,67 @@ evpl_http_server_dispatch_default(
 
     evpl_defer(evpl, &conn->flush);
 } /* evpl_http_server_complete_request */
+
+SYMBOL_EXPORT const char *
+evpl_http_request_type_to_string(struct evpl_http_request *request)
+{
+    switch (request->request_type) {
+        case EVPL_HTTP_REQUEST_TYPE_GET:
+            return "Get";
+        case EVPL_HTTP_REQUEST_TYPE_POST:
+            return "Post";
+        case EVPL_HTTP_REQUEST_TYPE_PUT:
+            return "Put";
+        case EVPL_HTTP_REQUEST_TYPE_DELETE:
+            return "Delete";
+        case EVPL_HTTP_REQUEST_TYPE_HEAD:
+            return "Head";
+        default:
+            return "Unknown";
+    } /* switch */
+} /* evpl_http_request_type_to_string */
+
+SYMBOL_EXPORT const char *
+evpl_http_request_url(
+    struct evpl_http_request *request,
+    int                      *len)
+{
+    if (len) {
+        *len = request->uri_len;
+    }
+
+    return request->uri;
+} /* evpl_http_request_url */
+
+SYMBOL_EXPORT const char *
+evpl_http_request_header(
+    struct evpl_http_request *request,
+    const char               *name)
+{
+    struct evpl_http_request_header *header;
+
+    DL_FOREACH(request->request_headers, header)
+    {
+        if (strncasecmp(header->name, name, sizeof(header->name) - 1) == 0) {
+            return header->value;
+        }
+    }
+
+    return NULL;
+} /* evpl_http_request_header */
+
+SYMBOL_EXPORT uint64_t
+evpl_http_request_get_data_avail(struct evpl_http_request *request)
+{
+    return evpl_iovec_ring_bytes(&request->recv_ring);
+} /* evpl_http_request_get_data_avail */
+
+SYMBOL_EXPORT int
+evpl_http_request_get_datav(
+    struct evpl              *evpl,
+    struct evpl_http_request *request,
+    struct evpl_iovec        *iov,
+    int                       length)
+{
+    return evpl_iovec_ring_copyv(evpl, iov, &request->recv_ring, length);
+} /* evpl_http_request_get_datav */

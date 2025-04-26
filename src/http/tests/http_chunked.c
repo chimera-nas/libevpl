@@ -34,6 +34,7 @@ server_notify(
     enum evpl_http_notify_type  notify_type,
     enum evpl_http_request_type request_type,
     const char                 *uri,
+    void                       *notify_data,
     void                       *private_data)
 {
     struct evpl_iovec iov;
@@ -71,10 +72,12 @@ server_dispatch(
     struct evpl_http_agent      *agent,
     struct evpl_http_request    *request,
     evpl_http_notify_callback_t *notify_callback,
+    void                       **notify_data,
     void                        *private_data)
 {
     fprintf(stderr, "dispatch request\n");
     *notify_callback = server_notify;
+    *notify_data     = NULL;
 } /* server_dispatch */
 
 void *
@@ -84,6 +87,7 @@ server_function(void *ptr)
     struct evpl_http_server *server;
     struct evpl             *evpl;
     struct evpl_endpoint    *endpoint;
+    struct evpl_listener    *listener;
     struct evpl_http_agent  *agent;
 
     evpl = evpl_create(NULL);
@@ -94,7 +98,11 @@ server_function(void *ptr)
 
     endpoint = evpl_endpoint_create("0.0.0.0", 80);
 
-    server = evpl_http_listen(agent, endpoint, server_dispatch, NULL);
+    listener = evpl_listener_create();
+
+    server = evpl_http_attach(agent, listener, server_dispatch, NULL);
+
+    evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
 
     __sync_synchronize();
 
@@ -106,6 +114,8 @@ server_function(void *ptr)
 
     evpl_http_server_destroy(agent, server);
     evpl_http_destroy(agent);
+
+    evpl_listener_destroy(listener);
 
     evpl_destroy(evpl);
 

@@ -40,7 +40,7 @@ void evpl_iovec_commit(
 void evpl_iovec_release(
     struct evpl_iovec *iovec);
 
-static inline const void *
+static inline void *
 evpl_iovec_data(const struct evpl_iovec *iovec)
 {
     return iovec->data;
