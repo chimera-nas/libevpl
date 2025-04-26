@@ -978,7 +978,12 @@ evpl_http_server_set_response_length(
     uint64_t                  content_length)
 {
     request->response_length = content_length;
-    request->response_left   = content_length;
+
+    if (request->request_type == EVPL_HTTP_REQUEST_TYPE_HEAD) {
+        request->response_left = 0;
+    } else {
+        request->response_left = content_length;
+    }
 } /* evpl_http_server_set_response_length */
 
 SYMBOL_EXPORT void
