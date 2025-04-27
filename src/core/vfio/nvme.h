@@ -12,6 +12,14 @@
 
 #pragma pack(push, 1)
 
+/* 128‑bit Scatter‑Gather List descriptor – NVMe 1.4 §4.4 */
+struct nvme_sgl_desc {
+    uint64_t addr;      /* byte address */
+    uint32_t length;    /* length in bytes */
+    uint8_t  rsvd[3];
+    uint8_t  type;      /* lower 4 bits = sub‑type, upper 4 bits = type */
+};
+
 enum {
     NVME_CMD_FLUSH               = 0x00,
     NVME_CMD_WRITE               = 0x01,
@@ -132,6 +140,11 @@ enum {
     NVME_VENDOR_ID_REDHAT  = 0x1B36, /* As seen from things like QEMU NVM Express Controllers */
 };
 
+enum {
+    NVME_SGL_FMT_DATA_DESC = 0x00, /* Data block descriptor            */
+    NVME_SGL_FMT_SEG_DESC  = 0x02, /* SGL segment descriptor           */
+};
+
 #define NVME_WORD_SIZE_BYTES                4
 #define NVME_ERROR_LOGPAGE_REPORTED_ENTRIES 64
 #define NVME_ERROR_ENTRY_WORDS              16
@@ -218,7 +231,9 @@ struct nvme_identify_ctlr {
     uint16_t           awun;
     uint16_t           awupf;
     uint8_t            nvscc;
-    uint8_t            rsvd531[173];
+    uint8_t            rsvd531[5];
+    uint32_t           sgls;
+    uint8_t            rsvd540[164];
     uint8_t            rsvd704[1344];
     uint8_t            psd[1024];
     uint8_t            vs[1024];
@@ -322,7 +337,7 @@ struct nvme_controller_reg {
 struct nvme_command_common {
     /* Command DWord 0 */
     uint8_t  opc;
-    uint8_t  fuse : 2; /* fuse bit will be set if command is desired be atomic with another */
+    uint8_t  fuse : 2;
     uint8_t  rsvd : 4;
     uint8_t  psdt : 2;
     uint16_t cid;
@@ -330,8 +345,13 @@ struct nvme_command_common {
     uint32_t nsid;
     uint64_t cdw2_3;
     uint64_t mptr;
-    uint64_t prp1; /* we always use prp, so exclude sg, which could be a union. */
-    uint64_t prp2;
+    union {
+        struct {
+            uint64_t prp1;
+            uint64_t prp2;
+        };                        /* legacy direct access (cmd.common.prp1/prp2) */
+        struct nvme_sgl_desc sgl; /* inline SGL or segment descriptor           */
+    };
 
     /* Command-Specific Dword 10-15 follows */
     /* per specific command */

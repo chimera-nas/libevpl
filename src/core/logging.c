@@ -45,7 +45,7 @@ evpl_vlog(
 {
     struct timespec ts;
     struct tm       tm_info;
-    char            buf[256], *bp = buf;
+    char            buf[512], *bp = buf;
     uint64_t        pid, tid;
 
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -146,6 +146,7 @@ evpl_abort(
     evpl_vlog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
+    __builtin_trap();
     abort();
 } /* evpl_abort */
 

@@ -956,12 +956,12 @@ evpl_http_request_add_datav(
 {
     int i;
 
+    evpl_http_abort_if(request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED, "request already finished");
+
     if (niov == 0) {
         request->request_flags |= EVPL_HTTP_REQUEST_RESPONSE_FINISHED;
         return;
     }
-
-    evpl_http_abort_if(request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED, "request already finished");
 
     for (i = 0; i < niov; i++) {
         evpl_iovec_ring_add(&request->send_ring, &iov[i]);

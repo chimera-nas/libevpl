@@ -110,6 +110,9 @@ struct evpl_vfio_device {
     char                        model[64];
     char                        serial[64];
     uint64_t                    msixsize;
+    uint32_t                    sgls;
+    int                         sgl_supported;
+    int                         sgl_unaligned;
     uint64_t                    timeout;
     uint64_t                    max_queue_size;
     uint64_t                    dbstride;
@@ -687,6 +690,7 @@ evpl_vfio_identify_ctrl(
     struct evpl_vfio_identify_ctx *ctx = (struct evpl_vfio_identify_ctx *) arg;
     struct evpl_vfio_device       *dev = ctx->device;
     struct nvme_identify_ctlr     *identify;
+    size_t                         model_len, serial_len;
 
     identify = (struct nvme_identify_ctlr *) ctx->mr->buffer;
 
@@ -694,9 +698,24 @@ evpl_vfio_identify_ctrl(
 
     memcpy(dev->model, identify->mn, sizeof(identify->mn));
     dev->model[sizeof(identify->mn)] = '\0';
+    model_len                        = strlen(dev->model);
+    while (model_len > 0 && dev->model[model_len - 1] == ' ') {
+        dev->model[--model_len] = '\0';
+    }
 
     memcpy(dev->serial, identify->sn, sizeof(identify->sn));
     dev->serial[sizeof(identify->sn)] = '\0';
+    serial_len                        = strlen(dev->serial);
+
+    while (serial_len > 0 && dev->serial[serial_len - 1] == ' ') {
+        dev->serial[--serial_len] = '\0';
+    }
+
+    /* Record and report SGL capabilities */
+    dev->sgls          = identify->sgls;
+    dev->sgl_supported = (dev->sgls & 0x3) != 0;
+    dev->sgl_unaligned = (dev->sgls & 0x3) == 0x1;
+
 } /* evpl_vfio_identify_ctrl */
 
 static void
@@ -734,6 +753,64 @@ evpl_vfio_get_max_queues(
 } /* evpl_vfio_get_max_queues */
 
 static inline void
+evpl_vfio_prepare_sgls(
+    struct evpl_vfio_device *device,
+    struct evpl_vfio_queue  *queue,
+    uint32_t                 cid,
+    struct nvme_command_rw  *cmd,
+    const struct evpl_iovec *iov,
+    int                      niov)
+{
+    struct nvme_sgl_desc *list;
+    struct evpl_vfio_mr  *mr;
+    uint64_t              addr, total_len = 0;
+    int                   i;
+
+    if (niov == 1) {
+        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
+
+        cmd->common.psdt       = 1;
+        cmd->common.sgl.addr   = mr->iova + (iov[0].data - mr->buffer);
+        cmd->common.sgl.length = iov[0].length;
+        memset(cmd->common.sgl.rsvd, 0, sizeof(cmd->common.sgl.rsvd));
+        cmd->common.sgl.type = NVME_SGL_FMT_DATA_DESC;
+
+        total_len += iov[0].length;
+    } else {
+
+        evpl_vfio_abort_if(
+            niov * sizeof(struct nvme_sgl_desc) > 4096,
+            "Too many iovecs (%d) for one‑page SGL list", niov);
+
+        list = (struct nvme_sgl_desc *) (queue->prplist->buffer + (cid << 12));
+
+        for (i = 0; i < niov; ++i) {
+            mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[i]), EVPL_FRAMEWORK_VFIO);
+
+            addr = mr->iova + (iov[i].data - mr->buffer);
+
+            list[i].addr   = addr;
+            list[i].length = iov[i].length;
+            memset(list[i].rsvd, 0, sizeof(list[i].rsvd));
+            list[i].type = NVME_SGL_FMT_DATA_DESC;
+
+            total_len += iov[i].length;
+        }
+
+        cmd->common.psdt       = 3;
+        cmd->common.sgl.addr   = queue->prplist->iova + (cid << 12);
+        cmd->common.sgl.length = niov * sizeof(struct nvme_sgl_desc);
+        memset(cmd->common.sgl.rsvd, 0, sizeof(cmd->common.sgl.rsvd));
+        cmd->common.sgl.type = NVME_SGL_FMT_SEG_DESC;
+    }
+
+    evpl_vfio_abort_if(total_len > device->max_xfer_bytes, "NVMe I/O length %lu exceeds max_xfer_bytes %lu",
+                       total_len, device->max_xfer_bytes);
+
+    cmd->nlb = (total_len >> device->sector_shift) - 1;
+} /* evpl_vfio_prepare_sgls */
+
+static inline void
 evpl_vfio_prepare_prplist(
     struct evpl_vfio_device *device,
     struct evpl_vfio_queue  *queue,
@@ -746,6 +823,7 @@ evpl_vfio_prepare_prplist(
     uint64_t            *prpe, *prpc, prpv, end, total_len = 0;
     int                  i, j = 0;
 
+    cmd->common.psdt = 0;
     cmd->common.prp1 = 0;
     cmd->common.prp2 = 0;
 
@@ -787,10 +865,29 @@ evpl_vfio_prepare_prplist(
                 prpv += 4096;
             }
         }
-    } /* evpl_vfio_prepare_prplist */
+    }
+
+    evpl_vfio_abort_if(total_len > device->max_xfer_bytes, "NVMe I/O length %lu exceeds max_xfer_bytes %lu",
+                       total_len, device->max_xfer_bytes);
 
     cmd->nlb = (total_len >> device->sector_shift) - 1;
 } /* evpl_vfio_prepare_prplist */
+
+static inline void
+evpl_vfio_prepare_payload(
+    struct evpl_vfio_device *device,
+    struct evpl_vfio_queue  *queue,
+    uint32_t                 cid,
+    struct nvme_command_rw  *cmd,
+    const struct evpl_iovec *iov,
+    int                      niov)
+{
+    if (device->sgl_supported) {
+        evpl_vfio_prepare_sgls(device, queue, cid, cmd, iov, niov);
+    } else {
+        evpl_vfio_prepare_prplist(device, queue, cid, cmd, iov, niov);
+    }
+} /* evpl_vfio_prepare_payload */
 
 static void
 evpl_vfio_read(
@@ -834,7 +931,7 @@ evpl_vfio_read(
     cmd->elbat         = 0;
     cmd->elbatm        = 0;
 
-    evpl_vfio_prepare_prplist(device, queue, cid, cmd, iov, niov);
+    evpl_vfio_prepare_payload(device, queue, cid, cmd, iov, niov);
 
     evpl_defer(evpl, &queue->ring_sq);
 } /* evpl_vfio_read */
@@ -883,7 +980,7 @@ evpl_vfio_write(
     cmd->elbat         = 0;
     cmd->elbatm        = 0;
 
-    evpl_vfio_prepare_prplist(device, queue, cid, cmd, iov, niov);
+    evpl_vfio_prepare_payload(device, queue, cid, cmd, iov, niov);
 
     evpl_defer(evpl, &queue->ring_sq);
 
@@ -1158,6 +1255,10 @@ evpl_vfio_open_device(
 
     bdev->size             = dev->num_sectors * dev->sector_size;
     bdev->max_request_size = dev->max_xfer_bytes;
+
+    evpl_vfio_debug("NVMe controller %s [%s] SGLs=%d SGLa=%d max_queues=%d max_xfer_size=%d",
+                    dev->model, dev->serial, dev->sgls, dev->sgl_unaligned,
+                    dev->max_queues, dev->max_xfer_bytes);
 
     evpl_vfio_free(dev->vfio, inquiry_mr);
 

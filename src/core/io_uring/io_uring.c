@@ -273,7 +273,7 @@ evpl_io_uring_read(
         req->iov[i].iov_len  = iov[i].length;
         req->length         += iov[i].length;
 
-        if ((uint64_t) iov[i].data & 4095) {
+        if (((uint64_t) iov[i].data & 4095) || (iov[i].length & 4095)) {
             bounce_needed = 1;
         }
     }
@@ -325,7 +325,7 @@ evpl_io_uring_write(
         req->iov[i].iov_len  = iov[i].length;
         req->length         += iov[i].length;
 
-        if ((uint64_t) iov[i].data & 4095) {
+        if (((uint64_t) iov[i].data & 4095) || (iov[i].length & 4095)) {
             need_bounce = 1;
         }
     }
