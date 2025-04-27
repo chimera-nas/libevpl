@@ -141,8 +141,9 @@ enum {
 };
 
 enum {
-    NVME_SGL_FMT_DATA_DESC = 0x00, /* Data block descriptor            */
-    NVME_SGL_FMT_SEG_DESC  = 0x02, /* SGL segment descriptor           */
+    NVME_SGL_FMT_DATA_DESC     = 0x00, /* Data block descriptor            */
+    NVME_SGL_FMT_SEG_DESC      = 0x20, /* SGL segment descriptor           */
+    NVME_SGL_FMT_LAST_SEG_DESC = 0x30,  /* Last SGL segment descriptor      */
 };
 
 #define NVME_WORD_SIZE_BYTES                4

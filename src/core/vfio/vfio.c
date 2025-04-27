@@ -775,6 +775,12 @@ evpl_vfio_prepare_sgls(
         memset(cmd->common.sgl.rsvd, 0, sizeof(cmd->common.sgl.rsvd));
         cmd->common.sgl.type = NVME_SGL_FMT_DATA_DESC;
 
+        evpl_vfio_abort_if(!device->sgl_unaligned && (cmd->common.sgl.addr & 7),
+                           "Device requires alignment and SGL address is not DWORD‑aligned");
+        evpl_vfio_abort_if(!device->sgl_unaligned && (cmd->common.sgl.length & 7),
+                           "Device requires alignment and SGL length is not DWORD‑aligned");
+
+
         total_len += iov[0].length;
     } else {
 
@@ -794,14 +800,19 @@ evpl_vfio_prepare_sgls(
             memset(list[i].rsvd, 0, sizeof(list[i].rsvd));
             list[i].type = NVME_SGL_FMT_DATA_DESC;
 
+            evpl_vfio_abort_if(!device->sgl_unaligned && (addr & 7),
+                               "Device requires alignment and SGL address is not DWORD‑aligned");
+            evpl_vfio_abort_if(!device->sgl_unaligned && (iov[i].length & 7),
+                               "Device requires alignment and SGL length is not DWORD‑aligned");
+
             total_len += iov[i].length;
         }
 
-        cmd->common.psdt       = 3;
+        cmd->common.psdt       = 1;
         cmd->common.sgl.addr   = queue->prplist->iova + (cid << 12);
         cmd->common.sgl.length = niov * sizeof(struct nvme_sgl_desc);
         memset(cmd->common.sgl.rsvd, 0, sizeof(cmd->common.sgl.rsvd));
-        cmd->common.sgl.type = NVME_SGL_FMT_SEG_DESC;
+        cmd->common.sgl.type = NVME_SGL_FMT_LAST_SEG_DESC;
     }
 
     evpl_vfio_abort_if(total_len > device->max_xfer_bytes, "NVMe I/O length %lu exceeds max_xfer_bytes %lu",
@@ -838,6 +849,8 @@ evpl_vfio_prepare_prplist(
 
         prpv = mr->iova + (iov[i].data - mr->buffer);
         end  = prpv + iov[i].length;
+
+        evpl_vfio_abort_if((prpv & 4095) && j > 0, "PRP2+ is not page aligned");
 
         while (prpv < end) {
             if (j == 0) {
