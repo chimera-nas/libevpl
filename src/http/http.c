@@ -1003,6 +1003,8 @@ evpl_http_server_dispatch_default(
     request->status         = status;
     request->request_flags |= EVPL_HTTP_REQUEST_RESPONSE_READY;
 
+    evpl_http_request_add_header(request, "Connection", "keep-alive");
+
     evpl_defer(evpl, &conn->flush);
 } /* evpl_http_server_complete_request */
 
