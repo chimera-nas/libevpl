@@ -22,8 +22,9 @@ enum evpl_protocol_id {
     EVPL_DATAGRAM_RDMACM_UD  = 2,
     EVPL_STREAM_SOCKET_TCP   = 3,
     EVPL_STREAM_XLIO_TCP     = 4,
-    EVPL_STREAM_RDMACM_RC    = 5,
-    EVPL_NUM_PROTO           = 6
+    EVPL_STREAM_IO_URING_TCP = 5,
+    EVPL_STREAM_RDMACM_RC    = 6,
+    EVPL_NUM_PROTO           = 7
 };
 
 enum evpl_block_protocol_id {

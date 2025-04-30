@@ -276,6 +276,7 @@ evpl_xlio_tcp_attach(
 } /* evpl_rdmacm_attach */
 
 extern struct evpl_framework evpl_framework_xlio;
+
 struct evpl_protocol         evpl_xlio_tcp = {
     .id            = EVPL_STREAM_XLIO_TCP,
     .connected     = 1,

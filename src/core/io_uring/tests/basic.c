@@ -11,8 +11,9 @@
 
 static void
 read_callback(
-    int   status,
-    void *private_data)
+    struct evpl *evpl,
+    int          status,
+    void        *private_data)
 {
     int *pending = private_data;
 

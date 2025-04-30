@@ -44,7 +44,7 @@ if (HAVE_VFIO)
 endif()
 
 if (HAVE_IO_URING)
-    set(CORE_SRC ${CORE_SRC} io_uring/io_uring.c io_uring/io_uring.h)
+    set(CORE_SRC ${CORE_SRC} io_uring/io_uring.c io_uring/io_uring_tcp.c io_uring/io_uring_block.c io_uring/io_uring.h)
     add_subdirectory(io_uring)
     set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} uring)
 endif()

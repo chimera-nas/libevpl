@@ -39,13 +39,10 @@
 #define evpl_vfio_abort_if(cond, ...) \
         evpl_abort_if(cond, "vfio", __FILE__, __LINE__, __VA_ARGS__)
 
-typedef void (*evpl_vfio_complete_callback_t)(
-    int   status,
-    void *arg);
 
 struct evpl_vfio_callback_ctx {
-    evpl_vfio_complete_callback_t fn;
-    void                         *arg;
+    evpl_block_callback_t fn;
+    void                 *arg;
 };
 
 
@@ -452,9 +449,9 @@ evpl_vfio_queue_close(
 
 static inline int
 evpl_vfio_alloc_cid(
-    struct evpl_vfio_queue       *queue,
-    evpl_vfio_complete_callback_t callback,
-    void                         *arg)
+    struct evpl_vfio_queue *queue,
+    evpl_block_callback_t   callback,
+    void                   *arg)
 {
     int cid = queue->sq_tail;
 
@@ -485,7 +482,9 @@ evpl_vfio_ring_cq(struct evpl_vfio_queue *queue)
 } /* evpl_vfio_ring_cq */
 
 static inline int
-evpl_vfio_poll_queue(struct evpl_vfio_queue *queue)
+evpl_vfio_poll_queue(
+    struct evpl            *evpl,
+    struct evpl_vfio_queue *queue)
 {
     struct nvme_cq_entry          *cqe;
     int                            cid, moved = 0;
@@ -510,7 +509,7 @@ evpl_vfio_poll_queue(struct evpl_vfio_queue *queue)
         }
 
         if (cb->fn) {
-            cb->fn(cqe->sc ? EIO : 0, cb->arg);
+            cb->fn(evpl, cqe->sc ? EIO : 0, cb->arg);
         }
 
         --queue->cidcount;
@@ -569,6 +568,7 @@ evpl_vfio_create_adminq(
 
 static struct evpl_vfio_queue *
 evpl_vfio_create_ioq(
+    struct evpl             *evpl,
     struct evpl_vfio_device *device,
     int                      size)
 {
@@ -620,7 +620,7 @@ evpl_vfio_create_ioq(
     evpl_vfio_ring_sq(device->adminq);
 
     while (device->adminq->cidcount > 0) {
-        evpl_vfio_poll_queue(device->adminq);
+        evpl_vfio_poll_queue(evpl, device->adminq);
     }
 
     pthread_mutex_unlock(&device->lock);
@@ -630,11 +630,12 @@ evpl_vfio_create_ioq(
 
 static void
 evpl_vfio_identify(
-    struct evpl_vfio_device      *device,
-    struct evpl_vfio_mr          *mr,
-    int                           nsid,
-    evpl_vfio_complete_callback_t callback,
-    void                         *arg)
+    struct evpl             *evpl,
+    struct evpl_vfio_device *device,
+    struct evpl_vfio_mr     *mr,
+    int                      nsid,
+    evpl_block_callback_t    callback,
+    void                    *arg)
 {
     struct nvme_admin_identify *cmd;
     int                         cid;
@@ -654,16 +655,16 @@ evpl_vfio_identify(
     evpl_vfio_ring_sq(device->adminq);
 
     while (device->adminq->cidcount > 0) {
-        evpl_vfio_poll_queue(device->adminq);
+        evpl_vfio_poll_queue(evpl, device->adminq);
     }
 } /* evpl_vfio_identify */
 
 static void
 evpl_vfio_get_features(
-    struct evpl_vfio_device      *device,
-    int                           feature,
-    evpl_vfio_complete_callback_t callback,
-    void                         *arg)
+    struct evpl_vfio_device *device,
+    int                      feature,
+    evpl_block_callback_t    callback,
+    void                    *arg)
 {
     int                             cid;
     struct nvme_admin_get_features *cmd;
@@ -684,8 +685,9 @@ evpl_vfio_get_features(
 
 static void
 evpl_vfio_identify_ctrl(
-    int   status,
-    void *arg)
+    struct evpl *evpl,
+    int          status,
+    void        *arg)
 {
     struct evpl_vfio_identify_ctx *ctx = (struct evpl_vfio_identify_ctx *) arg;
     struct evpl_vfio_device       *dev = ctx->device;
@@ -720,8 +722,9 @@ evpl_vfio_identify_ctrl(
 
 static void
 evpl_vfio_identify_ns(
-    int   status,
-    void *arg)
+    struct evpl *evpl,
+    int          status,
+    void        *arg)
 {
     struct evpl_vfio_identify_ctx *ctx = (struct evpl_vfio_identify_ctx *) arg;
     struct evpl_vfio_device       *dev = ctx->device;
@@ -737,8 +740,9 @@ evpl_vfio_identify_ns(
 
 static void
 evpl_vfio_get_max_queues(
-    int   status,
-    void *arg)
+    struct evpl *evpl,
+    int          status,
+    void        *arg)
 {
     struct evpl_vfio_device       *device = (struct evpl_vfio_device *) arg;
     struct nvme_feature_num_queues nq;
@@ -904,13 +908,13 @@ evpl_vfio_prepare_payload(
 
 static void
 evpl_vfio_read(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *bqueue,
-    struct evpl_iovec *iov,
-    int niov,
-    uint64_t offset,
-    void ( *callback )(int status, void *private_data),
-    void *private_data)
+    struct evpl_iovec       *iov,
+    int                      niov,
+    uint64_t                 offset,
+    evpl_block_callback_t    callback,
+    void                    *private_data)
 {
     struct evpl_vfio_queue  *queue  = bqueue->private_data;
     struct evpl_vfio_device *device = queue->device;
@@ -951,14 +955,14 @@ evpl_vfio_read(
 
 static void
 evpl_vfio_write(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *bqueue,
     const struct evpl_iovec *iov,
-    int niov,
-    uint64_t offset,
-    int sync,
-    void ( *callback )(int status, void *private_data),
-    void *private_data)
+    int                      niov,
+    uint64_t                 offset,
+    int                      sync,
+    evpl_block_callback_t    callback,
+    void                    *private_data)
 {
     struct evpl_vfio_queue  *queue  = bqueue->private_data;
     struct evpl_vfio_device *device = queue->device;
@@ -1001,10 +1005,10 @@ evpl_vfio_write(
 
 static void
 evpl_vfio_flush(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *bqueue,
-    void ( *callback )(int status, void *private_data),
-    void *private_data)
+    evpl_block_callback_t    callback,
+    void                    *private_data)
 {
     struct evpl_vfio_queue *queue = bqueue->private_data;
     struct nvme_command_rw *cmd;
@@ -1074,7 +1078,7 @@ evpl_vfio_event_callback(
         return;
     }
 
-    evpl_vfio_poll_queue(queue);
+    evpl_vfio_poll_queue(evpl, queue);
 } /* evpl_vfio_event_callback */
 
 static void
@@ -1094,7 +1098,7 @@ evpl_vfio_poll_cq(
 {
     struct evpl_vfio_queue *queue = private_data;
 
-    evpl_vfio_poll_queue(queue);
+    evpl_vfio_poll_queue(evpl, queue);
 } /* evpl_vfio_poll_cq */
 
 static struct evpl_block_queue *
@@ -1108,7 +1112,7 @@ evpl_vfio_open_queue(
 
     bqueue = evpl_zalloc(sizeof(*bqueue));
 
-    queue = evpl_vfio_create_ioq(device, device->queue_size);
+    queue = evpl_vfio_create_ioq(evpl, device, device->queue_size);
 
     bqueue->private_data = queue;
     bqueue->close_queue  = evpl_vfio_close_queue;
@@ -1239,21 +1243,21 @@ evpl_vfio_open_device(
     ctrl_id_ctx.nsid   = 0;
     ctrl_id_ctx.mr     = inquiry_mr;
 
-    evpl_vfio_identify(dev, ctrl_id_ctx.mr, 0,
+    evpl_vfio_identify(NULL, dev, ctrl_id_ctx.mr, 0,
                        evpl_vfio_identify_ctrl, &ctrl_id_ctx);
 
     ns_id_ctx.device = dev;
     ns_id_ctx.nsid   = 1;
     ns_id_ctx.mr     = inquiry_mr;
 
-    evpl_vfio_identify(dev, ns_id_ctx.mr, 1,
+    evpl_vfio_identify(NULL, dev, ns_id_ctx.mr, 1,
                        evpl_vfio_identify_ns, &ns_id_ctx);
 
     evpl_vfio_get_features(dev, NVME_FEATURE_NUM_QUEUES,
                            evpl_vfio_get_max_queues, dev);
 
     while (dev->adminq->cidcount > 0) {
-        evpl_vfio_poll_queue(dev->adminq);
+        evpl_vfio_poll_queue(NULL, dev->adminq);
     }
 
     dev->queue_size = 1;
@@ -1263,7 +1267,7 @@ evpl_vfio_open_device(
     }
 
     while (dev->adminq->cidcount > 0) {
-        evpl_vfio_poll_queue(dev->adminq);
+        evpl_vfio_poll_queue(NULL, dev->adminq);
     }
 
     bdev->size             = dev->num_sectors * dev->sector_size;

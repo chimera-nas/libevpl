@@ -85,7 +85,7 @@ evpl_block_read(
     struct evpl_iovec *iov,
     int niov,
     uint64_t offset,
-    void ( *callback )(int status, void *private_data),
+    void ( *callback )(struct evpl *evpl, int status, void *private_data),
     void *private_data)
 {
     queue->read(evpl, queue, iov, niov, offset, callback, private_data);
@@ -99,7 +99,7 @@ evpl_block_write(
     int niov,
     uint64_t offset,
     int sync,
-    void ( *callback )(int status, void *private_data),
+    void ( *callback )(struct evpl *evpl, int status, void *private_data),
     void *private_data)
 {
     queue->write(evpl, queue, iov, niov, offset, sync, callback, private_data);
@@ -109,7 +109,7 @@ SYMBOL_EXPORT void
 evpl_block_flush(
     struct evpl *evpl,
     struct evpl_block_queue *queue,
-    void ( *callback )(int status, void *private_data),
+    void ( *callback )(struct evpl *evpl, int status, void *private_data),
     void *private_data)
 {
     queue->flush(evpl, queue, callback, private_data);
