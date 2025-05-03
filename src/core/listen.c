@@ -153,9 +153,10 @@ evpl_listener_create(void)
 SYMBOL_EXPORT void
 evpl_listener_destroy(struct evpl_listener *listener)
 {
-
     evpl_core_abort_if(listener->num_attached,
                        "evpl_listener_destroy called with attached evpl contexts");
+
+    evpl_thread_destroy(listener->thread);
 
     pthread_mutex_destroy(&listener->lock);
     evpl_free(listener->binds);

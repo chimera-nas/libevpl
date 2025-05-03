@@ -257,6 +257,42 @@ evpl_iovec_ring_iov(
     return niov;
 } // evpl_iovec_ring_iov
 
+
+static inline int
+evpl_iovec_ring_move_iov(
+    ssize_t                *r_total,
+    struct iovec           *iov,
+    int                     max_iov,
+    struct evpl_iovec_ring *ring)
+{
+    struct evpl_iovec *iovec;
+    int                niov  = 0;
+    int                total = 0;
+
+    evpl_core_assert(r_total);
+    evpl_core_assert(iov);
+    evpl_core_assert(max_iov > 0);
+    evpl_core_assert(ring);
+
+    while (niov < max_iov && ring->tail != ring->head) {
+        iovec = &ring->iovec[ring->tail];
+
+        evpl_core_assert(iovec->length > 0);
+        evpl_core_assert(((struct evpl_buffer *) iovec->private_data)->refcnt > 0);
+
+        iov[niov].iov_base = iovec->data;
+        iov[niov].iov_len  = iovec->length;
+        niov++;
+        total += iovec->length;
+
+        ring->tail = (ring->tail + 1) & ring->mask;
+    }
+
+    *r_total = total;
+
+    return niov;
+} // evpl_iovec_ring_iov
+
 static inline int
 evpl_iovec_ring_consume(
     struct evpl            *evpl,

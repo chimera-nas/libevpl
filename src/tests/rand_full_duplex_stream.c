@@ -118,7 +118,6 @@ accept_callback(
     void                   **conn_private_data,
     void                    *private_data)
 {
-    evpl_test_info("accepted connection");
     *notify_callback   = client_callback;
     *conn_private_data = private_data;
 } /* accept_callback */
@@ -155,7 +154,10 @@ client_thread(void *arg)
         evpl_continue(evpl);
     }
 
-    evpl_test_info("calling evpl destroy");
+    evpl_listener_detach(evpl, listener);
+
+    evpl_listener_destroy(listener);
+
     evpl_destroy(evpl);
 
     free(state->buffer);

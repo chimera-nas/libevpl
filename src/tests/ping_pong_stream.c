@@ -54,13 +54,16 @@ client_callback(
                     evpl_test_info("client received %u sent %u recv %u", value,
                                    state->sent, state->recv);
 
-                    evpl_send(evpl, bind, &state->value, sizeof(state->value));
+                    if (state->recv < state->niters) {
 
-                    state->value++;
-                    state->sent++;
+                        evpl_send(evpl, bind, &state->value, sizeof(state->value));
 
-                    evpl_test_debug("client sent sent %u recv %u",
-                                    state->sent, state->recv);
+                        state->value++;
+                        state->sent++;
+
+                        evpl_test_debug("client sent sent %u recv %u",
+                                        state->sent, state->recv);
+                    }
 
                 }
             } while (length > 0);
@@ -213,6 +216,10 @@ main(
     }
 
     pthread_join(thr, NULL);
+
+    evpl_listener_detach(evpl, listener);
+
+    evpl_listener_destroy(listener);
 
     evpl_destroy(evpl);
 

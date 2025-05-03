@@ -204,6 +204,10 @@ main(
 
     pthread_join(thr, NULL);
 
+    evpl_listener_detach(evpl, listener);
+
+    evpl_listener_destroy(listener);
+
     evpl_destroy(evpl);
 
     return 0;
