@@ -384,7 +384,6 @@ evpl_continue(struct evpl *evpl)
             while (evpl->pending_close_binds) {
                 bind = evpl->pending_close_binds;
                 bind->protocol->close(evpl, bind);
-                //DL_DELETE(evpl->pending_close_binds, bind);
                 evpl_bind_destroy(evpl, bind);
             }
         }
