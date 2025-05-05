@@ -46,7 +46,6 @@ struct evpl_io_uring_request {
         struct {
             struct evpl_io_uring_socket *socket;
             uint32_t                     msgs_sent;
-            struct evpl_iovec            iov;
 
         } tcp;
 
@@ -80,12 +79,15 @@ struct evpl_io_uring_context {
     int                           eventfd;
     int                           recv_ring_size;
     int                           recv_ring_mask;
+    int                           recv_buffer_size;
+    int                           next_send_group_id;
     uint64_t                     *recv_ring_iov_empty;
     struct evpl_iovec            *recv_ring_iov;
     struct evpl_event             event;
     struct evpl_deferral          flush;
     struct evpl_io_uring_request *free_requests;
     struct io_uring_buf_ring     *recv_ring;
+    struct evpl_poll             *poll;
 };
 
 struct evpl_io_uring_queue {
@@ -94,7 +96,7 @@ struct evpl_io_uring_queue {
     struct io_uring_sqe          *pending_sqe;
 };
 
-static inline void
+static inline int
 evpl_io_uring_fill_recv_ring(
     struct evpl                  *evpl,
     struct evpl_io_uring_context *ctx)
@@ -115,7 +117,7 @@ evpl_io_uring_fill_recv_ring(
                 continue;
             }
 
-            evpl_iovec_alloc(evpl, 128 * 1024, 4096, 1, &ctx->recv_ring_iov[k]);
+            evpl_iovec_alloc(evpl, ctx->recv_buffer_size, 4096, 1, &ctx->recv_ring_iov[k]);
 
             io_uring_buf_ring_add(
                 ctx->recv_ring,
@@ -131,10 +133,7 @@ evpl_io_uring_fill_recv_ring(
         }
     }
 
-    if (offset) {
-        io_uring_buf_ring_advance(ctx->recv_ring, offset);
-    }
-
+    return offset;
 
 } /* evpl_io_uring_fill_recv_ring */
 

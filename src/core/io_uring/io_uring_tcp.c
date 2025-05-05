@@ -15,9 +15,15 @@
 
 struct evpl_io_uring_socket {
     int                           fd;
+    uint32_t                      send_group_id;
     struct evpl_io_uring_request *recv_req;
     struct evpl_io_uring_request *accept_req;
     int                           reqs_inflight;
+    int                           send_ring_mask;
+    struct io_uring_buf_ring     *send_ring;
+    uint64_t                      send_ring_empty;
+    struct evpl_iovec             send_ring_iov[64];
+
 };
 
 struct evpl_io_uring_accepted_socket {
@@ -32,6 +38,13 @@ static void
 evpl_io_uring_tcp_recv_callback(
     struct evpl                  *evpl,
     struct evpl_io_uring_request *req);
+
+
+static inline void
+evpl_io_uring_pump(
+    struct evpl                  *evpl,
+    struct evpl_io_uring_context *ctx,
+    struct evpl_io_uring_socket  *s);
 
 static inline void
 evpl_io_uring_post_multishot_recv(
@@ -80,9 +93,14 @@ evpl_io_uring_tcp_recv_callback(
 
     if (unlikely(!more)) {
         s->recv_req = NULL;
+        evpl_io_uring_error("recv_req finished res %d", req->res);
     }
 
     if (req->res <= 0) {
+        evpl_io_uring_error("recv_req status res %d", req->res);
+        if (req->res == -105 || req->res == -125) {
+            return;
+        }
         evpl_close(evpl, bind);
         return;
     }
@@ -151,10 +169,27 @@ evpl_io_uring_tcp_send_callback(
     struct evpl                  *evpl,
     struct evpl_io_uring_request *req)
 {
-    struct evpl_bind  *bind = evpl_private2bind(req->tcp.socket);
-    struct evpl_notify notify;
+    struct evpl_io_uring_context *ctx  = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
+    struct evpl_bind             *bind = evpl_private2bind(req->tcp.socket);
+    struct evpl_io_uring_socket  *s    = req->tcp.socket;
+    struct evpl_notify            notify;
+    int                           buffer_id;
 
-    evpl_iovec_decref(&req->tcp.iov);
+    if (req->res < 0) {
+        evpl_io_uring_error("send_req status res %d", req->res);
+    }
+
+    buffer_id = req->flags >> IORING_CQE_BUFFER_SHIFT;
+
+#if 0
+    evpl_io_uring_abort_if(req->res > 0 && req->res != s->send_ring_iov[buffer_id].length,
+                           "send request did not send full data (%d != %d, flags %08x)", req->res, s->send_ring_iov[
+                               buffer_id].length,
+                           req->flags);
+#endif /* if 0 */
+
+    evpl_iovec_decref(&s->send_ring_iov[buffer_id]);
+    s->send_ring_empty |=  (1ULL << buffer_id);
 
     if (req->res > 0 && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
         notify.notify_type   = EVPL_NOTIFY_SENT;
@@ -166,12 +201,13 @@ evpl_io_uring_tcp_send_callback(
 
     req->tcp.socket->reqs_inflight--;
 
+    evpl_io_uring_pump(evpl, ctx, req->tcp.socket);
+
     if (req->tcp.socket->reqs_inflight == 0) {
         if (bind->flags & EVPL_BIND_FINISH) {
             evpl_close(evpl, bind);
         }
     }
-
 
     if (req->res <= 0) {
         evpl_close(evpl, bind);
@@ -186,52 +222,74 @@ evpl_io_uring_pump(
     struct evpl_io_uring_context *ctx,
     struct evpl_io_uring_socket  *s)
 {
-    int                           do_flush = 0;
-    struct evpl_bind             *bind     = evpl_private2bind(s);
+    struct evpl_bind             *bind = evpl_private2bind(s);
     struct io_uring_sqe          *sqe;
     struct evpl_io_uring_request *req;
+    int                           offset = 0, i;
 
     while (!evpl_iovec_ring_is_empty(&bind->iovec_send)) {
+
+        i = __builtin_ffsll(s->send_ring_empty);
+
+        if (i == 0) {
+            evpl_io_uring_debug("send ring empty, cannot send");
+            break;
+        }
+
+        i--;
 
         req = evpl_io_uring_request_alloc(ctx, EVPL_IO_URING_REQ_TCP);
 
         req->callback      = evpl_io_uring_tcp_send_callback;
         req->tcp.socket    = s;
         req->tcp.msgs_sent = 0;
-        sqe                = io_uring_get_sqe(&ctx->ring);
 
-        req->tcp.iov = *evpl_iovec_ring_tail(&bind->iovec_send);
-        evpl_iovec_ring_remove(&bind->iovec_send);
-
-        evpl_io_uring_abort_if(!sqe, "io_uring_get_sqe returned NULL");
-
-        io_uring_prep_send(sqe, s->fd, req->tcp.iov.data, req->tcp.iov.length, 0);
-
-        io_uring_sqe_set_data64(sqe, (uint64_t) req);
+        s->send_ring_iov[i] = *evpl_iovec_ring_tail(&bind->iovec_send);
+        s->send_ring_empty &= ~(1ULL << i);
 
         if (bind->segment_callback) {
             struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
-            if (!dgram) {
-                break;
-            }
+            if (dgram) {
 
-            dgram->niov--;
+                dgram->niov--;
 
-            if (dgram->niov == 0) {
-                req->tcp.msgs_sent++;
-                evpl_dgram_ring_remove(&bind->dgram_send);
+                if (dgram->niov == 0) {
+                    req->tcp.msgs_sent++;
+                    evpl_dgram_ring_remove(&bind->dgram_send);
+                }
             }
         }
 
+        io_uring_buf_ring_add(
+            s->send_ring,
+            evpl_iovec_data(&s->send_ring_iov[i]),
+            evpl_iovec_length(&s->send_ring_iov[i]),
+            i,
+            s->send_ring_mask,
+            offset);
+
+        offset++;
+
+        sqe = io_uring_get_sqe(&ctx->ring);
+
+        evpl_io_uring_abort_if(!sqe, "io_uring_get_sqe returned NULL");
+
+        io_uring_prep_send(sqe, s->fd, NULL, 0, MSG_WAITALL);
+
+        io_uring_sqe_set_data64(sqe, (uint64_t) req);
+
+        sqe->flags    |= IOSQE_BUFFER_SELECT;
+        sqe->buf_group = s->send_group_id;
+
+        evpl_iovec_ring_remove(&bind->iovec_send);
+
         s->reqs_inflight++;
-
-        do_flush = 1;
     }
 
-    if (do_flush) {
-        evpl_defer(evpl, &ctx->flush);
-    }
+    io_uring_buf_ring_advance(s->send_ring, offset);
+
+    evpl_defer(evpl, &ctx->flush);
 } /* evpl_io_uring_pump */
 
 static inline void
@@ -241,13 +299,21 @@ evpl_io_uring_setup_socket(
     struct evpl_io_uring_socket  *s,
     int                           listen)
 {
-    int flags, rc, yes = 1;
+    int flags, rc, yes = 1, n;
 
-    evpl_io_uring_fill_recv_ring(evpl, ctx);
+    n = evpl_io_uring_fill_recv_ring(evpl, ctx);
+
+    if (n) {
+        io_uring_buf_ring_advance(ctx->recv_ring, n);
+    }
+
+    s->send_group_id = ctx->next_send_group_id++;
 
     s->recv_req      = NULL;
     s->accept_req    = NULL;
     s->reqs_inflight = 0;
+
+    s->send_ring_empty = UINT64_MAX;
 
     flags = fcntl(s->fd, F_GETFL, 0);
 
@@ -267,6 +333,12 @@ evpl_io_uring_setup_socket(
 
         evpl_io_uring_post_multishot_recv(evpl, ctx, s);
     }
+
+    s->send_ring = io_uring_setup_buf_ring(&ctx->ring, 64, s->send_group_id, 0, &rc);
+
+    s->send_ring_mask = io_uring_buf_ring_mask(64);
+
+    evpl_io_uring_abort_if(rc, "Failed to setup send ring");
 
 } /* evpl_io_uring_setup_socket */
 
