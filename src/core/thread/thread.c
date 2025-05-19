@@ -86,6 +86,8 @@ evpl_thread_function(void *ptr)
 
     evpl_run(evpl);
 
+    evpl_destroy_close_bind(evpl);
+
     if (evpl_thread->shutdown_callback) {
         evpl_thread->shutdown_callback(evpl, evpl_thread->private_data);
     }
@@ -139,6 +141,7 @@ SYMBOL_EXPORT void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
     evpl_stop(evpl_thread->evpl);
+
 
     pthread_join(evpl_thread->thread, NULL);
 

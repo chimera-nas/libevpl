@@ -462,14 +462,14 @@ evpl_stop(struct evpl *evpl)
     evpl_core_abort_if(len != sizeof(value),
                        "evpl_stop: write to eventfd failed");
 } /* evpl_stop */
-SYMBOL_EXPORT void
-evpl_destroy(struct evpl *evpl)
-{
-    struct evpl_framework *framework;
-    struct evpl_bind      *bind;
-    int                    i;
 
-    /* Push any open binds into pending close state */
+
+void
+evpl_destroy_close_bind(struct evpl *evpl)
+{
+    struct evpl_bind *bind;
+
+/* Push any open binds into pending close state */
     while (evpl->binds) {
         bind = evpl->binds;
         bind->protocol->pending_close(evpl, bind);
@@ -482,6 +482,17 @@ evpl_destroy(struct evpl *evpl)
     while (evpl->pending_close_binds) {
         evpl_continue(evpl);
     }
+
+} /* evpl_destroy_close_bind */
+
+SYMBOL_EXPORT void
+evpl_destroy(struct evpl *evpl)
+{
+    struct evpl_framework *framework;
+    struct evpl_bind      *bind;
+    int                    i;
+
+    evpl_destroy_close_bind(evpl);
 
     while (evpl->free_binds) {
         bind = evpl->free_binds;

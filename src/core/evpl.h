@@ -183,6 +183,11 @@ __evpl_init(
     void);
 
 
+
+void
+evpl_destroy_close_bind(
+    struct evpl *evpl);
+
 static inline void
 evpl_activity(struct evpl *evpl)
 {
