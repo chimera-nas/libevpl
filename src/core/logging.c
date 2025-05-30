@@ -81,7 +81,7 @@ evpl_debug(
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(level_string[EVPL_LOG_DEBUG], mod, srcfile, lineno, fmt, argp);
+    EvplLog(level_string[EVPL_LOG_DEBUG], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 } /* evpl_debug */
 
@@ -96,7 +96,7 @@ evpl_info(
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(level_string[EVPL_LOG_INFO], mod, srcfile, lineno, fmt, argp);
+    EvplLog(level_string[EVPL_LOG_INFO], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 } /* evpl_info */
 
@@ -111,7 +111,7 @@ evpl_error(
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(level_string[EVPL_LOG_ERROR], mod, srcfile, lineno, fmt, argp);
+    EvplLog(level_string[EVPL_LOG_ERROR], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 } /* evpl_error */
 
@@ -126,7 +126,7 @@ evpl_fatal(
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
+    EvplLog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
     exit(1);
@@ -143,7 +143,7 @@ evpl_abort(
     va_list argp;
 
     va_start(argp, fmt);
-    evpl_vlog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
+    EvplLog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
     __builtin_trap();

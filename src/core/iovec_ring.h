@@ -397,7 +397,11 @@ evpl_iovec_ring_append(
 
     head = evpl_iovec_ring_head(ring);
 
-    if (head && head->data + head->length == append->data) {
+    if (head && head->private_data == append->private_data &&
+        head->data + head->length == append->data) {
+        /* The head iovec is from the same buffer as the one to be
+         * appended and they are contiguous. Extend the head iovec.
+         */
         head->length += length;
     } else {
         head               = evpl_iovec_ring_add_new(ring);
