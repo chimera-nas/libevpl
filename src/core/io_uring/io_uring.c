@@ -34,6 +34,7 @@ evpl_io_uring_init(void)
 {
     struct evpl_io_uring_shared *shared;
     struct io_uring_params       params;
+    int                          rc;
 
     memset(&params, 0, sizeof(params));
 
@@ -42,7 +43,12 @@ evpl_io_uring_init(void)
 
     shared = evpl_zalloc(sizeof(*shared));
 
-    io_uring_queue_init_params(256, &shared->ring, &params);
+    rc = io_uring_queue_init_params(256, &shared->ring, &params);
+
+    if (rc < 0) {
+        free(shared);
+        return NULL;
+    }
 
     return shared;
 } /* evpl_io_uring_init */

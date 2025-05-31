@@ -542,7 +542,7 @@ evpl_attach_framework(
 
     evpl_attach_framework_shared(framework_id);
 
-    if (!evpl->framework_private[framework->id]) {
+    if (evpl_shared->framework_private[framework->id] && !evpl->framework_private[framework->id]) {
         evpl->framework_private[framework->id] =
             framework->create(evpl, evpl_shared->framework_private[framework->id
                               ]);

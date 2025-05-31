@@ -39,7 +39,9 @@ evpl_attach_framework_shared(enum evpl_framework_id framework_id)
 
         evpl_shared->framework_private[framework->id] = framework->init();
 
-        evpl_allocator_reregister(evpl_shared->allocator);
+        if (evpl_shared->framework_private[framework->id]) {
+            evpl_allocator_reregister(evpl_shared->allocator);
+        }
     }
 
     pthread_mutex_unlock(&evpl_shared->lock);
