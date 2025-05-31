@@ -33,13 +33,20 @@ main(
     struct evpl              *evpl;
     struct evpl_block_device *bdev;
     int                       fd;
+    int                       rc;
     struct evpl_block_queue  *bqueue;
     int                       pending = 0;
     struct evpl_iovec         iov;
     int                       niov;
 
     fd = open("test.img", O_RDWR | O_CREAT, 0666);
-    ftruncate(fd, 1024 * 1024 * 1024);
+    rc = ftruncate(fd, 1024 * 1024 * 1024);
+
+    if (rc < 0) {
+        perror("ftruncate");
+        exit(1);
+    }
+
     close(fd);
 
     evpl = evpl_create(NULL);
