@@ -17,8 +17,10 @@ evpl_global_config_init(void)
 {
     struct evpl_global_config *config = evpl_zalloc(sizeof(*config));
 
-    config->thread_default.spin_ns = 1000000UL;
-    config->thread_default.wait_ms = -1;
+    config->thread_default.poll_mode       = 1;
+    config->thread_default.poll_iterations = 1000;
+    config->thread_default.spin_ns         = 1000000UL;
+    config->thread_default.wait_ms         = -1;
 
     config->max_pending        = 16;
     config->max_poll_fd        = 16;

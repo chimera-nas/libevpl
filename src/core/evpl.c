@@ -323,7 +323,7 @@ evpl_continue(struct evpl *evpl)
         } while (evpl->num_timers);
     }
 
-    if (evpl->num_poll) {
+    if (evpl->config.poll_mode && evpl->num_poll) {
 
         if (evpl->activity != evpl->last_activity) {
             evpl->last_activity    = evpl->activity;
@@ -358,16 +358,15 @@ evpl_continue(struct evpl *evpl)
                 evpl->poll_mode       = 1;
                 evpl->poll_iterations = 0;
             }
-
-            msecs = 0;
         }
     }
 
-    if (evpl->pending_close_binds || evpl->num_active_events || evpl->num_active_deferrals) {
+    if (evpl->poll_mode || evpl->activity != evpl->last_activity ||
+        evpl->num_active_events || evpl->num_active_deferrals || evpl->pending_close_binds) {
         msecs = 0;
     }
 
-    if (evpl->poll_mode && evpl->poll_iterations < 100) {
+    if (evpl->poll_mode && evpl->poll_iterations < evpl->config.poll_iterations) {
         for (i = 0; i < evpl->num_poll; ++i) {
             poll = &evpl->poll[i];
             poll->callback(evpl, poll->private_data);
@@ -376,7 +375,6 @@ evpl_continue(struct evpl *evpl)
         evpl->poll_iterations++;
 
     } else {
-
 
         n = evpl_core_wait(&evpl->core, msecs);
 

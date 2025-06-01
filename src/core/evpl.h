@@ -22,6 +22,8 @@
 #endif /* if EVPL_MECH == epoll */
 
 struct evpl_thread_config {
+    int          poll_mode;
+    int          poll_iterations;
     unsigned int spin_ns;
     int          wait_ms;
 

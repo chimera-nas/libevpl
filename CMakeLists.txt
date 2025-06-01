@@ -85,6 +85,8 @@ endif()
 add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
 add_definitions(-fvisibility=hidden)
 
+set(LIBEVPL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+
 include_directories(3rdparty)
 include_directories(include)
 

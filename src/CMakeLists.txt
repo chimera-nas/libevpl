@@ -11,7 +11,7 @@ macro(unit_test module test_name)
     target_link_libraries(${module}_${test_name} evpl pthread)
 
     # Add the test
-    add_test(NAME libevpl/${module}/${test_name} COMMAND ${module}_${test_name})
+    add_test(NAME libevpl/${module}/${test_name} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
 
     # Set TEST_FILE environment variable to point to the test source
     list(GET sources 0 first_source)
@@ -22,7 +22,7 @@ endmacro()
 
 macro(unit_test_bin module test_name binary_name)
 
-    add_test(NAME libevpl/${module}/${test_name} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
+    add_test(NAME libevpl/${module}/${test_name} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${TEST_BIN}/${binary_name} ${ARGN})
 
 
     get_target_property(test_file ${binary_name} TEST_FILE)

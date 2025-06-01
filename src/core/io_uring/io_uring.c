@@ -140,6 +140,7 @@ evpl_io_uring_poll_enter(
     struct evpl_io_uring_context *ctx = private_data;
 
     io_uring_unregister_eventfd(&ctx->ring);
+    evpl_io_uring_complete(evpl, ctx);
 } /* evpl_io_uring_poll_enter */
 
 static void
