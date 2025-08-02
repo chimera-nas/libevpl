@@ -52,6 +52,7 @@
 
 #include "socket/udp.h"
 #include "socket/tcp.h"
+#include "tls/tls.h"
 
 pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
 struct evpl_shared *evpl_shared      = NULL;
@@ -76,6 +77,12 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TCP,
                        &evpl_socket_tcp);
+
+    evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TLS,
+                        &evpl_framework_tls);
+
+    evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TLS,
+                       &evpl_socket_tls);
 
 #ifdef HAVE_IO_URING
     if (config->io_uring_enabled) {
@@ -130,6 +137,8 @@ evpl_cleanup()
     struct evpl_endpoint *endpoint;
     unsigned int          i;
 
+    fprintf(stderr, "evpl_cleanup\n");
+
     while (evpl_shared->endpoints) {
         endpoint = evpl_shared->endpoints;
         evpl_endpoint_close(endpoint);
@@ -153,6 +162,8 @@ evpl_cleanup()
 SYMBOL_EXPORT void
 evpl_init(struct evpl_global_config *config)
 {
+    evpl_core_abort_if(evpl_shared, "evpl_init: evpl_shared already initialized");
+
     evpl_shared_init(config);
     atexit(evpl_cleanup);
 } /* evpl_init_auto */

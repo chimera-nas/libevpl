@@ -11,6 +11,7 @@
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
+#include "test_common.h"
 
 const char            hello[]  = "Hello World!";
 const int             hellolen = strlen(hello) + 1;
@@ -110,6 +111,8 @@ main(
     struct evpl          *evpl;
     int                   opt, rc, run = 1;
     struct evpl_endpoint *ep;
+
+    test_evpl_config();
 
     while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {
         switch (opt) {

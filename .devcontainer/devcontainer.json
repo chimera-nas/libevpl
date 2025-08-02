@@ -10,11 +10,13 @@
                         "settings": {},
                         // Add the IDs of extensions you want installed when the container is created.
                         "extensions": [
-                                "ms-vscode.cpptools-extension-pack",
+                                "anysphere.cpptools",
                                 "ms-vscode.cmake-tools",
                                 "fredericbonnet.cmake-test-adapter",
                                 "ms-azuretools.vscode-docker",
-                                "zachflower.uncrustify"
+                                "benjarvis.uncrustify",
+                                "anthropic.claude-code"
+"
                         ]
                 }
         },
@@ -24,6 +26,9 @@
         "appPort": [],
         "forwardPorts": [],
         "privileged": true,
+        "remoteEnv": {
+                "LIBEVPL_BUILD_DIR": "/build"
+        },
         "workspaceMount": "source=${localWorkspaceFolder},target=/libevpl,type=bind",
         "workspaceFolder": "/libevpl"
 }

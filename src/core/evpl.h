@@ -65,6 +65,13 @@ struct evpl_global_config {
     unsigned int              xlio_enabled;
 
     unsigned int              vfio_enabled;
+
+    char                     *tls_cert_file;
+    char                     *tls_key_file;
+    char                     *tls_ca_file;
+    char                     *tls_cipher_list;
+    int                       tls_verify_peer;
+    int                       tls_ktls_enabled;
 };
 
 typedef void (*evpl_accept_callback_t)(

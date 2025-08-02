@@ -44,6 +44,30 @@ void evpl_global_config_set_rdmacm_srq_prefill(
     struct evpl_global_config *config,
     int                        prefill);
 
+void evpl_global_config_set_tls_cert(
+    struct evpl_global_config *config,
+    const char                *cert_file);
+
+void evpl_global_config_set_tls_key(
+    struct evpl_global_config *config,
+    const char                *key_file);
+
+void evpl_global_config_set_tls_ca(
+    struct evpl_global_config *config,
+    const char                *ca_file);
+
+void evpl_global_config_set_tls_cipher_list(
+    struct evpl_global_config *config,
+    const char                *cipher_list);
+
+void evpl_global_config_set_tls_verify_peer(
+    struct evpl_global_config *config,
+    int                        verify);
+
+void evpl_global_config_set_tls_ktls_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
 struct evpl_thread_config *
 evpl_thread_config_init(
     void);

@@ -5,6 +5,9 @@
   "cmake.configureSettings": {
     "CMAKE_C_COMPILER": "clang"
   },
+  "cmake.configureArgs": [
+    "-DCMAKE_EXPORT_COMPILE_COMMANDS=1"
+  ],
   "cmake.options.statusBarVisibility": "compact",
   "cmake.options.advanced.launch.statusBarVisibility": "hidden",
   "cmake.options.advanced.ctest.statusBarVisibility": "hidden",
@@ -16,7 +19,7 @@
   "cmakeExplorer.suiteDelimiter": "/",
   "cmakeExplorer.testFileVar": "TEST_FILE",
   "[c]": {
-    "editor.defaultFormatter": "zachflower.uncrustify"
+    "editor.defaultFormatter": "benjarvis.uncrustify"
   },
   "cmake.ctest.testExplorerIntegrationEnabled": false,
   "cmakeExplorer.parallelJobs": 1,
