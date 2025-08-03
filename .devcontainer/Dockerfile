@@ -9,6 +9,8 @@ RUN apt-get -y update && \
     echo y | unminimize && \
     apt-get -y --no-install-recommends install clang clang-tools cmake ninja-build git lldb gdb less psmisc uncrustify reuse \
     net-tools tshark tcpdump uuid-dev iproute2 man-db manpages-dev ca-certificates ssh libjansson-dev libclang-rt-18-dev llvm \
-    libxxhash-dev librdmacm-dev liburing-dev libunwind-dev flex bison libcurl4-openssl-dev build-essential ruby-full && \
+    libxxhash-dev librdmacm-dev liburing-dev libunwind-dev flex bison libcurl4-openssl-dev build-essential ruby-full npm \
+    libssl-dev openssl clangd && \
     gem install jekyll bundler && \
-    bundler install
+    bundler install && \
+    npm install -g @anthropic-ai/claude-code

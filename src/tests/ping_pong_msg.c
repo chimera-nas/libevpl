@@ -11,6 +11,7 @@
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
+#include "test_common.h"
 
 enum evpl_protocol_id proto       = EVPL_DATAGRAM_SOCKET_UDP;
 const char            localhost[] = "127.0.0.1";
@@ -128,6 +129,8 @@ main(
         .niters = 100,
         .value  = 1
     };
+
+    test_evpl_config();
 
     while ((opt = getopt(argc, argv, "a:p:r:")) != -1) {
         switch (opt) {

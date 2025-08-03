@@ -4,3 +4,7 @@ build
 *.diff
 cscope.out
 *.log
+private
+compile_commands.json
+.cache
+*.local.json

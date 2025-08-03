@@ -56,6 +56,15 @@ evpl_add_event(
     evpl_event_write_callback_t write_callback,
     evpl_event_error_callback_t error_callback);
 
+
+void
+evpl_event_update_callbacks(
+    struct evpl                *evpl,
+    struct evpl_event          *event,
+    evpl_event_read_callback_t  read_callback,
+    evpl_event_write_callback_t write_callback,
+    evpl_event_error_callback_t error_callback);
+
 void
 evpl_remove_event(
     struct evpl       *evpl,

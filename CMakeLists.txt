@@ -90,8 +90,12 @@ set(LIBEVPL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(3rdparty)
 include_directories(include)
 
+include_directories(ext/prometheus-c)
+
 add_subdirectory(ext)
 add_subdirectory(src)
+
+execute_process(COMMAND ln -sf ${CMAKE_BINARY_DIR}/compile_commands.json ${CMAKE_SOURCE_DIR}/compile_commands.json)
 
 if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(XDRZCC ${XDRZCC} PARENT_SCOPE)

@@ -38,6 +38,9 @@ set(BACKEND_LIBDEPS)
 set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h)
 add_subdirectory(socket)
 
+set(CORE_SRC ${CORE_SRC} tls/tls.c tls/tls.h)
+add_subdirectory(tls)
+
 if (HAVE_VFIO)
     set(CORE_SRC ${CORE_SRC} vfio/vfio.c vfio/vfio.h vfio/nvme.h)
     add_subdirectory(vfio)
@@ -65,7 +68,7 @@ add_subdirectory(thread)
 
 add_library(evpl SHARED ${CORE_SRC})
 
-target_link_libraries(evpl ${BACKEND_LIBDEPS})
+target_link_libraries(evpl ${BACKEND_LIBDEPS} ssl crypto)
 
 install(TARGETS evpl DESTINATION lib)
 

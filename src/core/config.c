@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL
 
 #include <unistd.h>
+#include <string.h>
 #include <pthread.h>
 
 #include "core/evpl.h"
@@ -60,16 +61,43 @@ evpl_global_config_init(void)
 
     config->vfio_enabled = 1;
 
+    config->tls_cert_file    = NULL;
+    config->tls_key_file     = NULL;
+    config->tls_cipher_list  = NULL;
+    config->tls_verify_peer  = 1;
+    config->tls_ktls_enabled = 1;
+
     return config;
 } /* evpl_config_init */
 
+static void
+evpl_global_config_free(struct evpl_global_config *config)
+{
+    if (config->tls_cert_file) {
+        evpl_free(config->tls_cert_file);
+    }
+
+    if (config->tls_key_file) {
+        evpl_free(config->tls_key_file);
+    }
+
+    if (config->tls_ca_file) {
+        evpl_free(config->tls_ca_file);
+    }
+
+    if (config->tls_cipher_list) {
+        evpl_free(config->tls_cipher_list);
+    }
+
+    evpl_free(config);
+} /* evpl_global_config_free */
 
 SYMBOL_EXPORT void
 evpl_global_config_release(struct evpl_global_config *config)
 {
 
     if (!evpl_shared) {
-        evpl_free(config);
+        evpl_global_config_free(config);
         return;
     }
 
@@ -81,7 +109,7 @@ evpl_global_config_release(struct evpl_global_config *config)
     config->refcnt--;
 
     if (config->refcnt == 0) {
-        evpl_free(config);
+        evpl_global_config_free(config);
     }
 
     pthread_mutex_unlock(&evpl_shared->lock);
@@ -134,5 +162,65 @@ evpl_global_config_set_spin_ns(
 {
     config->thread_default.spin_ns = ns;
 } /* evpl_global_config_set_spin_ns */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_tls_cert(
+    struct evpl_global_config *config,
+    const char                *cert_file)
+{
+    if (config->tls_cert_file) {
+        evpl_free(config->tls_cert_file);
+    }
+
+    config->tls_cert_file = strdup(cert_file);
+} /* evpl_global_config_set_tls_cert */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_tls_key(
+    struct evpl_global_config *config,
+    const char                *key_file)
+{
+    if (config->tls_key_file) {
+        evpl_free(config->tls_key_file);
+    }
+
+    config->tls_key_file = strdup(key_file);
+} /* evpl_global_config_set_tls_key */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_tls_ca(
+    struct evpl_global_config *config,
+    const char                *ca_file)
+{
+    config->tls_ca_file = strdup(ca_file);
+} /* evpl_global_config_set_tls_ca */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_tls_cipher_list(
+    struct evpl_global_config *config,
+    const char                *cipher_list)
+{
+    if (config->tls_cipher_list) {
+        evpl_free(config->tls_cipher_list);
+    }
+
+    config->tls_cipher_list = cipher_list ? strdup(cipher_list) : NULL;
+} /* evpl_global_config_set_tls_cipher_list */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_tls_verify_peer(
+    struct evpl_global_config *config,
+    int                        verify)
+{
+    config->tls_verify_peer = verify;
+} /* evpl_global_config_set_tls_verify_peer */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_tls_ktls_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->tls_ktls_enabled = enabled;
+} /* evpl_global_config_set_tls_ktls_enabled */
 
 

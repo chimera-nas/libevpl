@@ -7,27 +7,30 @@ CMAKE_ARGS_RELEASE := -DCMAKE_BUILD_TYPE=Release
 CMAKE_ARGS_DEBUG := -DCMAKE_BUILD_TYPE=Debug
 CTEST_ARGS := --output-on-failure --timeout 10
 
+# Use LIBEVPL_BUILD_DIR if set (for devcontainer), otherwise use build subdirectory
+BUILD_DIR ?= $(if $(LIBEVPL_BUILD_DIR),$(LIBEVPL_BUILD_DIR),build)
+
 default: release
 
 .PHONY: build_release
 build_release: 
-	@mkdir -p build/release
-	@cmake ${CMAKE_ARGS} ${CMAKE_ARGS_RELEASE} -S . -B build/release
-	@ninja -C build/release
+	@mkdir -p ${BUILD_DIR}/Release
+	@cmake ${CMAKE_ARGS} ${CMAKE_ARGS_RELEASE} -S . -B ${BUILD_DIR}/Release
+	@ninja -C ${BUILD_DIR}/Release
 
 .PHONY: build_debug
 build_debug:
-	@mkdir -p build/debug
-	@cmake ${CMAKE_ARGS} ${CMAKE_ARGS_DEBUG} -S . -B build/debug
-	@ninja -C build/debug
+	@mkdir -p ${BUILD_DIR}/Debug
+	@cmake ${CMAKE_ARGS} ${CMAKE_ARGS_DEBUG} -S . -B ${BUILD_DIR}/Debug
+	@ninja -C ${BUILD_DIR}/Debug
 
 .PHONY: test_debug
 test_debug: build_debug
-	cd build/debug && ctest ${CTEST_ARGS}
+	cd ${BUILD_DIR}/Debug && ctest ${CTEST_ARGS}
 
 .PHONY: test_release
 test_release: build_release
-	cd build/release && ctest ${CTEST_ARGS}
+	cd ${BUILD_DIR}/Release && ctest ${CTEST_ARGS}
 
 .PHONY: debug
 debug: build_debug test_debug
@@ -40,5 +43,5 @@ uncrustify:
 	@uncrustify -c etc/uncrustify.cfg --replace --no-backup src/*/*.[ch]
 
 clean:
-	@rm -rf build
+	@rm -rf ${BUILD_DIR}
 		
