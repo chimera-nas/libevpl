@@ -61,8 +61,8 @@ evpl_global_config_init(void)
 
     config->vfio_enabled = 1;
 
-    config->tls_cert_file    = strdup("cert.pem");
-    config->tls_key_file     = strdup("key.pem");
+    config->tls_cert_file    = NULL;
+    config->tls_key_file     = NULL;
     config->tls_cipher_list  = NULL;
     config->tls_verify_peer  = 1;
     config->tls_ktls_enabled = 1;

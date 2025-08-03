@@ -17,6 +17,11 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
+#include <openssl/x509.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include "core/allocator.h"
 #include "core/endpoint.h"
@@ -61,11 +66,11 @@ enum evpl_tls_state {
 struct evpl_tls {
     struct evpl_event         event;
     int                       fd;
-    SSL_CTX                  *ssl_ctx;
     SSL                      *ssl;
     enum evpl_tls_state state;
     int                       is_server;
-    int                       ktls_enabled;
+    int                       is_attached;
+    int                       ktls_checked;
     struct evpl_tls_datagram *free_datagrams;
     struct evpl_iovec         recv1;
     struct evpl_iovec         recv2;
@@ -77,6 +82,98 @@ struct evpl_tls_shared {
     SSL_CTX *client_ctx;
     SSL_CTX *server_ctx;
 };
+
+static int
+evpl_tls_generate_self_signed_cert(SSL_CTX *ctx)
+{
+    EVP_PKEY     *pkey     = NULL;
+    X509         *cert     = NULL;
+    X509_NAME    *name     = NULL;
+    EVP_PKEY_CTX *pkey_ctx = NULL;
+    int           rc       = 0;
+
+    pkey = EVP_PKEY_new();
+    evpl_tls_abort_if(!pkey, "Failed to create private key");
+
+    pkey_ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    evpl_tls_abort_if(!pkey_ctx, "Failed to create RSA key context");
+
+    rc = EVP_PKEY_keygen_init(pkey_ctx);
+    evpl_tls_abort_if(rc <= 0, "Failed to initialize key generation");
+
+    rc = EVP_PKEY_CTX_set_rsa_keygen_bits(pkey_ctx, 2048);
+    evpl_tls_abort_if(rc <= 0, "Failed to set RSA key size");
+
+    rc = EVP_PKEY_keygen(pkey_ctx, &pkey);
+    evpl_tls_abort_if(rc <= 0, "Failed to generate RSA key");
+
+    cert = X509_new();
+    evpl_tls_abort_if(!cert, "Failed to create certificate");
+
+    rc = X509_set_version(cert, 2);
+    evpl_tls_abort_if(rc <= 0, "Failed to set certificate version");
+
+    ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
+
+    X509_gmtime_adj(X509_get_notBefore(cert), 0);
+    X509_gmtime_adj(X509_get_notAfter(cert), 365 * 24 * 60 * 60);
+
+    X509_set_pubkey(cert, pkey);
+
+    name = X509_get_subject_name(cert);
+    X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, (unsigned char *) "US", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "ST", MBSTRING_ASC, (unsigned char *) "Self-Signed", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "L", MBSTRING_ASC, (unsigned char *) "Self-Signed", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC, (unsigned char *) "Self-Signed", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "OU", MBSTRING_ASC, (unsigned char *) "Self-Signed", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char *) "localhost", -1, -1, 0);
+
+    X509_set_issuer_name(cert, name);
+
+    X509V3_CTX      ctx_v3;
+    X509V3_set_ctx(&ctx_v3, cert, cert, NULL, NULL, 0);
+
+    X509_EXTENSION *ext = X509V3_EXT_conf_nid(NULL, &ctx_v3, NID_basic_constraints, "CA:FALSE");
+    if (ext) {
+        X509_add_ext(cert, ext, -1);
+        X509_EXTENSION_free(ext);
+    }
+
+    ext = X509V3_EXT_conf_nid(NULL, &ctx_v3, NID_subject_key_identifier, "hash");
+    if (ext) {
+        X509_add_ext(cert, ext, -1);
+        X509_EXTENSION_free(ext);
+    }
+
+    ext = X509V3_EXT_conf_nid(NULL, &ctx_v3, NID_subject_alt_name, "DNS:localhost,IP:127.0.0.1");
+    if (ext) {
+        X509_add_ext(cert, ext, -1);
+        X509_EXTENSION_free(ext);
+    }
+
+    rc = X509_sign(cert, pkey, EVP_sha256());
+    evpl_tls_abort_if(rc <= 0, "Failed to sign certificate");
+
+    rc = SSL_CTX_use_certificate(ctx, cert);
+    evpl_tls_abort_if(rc <= 0, "Failed to use certificate in SSL context");
+
+    rc = SSL_CTX_use_PrivateKey(ctx, pkey);
+    evpl_tls_abort_if(rc <= 0, "Failed to use private key in SSL context");
+
+    rc = SSL_CTX_check_private_key(ctx);
+    evpl_tls_abort_if(rc <= 0, "Private key does not match certificate");
+
+    if (pkey_ctx) {
+        EVP_PKEY_CTX_free(pkey_ctx);
+    }
+    if (cert) {
+        X509_free(cert);
+    }
+    if (pkey) {
+        EVP_PKEY_free(pkey);
+    }
+    return rc;
+} /* evpl_tls_generate_self_signed_cert */
 
 static SSL_CTX *
 evpl_tls_create_ctx(int is_server)
@@ -93,11 +190,9 @@ evpl_tls_create_ctx(int is_server)
 
     /* Enable kTLS if configured */
     if (config->tls_ktls_enabled) {
-        evpl_tls_debug("Enabling kTLS");
         SSL_CTX_set_options(ctx, SSL_OP_ENABLE_KTLS);
-        /* kTLS currently supports TLS 1.2 and 1.3 */
         SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-        SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+        SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
     }
 
     /* Set cipher list if configured */
@@ -126,6 +221,10 @@ evpl_tls_create_ctx(int is_server)
 
             evpl_tls_abort_if(rc <= 0, "Private key does not match certificate");
 
+        } else {
+            evpl_tls_info("No certificate files provided, generating self-signed certificate");
+            rc = evpl_tls_generate_self_signed_cert(ctx);
+            evpl_tls_abort_if(rc <= 0, "Failed to generate self-signed certificate");
         }
     }
 
@@ -155,14 +254,6 @@ evpl_tls_framework_init(void)
 
     shared = evpl_zalloc(sizeof(*shared));
 
-    shared->client_ctx = evpl_tls_create_ctx(0);
-
-    evpl_tls_abort_if(!shared->client_ctx, "Failed to create client SSL context");
-
-    shared->server_ctx = evpl_tls_create_ctx(1);
-
-    evpl_tls_abort_if(!shared->server_ctx, "Failed to create server SSL context");
-
     return shared;
 } /* evpl_tls_framework_init */
 
@@ -171,8 +262,12 @@ evpl_tls_framework_cleanup(void *private_data)
 {
     struct evpl_tls_shared *shared = private_data;
 
-    SSL_CTX_free(shared->client_ctx);
-    SSL_CTX_free(shared->server_ctx);
+    if (shared->client_ctx) {
+        SSL_CTX_free(shared->client_ctx);
+    }
+    if (shared->server_ctx) {
+        SSL_CTX_free(shared->server_ctx);
+    }
     evpl_free(shared);
 } /* evpl_tls_framework_cleanup */
 
@@ -221,13 +316,10 @@ evpl_tls_handle_ssl_error(
             return 0;
 
         case SSL_ERROR_ZERO_RETURN:
-            evpl_tls_debug("SSL connection closed");
             return -1;
 
         case SSL_ERROR_SYSCALL:
-            if (ret == 0) {
-                evpl_tls_debug("SSL connection closed");
-            } else {
+            if (ret != 0) {
                 evpl_tls_error("SSL syscall error: %s", strerror(errno));
             }
             return -1;
@@ -266,166 +358,12 @@ evpl_tls_handshake(
         notify.notify_type   = EVPL_NOTIFY_CONNECTED;
         notify.notify_status = 0;
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
+
     } else if (evpl_tls_handle_ssl_error(evpl, t, ret) < 0) {
         evpl_close(evpl, bind);
     }
 } /* evpl_tls_handshake */
 
-void
-evpl_tls_read(
-    struct evpl       *evpl,
-    struct evpl_event *event)
-{
-    struct evpl_tls   *t    = evpl_event_tls(event);
-    struct evpl_bind  *bind = evpl_private2bind(t);
-    struct evpl_iovec *iovec;
-    struct evpl_notify notify;
-    ssize_t            res;
-    int                length, niov, i;
-
-    if (unlikely(t->fd < 0)) {
-        return;
-    }
-
-    if (t->state == EVPL_TLS_STATE_HANDSHAKING) {
-        evpl_tls_handshake(evpl, bind, t);
-        return;
-    }
-
-    if (t->state != EVPL_TLS_STATE_CONNECTED) {
-        return;
-    }
-
-    if (t->recv1.length == 0) {
-        evpl_iovec_alloc_whole(evpl, &t->recv1);
-    }
-
-    res = SSL_read(t->ssl, evpl_iovec_data(&t->recv1), evpl_iovec_length(&t->recv1));
-
-    if (res <= 0) {
-        if (evpl_tls_handle_ssl_error(evpl, t, res) < 0) {
-            evpl_close(evpl, bind);
-        }
-        return;
-    }
-
-    evpl_iovec_ring_append(evpl, &bind->iovec_recv, &t->recv1, res);
-
-    if (bind->segment_callback) {
-        iovec = alloca(sizeof(struct evpl_iovec) * evpl_shared->config->max_num_iovec);
-
-        while (1) {
-            length = bind->segment_callback(evpl, bind, bind->private_data);
-
-            if (length == 0 || evpl_iovec_ring_bytes(&bind->iovec_recv) < length) {
-                break;
-            }
-
-            if (unlikely(length < 0)) {
-                evpl_close(evpl, bind);
-                return;
-            }
-
-            niov = evpl_iovec_ring_copyv(evpl, iovec, &bind->iovec_recv, length);
-
-            notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
-            notify.recv_msg.iovec  = iovec;
-            notify.recv_msg.niov   = niov;
-            notify.recv_msg.length = length;
-            notify.recv_msg.addr   = bind->remote;
-
-            bind->notify_callback(evpl, bind, &notify, bind->private_data);
-
-            for (i = 0; i < niov; ++i) {
-                evpl_iovec_decref(&iovec[i]);
-            }
-        }
-    } else {
-        notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
-        notify.notify_status = 0;
-        bind->notify_callback(evpl, bind, &notify, bind->private_data);
-    }
-} /* evpl_tls_read */
-
-void
-evpl_tls_write(
-    struct evpl       *evpl,
-    struct evpl_event *event)
-{
-    struct evpl_tls   *t    = evpl_event_tls(event);
-    struct evpl_bind  *bind = evpl_private2bind(t);
-    struct evpl_notify notify;
-    struct iovec       iov;
-    int                niov, niov_sent, msg_sent = 0;
-    ssize_t            res;
-
-
-    if (unlikely(t->fd < 0)) {
-        return;
-    }
-
-    if (t->state == EVPL_TLS_STATE_HANDSHAKING) {
-        evpl_tls_handshake(evpl, bind, t);
-        return;
-    }
-
-    if (t->state != EVPL_TLS_STATE_CONNECTED) {
-        return;
-    }
-
-    niov = evpl_iovec_ring_iov(&res, &iov, 1, &bind->iovec_send);
-
-    if (!niov) {
-        evpl_event_write_disinterest(evpl, &t->event);
-        return;
-    }
-
-
-    res = SSL_write(t->ssl, iov.iov_base, iov.iov_len);
-
-    if (res <= 0) {
-        if (evpl_tls_handle_ssl_error(evpl, t, res) < 0) {
-            evpl_close(evpl, bind);
-        }
-        return;
-    }
-
-    niov_sent = (res == iov.iov_len) ? 1 : 0;
-
-    evpl_iovec_ring_consume(evpl, &bind->iovec_send, res);
-
-    if (bind->segment_callback) {
-        if (niov_sent) {
-            struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
-
-            if (dgram) {
-
-                if (dgram->niov) {
-                    dgram->niov--;
-                } else {
-                    msg_sent++;
-                    evpl_dgram_ring_remove(&bind->dgram_send);
-                }
-            }
-        }
-    }
-
-    if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
-        notify.notify_type   = EVPL_NOTIFY_SENT;
-        notify.notify_status = 0;
-        notify.sent.bytes    = res;
-        notify.sent.msgs     = msg_sent;
-        bind->notify_callback(evpl, bind, &notify, bind->private_data);
-    }
-
-    if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
-        evpl_event_write_disinterest(evpl, &t->event);
-
-        if (bind->flags & EVPL_BIND_FINISH) {
-            evpl_close(evpl, bind);
-        }
-    }
-} /* evpl_tls_write */
 
 
 void
@@ -442,15 +380,6 @@ evpl_tls_read_ktls(
     int                length, niov, i;
 
     if (unlikely(s->fd < 0)) {
-        return;
-    }
-
-    if (s->state == EVPL_TLS_STATE_HANDSHAKING) {
-        evpl_tls_handshake(evpl, bind, s);
-        return;
-    }
-
-    if (s->state != EVPL_TLS_STATE_CONNECTED) {
         return;
     }
 
@@ -561,16 +490,6 @@ evpl_tls_write_ktls(
         return;
     }
 
-
-    if (s->state == EVPL_TLS_STATE_HANDSHAKING) {
-        evpl_tls_handshake(evpl, bind, s);
-        return;
-    }
-
-    if (s->state != EVPL_TLS_STATE_CONNECTED) {
-        return;
-    }
-
     iov = alloca(sizeof(struct iovec) * maxiov);
 
     niov = evpl_iovec_ring_iov(&total, iov, maxiov, &bind->iovec_send);
@@ -642,6 +561,23 @@ evpl_tls_write_ktls(
 } /* evpl_tls_write_ktls */
 
 void
+evpl_tls_attach_ssl(struct evpl_tls *t)
+{
+    SSL_set_fd(t->ssl, t->fd);
+    t->is_attached = 1;
+} /* evpl_tls_attach_ssl */
+
+void
+evpl_tls_read(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+
+void
+evpl_tls_write(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+
+void
 evpl_tls_event_error(
     struct evpl       *evpl,
     struct evpl_event *event)
@@ -654,8 +590,198 @@ evpl_tls_event_error(
     }
 
     evpl_close(evpl, bind);
-} /* evpl_tls_event_error */
+}     /* evpl_tls_event_error */
 
+void
+evpl_tls_check_ktls(
+    struct evpl     *evpl,
+    struct evpl_tls *t)
+{
+    int ktls_rx, ktls_tx;
+
+    t->ktls_checked = 1;
+
+    ktls_rx = BIO_get_ktls_recv(SSL_get_rbio(t->ssl)) == 1;
+    ktls_tx = BIO_get_ktls_send(SSL_get_wbio(t->ssl)) == 1;
+
+    evpl_event_update_callbacks(evpl, &t->event,
+                                ktls_rx ? evpl_tls_read_ktls : evpl_tls_read,
+                                ktls_tx ? evpl_tls_write_ktls : evpl_tls_write,
+                                evpl_tls_event_error);
+} /* evpl_tls_check_ktls */
+
+void
+evpl_tls_read(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    struct evpl_tls   *t    = evpl_event_tls(event);
+    struct evpl_bind  *bind = evpl_private2bind(t);
+    struct evpl_iovec *iovec;
+    struct evpl_notify notify;
+    ssize_t            res;
+    int                length, niov, i;
+
+    if (unlikely(t->fd < 0)) {
+        return;
+    }
+
+    if (!t->is_attached) {
+        evpl_tls_attach_ssl(t);
+    }
+
+    if (t->state == EVPL_TLS_STATE_HANDSHAKING) {
+        evpl_tls_handshake(evpl, bind, t);
+        return;
+    }
+
+    if (t->state != EVPL_TLS_STATE_CONNECTED) {
+        return;
+    }
+
+    if (t->recv1.length == 0) {
+        evpl_iovec_alloc_whole(evpl, &t->recv1);
+    }
+
+    res = SSL_read(t->ssl, evpl_iovec_data(&t->recv1), evpl_iovec_length(&t->recv1));
+
+    if (res <= 0) {
+        if (evpl_tls_handle_ssl_error(evpl, t, res) < 0) {
+            evpl_close(evpl, bind);
+        }
+        return;
+    }
+
+    if (evpl_shared->config->tls_ktls_enabled && !t->ktls_checked) {
+        evpl_tls_check_ktls(evpl, t);
+    }
+
+    evpl_iovec_ring_append(evpl, &bind->iovec_recv, &t->recv1, res);
+
+    if (bind->segment_callback) {
+        iovec = alloca(sizeof(struct evpl_iovec) * evpl_shared->config->max_num_iovec);
+
+        while (1) {
+            length = bind->segment_callback(evpl, bind, bind->private_data);
+
+            if (length == 0 || evpl_iovec_ring_bytes(&bind->iovec_recv) < length) {
+                break;
+            }
+
+            if (unlikely(length < 0)) {
+                evpl_close(evpl, bind);
+                return;
+            }
+
+            niov = evpl_iovec_ring_copyv(evpl, iovec, &bind->iovec_recv, length);
+
+            notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+            notify.recv_msg.iovec  = iovec;
+            notify.recv_msg.niov   = niov;
+            notify.recv_msg.length = length;
+            notify.recv_msg.addr   = bind->remote;
+
+            bind->notify_callback(evpl, bind, &notify, bind->private_data);
+
+            for (i = 0; i < niov; ++i) {
+                evpl_iovec_decref(&iovec[i]);
+            }
+        }
+    } else {
+        notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
+        notify.notify_status = 0;
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
+    }
+} /* evpl_tls_read */
+
+void
+evpl_tls_write(
+    struct evpl       *evpl,
+    struct evpl_event *event)
+{
+    struct evpl_tls   *t    = evpl_event_tls(event);
+    struct evpl_bind  *bind = evpl_private2bind(t);
+    struct evpl_notify notify;
+    struct iovec       iov;
+    int                niov, niov_sent, msg_sent = 0;
+    ssize_t            res;
+
+
+    if (unlikely(t->fd < 0)) {
+        return;
+    }
+
+    if (!t->is_attached) {
+        evpl_tls_attach_ssl(t);
+    }
+
+
+    if (t->state == EVPL_TLS_STATE_HANDSHAKING) {
+        evpl_tls_handshake(evpl, bind, t);
+        return;
+    }
+
+    if (t->state != EVPL_TLS_STATE_CONNECTED) {
+        return;
+    }
+
+    niov = evpl_iovec_ring_iov(&res, &iov, 1, &bind->iovec_send);
+
+    if (!niov) {
+        evpl_event_write_disinterest(evpl, &t->event);
+        return;
+    }
+
+
+    res = SSL_write(t->ssl, iov.iov_base, iov.iov_len);
+
+    if (res <= 0) {
+        if (evpl_tls_handle_ssl_error(evpl, t, res) < 0) {
+            evpl_close(evpl, bind);
+        }
+        return;
+    }
+
+    if (evpl_shared->config->tls_ktls_enabled && !t->ktls_checked) {
+        evpl_tls_check_ktls(evpl, t);
+    }
+
+    niov_sent = (res == iov.iov_len) ? 1 : 0;
+
+    evpl_iovec_ring_consume(evpl, &bind->iovec_send, res);
+
+    if (bind->segment_callback) {
+        if (niov_sent) {
+            struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+
+            if (dgram) {
+
+                if (dgram->niov) {
+                    dgram->niov--;
+                } else {
+                    msg_sent++;
+                    evpl_dgram_ring_remove(&bind->dgram_send);
+                }
+            }
+        }
+    }
+
+    if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
+        notify.notify_type   = EVPL_NOTIFY_SENT;
+        notify.notify_status = 0;
+        notify.sent.bytes    = res;
+        notify.sent.msgs     = msg_sent;
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
+    }
+
+    if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
+        evpl_event_write_disinterest(evpl, &t->event);
+
+        if (bind->flags & EVPL_BIND_FINISH) {
+            evpl_close(evpl, bind);
+        }
+    }
+} /* evpl_tls_write */
 
 void
 evpl_accept_tls(
@@ -696,7 +822,8 @@ evpl_tls_init(
     int              is_listen)
 {
     struct evpl_tls_shared *shared = evpl_framework_private(evpl, EVPL_FRAMEWORK_TLS);
-    int                     flags, rc, yes = 1, ktls_rx, ktls_tx;
+    int                     flags, rc, yes = 1;
+    SSL_CTX                *ssl_ctx;
 
     evpl_tls_abort_if(!shared, "TLS framework not initialized");
 
@@ -709,11 +836,23 @@ evpl_tls_init(
         t->state = EVPL_TLS_STATE_HANDSHAKING;
     }
 
-    t->ssl_ctx = is_server ? shared->server_ctx : shared->client_ctx;
-    t->ssl     = SSL_new(t->ssl_ctx);
+    if (is_server) {
+        if (!shared->server_ctx) {
+            shared->server_ctx = evpl_tls_create_ctx(1);
+        }
+        ssl_ctx = shared->server_ctx;
+    } else {
+        if (!shared->client_ctx) {
+            shared->client_ctx = evpl_tls_create_ctx(0);
+        }
+        ssl_ctx = shared->client_ctx;
+    }
+
+    t->ssl          = SSL_new(ssl_ctx);
+    t->is_attached  = 0;
+    t->ktls_checked = 0;
 
     evpl_tls_abort_if(!t->ssl, "Failed to create SSL object");
-    SSL_set_fd(t->ssl, t->fd);
 
     flags = fcntl(t->fd, F_GETFL, 0);
     evpl_tls_abort_if(flags < 0, "Failed to get socket flags: %s", strerror(errno));
@@ -733,19 +872,9 @@ evpl_tls_init(
         rc = setsockopt(t->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
         evpl_tls_abort_if(rc, "Failed to set TCP_NODELAY on socket");
 
-        if (evpl_shared->config->tls_ktls_enabled) {
-            ktls_rx = BIO_get_ktls_recv(SSL_get_rbio(t->ssl)) == 1;
-            ktls_tx = BIO_get_ktls_send(SSL_get_wbio(t->ssl)) == 1;
-        } else {
-            ktls_rx = 0;
-            ktls_tx = 0;
-        }
-
-        evpl_tls_debug("kTLS enabled?  TX=%d  RX=%d", ktls_tx, ktls_rx);
-
         evpl_add_event(evpl, &t->event, t->fd,
-                       ktls_rx ? evpl_tls_read_ktls : evpl_tls_read,
-                       ktls_tx ? evpl_tls_write_ktls : evpl_tls_write,
+                       evpl_tls_read,
+                       evpl_tls_write,
                        evpl_tls_event_error);
 
         evpl_event_read_interest(evpl, &t->event);

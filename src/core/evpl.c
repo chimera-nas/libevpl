@@ -587,7 +587,18 @@ evpl_add_event(
     evpl->num_events++;
 } /* evpl_add_event */
 
-
+void
+evpl_event_update_callbacks(
+    struct evpl                *evpl,
+    struct evpl_event          *event,
+    evpl_event_read_callback_t  read_callback,
+    evpl_event_write_callback_t write_callback,
+    evpl_event_error_callback_t error_callback)
+{
+    event->read_callback  = read_callback;
+    event->write_callback = write_callback;
+    event->error_callback = error_callback;
+} /* evpl_event_update_callbacks */
 void
 evpl_remove_event(
     struct evpl       *evpl,
