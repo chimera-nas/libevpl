@@ -1,13 +1,12 @@
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
-// SPDX-License-Identifier: LGPL
+// SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
 
 #include <netinet/tcp.h> // For TCP_NODELAY
+#include <utlist.h>
 
-
-#include "uthash/utlist.h"
 #include "evpl/evpl.h"
 #include "core/evpl_shared.h"
 

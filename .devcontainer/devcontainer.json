@@ -16,7 +16,6 @@
                                 "ms-azuretools.vscode-docker",
                                 "benjarvis.uncrustify",
                                 "anthropic.claude-code"
-"
                         ]
                 }
         },

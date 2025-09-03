@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: IETF Trust
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
 enum auth_flavor {
     AUTH_NONE       = 0,
     AUTH_SYS        = 1,

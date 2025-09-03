@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
-// SPDX-License-Identifier: LGPL
+// SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <netinet/tcp.h>
+#include <utlist.h>
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -31,7 +32,6 @@
 #include "core/evpl.h"
 #include "core/evpl_shared.h"
 #include "core/tls/tls.h"
-#include "uthash/utlist.h"
 
 extern struct evpl_shared *evpl_shared;
 

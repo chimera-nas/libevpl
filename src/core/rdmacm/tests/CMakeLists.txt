@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 #
-# SPDX-License-Identifier: LGPL
+# SPDX-License-Identifier: LGPL-2.1-only
 
 if (DEFINED ENV{EVPL_RDMACM_IP}) 
     unit_test_bin(rdmacm hello_world_msg_rdmacm_ud hello_world_msg -r DATAGRAM_RDMACM_UD -a $ENV{EVPL_RDMACM_IP})

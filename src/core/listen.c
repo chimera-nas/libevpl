@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL-2.1-only
+
 #include <pthread.h>
 #include <unistd.h>
-
-#include "uthash/utlist.h"
+#include <utlist.h>
 
 #include "core/bind.h"
 #include "core/macros.h"

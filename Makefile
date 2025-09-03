@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2025 Ben Jarvis
 #
-# SPDX-License-Identifier: LGPL
+# SPDX-License-Identifier: LGPL-2.1-only
 
 CMAKE_ARGS := -G Ninja -DCMAKE_C_COMPILER=gcc
 CMAKE_ARGS_RELEASE := -DCMAKE_BUILD_TYPE=Release
@@ -9,6 +9,8 @@ CTEST_ARGS := --output-on-failure --timeout 10
 
 # Use LIBEVPL_BUILD_DIR if set (for devcontainer), otherwise use build subdirectory
 BUILD_DIR ?= $(if $(LIBEVPL_BUILD_DIR),$(LIBEVPL_BUILD_DIR),build)
+
+SOURCE_DIR := $(shell pwd)
 
 default: release
 
@@ -38,10 +40,18 @@ debug: build_debug test_debug
 .PHONY: release
 release: build_release test_release
 
-.PHONY: uncrustify
-uncrustify:
-	@uncrustify -c etc/uncrustify.cfg --replace --no-backup src/*/*.[ch]
-
 clean:
 	@rm -rf ${BUILD_DIR}
+
+
+.PHONY: syntax-check
+syntax-check:
+	@find src/ -type f \( -name "*.c" -o -name "*.h" \) -print0 | \
+                xargs -0 -I {} sh -c 'uncrustify -c etc/uncrustify.cfg --check {} >/dev/null 2>&1 || (echo "Formatting issue in: {}" && exit 1)' || exit 1
+
+
+.PHONY: syntax
+syntax:
+	@find src/ -type f \( -name "*.c" -o -name "*.h" \) -print0 | \
+                xargs -0 -I {} sh -c 'uncrustify -c etc/uncrustify.cfg --replace --no-backup {}' >/dev/null 2>&1
 		

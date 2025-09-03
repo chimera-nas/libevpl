@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2025 Ben Jarvis
 #
-# SPDX-License-Identifier: LGPL
+# SPDX-License-Identifier: LGPL-2.1-only
 
 set(TEST_BIN ${CMAKE_CURRENT_BINARY_DIR} PARENT_SCOPE)
 

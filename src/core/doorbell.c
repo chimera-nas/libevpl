@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL-2.1-only
+
 #include <sys/eventfd.h>
 #include <unistd.h>
-
-#include "uthash/utlist.h"
+#include <utlist.h>
 
 #include "doorbell.h"
 #include "evpl/evpl.h"

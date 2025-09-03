@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
-// SPDX-License-Identifier: LGPL
+// SPDX-License-Identifier: LGPL-2.1-only
 
 #define _GNU_SOURCE
 #include <string.h>
@@ -14,12 +14,12 @@
 #include <errno.h>
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
+#include <utlist.h>
 #include "vfio.h"
 #include "core/evpl.h"
 #include "core/iovec.h"
 #include "core/protocol.h"
 #include "core/allocator.h"
-#include "uthash/utlist.h"
 #include "core/event_fn.h"
 #include "core/poll.h"
 

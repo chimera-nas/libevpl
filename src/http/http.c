@@ -1,16 +1,16 @@
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
-// SPDX-License-Identifier: LGPL
+// SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <utlist.h>
 
 #include "core/evpl.h"
 #include "evpl/evpl.h"
 #include "core/iovec_ring.h"
 #include "evpl/evpl_http.h"
-#include "uthash/utlist.h"
 
 #define evpl_http_debug(...) evpl_debug("http", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_http_info(...)  evpl_info("http", __FILE__, __LINE__, __VA_ARGS__)
