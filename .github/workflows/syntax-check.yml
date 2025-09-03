@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Unlicense
 
 name: Syntax Check
+permissions:
+  contents: read
 
 on:
   pull_request:
