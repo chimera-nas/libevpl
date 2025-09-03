@@ -1,4 +1,8 @@
-#include "uthash/utlist.h"
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL-2.1-only
+
+#include <utlist.h>
 
 #include "core/macros.h"
 #include "core/evpl_shared.h"

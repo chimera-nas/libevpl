@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
-// SPDX-License-Identifier: LGPL
+// SPDX-License-Identifier: LGPL-2.1-only
 
 #define _GNU_SOURCE
 #include <time.h>
+#include <utlist.h>
 
 #include "core/evpl.h"
 #include "evpl/evpl_rpc2.h"
-
-#include "uthash/utlist.h"
 
 #include "rpc2/common.h"
 #include "rpc2_xdr.h"

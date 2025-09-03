@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL-2.1-only
+
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -6,7 +10,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include "uthash/utlist.h"
+#include <utlist.h>
 
 #include "core/macros.h"
 #include "core/endpoint.h"

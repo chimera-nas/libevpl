@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 #
-# SPDX-License-Identifier: LGPL
+# SPDX-License-Identifier: LGPL-2.1-only
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -94,6 +94,7 @@ include_directories(ext/prometheus-c)
 
 add_subdirectory(ext)
 add_subdirectory(src)
+add_subdirectory(include)
 
 execute_process(COMMAND ln -sf ${CMAKE_BINARY_DIR}/compile_commands.json ${CMAKE_SOURCE_DIR}/compile_commands.json)
 

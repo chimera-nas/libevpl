@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2025 Ben Jarvis
+
+SPDX-License-Identifier: LGPL-2.1-only
+-->
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.

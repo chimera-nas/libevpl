@@ -1,4 +1,9 @@
 
+/*
+ * SPDX-FileCopyrightText: 2025 Ben Jarvis
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
 struct Hello {
     unsigned int    id;
     string          greeting;

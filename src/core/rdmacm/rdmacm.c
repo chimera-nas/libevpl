@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
-// SPDX-License-Identifier: LGPL
+// SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdlib.h>
 #include <fcntl.h>
@@ -12,9 +12,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
-
-#include "uthash/uthash.h"
-#include "uthash/utlist.h"
+#include <uthash.h>
+#include <utlist.h>
 
 #include "core/evpl.h"
 #include "core/rdmacm/rdmacm.h"

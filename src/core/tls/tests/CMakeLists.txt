@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2025 Ben Jarvis
 #
-# SPDX-License-Identifier: LGPL
+# SPDX-License-Identifier: LGPL-2.1-only
 
 # Generate test certificates
 set(TLS_TEST_CERT_DIR ${CMAKE_CURRENT_BINARY_DIR})

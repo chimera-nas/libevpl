@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2025 Ben Jarvis
 #
-# SPDX-License-Identifier: LGPL
+# SPDX-License-Identifier: LGPL-2.1-only
 
 unit_test(core init_no_config init_no_config.c)
 unit_test(core init_auto_no_config init_auto_no_config.c)

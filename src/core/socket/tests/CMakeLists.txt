@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 #
-# SPDX-License-Identifier: LGPL
+# SPDX-License-Identifier: LGPL-2.1-only
 
 unit_test_bin(socket hello_world_msg_udp hello_world_msg -r DATAGRAM_SOCKET_UDP)
 unit_test_bin(socket hello_world_stream_tcp hello_world_stream -r STREAM_SOCKET_TCP)

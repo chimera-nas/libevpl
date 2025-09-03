@@ -1,3 +1,8 @@
+/* SPDX-FileCopyrightText: 2010-2017 IETF Trust and persons identified as authors of the code.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+ 
 /*
  * Copyright (c) 2010-2017 IETF Trust and the persons
  * identified as authors of the code.  All rights reserved.

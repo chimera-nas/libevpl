@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 //
-// SPDX-License-Identifier: LGPL
+// SPDX-License-Identifier: LGPL-2.1-only
 
 #define _GNU_SOURCE 1
 
@@ -18,8 +18,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/eventfd.h>
-
-#include "uthash/utlist.h"
+#include <utlist.h>
 
 #include "core/evpl.h"
 #include "core/event_fn.h"

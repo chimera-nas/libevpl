@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Ben Jarvis
+//
+// SPDX-License-Identifier: LGPL-2.1-only
+
 #include "core/macros.h"
 #include "core/bind.h"
 #include "core/evpl.h"
