@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <mellanox/xlio_extra.h>
 #include <infiniband/verbs.h>
+#include <utlist.h>
 
 #include "core/evpl.h"
 #include "evpl/evpl.h"
@@ -17,8 +18,6 @@
 #include "core/endpoint.h"
 #include "core/allocator.h"
 #include "core/bind.h"
-
-#include "uthash/utlist.h"
 
 #define evpl_xlio_debug(...) evpl_debug("xlio", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_xlio_info(...)  evpl_info("xlio", __FILE__, __LINE__, __VA_ARGS__)
