@@ -164,42 +164,268 @@ evpl_rpc2_iovec_skip(
     return outc - out_iov;
 } /* evpl_rpc2_iovec_skip */
 
-static int
-evpl_rpc2_send_reply_error(
-    struct evpl          *evpl,
-    struct evpl_rpc2_msg *msg)
+static void
+evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
 {
-    struct evpl_iovec iov, reply_iov;
-    int               reply_len, reply_niov, niov;
-    uint32_t          hdr;
-    struct rpc_msg    rpc_reply;
+    struct evpl_rpc2_thread *thread = msg->thread;
+    struct evpl             *evpl   = thread->evpl;
 
-    niov = evpl_iovec_reserve(evpl, 4096, 0, 1, &iov);
+    evpl_sendv(
+        evpl,
+        msg->bind,
+        msg->reply_iov,
+        msg->reply_niov,
+        msg->reply_length);
 
-    evpl_rpc2_abort_if(niov != 1, "Failed to allocate iov for rpc header");
+
+    evpl_rpc2_msg_free(thread, msg);
+} /* evpl_rpc2_dispatch_reply */
+
+static void
+evpl_rpc2_write_segment_callback(
+    int   status,
+    void *private_data)
+{
+    struct evpl_rpc2_msg *msg = private_data;
+
+    evpl_rpc2_abort_if(status, "Failed to write rdma segment");
+
+    msg->pending_writes--;
+
+    if (msg->pending_writes == 0) {
+        evpl_rpc2_dispatch_reply(msg);
+    }
+} /* evpl_rpc2_write_segment_callback */
+
+static int
+evpl_rpc2_send_reply(
+    struct evpl          *evpl,
+    struct evpl_rpc2_msg *msg,
+    struct evpl_iovec    *msg_iov,
+    int                   msg_niov,
+    int                   length,
+    int                   rpc2_stat)
+{
+    struct evpl_iovec        iov, reply_iov;
+    int                      reply_len, reply_niov, offset, rpc_len;
+    uint32_t                 hdr, segment_offset, write_left, left, chunk, reply_offset;
+    struct rpc_msg           rpc_reply;
+    struct rdma_msg          rdma_msg, *req_rdma_msg;
+    struct xdr_write_list   *write_list;
+    struct xdr_rdma_segment *target;
+    struct evpl_iovec        segment_iov, *reply_segment_iov;
+    struct timespec          now;
+    uint64_t                 elapsed;
+    int                      i, reserve, reduce = 0, rdma = msg->rdma;
+    struct  xdr_write_chunk *reply_chunk;
+
+    reserve = msg->program ? msg->program->reserve : 0;
 
     rpc_reply.xid                               = msg->xid;
     rpc_reply.body.mtype                        = REPLY;
     rpc_reply.body.rbody.stat                   = 0;
     rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
     rpc_reply.body.rbody.areply.verf.body.len   = 0;
-    rpc_reply.body.rbody.areply.reply_data.stat = PROG_MISMATCH;
+    rpc_reply.body.rbody.areply.reply_data.stat = rpc2_stat;
+
+    rpc_len = marshall_length_rpc_msg(&rpc_reply);
+
+    if (rdma) {
+
+        req_rdma_msg = msg->rdma_msg;
+
+        rdma_msg.rdma_xid                       = msg->xid;
+        rdma_msg.rdma_vers                      = 1;
+        rdma_msg.rdma_credit                    = msg->rdma_credits;
+        rdma_msg.rdma_body.proc                 = RDMA_MSG;
+        rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
+        rdma_msg.rdma_body.rdma_msg.rdma_writes = rpc2_stat ? NULL : req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
+        rdma_msg.rdma_body.rdma_msg.rdma_reply  = rpc2_stat ? NULL : req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
+
+        write_list     = rdma_msg.rdma_body.rdma_msg.rdma_writes;
+        segment_offset = 0;
+        write_left     = msg->write_chunk.length;
+
+        while (write_list) {
+
+            for (i = 0; i < write_list->entry.num_target; i++) {
+                target = &write_list->entry.target[i];
+
+                if (write_left < target->length) {
+                    target->length = write_left;
+                    write_left     = 0;
+                } else {
+                    write_left -= target->length;
+                }
+
+                if (target->length) {
+                    segment_iov.data         = msg->write_chunk.iov->data + segment_offset;
+                    segment_iov.length       = target->length;
+                    segment_iov.private_data = msg->write_chunk.iov->private_data;
+
+                    evpl_rpc2_abort_if(msg->write_chunk.niov > 1, "write_chunk.niov > 1 unsupported atm");
+
+                    /* XXX this logic is wrong if write_chunk contains many small IOV */
+                    evpl_rdma_write(evpl, msg->bind,
+                                    target->handle, target->offset,
+                                    &segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+
+                    msg->pending_writes++;
+
+                    segment_offset += target->length;
+                }
+            }
+
+            write_list = write_list->next;
+        }
+
+        if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
+            if (rpc_len + length > 512) {
+                reduce = 1;
+
+                rdma_msg.rdma_body.proc                   = RDMA_NOMSG;
+                rdma_msg.rdma_body.rdma_nomsg.rdma_reads  = NULL;
+                rdma_msg.rdma_body.rdma_nomsg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
+                rdma_msg.rdma_body.rdma_nomsg.rdma_reply  = req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
+
+                left = rpc_len + length;
+
+                for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
+
+                    chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[i].length;
+
+                    if (left < chunk) {
+                        chunk = left;
+                    }
+
+                    req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = chunk;
+
+                    left -= chunk;
+                }
+
+            } else {
+
+                for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
+                    req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = 0;
+                }
+            }
+        }
+
+        offset = marshall_length_rdma_msg(&rdma_msg);
+
+        msg_iov[0].data   += reserve - (rpc_len + offset);
+        msg_iov[0].length -= reserve - (rpc_len + offset);
+        length            -= reserve - (rpc_len + offset);
+
+        reply_niov = 1;
+        iov        = msg_iov[0];
+        offset     = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, NULL, 0);
+
+    } else {
+        offset = 4;
+
+        msg_iov[0].data   += reserve - (rpc_len + offset);
+        msg_iov[0].length -= reserve - (rpc_len + offset);
+        length            -= reserve - (rpc_len + offset);
+    }
+
+    iov = msg_iov[0];
 
     reply_niov = 1;
-    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, NULL, 4);
+    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, NULL, offset);
 
-    hdr = rpc2_hton32((reply_len - 4) | 0x80000000);
+    evpl_rpc2_abort_if(reply_len != rpc_len + offset,
+                       "marshalled reply length mismatch %d != %d", reply_len, rpc_len + offset);
 
-    memcpy(reply_iov.data, &hdr, sizeof(hdr));
+    if (!rdma) {
+        hdr = rpc2_hton32((length - 4) | 0x80000000);
+        memcpy(msg_iov[0].data, &hdr, sizeof(hdr));
+    }
 
-    evpl_iovec_commit(evpl, 0, &iov, 1);
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
-    evpl_sendv(evpl, msg->bind, &reply_iov, 1, reply_len);
+    elapsed = evpl_ts_interval(&now, &msg->timestamp);
 
-    evpl_rpc2_msg_free(msg->thread, msg);
+    prometheus_histogram_sample(msg->metric, elapsed);
+
+    if (reduce) {
+
+        reply_chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply;
+
+        xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
+
+        msg->reply_iov->data         = msg_iov[0].data;
+        msg->reply_iov->length       = offset;
+        msg->reply_iov->private_data = msg_iov[0].private_data;
+        msg->reply_niov              = 1;
+        msg->reply_length            = offset;
+
+        msg_iov[0].data   += offset;
+        msg_iov[0].length -= offset;
+
+        reply_offset = 0;
+
+        for (i = 0; i < reply_chunk->num_target; i++) {
+
+            if (reply_chunk->target[i].length == 0) {
+                continue;
+            }
+            xdr_dbuf_alloc_space(reply_segment_iov, sizeof(*reply_segment_iov), msg->dbuf);
+
+            reply_segment_iov->data         = msg_iov[0].data + reply_offset;
+            reply_segment_iov->length       = reply_chunk->target[i].length;
+            reply_segment_iov->private_data = msg_iov[0].private_data;
+
+            evpl_rdma_write(evpl, msg->bind,
+                            reply_chunk->target[i].handle,
+                            reply_chunk->target[i].offset,
+                            reply_segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+
+            reply_offset += reply_chunk->target[i].length;
+
+            msg->pending_writes++;
+        }
+
+    } else {
+        msg->reply_iov    = msg_iov;
+        msg->reply_niov   = msg_niov;
+        msg->reply_length = length;
+    }
+
+    if (msg->pending_writes == 0) {
+        evpl_rpc2_dispatch_reply(msg);
+    }
 
     return 0;
+} /* evpl_rpc2_send_reply */
+
+
+static inline int
+evpl_rpc2_send_reply_error(
+    struct evpl          *evpl,
+    struct evpl_rpc2_msg *msg,
+    int                   rpc2_stat)
+{
+    struct evpl_iovec msg_iov;
+    int               msg_niov = 1;
+
+    msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, &msg_iov);
+
+    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov, 0, rpc2_stat);
 } /* evpl_rpc2_send_reply_error */
+
+
+static inline int
+evpl_rpc2_send_reply_success(
+    struct evpl          *evpl,
+    struct evpl_rpc2_msg *msg,
+    struct evpl_iovec    *msg_iov,
+    int                   msg_niov,
+    int                   length)
+{
+    return evpl_rpc2_send_reply(evpl, msg, msg_iov, msg_niov, length, SUCCESS);
+} /* evpl_rpc2_send_reply_success */
+
 
 static void
 evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
@@ -239,7 +465,7 @@ evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
                     rpc_msg->body.cbody.prog,
                     rpc_msg->body.cbody.vers);
 
-                evpl_rpc2_send_reply_error(evpl, msg);
+                evpl_rpc2_send_reply_error(evpl, msg, PROG_MISMATCH);
                 return;
             }
 
@@ -465,239 +691,6 @@ evpl_rpc2_accept(
 
 } /* evpl_rpc2_accept */
 
-static void
-evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
-{
-    struct evpl_rpc2_thread *thread = msg->thread;
-    struct evpl             *evpl   = thread->evpl;
-
-    evpl_sendv(
-        evpl,
-        msg->bind,
-        msg->reply_iov,
-        msg->reply_niov,
-        msg->reply_length);
-
-
-    evpl_rpc2_msg_free(thread, msg);
-} /* evpl_rpc2_dispatch_reply */
-
-static void
-evpl_rpc2_write_segment_callback(
-    int   status,
-    void *private_data)
-{
-    struct evpl_rpc2_msg *msg = private_data;
-
-    evpl_rpc2_abort_if(status, "Failed to write rdma segment");
-
-    msg->pending_writes--;
-
-    if (msg->pending_writes == 0) {
-        evpl_rpc2_dispatch_reply(msg);
-    }
-} /* evpl_rpc2_write_segment_callback */
-
-static int
-evpl_rpc2_send_reply(
-    struct evpl          *evpl,
-    struct evpl_rpc2_msg *msg,
-    struct evpl_iovec    *msg_iov,
-    int                   msg_niov,
-    int                   length)
-{
-    struct evpl_iovec        iov, reply_iov;
-    int                      reply_len, reply_niov, offset, rpc_len;
-    uint32_t                 hdr, segment_offset, write_left, left, chunk, reply_offset;
-    struct rpc_msg           rpc_reply;
-    struct rdma_msg          rdma_msg, *req_rdma_msg;
-    struct xdr_write_list   *write_list;
-    struct xdr_rdma_segment *target;
-    struct evpl_iovec        segment_iov, *reply_segment_iov;
-    struct timespec          now;
-    uint64_t                 elapsed;
-    int                      i, reduce = 0, rdma = msg->rdma;
-    struct  xdr_write_chunk *reply_chunk;
-
-
-    rpc_reply.xid                               = msg->xid;
-    rpc_reply.body.mtype                        = REPLY;
-    rpc_reply.body.rbody.stat                   = 0;
-    rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
-    rpc_reply.body.rbody.areply.verf.body.len   = 0;
-    rpc_reply.body.rbody.areply.reply_data.stat = SUCCESS;
-
-    rpc_len = marshall_length_rpc_msg(&rpc_reply);
-
-    if (rdma) {
-
-        req_rdma_msg = msg->rdma_msg;
-
-        rdma_msg.rdma_xid                       = msg->xid;
-        rdma_msg.rdma_vers                      = 1;
-        rdma_msg.rdma_credit                    = msg->rdma_credits;
-        rdma_msg.rdma_body.proc                 = RDMA_MSG;
-        rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
-        rdma_msg.rdma_body.rdma_msg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
-        rdma_msg.rdma_body.rdma_msg.rdma_reply  = req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
-
-        write_list     = rdma_msg.rdma_body.rdma_msg.rdma_writes;
-        segment_offset = 0;
-        write_left     = msg->write_chunk.length;
-
-        while (write_list) {
-
-            for (i = 0; i < write_list->entry.num_target; i++) {
-                target = &write_list->entry.target[i];
-
-                if (write_left < target->length) {
-                    target->length = write_left;
-                    write_left     = 0;
-                } else {
-                    write_left -= target->length;
-                }
-
-                if (target->length) {
-                    segment_iov.data         = msg->write_chunk.iov->data + segment_offset;
-                    segment_iov.length       = target->length;
-                    segment_iov.private_data = msg->write_chunk.iov->private_data;
-
-                    evpl_rpc2_abort_if(msg->write_chunk.niov > 1, "write_chunk.niov > 1 unsupported atm");
-
-                    /* XXX this logic is wrong if write_chunk contains many small IOV */
-                    evpl_rdma_write(evpl, msg->bind,
-                                    target->handle, target->offset,
-                                    &segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
-
-                    msg->pending_writes++;
-
-                    segment_offset += target->length;
-                }
-            }
-
-            write_list = write_list->next;
-        }
-
-        if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
-            if (rpc_len + length > 512) {
-                reduce = 1;
-
-                rdma_msg.rdma_body.proc                   = RDMA_NOMSG;
-                rdma_msg.rdma_body.rdma_nomsg.rdma_reads  = NULL;
-                rdma_msg.rdma_body.rdma_nomsg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
-                rdma_msg.rdma_body.rdma_nomsg.rdma_reply  = req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
-
-                left = rpc_len + length;
-
-                for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
-
-                    chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[i].length;
-
-                    if (left < chunk) {
-                        chunk = left;
-                    }
-
-                    req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = chunk;
-
-                    left -= chunk;
-                }
-
-            } else {
-
-                for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
-                    req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = 0;
-                }
-            }
-        }
-
-        offset = marshall_length_rdma_msg(&rdma_msg);
-
-        msg_iov[0].data   += msg->program->reserve - (rpc_len + offset);
-        msg_iov[0].length -= msg->program->reserve - (rpc_len + offset);
-        length            -= msg->program->reserve - (rpc_len + offset);
-
-        reply_niov = 1;
-        iov        = msg_iov[0];
-        offset     = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, NULL, 0);
-
-    } else {
-        offset = 4;
-
-        msg_iov[0].data   += msg->program->reserve - (rpc_len + offset);
-        msg_iov[0].length -= msg->program->reserve - (rpc_len + offset);
-        length            -= msg->program->reserve - (rpc_len + offset);
-    }
-
-    iov = msg_iov[0];
-
-    reply_niov = 1;
-    reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, NULL, offset);
-
-    evpl_rpc2_abort_if(reply_len != rpc_len + offset,
-                       "marshalled reply length mismatch %d != %d", reply_len, rpc_len + offset);
-
-    if (!rdma) {
-        hdr = rpc2_hton32((length - 4) | 0x80000000);
-        memcpy(msg_iov[0].data, &hdr, sizeof(hdr));
-    }
-
-    clock_gettime(CLOCK_MONOTONIC, &now);
-
-    elapsed = evpl_ts_interval(&now, &msg->timestamp);
-
-    prometheus_histogram_sample(msg->metric, elapsed);
-
-    if (reduce) {
-
-        reply_chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply;
-
-        xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
-
-        msg->reply_iov->data         = msg_iov[0].data;
-        msg->reply_iov->length       = offset;
-        msg->reply_iov->private_data = msg_iov[0].private_data;
-        msg->reply_niov              = 1;
-        msg->reply_length            = offset;
-
-        msg_iov[0].data   += offset;
-        msg_iov[0].length -= offset;
-
-        reply_offset = 0;
-
-        for (i = 0; i < reply_chunk->num_target; i++) {
-
-            if (reply_chunk->target[i].length == 0) {
-                continue;
-            }
-            xdr_dbuf_alloc_space(reply_segment_iov, sizeof(*reply_segment_iov), msg->dbuf);
-
-            reply_segment_iov->data         = msg_iov[0].data + reply_offset;
-            reply_segment_iov->length       = reply_chunk->target[i].length;
-            reply_segment_iov->private_data = msg_iov[0].private_data;
-
-            evpl_rdma_write(evpl, msg->bind,
-                            reply_chunk->target[i].handle,
-                            reply_chunk->target[i].offset,
-                            reply_segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
-
-            reply_offset += reply_chunk->target[i].length;
-
-            msg->pending_writes++;
-        }
-
-    } else {
-        msg->reply_iov    = msg_iov;
-        msg->reply_niov   = msg_niov;
-        msg->reply_length = length;
-    }
-
-    if (msg->pending_writes == 0) {
-        evpl_rpc2_dispatch_reply(msg);
-    }
-
-    return 0;
-} /* evpl_rpc2_send_reply */
-
 SYMBOL_EXPORT struct evpl_rpc2_server *
 evpl_rpc2_init(
     struct evpl_rpc2_program **programs,
@@ -714,7 +707,7 @@ evpl_rpc2_init(
     memcpy(server->programs, programs, nprograms * sizeof(*programs));
 
     for (int i = 0; i < nprograms; i++) {
-        server->programs[i]->reply_dispatch = evpl_rpc2_send_reply;
+        server->programs[i]->reply_dispatch = evpl_rpc2_send_reply_success;
     }
 
     return server;

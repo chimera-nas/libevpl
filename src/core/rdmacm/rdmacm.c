@@ -1484,10 +1484,12 @@ evpl_rdmacm_close(
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
 
-    --rdmacm_id->dev->num_qp;
+    if (rdmacm) {
+        --rdmacm_id->dev->num_qp;
 
-    if (rdmacm_id->qp) {
-        HASH_DELETE(hh, rdmacm->ids, rdmacm_id);
+        if (rdmacm_id->qp) {
+            HASH_DELETE(hh, rdmacm->ids, rdmacm_id);
+        }
     }
 } /* evpl_rdmacm_close */
 
