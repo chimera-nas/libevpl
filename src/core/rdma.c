@@ -8,6 +8,8 @@
 #include "core/bind.h"
 #include "core/protocol.h"
 #include "core/evpl.h"
+#include "core/rdma_request.h"
+
 
 SYMBOL_EXPORT void
 evpl_rdma_read(
@@ -22,13 +24,23 @@ evpl_rdma_read(
 {
     struct evpl_protocol *protocol = bind->protocol;
 
-    if (unlikely(!protocol->rdma_read)) {
+    if (unlikely(!protocol->rdma)) {
         callback(ENOTSUP, private_data);
         return;
     }
 
-    protocol->rdma_read(evpl, bind, remote_key, remote_address, iov, niov,
-                        callback, private_data);
+    evpl_rdma_request_ring_add(
+        &bind->rdma_rw,
+        EVPL_RDMA_READ,
+        remote_key,
+        remote_address,
+        iov,
+        niov,
+        callback,
+        private_data);
+
+
+    evpl_defer(evpl, &bind->flush_deferral);
 } /* evpl_rdma_read */
 
 SYMBOL_EXPORT void
@@ -44,11 +56,20 @@ evpl_rdma_write(
 {
     struct evpl_protocol *protocol = bind->protocol;
 
-    if (unlikely(!protocol->rdma_write)) {
+    if (unlikely(!protocol->rdma)) {
         callback(ENOTSUP, private_data);
         return;
     }
 
-    protocol->rdma_write(evpl, bind, remote_key, remote_address, iov, niov,
-                         callback, private_data);
+    evpl_rdma_request_ring_add(
+        &bind->rdma_rw,
+        EVPL_RDMA_WRITE,
+        remote_key,
+        remote_address,
+        iov,
+        niov,
+        callback,
+        private_data);
+
+    evpl_defer(evpl, &bind->flush_deferral);
 } /* evpl_rdma_write */

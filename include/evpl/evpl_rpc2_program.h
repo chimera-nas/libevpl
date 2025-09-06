@@ -48,6 +48,8 @@ struct evpl_rpc2_msg {
     struct evpl_rpc2_msg                 *next;
     struct evpl_rpc2_rdma_chunk           read_chunk;
     struct evpl_rpc2_rdma_chunk           write_chunk;
+    struct evpl_iovec                     reply_segment_iov;
+    struct evpl_iovec                     segment_iov[64];
 };
 
 struct evpl_rpc2_program {
