@@ -213,7 +213,7 @@ evpl_rpc2_send_reply(
     struct rdma_msg          rdma_msg, *req_rdma_msg;
     struct xdr_write_list   *write_list;
     struct xdr_rdma_segment *target;
-    struct evpl_iovec        segment_iov, *reply_segment_iov;
+    struct evpl_iovec       *segment_iov, *reply_segment_iov;
     struct timespec          now;
     uint64_t                 elapsed;
     int                      i, reserve, reduce = 0, rdma = msg->rdma;
@@ -246,7 +246,10 @@ evpl_rpc2_send_reply(
         segment_offset = 0;
         write_left     = msg->write_chunk.length;
 
+        segment_iov = msg->segment_iov;
+
         while (write_list) {
+
 
             for (i = 0; i < write_list->entry.num_target; i++) {
                 target = &write_list->entry.target[i];
@@ -259,20 +262,22 @@ evpl_rpc2_send_reply(
                 }
 
                 if (target->length) {
-                    segment_iov.data         = msg->write_chunk.iov->data + segment_offset;
-                    segment_iov.length       = target->length;
-                    segment_iov.private_data = msg->write_chunk.iov->private_data;
+                    segment_iov->data         = msg->write_chunk.iov->data + segment_offset;
+                    segment_iov->length       = target->length;
+                    segment_iov->private_data = msg->write_chunk.iov->private_data;
 
                     evpl_rpc2_abort_if(msg->write_chunk.niov > 1, "write_chunk.niov > 1 unsupported atm");
 
                     /* XXX this logic is wrong if write_chunk contains many small IOV */
                     evpl_rdma_write(evpl, msg->bind,
                                     target->handle, target->offset,
-                                    &segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+                                    segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
 
                     msg->pending_writes++;
 
                     segment_offset += target->length;
+
+                    segment_iov++;
                 }
             }
 
@@ -370,7 +375,8 @@ evpl_rpc2_send_reply(
             if (reply_chunk->target[i].length == 0) {
                 continue;
             }
-            xdr_dbuf_alloc_space(reply_segment_iov, sizeof(*reply_segment_iov), msg->dbuf);
+
+            reply_segment_iov = &msg->reply_segment_iov;
 
             reply_segment_iov->data         = msg_iov[0].data + reply_offset;
             reply_segment_iov->length       = reply_chunk->target[i].length;
@@ -517,7 +523,7 @@ evpl_rpc2_event(
     struct evpl_iovec       *hdr_iov;
     int                      hdr_niov;
     int                      i, rc, rdma, offset, segment_offset;
-    struct evpl_iovec        segment_iov;
+    struct evpl_iovec       *segment_iov;
     char                     addr_str[80], addr_str_local[80];
 
     rdma = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
@@ -591,19 +597,23 @@ evpl_rpc2_event(
 
                     segment_offset = 0;
 
+                    segment_iov = msg->segment_iov;
+
                     while (read_list) {
 
-                        segment_iov.data         = msg->read_chunk.iov->data + segment_offset;
-                        segment_iov.length       = read_list->entry.target.length;
-                        segment_iov.private_data = msg->read_chunk.iov->private_data;
+                        segment_iov->data         = msg->read_chunk.iov->data + segment_offset;
+                        segment_iov->length       = read_list->entry.target.length;
+                        segment_iov->private_data = msg->read_chunk.iov->private_data;
 
                         evpl_rdma_read(evpl, msg->bind,
                                        read_list->entry.target.handle, read_list->entry.target.offset,
-                                       &segment_iov, 1, evpl_rpc2_read_segment_callback, msg);
+                                       segment_iov, 1, evpl_rpc2_read_segment_callback, msg);
 
                         msg->pending_reads++;
 
                         segment_offset += read_list->entry.target.length;
+
+                        segment_iov++;
 
                         read_list = read_list->next;
                     }

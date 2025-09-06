@@ -23,18 +23,19 @@ evpl_global_config_init(void)
     config->thread_default.spin_ns         = 1000000UL;
     config->thread_default.wait_ms         = -1;
 
-    config->max_pending        = 16;
-    config->max_poll_fd        = 16;
-    config->max_num_iovec      = 128;
-    config->huge_pages         = 0;
-    config->buffer_size        = 2 * 1024 * 1024;
-    config->slab_size          = 1 * 1024 * 1024 * 1024;
-    config->refcnt             = 1;
-    config->iovec_ring_size    = 1024;
-    config->dgram_ring_size    = 256;
-    config->max_datagram_size  = 65536;
-    config->max_datagram_batch = 16;
-    config->resolve_timeout_ms = 5000;
+    config->max_pending            = 16;
+    config->max_poll_fd            = 16;
+    config->max_num_iovec          = 128;
+    config->huge_pages             = 0;
+    config->buffer_size            = 2 * 1024 * 1024;
+    config->slab_size              = 1 * 1024 * 1024 * 1024;
+    config->refcnt                 = 1;
+    config->iovec_ring_size        = 1024;
+    config->dgram_ring_size        = 256;
+    config->rdma_request_ring_size = 64;
+    config->max_datagram_size      = 65536;
+    config->max_datagram_batch     = 16;
+    config->resolve_timeout_ms     = 5000;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 

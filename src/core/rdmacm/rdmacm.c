@@ -132,6 +132,8 @@ struct evpl_rdmacm_id {
     struct ibv_qp_ex             *qp;
     int                           stream;
     int                           ud;
+    int                           max_rdma_rw;
+    int                           cur_rdma_rw;
 
     struct evpl_address          *resolve_addr;
 
@@ -539,27 +541,31 @@ evpl_rdmacm_poll_cq(
                         cq->status,
                         ibv_wc_read_vendor_err(cq));
                     break;
+                case IBV_WC_RDMA_READ:
                 case IBV_WC_RDMA_WRITE:
                     evpl_rdmacm_error(
-                        "rdma write completion error wr_id %lu type %u status %u vendor_err %u",
+                        "rdma %s completion error wr_id %lu type %u status %u vendor_err %u",
+                        ibv_wc_read_opcode(cq) == IBV_WC_RDMA_READ ? "read" : "write",
                         cq->wr_id,
                         ibv_wc_read_opcode(cq),
                         cq->status,
                         ibv_wc_read_vendor_err(cq));
+
                     sr = (struct evpl_rdmacm_sr *) cq->wr_id;
                     sr->callback(EIO, sr->private_data);
+
+                    rdmacm_id = sr->rdmacm_id;
+
                     evpl_rdmacm_sr_free(rdmacm, sr);
-                    break;
-                case IBV_WC_RDMA_READ:
-                    evpl_rdmacm_error(
-                        "rdma read completion error wr_id %lu type %u status %u vendor_err %u",
-                        cq->wr_id,
-                        ibv_wc_read_opcode(cq),
-                        cq->status,
-                        ibv_wc_read_vendor_err(cq));
-                    sr = (struct evpl_rdmacm_sr *) cq->wr_id;
-                    sr->callback(EIO, sr->private_data);
-                    evpl_rdmacm_sr_free(rdmacm, sr);
+
+                    bind = evpl_private2bind(rdmacm_id);
+
+                    --rdmacm_id->cur_rdma_rw;
+
+                    if (!evpl_rdma_request_ring_is_empty(&bind->rdma_rw)) {
+                        evpl_defer(evpl, &bind->flush_deferral);
+                    }
+
                     break;
                 default:
                     abort();
@@ -658,14 +664,21 @@ evpl_rdmacm_poll_cq(
 
                 break;
             case IBV_WC_RDMA_READ:
-                sr = (struct evpl_rdmacm_sr *) cq->wr_id;
-                sr->callback(0, sr->private_data);
-                evpl_rdmacm_sr_free(rdmacm, sr);
-                break;
             case IBV_WC_RDMA_WRITE:
                 sr = (struct evpl_rdmacm_sr *) cq->wr_id;
+
+                rdmacm_id = sr->rdmacm_id;
+
                 sr->callback(0, sr->private_data);
                 evpl_rdmacm_sr_free(rdmacm, sr);
+                bind = evpl_private2bind(rdmacm_id);
+
+                --rdmacm_id->cur_rdma_rw;
+
+                if (!evpl_rdma_request_ring_is_empty(&bind->rdma_rw)) {
+                    evpl_defer(evpl, &bind->flush_deferral);
+                }
+
                 break;
             default:
                 evpl_rdmacm_error("Unhandled RDMA completion opcode %u",
@@ -1044,6 +1057,9 @@ evpl_rdmacm_attach(
     conn_param.responder_resources = accepted_id->conn_param.initiator_depth;
     conn_param.initiator_depth     = accepted_id->conn_param.initiator_depth;//responder_resources;
 
+    rdmacm_id->max_rdma_rw = accepted_id->conn_param.initiator_depth;
+    rdmacm_id->cur_rdma_rw = 0;
+
     rc = rdma_accept(accepted_id->id, &conn_param);
 
     evpl_rdmacm_abort_if(rc, "rdma_accept error %s", strerror(errno));
@@ -1060,8 +1076,9 @@ evpl_rdmacm_listen(
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     int                    rc;
 
-    rdmacm_id->stream = bind->protocol->stream;
-    rdmacm_id->ud     = 0;
+    rdmacm_id->stream      = bind->protocol->stream;
+    rdmacm_id->ud          = 0;
+    rdmacm_id->cur_rdma_rw = 0;
 
     rdmacm_id->resolve_id = NULL;
 
@@ -1185,6 +1202,76 @@ evpl_rdmacm_ud_resolve(
 
 } /* evpl_rdmacm_ud_resolve */
 
+static inline void
+evpl_rdmacm_flush_rdma_rw(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    struct evpl_rdmacm_id    *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_rdma_request *req;
+    struct evpl_rdmacm       *rdmacm = rdmacm_id->rdmacm;
+    struct ibv_qp_ex         *qp     = rdmacm_id->qp;
+    struct ibv_mr           **mrset, *mr;
+    struct evpl_iovec        *cur;
+    struct evpl_rdmacm_sr    *sr;
+    struct ibv_sge           *sge;
+    int                       len = 0, i, rc;
+
+    while (rdmacm_id->cur_rdma_rw < rdmacm_id->max_rdma_rw &&
+           !evpl_rdma_request_ring_is_empty(&bind->rdma_rw)) {
+
+        req = evpl_rdma_request_ring_tail(&bind->rdma_rw);
+
+        rdmacm_id->cur_rdma_rw++;
+
+        sr = evpl_rdmacm_sr_alloc(rdmacm);
+
+        sr->rdmacm_id    = rdmacm_id;
+        sr->callback     = req->callback;
+        sr->private_data = req->private_data;
+
+        sge = alloca(sizeof(struct ibv_sge) * req->niov);
+
+        for (i = 0; i < req->niov; ++i) {
+
+            cur = &req->iov[i];
+
+            mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
+                                                  EVPL_FRAMEWORK_RDMACM);
+
+            mr = mrset[rdmacm_id->devindex];
+
+            sge[i].addr   = (uint64_t) cur->data;
+            sge[i].length = cur->length;
+            sge[i].lkey   = mr->lkey;
+
+            len += cur->length;
+        }
+
+        sr->length = len;
+
+        ibv_wr_start(qp);
+
+        qp->wr_id    = (uint64_t) sr;
+        qp->wr_flags = 0;
+
+        if (req->type == EVPL_RDMA_READ) {
+            ibv_wr_rdma_read(qp, req->remote_key, req->remote_address);
+        } else {
+            ibv_wr_rdma_write(qp, req->remote_key, req->remote_address);
+        }
+
+        ibv_wr_set_sge_list(qp, req->niov, sge);
+
+        rc = ibv_wr_complete(qp);
+
+        evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(errno));
+
+        evpl_rdma_request_ring_remove(&bind->rdma_rw);
+
+    }
+} /* evpl_rdmacm_flush_rdma_rw */
+
 void
 evpl_rdmacm_flush_datagram(
     struct evpl      *evpl,
@@ -1205,6 +1292,8 @@ evpl_rdmacm_flush_datagram(
     if (unlikely(!qp)) {
         return;
     }
+
+    evpl_rdmacm_flush_rdma_rw(evpl, bind);
 
     while (!evpl_dgram_ring_is_empty(&bind->dgram_send)) {
 
@@ -1345,6 +1434,8 @@ evpl_rdmacm_flush_stream(
         return;
     }
 
+    evpl_rdmacm_flush_rdma_rw(evpl, bind);
+
     sge = alloca(sizeof(struct ibv_sge) * config->max_num_iovec);
 
     while (!evpl_iovec_ring_is_empty(&bind->iovec_send)) {
@@ -1418,8 +1509,9 @@ evpl_rdmacm_bind(
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     int                    rc;
 
-    rdmacm_id->stream = 0;
-    rdmacm_id->ud     = 1;
+    rdmacm_id->stream      = 0;
+    rdmacm_id->ud          = 1;
+    rdmacm_id->cur_rdma_rw = 0;
 
     rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
@@ -1512,126 +1604,6 @@ evpl_rdmacm_release_address(
     evpl_free(ah);
 } /* evpl_rdmacm_release_address */
 
-void
-evpl_rdmacm_rdma_read(
-    struct evpl *evpl,
-    struct evpl_bind *bind,
-    uint32_t remote_key,
-    uint64_t remote_address,
-    struct evpl_iovec *iov,
-    int niov,
-    void ( *callback )(int status, void *private_data),
-    void *private_data)
-{
-    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
-    struct ibv_qp_ex      *qp        = rdmacm_id->qp;
-    struct ibv_mr        **mrset, *mr;
-    struct evpl_iovec     *cur;
-    struct evpl_rdmacm_sr *sr;
-    struct ibv_sge        *sge;
-    int                    len = 0, i, rc;
-
-    sr = evpl_rdmacm_sr_alloc(rdmacm);
-
-    sr->callback     = callback;
-    sr->private_data = private_data;
-
-    sge = alloca(sizeof(struct ibv_sge) * niov);
-
-    for (i = 0; i < niov; ++i) {
-
-        cur = &iov[i];
-
-        mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
-                                              EVPL_FRAMEWORK_RDMACM);
-
-        mr = mrset[rdmacm_id->devindex];
-
-        sge[i].addr   = (uint64_t) cur->data;
-        sge[i].length = cur->length;
-        sge[i].lkey   = mr->lkey;
-
-        len += cur->length;
-    }
-
-    sr->length = len;
-
-    ibv_wr_start(qp);
-
-    qp->wr_id    = (uint64_t) sr;
-    qp->wr_flags = 0;
-
-    ibv_wr_rdma_read(qp, remote_key, remote_address);
-
-    ibv_wr_set_sge_list(qp, niov, sge);
-
-    rc = ibv_wr_complete(qp);
-
-    evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(errno));
-
-} /* evpl_rdmacm_rdma_read */
-
-void
-evpl_rdmacm_rdma_write(
-    struct evpl *evpl,
-    struct evpl_bind *bind,
-    uint32_t remote_key,
-    uint64_t remote_address,
-    struct evpl_iovec *iov,
-    int niov,
-    void ( *callback )(int status, void *private_data),
-    void *private_data)
-{
-    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
-    struct ibv_qp_ex      *qp        = rdmacm_id->qp;
-    struct ibv_mr        **mrset, *mr;
-    struct evpl_iovec     *cur;
-    struct evpl_rdmacm_sr *sr;
-    struct ibv_sge        *sge;
-    int                    len = 0, i, rc;
-
-    sr = evpl_rdmacm_sr_alloc(rdmacm);
-
-    sr->callback     = callback;
-    sr->private_data = private_data;
-
-    sge = alloca(sizeof(struct ibv_sge) * niov);
-
-    for (i = 0; i < niov; ++i) {
-
-        cur = &iov[i];
-
-        mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
-                                              EVPL_FRAMEWORK_RDMACM);
-
-        mr = mrset[rdmacm_id->devindex];
-
-        sge[i].addr   = (uint64_t) cur->data;
-        sge[i].length = cur->length;
-        sge[i].lkey   = mr->lkey;
-
-        len += cur->length;
-    }
-
-    sr->length = len;
-
-    ibv_wr_start(qp);
-
-    qp->wr_id    = (uint64_t) sr;
-    qp->wr_flags = 0;
-
-    ibv_wr_rdma_write(qp, remote_key, remote_address);
-
-    ibv_wr_set_sge_list(qp, niov, sge);
-
-    rc = ibv_wr_complete(qp);
-
-    evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(errno));
-} /* evpl_rdmacm_rdma_write */
-
-
 struct evpl_framework evpl_framework_rdmacm = {
     .id                = EVPL_FRAMEWORK_RDMACM,
     .name              = "RDMACM",
@@ -1648,6 +1620,7 @@ struct evpl_protocol  evpl_rdmacm_rc_datagram = {
     .id            = EVPL_DATAGRAM_RDMACM_RC,
     .connected     = 1,
     .stream        = 0,
+    .rdma          = 1,
     .name          = "DATAGRAM_RDMACM_RC",
     .framework     = &evpl_framework_rdmacm,
     .listen        = evpl_rdmacm_listen,
@@ -1656,14 +1629,13 @@ struct evpl_protocol  evpl_rdmacm_rc_datagram = {
     .pending_close = evpl_rdmacm_pending_close,
     .close         = evpl_rdmacm_close,
     .flush         = evpl_rdmacm_flush_datagram,
-    .rdma_read     = evpl_rdmacm_rdma_read,
-    .rdma_write    = evpl_rdmacm_rdma_write,
 };
 
 struct evpl_protocol  evpl_rdmacm_rc_stream = {
     .id            = EVPL_STREAM_RDMACM_RC,
     .connected     = 1,
     .stream        = 1,
+    .rdma          = 1,
     .name          = "STREAM_RDMACM_RC",
     .framework     = &evpl_framework_rdmacm,
     .listen        = evpl_rdmacm_listen,
@@ -1672,8 +1644,6 @@ struct evpl_protocol  evpl_rdmacm_rc_stream = {
     .pending_close = evpl_rdmacm_pending_close,
     .close         = evpl_rdmacm_close,
     .flush         = evpl_rdmacm_flush_stream,
-    .rdma_read     = evpl_rdmacm_rdma_read,
-    .rdma_write    = evpl_rdmacm_rdma_write,
 };
 
 struct evpl_protocol  evpl_rdmacm_ud_datagram = {

@@ -44,6 +44,7 @@ struct evpl_global_config {
     unsigned int              max_datagram_batch;
     unsigned int              refcnt;
     unsigned int              iovec_ring_size;
+    unsigned int              rdma_request_ring_size;
     unsigned int              dgram_ring_size;
     unsigned int              resolve_timeout_ms;
 
