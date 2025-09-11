@@ -32,6 +32,7 @@
 #include "core/timer.h"
 #include "core/protocol.h"
 #include "core/timing.h"
+#include "core/numa.h"
 
 #ifdef HAVE_IO_URING
 #include "io_uring/io_uring.h"
@@ -68,6 +69,8 @@ evpl_shared_init(struct evpl_global_config *config)
     }
 
     evpl_shared->config = config;
+
+    evpl_shared->numa_config = evpl_numa_discover();
 
     evpl_shared->allocator = evpl_allocator_create();
 
@@ -136,8 +139,6 @@ evpl_cleanup()
     struct evpl_endpoint *endpoint;
     unsigned int          i;
 
-    fprintf(stderr, "evpl_cleanup\n");
-
     while (evpl_shared->endpoints) {
         endpoint = evpl_shared->endpoints;
         evpl_endpoint_close(endpoint);
@@ -151,6 +152,8 @@ evpl_cleanup()
                                                );
         }
     }
+
+    evpl_numa_config_release(evpl_shared->numa_config);
 
     evpl_global_config_release(evpl_shared->config);
 
