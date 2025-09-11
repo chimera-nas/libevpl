@@ -23,6 +23,7 @@ set(CORE_SRC
     send.c
     recv.c
     rdma.c
+    numa.c
 )
 
 if (EVPL_MECH STREQUAL "epoll") 
@@ -68,7 +69,7 @@ add_subdirectory(thread)
 
 add_library(evpl SHARED ${CORE_SRC})
 
-target_link_libraries(evpl ${BACKEND_LIBDEPS} ssl crypto)
+target_link_libraries(evpl ${BACKEND_LIBDEPS} ssl crypto numa)
 
 install(TARGETS evpl DESTINATION lib)
 
