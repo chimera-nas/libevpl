@@ -439,18 +439,6 @@ evpl_xlio_socket_init(
     evpl_xlio_abort_if(res, "Failed to set TCP_QUICKACK on socket");
 
     res = xlio->extra->xlio_socket_setsockopt(
-        s->socket, SOL_SOCKET, SO_ZEROCOPY, (char *) &yes, sizeof(yes));
-
-    evpl_xlio_abort_if(res, "Failed to set SO_ZEROCOPY on socket");
-
-#if 0
-    res = xlio->extra->xlio_socket_setsockopt(
-        s->socket, IPPROTO_TCP, TCP_CONGESTION, "reno", strlen("reno"));
-
-    evpl_xlio_abort_if(res, "Failed to set TCP_CONGESTION on socket");
-#endif /* if 0 */
-
-    res = xlio->extra->xlio_socket_setsockopt(
         s->socket, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
 
     evpl_xlio_abort_if(res, "Failed to set SO_SNDBUF");
@@ -478,11 +466,6 @@ evpl_xlio_socket_init(
     s->active         = 0;
     s->closed         = 0;
     s->zc_pending     = 0;
-
-    res = xlio->extra->xlio_socket_setsockopt(
-        s->socket, SOL_SOCKET, SO_XLIO_USER_DATA, &s, sizeof(s));
-
-    evpl_xlio_abort_if(res, "Failed to set SO_XLIO_USER_DATA for socket");
 
 } /* evpl_socket_init */
 
