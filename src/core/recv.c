@@ -43,10 +43,10 @@ evpl_peek(
         if (chunk > left) {
             chunk = left;
         }
-
         memcpy(ptr, cur->data, chunk);
 
         left -= chunk;
+        ptr  += chunk;
 
         cur = evpl_iovec_ring_next(&bind->iovec_recv, cur);
 
@@ -56,7 +56,6 @@ evpl_peek(
     }
 
     return length;
-
 } /* evpl_peek */
 
 SYMBOL_EXPORT int
