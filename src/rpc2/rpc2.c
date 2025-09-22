@@ -15,6 +15,7 @@
 #include "evpl/evpl_rpc2_program.h"
 #include "evpl/evpl.h"
 #include "core/timing.h"
+#include "core/macros.h"
 
 #include "prometheus-c.h"
 
@@ -28,6 +29,7 @@ struct evpl_rpc2_thread {
     struct evpl                            *evpl;
     struct evpl_rpc2_server                *server;
     struct evpl_rpc2_msg                   *free_msg;
+    struct evpl_listener_binding           *binding;
     struct prometheus_histogram_instance ***metrics;
     void                                   *private_data;
 };
@@ -767,7 +769,11 @@ evpl_rpc2_attach(
         }
     }
 
-    evpl_listener_attach(thread->evpl, server->listener, evpl_rpc2_accept, thread);
+    thread->binding = evpl_listener_attach(
+        thread->evpl,
+        server->listener,
+        evpl_rpc2_accept,
+        thread);
 
     return thread;
 
@@ -781,7 +787,7 @@ evpl_rpc2_detach(struct evpl_rpc2_thread *thread)
     struct evpl_rpc2_program *program;
     struct evpl_rpc2_msg     *msg;
 
-    evpl_listener_detach(thread->evpl, thread->server->listener);
+    evpl_listener_detach(thread->evpl, thread->binding);
 
     for (i = 0; i < server->nprograms; i++) {
         program = server->programs[i];
@@ -809,9 +815,18 @@ evpl_rpc2_detach(struct evpl_rpc2_thread *thread)
 } /* evpl_rpc2_detach */
 
 SYMBOL_EXPORT void
-evpl_rpc2_destroy(struct evpl_rpc2_server *server)
+evpl_rpc2_stop(struct evpl_rpc2_server *server)
 {
     evpl_listener_destroy(server->listener);
+    server->listener = NULL;
+} /* evpl_rpc2_stop */
+
+SYMBOL_EXPORT void
+evpl_rpc2_destroy(struct evpl_rpc2_server *server)
+{
+    if (server->listener) {
+        evpl_listener_destroy(server->listener);
+    }
 
     evpl_free(server->programs);
     evpl_free(server);

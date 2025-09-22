@@ -11,6 +11,8 @@
 #include "core/evpl_shared.h"
 #include "core/evpl.h"
 
+static pthread_mutex_t EvplListenerLock = PTHREAD_MUTEX_INITIALIZER;
+
 static void
 evpl_listener_accept(
     struct evpl         *evpl,
@@ -25,9 +27,14 @@ evpl_listener_accept(
     uint64_t                      one = 1;
     int                           rc;
 
-    pthread_mutex_lock(&listener->lock);
+    pthread_mutex_lock(&EvplListenerLock);
 
-    binding = &listener->attached[listener->rotor];
+    if (listener->num_attached == 0) {
+        pthread_mutex_unlock(&EvplListenerLock);
+        return;
+    }
+
+    binding = listener->attached[listener->rotor];
 
     listener->rotor++;
 
@@ -55,7 +62,7 @@ evpl_listener_accept(
     evpl_core_abort_if(rc != sizeof(one),
                        "evpl_listener_accept: write failed");
 
-    pthread_mutex_unlock(&listener->lock);
+    pthread_mutex_unlock(&EvplListenerLock);
 } /* evpl_listener_accept */
 
 static void
@@ -67,7 +74,7 @@ evpl_listener_callback(
     struct evpl_listen_request *request;
     struct evpl_bind           *bind, **new_binds;
 
-    pthread_mutex_lock(&listener->lock);
+    pthread_mutex_lock(&EvplListenerLock);
 
     while (listener->requests) {
         request = listener->requests;
@@ -106,7 +113,7 @@ evpl_listener_callback(
         pthread_mutex_unlock(&request->lock);
     }
 
-    pthread_mutex_unlock(&listener->lock);
+    pthread_mutex_unlock(&EvplListenerLock);
 
 } /* evpl_listener_callback */
 
@@ -136,15 +143,13 @@ evpl_listener_create(void)
 
     listener = evpl_zalloc(sizeof(*listener));
 
-    pthread_mutex_init(&listener->lock, NULL);
-
     listener->thread = evpl_thread_create(NULL, evpl_listener_init, NULL, listener);
 
     listener->max_binds = 64;
     listener->binds     = evpl_calloc(listener->max_binds, sizeof(struct evpl_bind *));
 
     listener->max_attached = 64;
-    listener->attached     = evpl_calloc(listener->max_attached, sizeof(struct evpl_listener_binding));
+    listener->attached     = evpl_calloc(listener->max_attached, sizeof(struct evpl_listener_binding *));
 
     while (!listener->running) {
         __sync_synchronize();
@@ -156,67 +161,103 @@ evpl_listener_create(void)
 SYMBOL_EXPORT void
 evpl_listener_destroy(struct evpl_listener *listener)
 {
-    evpl_core_abort_if(listener->num_attached,
-                       "evpl_listener_destroy called with attached evpl contexts");
+
+    pthread_mutex_lock(&EvplListenerLock);
+
+    for (int i = 0; i < listener->num_attached; i++) {
+        listener->attached[i]->listener = NULL;
+    }
+    pthread_mutex_unlock(&EvplListenerLock);
 
     evpl_thread_destroy(listener->thread);
 
-    pthread_mutex_destroy(&listener->lock);
     evpl_free(listener->binds);
     evpl_free(listener->attached);
     evpl_free(listener);
 } /* evpl_listener_destroy */
 
-SYMBOL_EXPORT void
+SYMBOL_EXPORT struct evpl_listener_binding *
 evpl_listener_attach(
     struct evpl           *evpl,
     struct evpl_listener  *listener,
     evpl_attach_callback_t attach_callback,
     void                  *private_data)
 {
-    struct evpl_listener_binding *binding, *new_attached;
+    struct evpl_listener_binding *binding, **new_attached;
 
-    pthread_mutex_lock(&listener->lock);
+    binding = evpl_zalloc(sizeof(struct evpl_listener_binding));
+
+    binding->evpl            = evpl;
+    binding->listener        = listener;
+    binding->attach_callback = attach_callback;
+    binding->private_data    = private_data;
+    binding->enabled         = 1;
+
+    DL_APPEND(evpl->listener_bindings, binding);
+
+    pthread_mutex_lock(&EvplListenerLock);
 
     if (listener->num_attached >= listener->max_attached) {
+
         listener->max_attached *= 2;
 
-        new_attached = evpl_zalloc(sizeof(struct evpl_listener_binding) * listener->max_attached);
+        new_attached = evpl_zalloc(sizeof(struct evpl_listener_binding * ) * listener->max_attached);
 
-        memcpy(new_attached, listener->attached, listener->num_attached * sizeof(struct evpl_listener_binding));
+        memcpy(new_attached, listener->attached, listener->num_attached * sizeof(struct evpl_listener_binding *));
 
         evpl_free(listener->attached);
 
         listener->attached = new_attached;
     }
 
-    binding = &listener->attached[listener->num_attached++];
+    listener->attached[listener->num_attached++] = binding;
 
-    binding->evpl            = evpl;
-    binding->attach_callback = attach_callback;
-    binding->private_data    = private_data;
+    pthread_mutex_unlock(&EvplListenerLock);
 
-    pthread_mutex_unlock(&listener->lock);
+    return binding;
 } /* evpl_listener_attach */
 
 SYMBOL_EXPORT void
 evpl_listener_detach(
-    struct evpl          *evpl,
-    struct evpl_listener *listener)
+    struct evpl                  *evpl,
+    struct evpl_listener_binding *binding)
 {
-    pthread_mutex_lock(&listener->lock);
+    struct evpl_listener *listener;
 
-    for (int i = 0; i < listener->num_attached; i++) {
-        if (listener->attached[i].evpl == evpl) {
-            if (i + 1 < listener->num_attached) {
-                listener->attached[i] = listener->attached[listener->num_attached - 1];
+    evpl_core_abort_if(!binding,
+                       "evpl_listener_detach called with NULL binding");
+
+    pthread_mutex_lock(&EvplListenerLock);
+
+    listener = binding->listener;
+
+    if (listener) {
+
+        for (int i = 0; i < listener->num_attached; i++) {
+            if (listener->attached[i] == binding) {
+
+                if (i + 1 < listener->num_attached) {
+                    memmove(&listener->attached[i], &listener->attached[i + 1],
+                            (listener->num_attached - i - 1) * sizeof(struct evpl_listener_binding *));
+                }
+
+                listener->num_attached--;
+
+                if (listener->rotor >= listener->num_attached) {
+                    listener->rotor = 0;
+                }
+                break;
             }
-            listener->num_attached--;
-            break;
         }
+
     }
 
-    pthread_mutex_unlock(&listener->lock);
+    pthread_mutex_unlock(&EvplListenerLock);
+
+    DL_DELETE(evpl->listener_bindings, binding);
+
+    evpl_free(binding);
+
 } /* evpl_listener_detach */
 
 SYMBOL_EXPORT void
@@ -235,9 +276,9 @@ evpl_listen(
     request->protocol_id = protocol_id;
     request->address     = evpl_endpoint_resolve(endpoint);
 
-    pthread_mutex_lock(&listener->lock);
+    pthread_mutex_lock(&EvplListenerLock);
     DL_APPEND(listener->requests, request);
-    pthread_mutex_unlock(&listener->lock);
+    pthread_mutex_unlock(&EvplListenerLock);
 
     evpl_ring_doorbell(&listener->doorbell);
 

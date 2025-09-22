@@ -4,14 +4,12 @@
 
 #pragma once
 #include <stdint.h>
-#include <stdlib.h>
 #include <stddef.h>
+#include <pthread.h>
 
 #define EVPL_INTERNAL 1
 #include "event.h"
 #include "doorbell.h"
-#include "macros.h"
-#include "logging.h"
 #include "evpl/evpl.h"
 
 
@@ -83,53 +81,55 @@ typedef void (*evpl_accept_callback_t)(
     void                *private_data);
 
 struct evpl {
-    struct evpl_core             core; /* must be first */
+    struct evpl_core              core; /* must be first */
 
-    struct timespec              last_activity_ts;
-    uint64_t                     activity;
-    uint64_t                     last_activity;
-    uint64_t                     poll_iterations;
+    struct timespec               last_activity_ts;
+    uint64_t                      activity;
+    uint64_t                      last_activity;
+    uint64_t                      poll_iterations;
 
-    struct evpl_poll            *poll;
-    int                          num_poll;
-    int                          max_poll;
+    struct evpl_poll             *poll;
+    int                           num_poll;
+    int                           max_poll;
 
-    int                          eventfd;
-    int                          running;
-    struct evpl_event            run_event;
+    int                           eventfd;
+    int                           running;
+    struct evpl_event             run_event;
 
-    pthread_mutex_t              lock;
-    struct evpl_connect_request *connect_requests;
+    pthread_mutex_t               lock;
+    struct evpl_connect_request  *connect_requests;
 
-    struct evpl_event          **active_events;
-    int                          num_active_events;
-    int                          max_active_events;
-    int                          num_events;
-    int                          num_enabled_events;
-    int                          poll_mode;
-    int                          force_poll_mode;
+    struct evpl_event           **active_events;
+    int                           num_active_events;
+    int                           max_active_events;
+    int                           num_events;
+    int                           num_enabled_events;
+    int                           poll_mode;
+    int                           force_poll_mode;
 
-    struct evpl_doorbell        *doorbells;
+    struct evpl_doorbell         *doorbells;
 
 
-    struct evpl_timer          **timers;
-    int                          num_timers;
-    int                          max_timers;
+    struct evpl_timer           **timers;
+    int                           num_timers;
+    int                           max_timers;
 
-    struct evpl_deferral       **active_deferrals;
-    int                          num_active_deferrals;
-    int                          max_active_deferrals;
+    struct evpl_deferral        **active_deferrals;
+    int                           num_active_deferrals;
+    int                           max_active_deferrals;
 
-    struct evpl_buffer          *current_buffer;
-    struct evpl_buffer          *datagram_buffer;
-    struct evpl_bind            *free_binds;
-    struct evpl_bind            *binds;
-    struct evpl_bind            *pending_close_binds;
+    struct evpl_buffer           *current_buffer;
+    struct evpl_buffer           *datagram_buffer;
+    struct evpl_bind             *free_binds;
+    struct evpl_bind             *binds;
+    struct evpl_bind             *pending_close_binds;
 
-    struct evpl_thread_config    config;
+    struct evpl_listener_binding *listener_bindings;
 
-    void                        *protocol_private[EVPL_NUM_PROTO];
-    void                        *framework_private[EVPL_NUM_FRAMEWORK];
+    struct evpl_thread_config     config;
+
+    void                         *protocol_private[EVPL_NUM_PROTO];
+    void                         *framework_private[EVPL_NUM_FRAMEWORK];
 };
 
 struct evpl_listen_request {
@@ -143,9 +143,13 @@ struct evpl_listen_request {
 };
 
 struct evpl_listener_binding {
-    struct evpl           *evpl;
-    evpl_attach_callback_t attach_callback;
-    void                  *private_data;
+    struct evpl                  *evpl;
+    struct evpl_listener         *listener;
+    evpl_attach_callback_t        attach_callback;
+    void                         *private_data;
+    int                           enabled;
+    struct evpl_listener_binding *prev;
+    struct evpl_listener_binding *next;
 };
 
 struct evpl_connect_request {
@@ -160,19 +164,17 @@ struct evpl_connect_request {
 };
 
 struct evpl_listener {
-    struct evpl_thread           *thread;
-    int                           running;
-    struct evpl_doorbell          doorbell;
-    struct evpl_bind            **binds;
-    int                           num_binds;
-    int                           max_binds;
-    struct evpl_listen_request   *requests;
-    struct evpl_listener_binding *attached;
-    int                           num_attached;
-    int                           max_attached;
-    int                           rotor;
-    pthread_mutex_t               lock;
-
+    struct evpl_thread            *thread;
+    int                            running;
+    struct evpl_doorbell           doorbell;
+    struct evpl_bind             **binds;
+    int                            num_binds;
+    int                            max_binds;
+    struct evpl_listen_request    *requests;
+    struct evpl_listener_binding **attached;
+    int                            num_attached;
+    int                            max_attached;
+    int                            rotor;
 };
 
 void * evpl_malloc(

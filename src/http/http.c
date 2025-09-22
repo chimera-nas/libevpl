@@ -94,6 +94,7 @@ struct evpl_http_conn {
 struct evpl_http_server {
     struct evpl_http_agent       *agent;
     struct evpl_listener         *listener;
+    struct evpl_listener_binding *binding;
     void                         *private_data;
     evpl_http_dispatch_callback_t dispatch_callback;
 };
@@ -905,7 +906,7 @@ evpl_http_attach(
     server->private_data      = private_data;
     server->dispatch_callback = dispatch_callback;
 
-    evpl_listener_attach(agent->evpl, listener, evpl_http_accept, server);
+    server->binding = evpl_listener_attach(agent->evpl, listener, evpl_http_accept, server);
 
     return server;
 } /* evpl_http_listen */
@@ -915,7 +916,7 @@ evpl_http_server_destroy(
     struct evpl_http_agent  *agent,
     struct evpl_http_server *server)
 {
-    evpl_listener_detach(agent->evpl, server->listener);
+    evpl_listener_detach(agent->evpl, server->binding);
     evpl_free(server);
 } /* evpl_http_server_destroy */
 

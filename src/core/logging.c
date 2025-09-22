@@ -18,12 +18,16 @@
 #include "evpl/evpl.h"
 
 
-extern evpl_log_fn EvplLog;
+extern evpl_log_fn   EvplLog;
+extern evpl_flush_fn EvplFlush;
 
 SYMBOL_EXPORT void
-evpl_set_log_fn(evpl_log_fn log_fn)
+evpl_set_log_fn(
+    evpl_log_fn   log_fn,
+    evpl_flush_fn flush_fn)
 {
-    EvplLog = log_fn;
+    EvplLog   = log_fn;
+    EvplFlush = flush_fn;
 } /* evpl_set_log_fn */
 
 static const char *level_string[] = {
@@ -68,7 +72,8 @@ evpl_vlog(
     fprintf(stderr, "%s", buf);
 } /* evpl_vlog */
 
-evpl_log_fn EvplLog = evpl_vlog;
+evpl_log_fn   EvplLog   = evpl_vlog;
+evpl_flush_fn EvplFlush = NULL;
 
 SYMBOL_EXPORT void
 evpl_debug(
@@ -129,6 +134,8 @@ evpl_fatal(
     EvplLog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
+    EvplFlush();
+
     exit(1);
 } /* evpl_fatal */
 
@@ -146,7 +153,8 @@ evpl_abort(
     EvplLog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
-    __builtin_trap();
+    EvplFlush();
+
     abort();
 } /* evpl_abort */
 

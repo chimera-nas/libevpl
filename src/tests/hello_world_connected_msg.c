@@ -126,11 +126,12 @@ main(
     int   argc,
     char *argv[])
 {
-    pthread_t             thr;
-    struct evpl          *evpl;
-    struct evpl_listener *listener;
-    int                   rc, opt, run = 1;
-    struct evpl_endpoint *ep;
+    pthread_t                     thr;
+    struct evpl                  *evpl;
+    struct evpl_listener         *listener;
+    struct evpl_listener_binding *binding;
+    int                           rc, opt, run = 1;
+    struct evpl_endpoint         *ep;
 
     test_evpl_config();
 
@@ -163,7 +164,7 @@ main(
 
     listener = evpl_listener_create();
 
-    evpl_listener_attach(evpl, listener, accept_callback, &run);
+    binding = evpl_listener_attach(evpl, listener, accept_callback, &run);
 
     evpl_listen(listener, proto, ep);
 
@@ -175,7 +176,7 @@ main(
 
     pthread_join(thr, NULL);
 
-    evpl_listener_detach(evpl, listener);
+    evpl_listener_detach(evpl, binding);
 
     evpl_listener_destroy(listener);
 

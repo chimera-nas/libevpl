@@ -50,7 +50,7 @@ evpl_io_uring_init(void)
     rc = io_uring_queue_init_params(256, &shared->ring, &params);
 
     if (rc < 0) {
-        free(shared);
+        evpl_free(shared);
         return NULL;
     }
 

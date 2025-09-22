@@ -22,7 +22,7 @@
 #include "core/allocator.h"
 #include "core/event_fn.h"
 #include "core/poll.h"
-
+#include "core/macros.h"
 #include "nvme.h"
 
 #define VFIO_IOVA_START 0x10000000000ULL
@@ -168,7 +168,7 @@ evpl_vfio_cleanup(void *framework_private)
 
     close(shared->container_fd);
     pthread_mutex_destroy(&shared->lock);
-    free(shared);
+    evpl_free(shared);
 } /* evpl_vfio_cleanup */
 
 static void *

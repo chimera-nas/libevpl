@@ -4,6 +4,7 @@
 
 #include "core/evpl.h"
 #include "core/timer.h"
+#include "core/macros.h"
 
 #include "core/timing.h"
 

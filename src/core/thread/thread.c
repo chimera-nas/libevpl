@@ -10,6 +10,7 @@
 #include "evpl/evpl.h"
 #include "core/evpl_shared.h"
 #include "core/event_fn.h"
+#include "core/macros.h"
 
 extern struct evpl_shared *evpl_shared;
 

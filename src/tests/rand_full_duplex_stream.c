@@ -127,10 +127,11 @@ accept_callback(
 void *
 client_thread(void *arg)
 {
-    struct evpl          *evpl;
-    struct evpl_endpoint *ep;
-    struct evpl_listener *listener;
-    struct thread_state  *state = arg;
+    struct evpl                  *evpl;
+    struct evpl_endpoint         *ep;
+    struct evpl_listener         *listener;
+    struct evpl_listener_binding *binding;
+    struct thread_state          *state = arg;
 
     state->buffer = malloc(max_xfer);
 
@@ -140,7 +141,7 @@ client_thread(void *arg)
 
     listener = evpl_listener_create();
 
-    evpl_listener_attach(evpl, listener, accept_callback, state);
+    binding = evpl_listener_attach(evpl, listener, accept_callback, state);
 
     if (state->index == 0) {
         evpl_listen(listener, proto, ep);
@@ -155,7 +156,7 @@ client_thread(void *arg)
         evpl_continue(evpl);
     }
 
-    evpl_listener_detach(evpl, listener);
+    evpl_listener_detach(evpl, binding);
 
     evpl_listener_destroy(listener);
 
