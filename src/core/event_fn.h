@@ -6,6 +6,7 @@
 
 #include "core/event.h"
 #include "core/evpl.h"
+#include "core/logging.h"
 
 
 static inline void

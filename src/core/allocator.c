@@ -14,6 +14,7 @@
 #include "core/evpl_shared.h"
 #include "core/allocator.h"
 #include "core/protocol.h"
+#include "core/macros.h"
 
 
 extern struct evpl_shared *evpl_shared;

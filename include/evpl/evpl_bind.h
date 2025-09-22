@@ -10,6 +10,7 @@
 
 struct evpl_listener;
 struct evpl_bind;
+struct evpl_listener_binding;
 
 struct iovec;
 
@@ -63,15 +64,16 @@ void
 evpl_listener_destroy(
     struct evpl_listener *listener);
 
-void evpl_listener_attach(
+struct evpl_listener_binding *
+evpl_listener_attach(
     struct evpl           *evpl,
     struct evpl_listener  *listener,
     evpl_attach_callback_t attach_callback,
     void                  *private_data);
 
 void evpl_listener_detach(
-    struct evpl          *evpl,
-    struct evpl_listener *listener);
+    struct evpl                  *evpl,
+    struct evpl_listener_binding *binding);
 
 void
 evpl_listen(

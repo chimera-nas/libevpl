@@ -148,12 +148,13 @@ main(
     int   argc,
     char *argv[])
 {
-    pthread_t             thr;
-    struct evpl          *evpl;
-    struct evpl_listener *listener;
-    struct evpl_endpoint *me;
-    int                   rc, opt;
-    struct client_state   state = {
+    pthread_t                     thr;
+    struct evpl                  *evpl;
+    struct evpl_listener         *listener;
+    struct evpl_listener_binding *binding;
+    struct evpl_endpoint         *me;
+    int                           rc, opt;
+    struct client_state           state = {
         .run      = 1,
         .inflight = 0,
         .depth    = 100,
@@ -195,7 +196,7 @@ main(
 
     listener = evpl_listener_create();
 
-    evpl_listener_attach(evpl, listener, accept_callback, &state);
+    binding = evpl_listener_attach(evpl, listener, accept_callback, &state);
 
     evpl_listen(listener, proto, me);
 
@@ -207,7 +208,7 @@ main(
 
     pthread_join(thr, NULL);
 
-    evpl_listener_detach(evpl, listener);
+    evpl_listener_detach(evpl, binding);
 
     evpl_listener_destroy(listener);
 

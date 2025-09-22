@@ -53,5 +53,9 @@ evpl_rpc2_detach(
     struct evpl_rpc2_thread *thread);
 
 void
+evpl_rpc2_stop(
+    struct evpl_rpc2_server *server);
+
+void
 evpl_rpc2_destroy(
     struct evpl_rpc2_server *server);

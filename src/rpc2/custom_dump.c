@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 #include "common.h"
+#include "core/macros.h"
 
 SYMBOL_EXPORT void
 dump_output(

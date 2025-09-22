@@ -4,6 +4,7 @@
 
 #define _GNU_SOURCE
 
+#include <alloca.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>

@@ -9,6 +9,7 @@
 
 #include "core/evpl.h"
 #include "core/iovec.h"
+#include "core/macros.h"
 
 struct evpl_iovec_ring {
     struct evpl_iovec *iovec;
