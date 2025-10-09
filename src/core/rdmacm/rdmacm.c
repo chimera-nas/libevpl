@@ -405,6 +405,9 @@ evpl_rdmacm_event_callback(
             evpl_close(evpl, bind);
 
             break;
+        case RDMA_CM_EVENT_ADDR_CHANGE:
+            /* No action required */
+            break;
         default:
             evpl_rdmacm_debug("unhandled rdmacm event %u", cm_event->event);
     } /* switch */
@@ -1607,9 +1610,7 @@ evpl_rdmacm_close(
     if (rdmacm) {
         --rdmacm_id->dev->num_qp;
 
-        if (rdmacm_id->qp) {
-            HASH_DELETE(hh, rdmacm->ids, rdmacm_id);
-        }
+        HASH_DELETE(hh, rdmacm->ids, rdmacm_id);
     }
 } /* evpl_rdmacm_close */
 

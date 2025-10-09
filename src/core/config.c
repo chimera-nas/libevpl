@@ -117,6 +117,14 @@ evpl_global_config_release(struct evpl_global_config *config)
 } /* evpl_release_config */
 
 SYMBOL_EXPORT void
+evpl_global_config_set_buffer_size(
+    struct evpl_global_config *config,
+    uint64_t                   size)
+{
+    config->buffer_size = size;
+} /* evpl_global_config_set_buffer_size */
+
+SYMBOL_EXPORT void
 evpl_global_config_set_max_datagram_size(
     struct evpl_global_config *config,
     unsigned int               size)
