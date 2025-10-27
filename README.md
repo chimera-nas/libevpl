@@ -1,9 +1,4 @@
----
-title: Introduction
-layout: default
-nav_order: 1
-permalink: /intro
----
+Documentation can be found at the [project website](https://chimeraproject.io/libevpl/)
 
 # Introduction to libevpl
 
