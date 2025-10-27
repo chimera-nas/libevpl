@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2025 Ben Jarvis
+#
+# SPDX-License-Identifier: Unlicense
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND noninteractive
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+
+RUN apt-get -y update && \
+    apt-get -y --no-install-recommends upgrade && \
+    apt-get -y --no-install-recommends install build-essential cmake ninja-build uuid-dev libjansson-dev llvm iproute2 \
+    libxxhash-dev librdmacm-dev libunwind-dev flex bison libcurl4-openssl-dev libssl-dev openssl uthash-dev libnuma-dev
+
+CMD ["/bin/bash"]

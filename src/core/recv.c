@@ -111,7 +111,7 @@ evpl_consume(
     struct evpl_bind *bind,
     int               length)
 {
-    if (evpl_iovec_ring_length(&bind->iovec_recv) < length) {
+    if (evpl_iovec_ring_bytes(&bind->iovec_recv) < length) {
         return -1;
     }
 

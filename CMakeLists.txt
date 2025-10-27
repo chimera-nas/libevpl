@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.22)
 
-project(libevpl C)
+project(libevpl LANGUAGES C)
 
 enable_testing()
 
