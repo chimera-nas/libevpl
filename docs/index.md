@@ -1,41 +1,83 @@
-<!--
-SPDX-FileCopyrightText: 2025 Ben Jarvis
-
-SPDX-License-Identifier: Unlicense
--->
-
 ---
 title: Home
 layout: home
 ---
 
-This is a *bare-minimum* template to create a Jekyll site that uses the [Just the Docs] theme. You can easily set the created site to be published on [GitHub Pages] – the [README] file explains how to do that, along with other details.
+# libevpl Documentation
 
-If [Jekyll] is installed on your computer, you can also build and preview the created site *locally*. This lets you test changes before committing them, and avoids waiting for GitHub Pages.[^1] And you will be able to deploy your local build to a different platform than GitHub Pages.
+Welcome to the documentation for **libevpl**, a high-performance network and storage library designed for 400Gbps+ applications.
 
-More specifically, the created site:
+## What is libevpl?
 
-- uses a gem-based approach, i.e. uses a `Gemfile` and loads the `just-the-docs` gem
-- uses the [GitHub Pages / Actions workflow] to build and publish the site on GitHub Pages
+libevpl is a unified, high-performance I/O library that provides:
 
-Other than that, you're free to customize sites that you create with this template, however you like. You can easily change the versions of `just-the-docs` and Jekyll it uses, as well as adding further plugins.
+- **Fast networking** - Support for kernel sockets, NVIDIA XLIO, and RDMA with 400Gbps+ capability
+- **High-performance storage** - Asynchronous block I/O via io_uring and VFIO-NVMe
+- **Protocol-agnostic API** - Write once, run on multiple backends
+- **Hybrid event/polling** - Automatically switches between modes for optimal performance
+- **Zero-copy I/O** - Minimize memory copies for maximum throughput
 
-[Browse our documentation][Just the Docs] to learn more about how to use this theme.
+## Quick Links
 
-To get started with creating a site, simply:
+### Getting Started
+- **[Introduction](/intro)** - Learn what libevpl is and why to use it
+- **[Building & Installation](/build)** - Get libevpl running on your system
+- **[Getting Started Guide](/getting-started)** - Your first libevpl program
+- **[Architecture & Concepts](/architecture)** - Understand core abstractions
 
-1. click "[use this template]" to create a GitHub repository
-2. go to Settings > Pages > Build and deployment > Source, and select GitHub Actions
+### API Documentation
+- **[API Reference](/api)** - Complete function reference
+- **[Core API](/api/core)** - Event loops and initialization
+- **[Binds & Connections](/api/binds)** - Network I/O operations
+- **[Block I/O](/api/block)** - High-performance storage (io_uring, VFIO-NVMe)
+- **[Memory Management](/api/memory)** - Zero-copy buffer management
 
-If you want to maintain your docs in the `docs` directory of an existing project repo, see [Hosting your docs from an existing project repo](https://github.com/just-the-docs/just-the-docs-template/blob/main/README.md#hosting-your-docs-from-an-existing-project-repo) in the template README.
+### Advanced Topics
+- **[Performance Benchmarks](/performance)** - See what libevpl can do
+- **[Programming Guide](/programming_guide)** - Best practices (coming soon)
+- **[Examples](/examples)** - Complete working code examples
+- **[Protocol Backends](/protocols)** - Deep dive into backends (coming soon)
 
-----
+## Key Features
 
-[^1]: [It can take up to 10 minutes for changes to your site to publish after you push the changes to GitHub](https://docs.github.com/en/pages/setting-up-a-github-pages-site-with-jekyll/creating-a-github-pages-site-with-jekyll#creating-your-site).
+### Multiple Network Backends
+- Kernel TCP/UDP sockets
+- NVIDIA XLIO (Mellanox hardware acceleration)
+- RDMA CM (Reliable Connection and Unreliable Datagram)
+- Future: io_uring TCP, DPDK, libfabric
 
-[Just the Docs]: https://just-the-docs.github.io/just-the-docs/
-[GitHub Pages]: https://docs.github.com/en/pages
-[README]: https://github.com/just-the-docs/just-the-docs-template/blob/main/README.md
-[Jekyll]: https://jekyllrb.com
-[GitHub Pages / Actions workflow]: https://github.blog/changelog/2022-07-27-github-pages-custom-github-actions-workflows-beta/
-[use this template]: https://github.com/just-the-docs/just-the-docs-template/generate
+### High-Performance Storage
+- io_uring for asynchronous block I/O
+- VFIO-NVMe for ultra-low latency direct access
+- Zero-copy scatter-gather I/O
+
+### Event-Driven Architecture
+- Single-threaded event loops per thread
+- Timer and deferral support
+- Thread-safe inter-thread communication (doorbells)
+- Automatic hybrid event/polling mode
+
+### Protocol Modules
+- HTTP client and server
+- ONC RPC2 for NFS
+- Planned: ZMTP (ZeroMQ-compatible)
+
+## Project Status
+
+libevpl is currently under active development as the foundation for **Chimera**, a high-performance multi-protocol NAS stack.
+
+**Current Status:** Experimental - APIs may change as development continues.
+
+## License
+
+libevpl is licensed under **LGPL-2.1-only**, making it suitable for both open source and commercial applications.
+
+## Need Help?
+
+- Browse the **[FAQ](/faq)** (coming soon)
+- Check the **[API Reference](/api)** for detailed documentation
+- Open an issue on GitHub for bugs or questions
+
+---
+
+*Ready to get started? Head over to the [Building & Installation](/build) guide!*

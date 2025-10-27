@@ -34,7 +34,7 @@ client_callback(
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_DATA:
 
-            length = evpl_recv(evpl, bind, buffer, hellolen);
+            length = evpl_recv(evpl, bind, buffer, hellolen, EVPL_RECV_FLAG_ALL_OR_NONE);
 
             if (length == hellolen) {
                 evpl_test_info("client received '%s'", buffer);
@@ -93,7 +93,7 @@ server_callback(
             break;
         case EVPL_NOTIFY_RECV_DATA:
 
-            length = evpl_recv(evpl, bind, buffer, hellolen);
+            length = evpl_recv(evpl, bind, buffer, hellolen, EVPL_RECV_FLAG_ALL_OR_NONE);
 
             if (length == hellolen) {
 

@@ -98,7 +98,7 @@ client_callback(
         case EVPL_NOTIFY_RECV_DATA:
 
             do {
-                length = evpl_read(evpl, bind, state->buffer, max_xfer);
+                length = evpl_recv(evpl, bind, state->buffer, max_xfer, 0);
 
                 state->recv += length;
 

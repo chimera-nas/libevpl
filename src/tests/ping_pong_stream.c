@@ -46,7 +46,7 @@ client_callback(
         case EVPL_NOTIFY_RECV_DATA:
 
             do {
-                length = evpl_recv(evpl, bind, &value, sizeof(value));
+                length = evpl_recv(evpl, bind, &value, sizeof(value), EVPL_RECV_FLAG_ALL_OR_NONE);
 
                 if (length == sizeof(value)) {
 
@@ -134,7 +134,7 @@ server_callback(
             break;
         case EVPL_NOTIFY_RECV_DATA:
 
-            length = evpl_recv(evpl, bind, &value, sizeof(value));
+            length = evpl_recv(evpl, bind, &value, sizeof(value), EVPL_RECV_FLAG_ALL_OR_NONE);
 
             if (length == sizeof(value)) {
                 evpl_test_info("server received %u, responding", value);

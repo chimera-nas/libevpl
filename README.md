@@ -1,76 +1,90 @@
-<!--
-SPDX-FileCopyrightText: 2025 Ben Jarvis
+---
+title: Introduction
+layout: default
+nav_order: 1
+permalink: /intro
+---
 
-SPDX-License-Identifier: LGPL-2.1-only
--->
+# Introduction to libevpl
 
-# libevpl
+## The Challenge: Harnessing Modern High-Speed I/O
 
-## Introduction
+Modern data centers are equipped with remarkably capable hardware: PCIe network adapters delivering 400Gbps and beyond, NVMe storage devices capable of millions of IOPS, and multi-core CPUs ready to handle massive workloads. Yet efficiently harnessing this performance in real-world applications remains surprisingly difficult.
 
-As network speeds reach 400Gbps and beyond, efficiently harnessing this performance in distributed systems and applications presents significant challenges.
+Traditional kernel-based I/O models, designed when network speeds were measured in megabits and storage in thousands of operations per second, struggle to keep pace. Context switches, system call overhead, and memory copies consume precious CPU cycles.  The challenge today is not making optimal use of scarce network and storage resources.  The challenge today is to be capable of fully utilizing the abundance that the hardware provides.
 
-Traditional socket-based networking models struggle to fully utilize available bandwidth. Userspace-kernel memory copies, page pinning, context switching, and interrupt handling contribute to increased latency and inefficient CPU usage. Achieving optimal performance often requires extensive, specific tuning, making predictable real-world performance difficult.
+## The Current Landscape: Power and Complexity
 
-To address this, various hardware offload techniques and kernel bypass solutions offer higher performance. However, each alternative networking stack comes with its own APIs, semantics, and hardware limitations, complicating development and limiting portability.
+To address these limitations, the industry has developed numerous high-performance I/O frameworks and hardware acceleration technologies:
 
-libevpl aims to simplify this by providing a unified, high-performance network library that leverages a variety of backend protocol implementations.
+- **libibverbs** provides direct access to RDMA-capable network hardware, enabling kernel bypass and zero-copy transfers
+- **io_uring** offers a modern asynchronous I/O interface, reducing system call overhead for both network and storage operations
+- **VFIO** enables direct userspace access to PCIe devices like NVMe drives
+- **NVIDIA XLIO** accelerates TCP/IP processing in userspace for Mellanox network adapters
+- **DPDK** provides a low level hardware abstraction for various data plane devices
+- **libfabric** provides an abstraction for fabric-like data planes, but treats traditional TCP-like workflows as second class citizens
 
-## Events and Polling
+Each of these technologies delivers impressive performance improvements for applications that can leverage them. However, they come with significant challenges:
 
-There are two general strategies for handling asynchronous operation completion:
+1. **Disjoint Hardware Support**: Each framework supports different subsets of hardware. RDMA requires specific network adapters, XLIO works only with Mellanox NICs, VFIO requires IOMMU support. Choosing one path can lock you into specific hardware vendors.
 
-- **Event-driven**: The kernel is informed of the events we're interested in, and the process sleeps until the kernel wakes it upon event occurrence. This is scalable and simple but incurs additional latency and is CPU-inefficient in fully loaded scenarios where there are always completed events to process.
+2. **Steep Learning Curves**: Each SDK has its own programming model, APIs, and operational characteristics. Becoming proficient with even one of these systems requires substantial investment. Supporting multiple backends means learning them all.
 
-- **Polling**: The process continuously checks memory buffers for completed events, consuming CPU even when no work is done. However, it introduces lower latency than event-driven models and can be more CPU-efficient in fully loaded scenarios.
+3. **Limited Portability**: Applications written directly against these SDKs are difficult to port. Code written for libibverbs won't run on systems without RDMA hardware. XLIO applications require specific NICs. This fragments the ecosystem and limits where applications can deploy.
 
-libevpl supports a hybrid approach, automatically switching between event-driven and polling as appropriate. The name "libevpl" is a contraction of "event" and "poll."
+4. **Development Complexity**: Building applications that can opportunistically leverage available hardware acceleration while gracefully falling back to traditional approaches requires maintaining multiple code paths and substantial testing infrastructure.
 
-## Features
+## libevpl: A Unified Approach
 
-libevpl offers the following features:
+libevpl aims to solve these challenges by providing a **single, protocol-agnostic event loop engine** with unified abstractions for network and block I/O. Rather than replacing these high-performance backends, libevpl integrates them behind a common API:
 
-- A core API similar to the familiar sockets model
-- Asynchronous, non-blocking operations only
-- Memory buffer management and memory registration tracking
-- Zero-copy with supported backends
+- Applications write code once against libevpl's event-driven API
+- At runtime, libevpl automatically selects the best available backend based on the system's hardware and software capabilities
+- The same application binary can run efficiently on systems with RDMA hardware, XLIO-accelerated networking, or traditional kernel sockets—without code changes
+- Block I/O operations integrate seamlessly with network I/O, using io_uring or VFIO-NVMe as available
 
-## Protocol Support
+This approach delivers several key benefits:
 
-Currently supported protocols:
+**For Application Developers:**
+- A high level API that guides developers towards making performant choices
+- Write event-driven network and storage code once, run it across diverse hardware
+- Focus on application logic rather than the intricacies of each acceleration framework
+- Automatically benefit from hardware acceleration when available without code changes
+- Develop and test on standard hardware, deploy to accelerated environments with confidence
 
-- Kernel TCP and UDP sockets
-- NVIDIA XLIO TCP sockets
-- RDMA CM RC and UD queue pairs (RoCE V2)
+**For the Ecosystem:**
+- Lower barriers to adoption for high-performance hardware and SDKs
+- Broader utilization of performance-enhancing technologies
+- Easier migration between hardware platforms as requirements evolve
+- Reduced vendor lock-in while still leveraging vendor-specific optimizations
 
-Potential future additions:
+## Who Should Use libevpl?
 
-- io_uring
-- DPDK
-- libfabric
-- VPP
+libevpl is designed for building high-performance distributed systems where network throughput, storage IOPS, or latency are critical constraints:
 
-## Modules
+- **Storage Systems**: NAS servers, distributed filesystems, object stores requiring maximum throughput
+- **Financial Services**: Low-latency trading systems, market data processing
+- **Data Infrastructure**: High-speed data pipelines, stream processing, real-time analytics
+- **Scientific Computing**: HPC applications requiring efficient communication and I/O
+- **Database Systems**: Distributed databases, replication engines, query processing
 
-Current modules:
+If your application needs to efficiently handle hundreds of thousands of network connections, sustain multi-gigabit throughput, process millions of storage operations per second, or minimize latency to microseconds, libevpl provides the foundation to achieve these goals across diverse hardware platforms.
 
-- **core**: Provides a protocol-agnostic API similar to sockets
-- **thread**: Creates threads that run event loops
-- **threadpool**: Manages pools of threads running event loops
+## Project Status
 
-Planned future modules:
+libevpl is actively developed as the foundational I/O layer for **Chimera**, a high-performance multi-protocol NAS stack. While the library is functional and usable for experimentation and development, **it is not yet stable**. APIs may evolve as development continues and new use cases emerge.
 
-- **rpc2**: Support for ONC RPC2 protocol for NFS
-- **http**: HTTP client/server support
-- **ZMTP**: Message broker support, wire-compatible with ZMQ
-- **numa**: Assistance in building NUMA-aware thread pools within libevpl
+Contributions, feedback, and real-world usage reports are welcome and help guide the project's evolution.
 
-## Status
+## Getting Started
 
-libevpl is primarily being developed as the foundation for Chimera, a high-performance multi-protocol NAS stack. Work is focused on this goal.
+Ready to explore libevpl? Here's your path forward:
 
-At present, libevpl is usable for experimental purposes but is not yet stable.
+1. **[Building & Installation](/build)** - Get libevpl compiled and installed on your system
+2. **[Architecture & Concepts](/architecture)** - Understand libevpl's design and core abstractions
+3. **[API Documentation](/api)** - Dive into the detailed API reference
+4. **[Examples](/examples)** - Study working code samples
 
-## Documentation
+## License
 
-API documentation will be provided once the APIs stabilize. In the meantime, see `src/core/evpl.h` for a preview of the public API.
+libevpl is licensed under **LGPL-2.1-only**, enabling use in both open source and commercial applications. You can link libevpl into proprietary software while keeping your application's code private.
