@@ -550,7 +550,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             struct evpl_iovec iov;
 
             while (!evpl_iovec_ring_is_full(&request->recv_ring) && request->request_left > 0) {
-                niov = evpl_readv(evpl, bind, &iov, 1, request->request_left);
+                niov = evpl_recvv(evpl, bind, &iov, 1, request->request_left, NULL);
 
                 if (niov == 0) {
                     break;
@@ -596,7 +596,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             while (!evpl_iovec_ring_is_full(&request->recv_ring)) {
 
                 if (request->request_chunk_left > 0) {
-                    niov = evpl_readv(evpl, bind, &iov, 1, request->request_chunk_left);
+                    niov = evpl_recvv(evpl, bind, &iov, 1, request->request_chunk_left, NULL);
 
                     if (niov == 0) {
                         break;

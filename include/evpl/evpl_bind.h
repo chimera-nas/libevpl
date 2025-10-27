@@ -159,36 +159,27 @@ int evpl_peekv(
     int                maxiovecs,
     int                length);
 
-void evpl_consume(
+int evpl_consume(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     int               length);
 
-int evpl_read(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    void             *buffer,
-    int               length);
-
-int evpl_readv(
-    struct evpl       *evpl,
-    struct evpl_bind  *bind,
-    struct evpl_iovec *iovecs,
-    int                maxiovecs,
-    int                length);
+#define EVPL_RECV_FLAG_ALL_OR_NONE 0x1
 
 int evpl_recv(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     void             *buffer,
-    int               length);
+    int               maxlength,
+    unsigned int      flags);
 
 int evpl_recvv(
     struct evpl       *evpl,
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
     int                maxiovecs,
-    int                length);
+    int maxlength,
+    int *length);
 
 void evpl_close(
     struct evpl      *evpl,

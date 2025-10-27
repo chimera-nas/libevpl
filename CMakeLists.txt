@@ -94,6 +94,7 @@ include_directories(ext/prometheus-c)
 
 add_subdirectory(ext)
 add_subdirectory(src)
+add_subdirectory(docs)
 add_subdirectory(include)
 
 execute_process(COMMAND ln -sf ${CMAKE_BINARY_DIR}/compile_commands.json ${CMAKE_SOURCE_DIR}/compile_commands.json)

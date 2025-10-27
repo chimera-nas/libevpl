@@ -66,7 +66,7 @@ client_callback(
         case EVPL_NOTIFY_RECV_DATA:
 
             while (1) {
-                length = evpl_recv(evpl, bind, &value, sizeof(value));
+                length = evpl_recv(evpl, bind, &value, sizeof(value), EVPL_RECV_FLAG_ALL_OR_NONE);
 
                 if (length != sizeof(value)) {
                     break;
@@ -130,7 +130,7 @@ server_callback(
 
             while (1) {
 
-                length = evpl_recv(evpl, bind, &value, sizeof(value));
+                length = evpl_recv(evpl, bind, &value, sizeof(value), EVPL_RECV_FLAG_ALL_OR_NONE);
 
                 if (length != sizeof(value)) {
                     break;
