@@ -14,29 +14,29 @@ For now, there are a set of Dockerfiles in the project root that illustrate the 
 ## Ubuntu 22.04
 
 {% highlight dockerfile %}
-{% include Dockerfile.ubuntu22.04 %}
+{% include_relative Dockerfile.ubuntu22.04 %}
 {% endhighlight %}
 
 ## Ubuntu 24.04
 
 {% highlight dockerfile %}
-{% include Dockerfile.ubuntu24.04 %}
+{% include_relative Dockerfile.ubuntu24.04 %}
 {% endhighlight %}
 
 ## Ubuntu 25.10
 
 {% highlight dockerfile %}
-{% include Dockerfile.ubuntu25.10 %}
+{% include_relative Dockerfile.ubuntu25.10 %}
 {% endhighlight %}
 
 ## Rocky Linux 9
 
 {% highlight dockerfile %}
-{% include Dockerfile.rocky9 %}
+{% include_relative Dockerfile.rocky9 %}
 {% endhighlight %}
 
 ## Rocky Linux 10
 
 {% highlight dockerfile %}
-{% include Dockerfile.rocky10 %}
+{% include_relative Dockerfile.rocky10 %}
 {% endhighlight %}
