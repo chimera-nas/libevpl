@@ -75,10 +75,10 @@ Contributions, feedback, and real-world usage reports are welcome and help guide
 
 Ready to explore libevpl? Here's your path forward:
 
-1. **[Building & Installation](/build)** - Get libevpl compiled and installed on your system
-2. **[Architecture & Concepts](/architecture)** - Understand libevpl's design and core abstractions
-3. **[API Documentation](/api)** - Dive into the detailed API reference
-4. **[Examples](/examples)** - Study working code samples
+1. **[Building & Installation](https://chimeraproject.io/libevpl/build)** - Get libevpl compiled and installed on your system
+2. **[Architecture & Concepts](https://chimeraproject.io/libevpl/architecture)** - Understand libevpl's design and core abstractions
+3. **[API Documentation](https://chimeraproject.io/libevpl/api)** - Dive into the detailed API reference
+4. **[Examples](https://chimeraproject.io/libevpl/examples)** - Study working code samples
 
 ## License
 
