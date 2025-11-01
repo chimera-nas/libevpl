@@ -79,6 +79,7 @@ evpl_bind_close_deferral(
 
     DL_DELETE(evpl->binds, bind);
     DL_APPEND(evpl->pending_close_binds, bind);
+
     bind->protocol->pending_close(evpl, bind);
 } /* evpl_bind_close_deferral */
 
@@ -168,6 +169,10 @@ evpl_close(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
+
+    evpl_core_abort_if(bind->flags & EVPL_BIND_CLOSED,
+                       "bind %p already closed", bind);
+
     if (!(bind->flags & EVPL_BIND_PENDING_CLOSED)) {
         bind->flags |= EVPL_BIND_PENDING_CLOSED;
         evpl_defer(evpl, &bind->close_deferral);

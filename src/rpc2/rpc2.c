@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #include <time.h>
 #include <utlist.h>
+#include <uthash.h>
 
 #include "core/evpl.h"
 #include "evpl/evpl_rpc2.h"
@@ -25,13 +26,23 @@ struct evpl_rpc2_server {
     int                        nprograms;
 };
 
-struct evpl_rpc2_thread {
-    struct evpl                            *evpl;
+struct evpl_rpc2_server_binding {
+    struct evpl_rpc2_thread                *thread;
     struct evpl_rpc2_server                *server;
-    struct evpl_rpc2_msg                   *free_msg;
     struct evpl_listener_binding           *binding;
     struct prometheus_histogram_instance ***metrics;
     void                                   *private_data;
+    struct evpl_rpc2_server_binding        *prev;
+    struct evpl_rpc2_server_binding        *next;
+};
+
+struct evpl_rpc2_thread {
+    struct evpl                     *evpl;
+    struct evpl_rpc2_program       **programs;
+    int                              nprograms;
+    xdr_dbuf                        *dbuf;
+    struct evpl_rpc2_msg            *free_msg;
+    struct evpl_rpc2_server_binding *servers;
 };
 
 static struct evpl_rpc2_msg *
@@ -212,14 +223,14 @@ evpl_rpc2_send_reply(
     int                      reply_len, reply_niov, offset, rpc_len;
     uint32_t                 hdr, segment_offset, write_left, left, chunk, reply_offset;
     struct rpc_msg           rpc_reply;
-    struct rdma_msg          rdma_msg, *req_rdma_msg;
-    struct xdr_write_list   *write_list;
+    struct rdma_msg          rdma_msg;
+    struct xdr_write_chunk   reply_chunk;
+    struct xdr_write_list    write_list;
     struct xdr_rdma_segment *target;
     struct evpl_iovec       *segment_iov, *reply_segment_iov;
     struct timespec          now;
     uint64_t                 elapsed;
     int                      i, reserve, reduce = 0, rdma = msg->rdma;
-    struct  xdr_write_chunk *reply_chunk;
 
     reserve = msg->program ? msg->program->reserve : 0;
 
@@ -234,27 +245,35 @@ evpl_rpc2_send_reply(
 
     if (rdma) {
 
-        req_rdma_msg = msg->rdma_msg;
+        rdma_msg.rdma_xid                      = msg->xid;
+        rdma_msg.rdma_vers                     = 1;
+        rdma_msg.rdma_credit                   = msg->rdma_credits;
+        rdma_msg.rdma_body.proc                = RDMA_MSG;
+        rdma_msg.rdma_body.rdma_msg.rdma_reads = NULL;
 
-        rdma_msg.rdma_xid                       = msg->xid;
-        rdma_msg.rdma_vers                      = 1;
-        rdma_msg.rdma_credit                    = msg->rdma_credits;
-        rdma_msg.rdma_body.proc                 = RDMA_MSG;
-        rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
-        rdma_msg.rdma_body.rdma_msg.rdma_writes = rpc2_stat ? NULL : req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
-        rdma_msg.rdma_body.rdma_msg.rdma_reply  = rpc2_stat ? NULL : req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
+        if (msg->write_segments.num_segments > 0) {
+            write_list.entry.num_target = msg->write_segments.num_segments;
+            write_list.entry.target     = (struct xdr_rdma_segment *) msg->write_segments.segments;
+            write_list.next             = NULL;
 
-        write_list     = rdma_msg.rdma_body.rdma_msg.rdma_writes;
+            rdma_msg.rdma_body.rdma_msg.rdma_writes = &write_list;
+        }
+
+        if (msg->reply_segments.num_segments > 0) {
+            reply_chunk.num_target                 = msg->reply_segments.num_segments;
+            reply_chunk.target                     = (struct xdr_rdma_segment *) msg->reply_segments.segments;
+            rdma_msg.rdma_body.rdma_msg.rdma_reply = &reply_chunk;
+        }
+
         segment_offset = 0;
         write_left     = msg->write_chunk.length;
 
         segment_iov = msg->segment_iov;
 
-        while (write_list) {
+        if (msg->write_segments.num_segments > 0) {
 
-
-            for (i = 0; i < write_list->entry.num_target; i++) {
-                target = &write_list->entry.target[i];
+            for (i = 0; i < write_list.entry.num_target; i++) {
+                target = &write_list.entry.target[i];
 
                 if (write_left < target->length) {
                     target->length = write_left;
@@ -282,38 +301,35 @@ evpl_rpc2_send_reply(
                     segment_iov++;
                 }
             }
-
-            write_list = write_list->next;
         }
 
-        if (req_rdma_msg->rdma_body.rdma_msg.rdma_reply) {
+        if (msg->reply_segments.num_segments > 0) {
+
             if (rpc_len + length > 512) {
                 reduce = 1;
 
-                rdma_msg.rdma_body.proc                   = RDMA_NOMSG;
-                rdma_msg.rdma_body.rdma_nomsg.rdma_reads  = NULL;
-                rdma_msg.rdma_body.rdma_nomsg.rdma_writes = req_rdma_msg->rdma_body.rdma_msg.rdma_writes;
-                rdma_msg.rdma_body.rdma_nomsg.rdma_reply  = req_rdma_msg->rdma_body.rdma_msg.rdma_reply;
+                rdma_msg.rdma_body.proc                  = RDMA_NOMSG;
+                rdma_msg.rdma_body.rdma_nomsg.rdma_reads = NULL;
 
                 left = rpc_len + length;
 
-                for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
+                for (i = 0; i < reply_chunk.num_target; i++) {
 
-                    chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[i].length;
+                    chunk = reply_chunk.target[i].length;
 
                     if (left < chunk) {
                         chunk = left;
                     }
 
-                    req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = chunk;
+                    reply_chunk.target[ i].length = chunk;
 
                     left -= chunk;
                 }
 
             } else {
 
-                for (i = 0; i < req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->num_target; i++) {
-                    req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply->target[ i].length = 0;
+                for (i = 0; i < reply_chunk.num_target; i++) {
+                    reply_chunk.target[ i].length = 0;
                 }
             }
         }
@@ -353,11 +369,11 @@ evpl_rpc2_send_reply(
 
     elapsed = evpl_ts_interval(&now, &msg->timestamp);
 
-    prometheus_histogram_sample(msg->metric, elapsed);
+    if (msg->metric) {
+        prometheus_histogram_sample(msg->metric, elapsed);
+    }
 
     if (reduce) {
-
-        reply_chunk = req_rdma_msg->rdma_body.rdma_nomsg.rdma_reply;
 
         xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
 
@@ -372,24 +388,24 @@ evpl_rpc2_send_reply(
 
         reply_offset = 0;
 
-        for (i = 0; i < reply_chunk->num_target; i++) {
+        for (i = 0; i < reply_chunk.num_target; i++) {
 
-            if (reply_chunk->target[i].length == 0) {
+            if (reply_chunk.target[i].length == 0) {
                 continue;
             }
 
             reply_segment_iov = &msg->reply_segment_iov;
 
             reply_segment_iov->data         = msg_iov[0].data + reply_offset;
-            reply_segment_iov->length       = reply_chunk->target[i].length;
+            reply_segment_iov->length       = reply_chunk.target[i].length;
             reply_segment_iov->private_data = msg_iov[0].private_data;
 
             evpl_rdma_write(evpl, msg->bind,
-                            reply_chunk->target[i].handle,
-                            reply_chunk->target[i].offset,
+                            reply_chunk.target[i].handle,
+                            reply_chunk.target[i].offset,
                             reply_segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
 
-            reply_offset += reply_chunk->target[i].length;
+            reply_offset += reply_chunk.target[i].length;
 
             msg->pending_writes++;
         }
@@ -434,61 +450,25 @@ evpl_rpc2_send_reply_success(
     return evpl_rpc2_send_reply(evpl, msg, msg_iov, msg_niov, length, SUCCESS);
 } /* evpl_rpc2_send_reply_success */
 
-
 static void
-evpl_rpc2_handle_msg(struct evpl_rpc2_msg *msg)
+evpl_rpc2_server_handle_msg(struct evpl_rpc2_msg *msg)
 {
-    struct evpl_rpc2_conn    *conn    = msg->conn;
-    struct evpl_rpc2_thread  *thread  = msg->thread;
-    struct evpl              *evpl    = thread->evpl;
-    struct evpl_rpc2_server  *server  = thread->server;
-    struct rpc_msg           *rpc_msg = msg->rpc_msg;
-    struct evpl_rpc2_program *program;
-    int                       i;
-    int                       error;
+    struct evpl_rpc2_conn           *conn           = msg->conn;
+    struct evpl_rpc2_thread         *thread         = msg->thread;
+    struct evpl                     *evpl           = thread->evpl;
+    struct evpl_rpc2_server_binding *server_binding = conn->server_binding;
+    int                              error;
 
-    msg->xid  = rpc_msg->xid;
-    msg->proc = rpc_msg->body.cbody.proc;
+    error = msg->program->recv_call_dispatch(evpl, conn, msg, msg->req_iov, msg->req_niov, msg->request_length,
+                                             server_binding->private_data);
 
-    switch (rpc_msg->body.mtype) {
-        case CALL:
+    if (unlikely(error)) {
+        abort();
+    }
 
-            msg->program = NULL;
+} /* evpl_rpc2_server_handle_msg */
 
-            for (i  = 0; i < server->nprograms; i++) {
-                program = server->programs[i];
 
-                if (program->program == rpc_msg->body.cbody.prog &&
-                    program->version == rpc_msg->body.cbody.vers) {
-
-                    msg->program = program;
-                    msg->metric  = thread->metrics[i][msg->proc];
-                    break;
-                }
-            }
-
-            if (unlikely(!msg->program)) {
-                evpl_rpc2_debug(
-                    "rpc2 received call for unknown program %u vers %u",
-                    rpc_msg->body.cbody.prog,
-                    rpc_msg->body.cbody.vers);
-
-                evpl_rpc2_send_reply_error(evpl, msg, PROG_MISMATCH);
-                return;
-            }
-
-            error = program->call_dispatch(evpl, conn, msg, msg->req_iov, msg->req_niov, msg->request_length,
-                                           thread->private_data);
-
-            if (unlikely(error)) {
-                abort();
-            }
-
-            break;
-        case REPLY:
-            break;
-    } /* switch */
-} /* evpl_rpc2_handle_msg */
 
 static void
 evpl_rpc2_read_segment_callback(
@@ -502,84 +482,142 @@ evpl_rpc2_read_segment_callback(
     msg->pending_reads--;
 
     if (msg->pending_reads == 0) {
-        evpl_rpc2_handle_msg(msg);
+        evpl_rpc2_server_handle_msg(msg);
     }
 } /* evpl_rpc2_read_segment_callback */
 
 static void
-evpl_rpc2_event(
-    struct evpl        *evpl,
-    struct evpl_bind   *bind,
-    struct evpl_notify *notify,
-    void               *private_data)
+evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
 {
-    struct evpl_rpc2_conn   *rpc2_conn = private_data;
-    struct evpl_rpc2_thread *thread    = rpc2_conn->thread;
-    struct rpc_msg          *rpc_msg;
-    struct rdma_msg         *rdma_msg;
-    struct evpl_rpc2_msg    *msg;
-    struct xdr_read_list    *read_list;
-    struct xdr_write_list   *write_list;
+    struct evpl_rpc2_thread *thread = msg->thread;
+    struct evpl_rpc2_conn   *conn   = msg->conn;
+    int                      error, i;
+    struct evpl             *evpl = thread->evpl;
 
-    uint32_t                 hdr;
-    struct evpl_iovec       *hdr_iov;
-    int                      hdr_niov;
-    int                      i, rc, rdma, offset, segment_offset;
-    struct evpl_iovec       *segment_iov;
-    char                     addr_str[80], addr_str_local[80];
+    error = msg->program->recv_reply_dispatch(evpl, conn, msg, msg->reply_iov, msg->reply_niov, msg->reply_length,
+                                              msg->callback,
+                                              msg->callback_arg);
+
+    if (unlikely(error)) {
+        abort();
+    }
+
+    for (i = 0; i < msg->reply_niov; i++) {
+        evpl_iovec_release(&msg->reply_iov[i]);
+    }
+
+    evpl_rpc2_msg_free(thread, msg);
+} /* evpl_rpc2_client_handle_msg */
+
+static void
+evpl_rpc2_recv_msg(
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovec,
+    int                niov,
+    int                length,
+    void              *private_data)
+{
+    struct evpl_rpc2_conn           *rpc2_conn = private_data;
+    struct evpl_rpc2_thread         *thread    = rpc2_conn->thread;
+    struct evpl_rpc2_msg            *msg;
+    struct evpl_rpc2_server_binding *server_binding = rpc2_conn->server_binding;
+    struct evpl_rpc2_server         *server         = server_binding ? server_binding->server : NULL;
+    struct evpl_rpc2_program        *program;
+    struct rpc_msg                   rpc_msg;
+    struct rdma_msg                  rdma_msg;
+    uint32_t                         hdr;
+    struct evpl_iovec               *hdr_iov, *req_iov;
+    int                              hdr_niov, req_niov;
+    int                              i, rc, offset, rdma, request_length;
+    struct xdr_read_list            *read_list;
+    struct xdr_write_list           *write_list;
+    struct evpl_iovec               *segment_iov;
+    int                              segment_offset;
+    struct timespec                  now;
+
+    xdr_dbuf_reset(thread->dbuf);
 
     rdma = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
-    switch (notify->notify_type) {
-        case EVPL_NOTIFY_CONNECTED:
-            evpl_bind_get_local_address(bind, addr_str_local, sizeof(addr_str_local));
-            evpl_bind_get_remote_address(bind, addr_str, sizeof(addr_str));
-            evpl_rpc2_debug("Connection established from %s to %s", addr_str, addr_str_local);
-            break;
-        case EVPL_NOTIFY_DISCONNECTED:
-            evpl_bind_get_local_address(bind, addr_str_local, sizeof(addr_str_local));
-            evpl_bind_get_remote_address(bind, addr_str, sizeof(addr_str));
-            evpl_rpc2_debug("Connection terminated from %s to %s", addr_str, addr_str_local);
-            free(rpc2_conn);
-            break;
-        case EVPL_NOTIFY_RECV_MSG:
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
+    if (rdma) {
+        /* RPC2 on RDMA has no header since its message based,
+         * instead we should have an rdma_msg xdr structure
+         * which describes the rdma particulars of the message */
+
+        offset = unmarshall_rdma_msg(&rdma_msg,
+                                     iovec,
+                                     niov,
+                                     NULL,
+                                     thread->dbuf);
+
+    } else {
+        /* We expect RPC2 on TCP to start with a 4 byte header */
+
+        offset = 4;
+        hdr    = *(uint32_t *) iovec->data;
+        hdr    = rpc2_ntoh32(hdr);
+
+        evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != length
+                           ,
+                           "RPC message length mismatch %d != %d",
+                           (hdr & 0x7FFFFFFF) + 4, length);
+    }
+
+    xdr_dbuf_alloc_space(hdr_iov, sizeof(*hdr_iov) * niov, thread->dbuf);
+    hdr_niov = evpl_rpc2_iovec_skip(hdr_iov, iovec, niov, offset);
+
+    rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, thread->dbuf);
+
+    switch (rpc_msg.body.mtype) {
+        case CALL:
             msg = evpl_rpc2_msg_alloc(thread);
+            break;
+        case REPLY:
+            HASH_FIND(hh, rpc2_conn->pending_calls, &rpc_msg.xid, sizeof(rpc_msg.xid), msg);
 
-            clock_gettime(CLOCK_MONOTONIC, &msg->timestamp);
+            if (unlikely(!msg)) {
+                evpl_rpc2_error("rpc2 received reply for unknown call %u", rpc_msg.xid);
+                evpl_close(evpl, bind);
+                return;
+            }
 
-            xdr_dbuf_alloc_space(msg->rpc_msg, sizeof(*msg->rpc_msg), msg->dbuf);
+            HASH_DELETE(hh, rpc2_conn->pending_calls, msg);
+            break;
+    } /* switch */
 
-            rpc_msg = msg->rpc_msg;
+    xdr_dbuf_alloc_space(req_iov, sizeof(*req_iov) * hdr_niov, msg->dbuf);
+    req_niov = evpl_rpc2_iovec_skip(req_iov, hdr_iov, hdr_niov, rc);
 
-            msg->conn = rpc2_conn;
-            msg->rdma = rdma;
-            msg->bind = bind;
+    for (i = 0; i < req_niov; ++i) {
+        evpl_iovec_addref(&req_iov[i]);
+    }
 
-            if (rdma) {
-                /* RPC2 on RDMA has no header since its message based,
-                 * instead we should have an rdma_msg xdr structure
-                 * which describes the rdma particulars of the message */
+    request_length = length - (rc + offset);
 
-                xdr_dbuf_alloc_space(msg->rdma_msg, sizeof(*msg->rdma_msg), msg->dbuf);
-                rdma_msg = msg->rdma_msg;
+    switch (rpc_msg.body.mtype) {
+        case CALL:
+            msg->conn           = rpc2_conn;
+            msg->bind           = bind;
+            msg->rdma           = rdma;
+            msg->xid            = rpc_msg.xid;
+            msg->proc           = rpc_msg.body.cbody.proc;
+            msg->timestamp      = now;
+            msg->pending_reads  = 0;
+            msg->pending_writes = 0;
+            msg->request_length = request_length;
+            msg->req_iov        = req_iov;
+            msg->req_niov       = req_niov;
 
-                offset = unmarshall_rdma_msg(rdma_msg,
-                                             notify->recv_msg.iovec,
-                                             notify->recv_msg.niov,
-                                             NULL,
-                                             msg->dbuf);
+            if (msg->rdma) {
+                if (rdma_msg.rdma_body.proc == RDMA_MSG) {
 
-                //dump_rdma_msg("rdma_msg", &rdma_msg);
-
-                msg->rdma_credits = rdma_msg->rdma_credit;
-
-                if (rdma_msg->rdma_body.proc == RDMA_MSG) {
-
-                    read_list = rdma_msg->rdma_body.rdma_msg.rdma_reads;
+                    read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
 
                     if (read_list) {
-                        msg->read_chunk.xdr_position = read_list->entry.position;
+                        msg->read_chunk.xdr_position = read_list->entry.position - rc;
                     }
 
                     while (read_list) {
@@ -595,7 +633,7 @@ evpl_rpc2_event(
 
                     msg->read_chunk.niov = evpl_iovec_alloc(evpl, msg->read_chunk.length, 4096, 1, msg->read_chunk.iov);
 
-                    read_list = rdma_msg->rdma_body.rdma_msg.rdma_reads;
+                    read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
 
                     segment_offset = 0;
 
@@ -620,7 +658,7 @@ evpl_rpc2_event(
                         read_list = read_list->next;
                     }
 
-                    write_list = rdma_msg->rdma_body.rdma_msg.rdma_writes;
+                    write_list = rdma_msg.rdma_body.rdma_msg.rdma_writes;
 
                     while (write_list) {
 
@@ -631,51 +669,80 @@ evpl_rpc2_event(
                         write_list = write_list->next;
                     }
                 } else {
-                    evpl_rpc2_error("rpc2 received rdma msg with unhandled proc %d", rdma_msg->rdma_body.proc);
+                    evpl_rpc2_error("rpc2 received rdma msg with unhandled proc %d", rdma_msg.rdma_body.proc);
                 }
-
-            } else {
-                /* We expect RPC2 on TCP to start with a 4 byte header */
-
-                offset = 4;
-                hdr    = *(uint32_t *) notify->recv_msg.iovec->data;
-                hdr    = rpc2_ntoh32(hdr);
-
-                evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != notify->recv_msg.length
-                                   ,
-                                   "RPC message length mismatch %d != %d",
-                                   (hdr & 0x7FFFFFFF) + 4, notify->recv_msg.length);
             }
 
-            xdr_dbuf_alloc_space(hdr_iov, sizeof(*hdr_iov) * notify->recv_msg.niov, msg->dbuf);
-            hdr_niov = evpl_rpc2_iovec_skip(hdr_iov, notify->recv_msg.iovec, notify->recv_msg.niov, offset);
+            msg->program = NULL;
 
-            rc = unmarshall_rpc_msg(rpc_msg, hdr_iov, hdr_niov, NULL, msg->dbuf);
+            for (i  = 0; i < server->nprograms; i++) {
+                program = server->programs[i];
 
-            //dump_rpc_msg("rpc_msg", &rpc_msg);
+                if (program->program == rpc_msg.body.cbody.prog &&
+                    program->version == rpc_msg.body.cbody.vers) {
 
-            if (rdma) {
-                /* Adjust xdr positions for the rpc header */
-                msg->read_chunk.xdr_position -= rc;
+                    msg->program = program;
+                    msg->metric  = server_binding->metrics[i][msg->proc];
+                    break;
+                }
             }
 
-            xdr_dbuf_alloc_space(msg->req_iov, sizeof(*msg->req_iov) * hdr_niov, msg->dbuf);
-            msg->req_niov = evpl_rpc2_iovec_skip(msg->req_iov, hdr_iov, hdr_niov, rc);
+            if (unlikely(!msg->program)) {
+                evpl_rpc2_debug(
+                    "rpc2 received call for unknown program %u vers %u",
+                    rpc_msg.body.cbody.prog,
+                    rpc_msg.body.cbody.vers);
 
-            for (i = 0; i < msg->req_niov; ++i) {
-                evpl_iovec_addref(&msg->req_iov[i]);
+                evpl_rpc2_send_reply_error(evpl, msg, PROG_MISMATCH);
+                return;
             }
-
-            msg->request_length = notify->recv_msg.length - (rc + offset);
 
             if (msg->pending_reads == 0) {
-                evpl_rpc2_handle_msg(msg);
+                evpl_rpc2_server_handle_msg(msg);
             }
-
+            break;
+        case REPLY:
+            msg->reply_iov    = req_iov;
+            msg->reply_niov   = req_niov;
+            msg->reply_length = request_length;
+            evpl_rpc2_client_handle_msg(msg);
             break;
         default:
-            evpl_rpc2_error("rpc2 unhandled event");
-            abort();
+            evpl_rpc2_error("rpc2 received unexpected message type %d", rpc_msg.body.mtype);
+            evpl_close(evpl, bind);
+    } /* switch */
+} /* evpl_rpc2_recv_msg */
+
+
+static void
+evpl_rpc2_event(
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
+{
+    struct evpl_rpc2_conn *rpc2_conn = private_data;
+    char                   addr_str[80], addr_str_local[80];
+
+    switch (notify->notify_type) {
+        case EVPL_NOTIFY_CONNECTED:
+            evpl_bind_get_local_address(bind, addr_str_local, sizeof(addr_str_local));
+            evpl_bind_get_remote_address(bind, addr_str, sizeof(addr_str));
+            evpl_rpc2_debug("Connection established from %s to %s", addr_str, addr_str_local);
+            break;
+        case EVPL_NOTIFY_DISCONNECTED:
+            evpl_bind_get_local_address(bind, addr_str_local, sizeof(addr_str_local));
+            evpl_bind_get_remote_address(bind, addr_str, sizeof(addr_str));
+            evpl_rpc2_debug("Connection terminated from %s to %s", addr_str, addr_str_local);
+            free(rpc2_conn);
+            break;
+        case EVPL_NOTIFY_RECV_MSG:
+
+            evpl_rpc2_recv_msg(evpl,
+                               bind,
+                               notify->recv_msg.iovec, notify->recv_msg.niov, notify->recv_msg.length,
+                               private_data);
+            break;
     } /* switch */
 
 } /* evpl_rpc2_event */
@@ -689,13 +756,15 @@ evpl_rpc2_accept(
     void                   **conn_private_data,
     void                    *private_data)
 {
-    struct evpl_rpc2_thread *thread = private_data;
-    struct evpl_rpc2_conn   *rpc2_conn;
+    struct evpl_rpc2_server_binding *server_binding = private_data;
+    struct evpl_rpc2_conn           *rpc2_conn;
 
-    rpc2_conn           = evpl_zalloc(sizeof(*rpc2_conn));
-    rpc2_conn->thread   = thread;
-    rpc2_conn->server   = thread->server;
-    rpc2_conn->protocol = evpl_bind_get_protocol(bind);
+    rpc2_conn                 = evpl_zalloc(sizeof(*rpc2_conn));
+    rpc2_conn->thread_dbuf    = (struct xdr_dbuf *) server_binding->thread->dbuf;
+    rpc2_conn->server_binding = server_binding;
+    rpc2_conn->thread         = server_binding->thread;
+    rpc2_conn->bind           = bind;
+    rpc2_conn->protocol       = evpl_bind_get_protocol(bind);
 
     *notify_callback   = evpl_rpc2_event;
     *segment_callback  = rpc2_segment_callback;
@@ -703,8 +772,56 @@ evpl_rpc2_accept(
 
 } /* evpl_rpc2_accept */
 
+SYMBOL_EXPORT struct evpl_rpc2_thread *
+evpl_rpc2_thread_init(
+    struct evpl               *evpl,
+    struct evpl_rpc2_program **programs,
+    int                        nprograms)
+{
+    struct evpl_rpc2_thread *thread;
+
+    thread = evpl_zalloc(sizeof(*thread));
+
+    thread->evpl      = evpl;
+    thread->nprograms = nprograms;
+
+    thread->dbuf = xdr_dbuf_alloc(128 * 1024);
+
+    if (nprograms) {
+        thread->programs = evpl_zalloc(nprograms * sizeof(*programs));
+        memcpy(thread->programs, programs, nprograms * sizeof(*programs));
+    } else {
+        thread->programs = NULL;
+    }
+
+    return thread;
+} /* evpl_rpc2_thread_init */
+
+SYMBOL_EXPORT void
+evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
+{
+    struct evpl_rpc2_msg *msg;
+
+    xdr_dbuf_free(thread->dbuf);
+
+    while (thread->free_msg) {
+        msg = thread->free_msg;
+        LL_DELETE(thread->free_msg, msg);
+        xdr_dbuf_free(msg->dbuf);
+        evpl_free(msg);
+    }
+
+    if (thread->programs) {
+        evpl_free(thread->programs);
+    }
+
+    evpl_free(thread);
+} /* evpl_rpc2_thread_destroy */
+
+
+
 SYMBOL_EXPORT struct evpl_rpc2_server *
-evpl_rpc2_init(
+evpl_rpc2_server_init(
     struct evpl_rpc2_program **programs,
     int                        nprograms)
 {
@@ -719,14 +836,14 @@ evpl_rpc2_init(
     memcpy(server->programs, programs, nprograms * sizeof(*programs));
 
     for (int i = 0; i < nprograms; i++) {
-        server->programs[i]->reply_dispatch = evpl_rpc2_send_reply_success;
+        server->programs[i]->send_reply_dispatch = evpl_rpc2_send_reply_success;
     }
 
     return server;
 } /* evpl_rpc2_listen */
 
 SYMBOL_EXPORT void
-evpl_rpc2_start(
+evpl_rpc2_server_start(
     struct evpl_rpc2_server *server,
     int                      protocol,
     struct evpl_endpoint    *endpoint)
@@ -737,92 +854,97 @@ evpl_rpc2_start(
         endpoint);
 } /* evpl_rpc2_start */
 
-SYMBOL_EXPORT struct evpl_rpc2_thread *
-evpl_rpc2_attach(
-    struct evpl             *evpl,
+SYMBOL_EXPORT void
+evpl_rpc2_server_attach(
+    struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_server *server,
     void                    *private_data)
 {
-    struct evpl_rpc2_thread  *thread;
-    struct evpl_rpc2_program *program;
-    int                       i, j;
+    struct evpl_rpc2_server_binding *server_binding;
+    struct evpl_rpc2_program        *program;
+    int                              i, j;
 
-    thread = evpl_zalloc(sizeof(*thread));
+    server_binding = evpl_zalloc(sizeof(*server_binding));
 
-    thread->evpl         = evpl;
-    thread->server       = server;
-    thread->private_data = private_data;
-    thread->metrics      = evpl_zalloc(server->nprograms * sizeof(*thread->metrics));
+    server_binding->thread       = thread;
+    server_binding->server       = server;
+    server_binding->private_data = private_data;
+    server_binding->metrics      = evpl_zalloc(server->nprograms * sizeof(*server_binding->metrics));
 
     for (i = 0; i < server->nprograms; i++) {
 
         program = server->programs[i];
 
-        thread->metrics[i] = evpl_zalloc(
+        server_binding->metrics[i] = evpl_zalloc(
             (program->maxproc + 1) * sizeof(struct prometheus_histogram_instance *)
             );
 
         for (j = 0; j <= program->maxproc; j++) {
-            if (program->metrics[j]) {
-                thread->metrics[i][j] = prometheus_histogram_series_create_instance(program->metrics[j]);
+            if (program->metrics && program->metrics[j]) {
+                server_binding->metrics[i][j] = prometheus_histogram_series_create_instance(program->metrics[j]);
             }
         }
     }
 
-    thread->binding = evpl_listener_attach(
+    server_binding->binding = evpl_listener_attach(
         thread->evpl,
         server->listener,
         evpl_rpc2_accept,
-        thread);
+        server_binding);
 
-    return thread;
+    DL_APPEND(thread->servers, server_binding);
 
 } /* evpl_rpc2_attach */
 
 SYMBOL_EXPORT void
-evpl_rpc2_detach(struct evpl_rpc2_thread *thread)
+evpl_rpc2_server_detach(
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_server *server)
 {
-    int                       i, j;
-    struct evpl_rpc2_server  *server = thread->server;
-    struct evpl_rpc2_program *program;
-    struct evpl_rpc2_msg     *msg;
+    int                              i, j;
+    struct evpl_rpc2_program        *program;
+    struct evpl_rpc2_server_binding *server_binding;
 
-    evpl_listener_detach(thread->evpl, thread->binding);
+    DL_FOREACH(thread->servers, server_binding)
+    {
+        if (server_binding->server == server) {
+            break;
+        }
+    }
+
+    evpl_rpc2_abort_if(!server_binding, "Server binding not found");
+
+    DL_DELETE(thread->servers, server_binding);
+
+    evpl_listener_detach(thread->evpl, server_binding->binding);
 
     for (i = 0; i < server->nprograms; i++) {
         program = server->programs[i];
         for (j = 0; j <= program->maxproc; j++) {
-            if (thread->metrics[i][j]) {
-                prometheus_histogram_series_destroy_instance(program->metrics[j], thread->metrics[i][j]);
+            if (server_binding->metrics[i][j]) {
+                prometheus_histogram_series_destroy_instance(program->metrics[j], server_binding->metrics[i][j]);
             }
         }
     }
 
     for (i = 0; i < server->nprograms; i++) {
-        evpl_free(thread->metrics[i]);
+        evpl_free(server_binding->metrics[i]);
     }
 
-    while (thread->free_msg) {
-        msg = thread->free_msg;
-        LL_DELETE(thread->free_msg, msg);
-        xdr_dbuf_free(msg->dbuf);
-        evpl_free(msg);
-    }
-
-    evpl_free(thread->metrics);
-    evpl_free(thread);
+    evpl_free(server_binding->metrics);
+    evpl_free(server_binding);
 
 } /* evpl_rpc2_detach */
 
 SYMBOL_EXPORT void
-evpl_rpc2_stop(struct evpl_rpc2_server *server)
+evpl_rpc2_server_stop(struct evpl_rpc2_server *server)
 {
     evpl_listener_destroy(server->listener);
     server->listener = NULL;
 } /* evpl_rpc2_stop */
 
 SYMBOL_EXPORT void
-evpl_rpc2_destroy(struct evpl_rpc2_server *server)
+evpl_rpc2_server_destroy(struct evpl_rpc2_server *server)
 {
     if (server->listener) {
         evpl_listener_destroy(server->listener);
@@ -831,3 +953,115 @@ evpl_rpc2_destroy(struct evpl_rpc2_server *server)
     evpl_free(server->programs);
     evpl_free(server);
 } /* evpl_rpc2_server_destroy */
+
+SYMBOL_EXPORT struct evpl_rpc2_conn *
+evpl_rpc2_client_connect(
+    struct evpl_rpc2_thread *thread,
+    int                      protocol,
+    struct evpl_endpoint    *endpoint)
+{
+    struct evpl_rpc2_conn *conn;
+
+    conn = evpl_zalloc(sizeof(*conn));
+
+    conn->thread         = thread;
+    conn->thread_dbuf    = (struct xdr_dbuf *) thread->dbuf;
+    conn->protocol       = protocol;
+    conn->server_binding = NULL;
+    conn->next_xid       = 1;
+
+    conn->bind = evpl_connect(
+        thread->evpl,
+        protocol,
+        NULL,  /* local_endpoint - let system choose */
+        endpoint,  /* remote_endpoint */
+        evpl_rpc2_event,
+        rpc2_segment_callback,
+        conn);
+
+    if (!conn->bind) {
+        evpl_free(conn);
+        return NULL;
+    }
+
+    return conn;
+} /* evpl_rpc2_client_connect */
+
+SYMBOL_EXPORT void
+evpl_rpc2_client_disconnect(
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_conn   *conn)
+{
+    evpl_close(thread->evpl, conn->bind);
+} /* evpl_rpc2_client_destroy */
+
+SYMBOL_EXPORT int
+evpl_rpc2_call(
+    struct evpl              *evpl,
+    struct evpl_rpc2_program *program,
+    struct evpl_rpc2_conn    *conn,
+    uint32_t                  procedure,
+    struct evpl_iovec        *req_iov,
+    int                       req_niov,
+    int                       req_length,
+    void                     *callback,
+    void                     *private_data)
+{
+    struct evpl_rpc2_thread *thread = conn->thread;
+    struct evpl_rpc2_msg    *msg;
+    struct rpc_msg           rpc_msg;
+    struct evpl_iovec        hdr_iov, hdr_out_iov;
+    int                      rpc_len;
+    int                      out_niov   = 1;
+    int                      reserve    = 256;  /* Must match the reserve value in generated code */
+    int                      offset     = 4;    /* TCP record header offset */
+    int                      pay_length = req_length - reserve;
+    int                      total_length;
+
+    msg = evpl_rpc2_msg_alloc(thread);
+
+    xdr_dbuf_alloc_space(msg->req_iov, sizeof(*msg->req_iov) * req_niov, msg->dbuf);
+    memcpy(msg->req_iov, req_iov, req_niov * sizeof(*msg->req_iov));
+
+    msg->conn         = conn;
+    msg->program      = program;
+    msg->req_niov     = req_niov;
+    msg->xid          = conn->next_xid++;
+    msg->proc         = procedure;
+    msg->callback     = callback;
+    msg->callback_arg = private_data;
+
+    HASH_ADD(hh, conn->pending_calls, xid, sizeof(msg->xid), msg);
+
+    rpc_msg.xid                      = msg->xid;
+    rpc_msg.body.mtype               = CALL;
+    rpc_msg.body.cbody.rpcvers       = 2;
+    rpc_msg.body.cbody.prog          = program->program;
+    rpc_msg.body.cbody.vers          = program->version;
+    rpc_msg.body.cbody.proc          = procedure;
+    rpc_msg.body.cbody.cred.flavor   = AUTH_NONE;
+    rpc_msg.body.cbody.cred.body.len = 0;
+    rpc_msg.body.cbody.verf.flavor   = AUTH_NONE;
+    rpc_msg.body.cbody.verf.body.len = 0;
+
+    /* Calculate exact RPC header length first */
+    rpc_len = marshall_length_rpc_msg(&rpc_msg);
+
+    total_length = offset + rpc_len + pay_length;
+
+    /* Adjust iovec to point to where payload data starts, following server pattern */
+    req_iov[0].data   = (char *) req_iov[0].data + (reserve - (rpc_len + offset));
+    req_iov[0].length = req_iov[0].length - (reserve - (rpc_len + offset));
+
+    hdr_iov = req_iov[0];
+
+    rpc_len = marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, offset);
+
+    /* Add 4-byte record marking header for TCP at the start of the output buffer */
+    *(uint32_t *) req_iov[0].data = rpc2_hton32((req_iov[0].length - 4) | 0x80000000);
+
+    /* Send the request - use out_iov which contains the marshalled header + payload */
+    evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length);
+
+    return 0;
+} /* evpl_rpc2_call */

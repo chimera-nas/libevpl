@@ -480,17 +480,14 @@ evpl_destroy_close_bind(struct evpl *evpl)
 {
     struct evpl_bind *bind;
 
-/* Push any open binds into pending close state */
-    while (evpl->binds) {
-        bind = evpl->binds;
-        bind->protocol->pending_close(evpl, bind);
-        bind->flags |= EVPL_BIND_PENDING_CLOSED;
-        DL_DELETE(evpl->binds, bind);
-        DL_APPEND(evpl->pending_close_binds, bind);
+    /* Push any open binds into pending close state */
+    DL_FOREACH(evpl->binds, bind)
+    {
+        evpl_close(evpl, bind);
     }
 
     /* Pump events until we have no pending close binds */
-    while (evpl->pending_close_binds) {
+    while (evpl->binds || evpl->pending_close_binds) {
         evpl_continue(evpl);
     }
 

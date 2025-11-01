@@ -5,173 +5,162 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <sys/uio.h>
+#include <assert.h>
+#include <unistd.h>
 
-#include "core/evpl.h"
-#include "rpc2/rpc2.h"
-
-#include "core/internal.h"
+#include "evpl/evpl.h"
+#include "evpl/evpl_rpc2.h"
 
 #include "hello_world_tcp_xdr.h"
 
-typedef void (*GreetingCallback)(
-    struct Hello *msg,
-    void         *private_data);
+/* RPC2 logging macros */
+#define evpl_info(fmt, ...)  printf("[INFO] " fmt "\n", ## __VA_ARGS__)
+#define evpl_error(fmt, ...) fprintf(stderr, "[ERROR] " fmt "\n", ## __VA_ARGS__)
 
+/* Test state shared between client and server */
+struct test_state {
+    int server_received;
+    int client_received;
+    int test_complete;
+    int test_passed;
+};
 
+/* Server-side: Handle GREET request */
 void
-hello_greeting_call(
-    struct evpl_rpc2_agent *agent,
-    struct evpl_conn       *conn,
-    struct Hello           *hello,
-    GreetingCallback        callback,
-    void                   *private_data)
+server_recv_greet(
+    struct evpl           *evpl,
+    struct evpl_rpc2_conn *conn,
+    struct Hello          *request,
+    struct evpl_rpc2_msg  *msg,
+    void                  *private_data)
 {
+    struct test_state *state = private_data;
+    struct HELLO_V1   *prog  = msg->program->program_data;
+    struct Hello       reply;
 
-} /* hello_greeting_call */
+    evpl_info("Server received GREET request: id=%u, greeting='%s'",
+              request->id, request->greeting.str);
 
-int
-client_callback(
-    struct evpl      *evpl,
-    struct evpl_conn *conn,
-    unsigned int      event_type,
-    unsigned int      event_code,
-    void             *private_data)
-{
-    int *run = private_data;
+    /* Validate request */
+    assert(request->id == 42);
+    assert(strcmp(request->greeting.str, "Hello from client!") == 0);
 
-    evpl_info("client callback event %u code %u", event_type, event_code);
+    state->server_received = 1;
 
-    switch (event_type) {
-        case EVPL_EVENT_DISCONNECTED:
-            *run = 0;
-            break;
-    } /* switch */
+    /* Prepare reply */
+    reply.id = 100;
+    xdr_set_str_static(&reply, greeting, "Hello from server!", strlen("Hello from server!"));
 
-    return 0;
-} /* client_callback */
+    /* Send reply */
+    prog->send_reply_GREET(evpl, &reply, msg);
 
+    evpl_info("Server sent GREET reply");
+} /* server_recv_greet */
+
+/* Client-side: Handle GREET reply */
 void
-client_dispatch(
-    struct evpl_rpc2_agent   *agent,
-    struct evpl_rpc2_request *msg,
-    void                     *private_data)
+client_recv_reply_greet(
+    struct evpl  *evpl,
+    struct Hello *reply,
+    int           status,
+    void         *callback_private_data)
 {
-    evpl_info("Received rpc2 request");
-} /* client_dispatch */
+    struct test_state *state = callback_private_data;
 
-void *
-client_thread(void *arg)
-{
-    struct evpl            *evpl;
-    struct evpl_rpc2_agent *agent;
-    struct evpl_conn       *conn;
-    struct Hello            hello;
-    static const char       hello_string[] = "Hello World!";
-    int                     run            = 1;
+    evpl_info("Client received GREET reply: status=%d, id=%u, greeting='%s'",
+              status, reply->id, reply->greeting.str);
 
-    evpl = evpl_init(NULL);
+    /* Validate reply */
+    assert(status == 0);  /* SUCCESS */
+    assert(reply->id == 100);
+    assert(strcmp(reply->greeting.str, "Hello from server!") == 0);
 
-    agent = evpl_rpc2_init(evpl);
+    state->client_received = 1;
 
-    conn = evpl_rpc2_connect(agent, EVPL_PROTO_TCP, "127.0.0.1", 8000,
-                             client_dispatch, &run);
-
-    hello.id = 42;
-
-    xdr_set_str_static(&hello, greeting, hello_string, strlen(hello_string));
-
-    evpl_rpc2_call(agent, conn, 1, 1, 1);
-
-    while (run) {
-
-        evpl_wait(evpl, -1);
+    /* Test complete */
+    if (state->server_received && state->client_received) {
+        state->test_complete = 1;
+        state->test_passed   = 1;
+        evpl_info("Test PASSED!");
     }
-
-    evpl_debug("client loop out");
-
-    evpl_close(evpl, conn);
-    evpl_rpc2_destroy(agent);
-    evpl_destroy(evpl);
-
-    return NULL;
-} /* client_thread */
-
-int
-server_callback(
-    struct evpl      *evpl,
-    struct evpl_conn *conn,
-    unsigned int      event_type,
-    unsigned int      event_code,
-    void             *private_data)
-{
-    //struct evpl_iovec iovec, *iovecp;
-    //const char hello[] = "Hello World!";
-    //int slen = strlen(hello);
-    int *run = private_data;
-
-    evpl_info("server callback event %u code %u", event_type, event_code);
-
-    switch (event_type) {
-        case EVPL_EVENT_DISCONNECTED:
-            *run = 0;
-            break;
-        case EVPL_EVENT_RECEIVED:
-
-/*
- *      evpl_iovec_alloc(evpl, slen, 0, &iovec);
- *
- *      memcpy(evpl_iovec_data(&iovec), hello, slen);
- *
- *      iovecp = &iovec;
- *
- *      evpl_send(evpl, conn, &iovecp, 1);
- *
- *      evpl_finish(evpl, conn);
- */
-            break;
-    } /* switch */
-
-    return 0;
-} /* server_callback */
-
-void
-server_dispatch(
-    struct evpl_rpc2_agent   *agent,
-    struct evpl_rpc2_request *msg,
-    void                     *private_data)
-{
-    evpl_info("Received rpc2 request");
-} /* server_dispatch */
+} /* client_recv_reply_greet */
 
 int
 main(
     int   argc,
     char *argv[])
 {
-    pthread_t               thr;
-    struct evpl            *evpl;
-    struct evpl_rpc2_agent *agent;
-    int                     run = 1;
+    struct evpl              *evpl;
+    struct evpl_rpc2_server  *server;
+    struct evpl_rpc2_conn    *conn;
+    struct evpl_rpc2_thread  *thread;
+    struct evpl_endpoint     *endpoint;
+    struct HELLO_V1           prog;
+    struct Hello              request;
+    struct evpl_rpc2_program *programs[1];
+    struct test_state         state = { 0 };
 
-    evpl = evpl_init(NULL);
+    evpl_init(NULL);
+    evpl = evpl_create(NULL);
 
-    agent = evpl_rpc2_init(evpl);
+    /* Initialize server program */
+    HELLO_V1_init(&prog);
+    prog.recv_call_GREET = server_recv_greet;
+    programs[0]          = &prog.rpc2;
 
-    evpl_rpc2_listen(agent, EVPL_PROTO_TCP,
-                     "0.0.0.0", 8000, server_dispatch, &run);
+    /* Create RPC2 server */
+    server = evpl_rpc2_server_init(programs, 1);
 
-    pthread_create(&thr, NULL, client_thread, NULL);
+    /* Create endpoint for 0.0.0.0:8000 */
+    endpoint = evpl_endpoint_create("0.0.0.0", 8000);
 
-    while (run) {
-        evpl_wait(evpl, -1);
+    /* Start listening */
+    evpl_rpc2_server_start(server, EVPL_STREAM_SOCKET_TCP, endpoint);
+
+    evpl_info("Server listening on port 8000");
+
+    thread = evpl_rpc2_thread_init(evpl, programs, 1);
+
+    /* Attach server to this thread */
+    evpl_rpc2_server_attach(thread, server, &state);
+
+    /* Connect to server */
+    conn = evpl_rpc2_client_connect(thread, EVPL_STREAM_SOCKET_TCP, endpoint);
+
+    if (!conn) {
+        evpl_error("Failed to create RPC2 client");
+        evpl_destroy(evpl);
+        return -1;
     }
 
-    pthread_join(thr, NULL);
+    evpl_info("Client connected to server");
 
-    evpl_rpc2_destroy(agent);
+    /* Prepare request */
+    request.id = 42;
+    xdr_set_str_static(&request, greeting, "Hello from client!", strlen("Hello from client!"));
+
+    /* Make RPC call */
+    evpl_info("Client sending GREET request");
+    prog.send_call_GREET(&prog.rpc2, evpl, conn, &request, client_recv_reply_greet, &state);
+
+    /* Wait for reply */
+    while (!state.test_complete) {
+        evpl_continue(evpl);
+    }
+    /* Cleanup */
+    evpl_rpc2_server_stop(server);
+    evpl_rpc2_client_disconnect(thread, conn);
+    evpl_rpc2_server_detach(thread, server);
+    evpl_rpc2_thread_destroy(thread);
+    evpl_rpc2_server_destroy(server);
     evpl_destroy(evpl);
 
-    return 0;
+    if (state.test_passed) {
+        printf("Test PASSED\n");
+        return 0;
+    } else {
+        printf("Test FAILED\n");
+        return 1;
+    }
 } /* main */
