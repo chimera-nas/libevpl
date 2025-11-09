@@ -46,8 +46,10 @@ struct evpl_rpc2_msg {
     uint32_t                              reply_length;
     uint16_t                              pending_reads;
     uint16_t                              pending_writes;
+    struct evpl_iovec                    *recv_iov;
     struct evpl_iovec                    *req_iov;
     struct evpl_iovec                    *reply_iov;
+    int                                   recv_niov;
     int                                   req_niov;
     int                                   reply_niov;
     struct timespec                       timestamp;

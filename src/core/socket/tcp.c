@@ -61,7 +61,7 @@ evpl_socket_tcp_read(
     struct evpl_notify  notify;
     struct iovec        iov[2];
     ssize_t             res, total, remain;
-    int                 length, niov, i;
+    int                 length, niov;
 
     if (unlikely(s->fd < 0)) {
         return;
@@ -138,11 +138,6 @@ evpl_socket_tcp_read(
             notify.recv_msg.addr   = bind->remote;
 
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
-
-            for (i = 0; i < niov; ++i) {
-                evpl_iovec_decref(&iovec[i]);
-            }
-
         }
 
     } else {

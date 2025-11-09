@@ -88,7 +88,7 @@ evpl_io_uring_tcp_recv_callback(
 {
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
     struct evpl_io_uring_socket  *s   = req->tcp.socket;
-    int                           buffer_id, niov, i;
+    int                           buffer_id, niov;
     uint64_t                      length;
     struct evpl_iovec            *iov;
     struct evpl_notify            notify;
@@ -149,10 +149,6 @@ evpl_io_uring_tcp_recv_callback(
                 notify.recv_msg.addr   = bind->remote;
 
                 bind->notify_callback(evpl, bind, &notify, bind->private_data);
-
-                for (i = 0; i < niov; ++i) {
-                    evpl_iovec_decref(&iov[i]);
-                }
 
             }
 

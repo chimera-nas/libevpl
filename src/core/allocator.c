@@ -53,6 +53,9 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
 
     while (allocator->free_buffers) {
         buffer = allocator->free_buffers;
+
+        evpl_core_abort_if(buffer->refcnt, "buffer %p has %d leaked references", buffer, buffer->refcnt);
+
         buffer->slab->refcnt--;
         LL_DELETE(allocator->free_buffers, buffer);
         evpl_free(buffer);

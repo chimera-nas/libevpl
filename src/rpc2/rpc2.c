@@ -79,8 +79,8 @@ evpl_rpc2_msg_free(
 {
     int i;
 
-    for (i = 0; i < msg->req_niov; ++i) {
-        evpl_iovec_release(&msg->req_iov[i]);
+    for (i = 0; i < msg->recv_niov; ++i) {
+        evpl_iovec_release(&msg->recv_iov[i]);
     }
 
     for (i = 0; i < msg->read_chunk.niov; ++i) {
@@ -491,7 +491,7 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
 {
     struct evpl_rpc2_thread *thread = msg->thread;
     struct evpl_rpc2_conn   *conn   = msg->conn;
-    int                      error, i;
+    int                      error;
     struct evpl             *evpl = thread->evpl;
 
     error = msg->program->recv_reply_dispatch(evpl, conn, msg, msg->reply_iov, msg->reply_niov, msg->reply_length,
@@ -500,10 +500,6 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
 
     if (unlikely(error)) {
         abort();
-    }
-
-    for (i = 0; i < msg->reply_niov; i++) {
-        evpl_iovec_release(&msg->reply_iov[i]);
     }
 
     evpl_rpc2_msg_free(thread, msg);
@@ -588,12 +584,12 @@ evpl_rpc2_recv_msg(
             break;
     } /* switch */
 
+    xdr_dbuf_alloc_space(msg->recv_iov, sizeof(*msg->recv_iov) * niov, msg->dbuf);
+    memcpy(msg->recv_iov, iovec, niov * sizeof(*msg->recv_iov));
+    msg->recv_niov = niov;
+
     xdr_dbuf_alloc_space(req_iov, sizeof(*req_iov) * hdr_niov, msg->dbuf);
     req_niov = evpl_rpc2_iovec_skip(req_iov, hdr_iov, hdr_niov, rc);
-
-    for (i = 0; i < req_niov; ++i) {
-        evpl_iovec_addref(&req_iov[i]);
-    }
 
     request_length = length - (rc + offset);
 
@@ -711,6 +707,7 @@ evpl_rpc2_recv_msg(
             evpl_rpc2_error("rpc2 received unexpected message type %d", rpc_msg.body.mtype);
             evpl_close(evpl, bind);
     } /* switch */
+
 } /* evpl_rpc2_recv_msg */
 
 
@@ -1013,9 +1010,8 @@ evpl_rpc2_call(
     struct evpl_iovec        hdr_iov, hdr_out_iov;
     int                      rpc_len;
     int                      out_niov   = 1;
-    int                      reserve    = 256;  /* Must match the reserve value in generated code */
     int                      offset     = 4;    /* TCP record header offset */
-    int                      pay_length = req_length - reserve;
+    int                      pay_length = req_length - program->reserve;
     int                      total_length;
 
     msg = evpl_rpc2_msg_alloc(thread);
@@ -1049,9 +1045,9 @@ evpl_rpc2_call(
 
     total_length = offset + rpc_len + pay_length;
 
-    /* Adjust iovec to point to where payload data starts, following server pattern */
-    req_iov[0].data   = (char *) req_iov[0].data + (reserve - (rpc_len + offset));
-    req_iov[0].length = req_iov[0].length - (reserve - (rpc_len + offset));
+    /* Adjust iovec to point to where payload data starts */
+    req_iov[0].data   = (char *) req_iov[0].data + (program->reserve - (rpc_len + offset));
+    req_iov[0].length = req_iov[0].length - (program->reserve - (rpc_len + offset));
 
     hdr_iov = req_iov[0];
 

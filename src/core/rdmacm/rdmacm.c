@@ -627,9 +627,6 @@ evpl_rdmacm_poll_cq(
 
                         bind->notify_callback(evpl, bind, &notify,
                                               bind->private_data);
-
-                        evpl_iovec_decref(&req->iovec);
-
                     }
 
                     --dev->srq_fill;

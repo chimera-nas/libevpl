@@ -39,6 +39,10 @@ client_callback(
 
             *run = 0;
 
+            for (int i = 0; i < notify->recv_msg.niov; i++) {
+                evpl_iovec_release(&notify->recv_msg.iovec[i]);
+            }
+
             break;
     } /* switch */
 
@@ -89,6 +93,10 @@ server_callback(
             client = evpl_endpoint_create(address, port + 1);
 
             evpl_sendtoep(evpl, bind, client, hello, hellolen);
+
+            for (int i = 0; i < notify->recv_msg.niov; i++) {
+                evpl_iovec_release(&notify->recv_msg.iovec[i]);
+            }
 
             evpl_finish(evpl, bind);
 
