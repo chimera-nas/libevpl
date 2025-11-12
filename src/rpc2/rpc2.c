@@ -582,6 +582,8 @@ evpl_rpc2_recv_msg(
 
             HASH_DELETE(hh, rpc2_conn->pending_calls, msg);
             break;
+        default:
+            abort();
     } /* switch */
 
     xdr_dbuf_alloc_space(msg->recv_iov, sizeof(*msg->recv_iov) * niov, msg->dbuf);

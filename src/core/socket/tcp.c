@@ -263,8 +263,11 @@ evpl_socket_tcp_connect(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
-    struct evpl_socket *s = evpl_bind_private(bind);
-    int                 rc, yes = 1;
+    struct evpl_socket     *s = evpl_bind_private(bind);
+    int                     rc, yes = 1;
+    struct sockaddr_storage ss;
+    socklen_t               sslen = sizeof(ss);
+    int                     rc_getsockname;
 
     s->fd = socket(bind->remote->addr->sa_family, SOCK_STREAM, 0);
 
@@ -275,6 +278,14 @@ evpl_socket_tcp_connect(
 
     evpl_socket_abort_if(rc < 0 && errno != EINPROGRESS,
                          "Failed to connect tcp socket: %s", strerror(errno));
+
+
+    rc_getsockname = getsockname(s->fd, (struct sockaddr *) &ss, &sslen);
+    evpl_socket_abort_if(rc_getsockname < 0, "Failed to getsockname on socket: %s", strerror(errno));
+
+    bind->local          = evpl_address_alloc();
+    bind->local->addrlen = sslen;
+    memcpy(bind->local->addr, &ss, sslen);
 
     evpl_socket_init(evpl, s, s->fd, 0);
 
