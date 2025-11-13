@@ -8,7 +8,9 @@ theme: just-the-docs
 color_scheme: dark
 
 
-url: https://chimeraproject.io/libevpl
+url: "https://chimeraproject.io"
+baseurl: "/libevpl"
+
 
 aux_links:
   GitHub: https://github.com/chimera-nas/libevpl
