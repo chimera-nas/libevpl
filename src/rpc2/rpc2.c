@@ -61,13 +61,15 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_thread *thread)
 
     xdr_dbuf_reset(msg->dbuf);
 
-    msg->pending_reads          = 0;
-    msg->pending_writes         = 0;
-    msg->read_chunk.niov        = 0;
-    msg->read_chunk.length      = 0;
-    msg->write_chunk.niov       = 0;
-    msg->write_chunk.length     = 0;
-    msg->write_chunk.max_length = 0;
+    msg->pending_reads               = 0;
+    msg->pending_writes              = 0;
+    msg->read_chunk.niov             = 0;
+    msg->read_chunk.length           = 0;
+    msg->write_chunk.niov            = 0;
+    msg->write_chunk.length          = 0;
+    msg->write_chunk.max_length      = 0;
+    msg->write_segments.num_segments = 0;
+    msg->reply_segments.num_segments = 0;
 
     return msg;
 } /* evpl_rpc2_msg_alloc */
@@ -245,11 +247,13 @@ evpl_rpc2_send_reply(
 
     if (rdma) {
 
-        rdma_msg.rdma_xid                      = msg->xid;
-        rdma_msg.rdma_vers                     = 1;
-        rdma_msg.rdma_credit                   = msg->rdma_credits;
-        rdma_msg.rdma_body.proc                = RDMA_MSG;
-        rdma_msg.rdma_body.rdma_msg.rdma_reads = NULL;
+        rdma_msg.rdma_xid                       = msg->xid;
+        rdma_msg.rdma_vers                      = 1;
+        rdma_msg.rdma_credit                    = msg->rdma_credits;
+        rdma_msg.rdma_body.proc                 = RDMA_MSG;
+        rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
+        rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
+        rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
 
         if (msg->write_segments.num_segments > 0) {
             write_list.entry.num_target = msg->write_segments.num_segments;
@@ -603,8 +607,6 @@ evpl_rpc2_recv_msg(
             msg->xid            = rpc_msg.xid;
             msg->proc           = rpc_msg.body.cbody.proc;
             msg->timestamp      = now;
-            msg->pending_reads  = 0;
-            msg->pending_writes = 0;
             msg->request_length = request_length;
             msg->req_iov        = req_iov;
             msg->req_niov       = req_niov;
@@ -619,9 +621,6 @@ evpl_rpc2_recv_msg(
                     }
 
                     while (read_list) {
-                        evpl_rpc2_abort_if(msg->read_chunk.xdr_position != read_list->entry.position,
-                                           "read segment position mismatch");
-
                         msg->read_chunk.length += read_list->entry.target.length;
 
                         read_list = read_list->next;
@@ -663,6 +662,11 @@ evpl_rpc2_recv_msg(
                         for (i = 0; i < write_list->entry.num_target; i++) {
                             msg->write_chunk.max_length += write_list->entry.target[i].length;
                         }
+
+                        msg->write_segments.num_segments = write_list->entry.num_target;
+                        memcpy(msg->write_segments.segments,
+                               write_list->entry.target,
+                               write_list->entry.num_target * sizeof(struct xdr_rdma_segment));
 
                         write_list = write_list->next;
                     }
