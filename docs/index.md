@@ -37,8 +37,8 @@ Each of these technologies delivers impressive performance improvements for appl
 
 libevpl aims to solve these challenges by providing a **single, protocol-agnostic event loop engine** with unified abstractions for network and block I/O. Rather than replacing these high-performance backends, libevpl integrates them behind a common API:
 
-- Applications write code once against libevpl's event-driven API
-- At runtime, libevpl automatically selects the best available backend based on the system's hardware and software capabilities
+- Write code once against libevpl's event-driven API
+- At runtime, select the best available backend based on the system's hardware and software capabilities
 - The same application binary can run efficiently on systems with RDMA hardware, XLIO-accelerated networking, or traditional kernel sockets—without code changes
 - Block I/O operations integrate seamlessly with network I/O, using io_uring or VFIO-NVMe as available
 

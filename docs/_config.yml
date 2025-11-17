@@ -11,6 +11,14 @@ color_scheme: dark
 url: "https://chimeraproject.io"
 baseurl: "/libevpl"
 
+google_site_verification: G-387Y69TT0T
+
+analytics:
+  provider: "google-gtag"
+  google:
+    tracking_id: "G-387Y69TT0T"
+    anonymize_ip: false # default
+
 
 aux_links:
   GitHub: https://github.com/chimera-nas/libevpl
