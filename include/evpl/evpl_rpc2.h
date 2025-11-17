@@ -36,6 +36,8 @@ struct evpl_rpc2_conn {
     struct evpl_rpc2_msg            *pending_calls;
     uint32_t                         next_xid;
     void                            *private_data;
+    struct evpl_rpc2_conn           *prev;
+    struct evpl_rpc2_conn           *next;
 };
 
 typedef void (*evpl_rpc2_reply_callback_t)(

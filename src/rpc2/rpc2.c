@@ -40,6 +40,7 @@ struct evpl_rpc2_thread {
     struct evpl                     *evpl;
     struct evpl_rpc2_program       **programs;
     int                              nprograms;
+    struct evpl_rpc2_conn           *conns;
     evpl_rpc2_notify_callback_t      notify_callback;
     void                            *private_data;
     xdr_dbuf                        *dbuf;
@@ -741,6 +742,7 @@ evpl_rpc2_event(
             }
             break;
         case EVPL_NOTIFY_DISCONNECTED:
+            DL_DELETE(rpc2_thread->conns, rpc2_conn);
             HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_msg, tmp)
             {
                 HASH_DELETE(hh, rpc2_conn->pending_calls, rpc2_msg);
@@ -788,6 +790,8 @@ evpl_rpc2_accept(
     *segment_callback  = rpc2_segment_callback;
     *conn_private_data = rpc2_conn;
 
+    DL_APPEND(server_binding->thread->conns, rpc2_conn);
+
     if (server_binding->thread->notify_callback) {
         rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_ACCEPTED;
         server_binding->thread->notify_callback(server_binding->thread,
@@ -831,7 +835,17 @@ evpl_rpc2_thread_init(
 SYMBOL_EXPORT void
 evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
 {
-    struct evpl_rpc2_msg *msg;
+    struct evpl_rpc2_msg  *msg;
+    struct evpl_rpc2_conn *rpc2_conn;
+
+    DL_FOREACH(thread->conns, rpc2_conn)
+    {
+        evpl_close(thread->evpl, rpc2_conn->bind);
+    }
+
+    while (thread->conns) {
+        evpl_continue(thread->evpl);
+    }
 
     xdr_dbuf_free(thread->dbuf);
 
@@ -1000,6 +1014,8 @@ evpl_rpc2_client_connect(
     conn->protocol       = protocol;
     conn->server_binding = NULL;
     conn->next_xid       = 1;
+
+    DL_APPEND(thread->conns, conn);
 
     conn->bind = evpl_connect(
         thread->evpl,
