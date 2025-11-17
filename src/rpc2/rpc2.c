@@ -40,6 +40,8 @@ struct evpl_rpc2_thread {
     struct evpl                     *evpl;
     struct evpl_rpc2_program       **programs;
     int                              nprograms;
+    evpl_rpc2_notify_callback_t      notify_callback;
+    void                            *private_data;
     xdr_dbuf                        *dbuf;
     struct evpl_rpc2_msg            *free_msg;
     struct evpl_rpc2_server_binding *servers;
@@ -61,6 +63,7 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_thread *thread)
 
     xdr_dbuf_reset(msg->dbuf);
 
+    msg->recv_niov                   = 0;
     msg->pending_reads               = 0;
     msg->pending_writes              = 0;
     msg->read_chunk.niov             = 0;
@@ -724,19 +727,30 @@ evpl_rpc2_event(
     struct evpl_notify *notify,
     void               *private_data)
 {
-    struct evpl_rpc2_conn *rpc2_conn = private_data;
-    char                   addr_str[80], addr_str_local[80];
+    struct evpl_rpc2_conn   *rpc2_conn   = private_data;
+    struct evpl_rpc2_thread *rpc2_thread = rpc2_conn->thread;
+    struct evpl_rpc2_notify  rpc2_notify;
+    struct evpl_rpc2_msg    *rpc2_msg, *tmp;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
-            evpl_bind_get_local_address(bind, addr_str_local, sizeof(addr_str_local));
-            evpl_bind_get_remote_address(bind, addr_str, sizeof(addr_str));
-            evpl_rpc2_debug("Connection established from %s to %s", addr_str, addr_str_local);
+            if (rpc2_conn->thread->notify_callback) {
+                rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_CONNECTED;
+                rpc2_thread->notify_callback(rpc2_thread, rpc2_conn, &rpc2_notify, rpc2_thread->private_data
+                                             );
+            }
             break;
         case EVPL_NOTIFY_DISCONNECTED:
-            evpl_bind_get_local_address(bind, addr_str_local, sizeof(addr_str_local));
-            evpl_bind_get_remote_address(bind, addr_str, sizeof(addr_str));
-            evpl_rpc2_debug("Connection terminated from %s to %s", addr_str, addr_str_local);
+            HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_msg, tmp)
+            {
+                HASH_DELETE(hh, rpc2_conn->pending_calls, rpc2_msg);
+                evpl_rpc2_msg_free(rpc2_conn->thread, rpc2_msg);
+            }
+            if (rpc2_conn->thread->notify_callback) {
+                rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_DISCONNECTED;
+                rpc2_conn->thread->notify_callback(rpc2_conn->thread, rpc2_conn, &rpc2_notify, rpc2_thread->private_data
+                                                   );
+            }
             free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:
@@ -761,6 +775,7 @@ evpl_rpc2_accept(
 {
     struct evpl_rpc2_server_binding *server_binding = private_data;
     struct evpl_rpc2_conn           *rpc2_conn;
+    struct evpl_rpc2_notify          rpc2_notify;
 
     rpc2_conn                 = evpl_zalloc(sizeof(*rpc2_conn));
     rpc2_conn->thread_dbuf    = (struct xdr_dbuf *) server_binding->thread->dbuf;
@@ -773,20 +788,33 @@ evpl_rpc2_accept(
     *segment_callback  = rpc2_segment_callback;
     *conn_private_data = rpc2_conn;
 
+    if (server_binding->thread->notify_callback) {
+        rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_ACCEPTED;
+        server_binding->thread->notify_callback(server_binding->thread,
+                                                rpc2_conn,
+                                                &rpc2_notify,
+                                                server_binding->
+                                                private_data);
+    }
+
 } /* evpl_rpc2_accept */
 
 SYMBOL_EXPORT struct evpl_rpc2_thread *
 evpl_rpc2_thread_init(
-    struct evpl               *evpl,
-    struct evpl_rpc2_program **programs,
-    int                        nprograms)
+    struct evpl                *evpl,
+    struct evpl_rpc2_program  **programs,
+    int                         nprograms,
+    evpl_rpc2_notify_callback_t notify_callback,
+    void                       *private_data)
 {
     struct evpl_rpc2_thread *thread;
 
     thread = evpl_zalloc(sizeof(*thread));
 
-    thread->evpl      = evpl;
-    thread->nprograms = nprograms;
+    thread->evpl            = evpl;
+    thread->nprograms       = nprograms;
+    thread->notify_callback = notify_callback;
+    thread->private_data    = private_data;
 
     thread->dbuf = xdr_dbuf_alloc(128 * 1024);
 
@@ -1060,7 +1088,7 @@ evpl_rpc2_call(
     rpc_len = marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, offset);
 
     /* Add 4-byte record marking header for TCP at the start of the output buffer */
-    *(uint32_t *) req_iov[0].data = rpc2_hton32((req_iov[0].length - 4) | 0x80000000);
+    *(uint32_t *) req_iov[0].data = rpc2_hton32((total_length - 4) | 0x80000000);
 
     /* Send the request - use out_iov which contains the marshalled header + payload */
     evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length);

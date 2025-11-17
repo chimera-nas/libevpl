@@ -17,6 +17,14 @@ struct evpl_iovec;
 struct evpl_rpc2_program;
 struct evpl_rpc2_call;
 
+#define EVPL_RPC2_NOTIFY_ACCEPTED     1
+#define EVPL_RPC2_NOTIFY_CONNECTED    2
+#define EVPL_RPC2_NOTIFY_DISCONNECTED 3
+
+struct evpl_rpc2_notify {
+    unsigned int notify_type;
+};
+
 
 struct evpl_rpc2_conn {
     enum evpl_protocol_id protocol;
@@ -41,11 +49,19 @@ typedef void (*evpl_rpc2_dispatch_callback_t)(
     struct evpl_rpc2_request *request,
     void                     *private_data);
 
+typedef void (*evpl_rpc2_notify_callback_t)(
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_conn   *conn,
+    struct evpl_rpc2_notify *notify,
+    void                    *private_data);
+
 struct evpl_rpc2_thread *
 evpl_rpc2_thread_init(
-    struct evpl               *evpl,
-    struct evpl_rpc2_program **programs,
-    int                        nprograms);
+    struct evpl                *evpl,
+    struct evpl_rpc2_program  **programs,
+    int                         nprograms,
+    evpl_rpc2_notify_callback_t notify_callback,
+    void                       *private_data);
 
 void
 evpl_rpc2_thread_destroy(

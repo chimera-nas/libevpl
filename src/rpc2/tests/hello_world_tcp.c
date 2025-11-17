@@ -120,7 +120,7 @@ main(
 
     evpl_info("Server listening on port 8000");
 
-    thread = evpl_rpc2_thread_init(evpl, programs, 1);
+    thread = evpl_rpc2_thread_init(evpl, programs, 1, NULL, NULL);
 
     /* Attach server to this thread */
     evpl_rpc2_server_attach(thread, server, &state);
