@@ -11,7 +11,7 @@ color_scheme: dark
 url: "https://chimeraproject.io"
 baseurl: "/libevpl"
 
-google_site_verification: G-387Y69TT0T
+ga_tracking: G-387Y69TT0T
 
 analytics:
   provider: "google-gtag"
