@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include <complex.h>
 #define _GNU_SOURCE
 #include <time.h>
 #include <utlist.h>
@@ -9,6 +10,7 @@
 
 #include "core/evpl.h"
 #include "evpl/evpl_rpc2.h"
+#include "evpl/evpl_rdma.h"
 
 #include "rpc2/common.h"
 #include "rpc2_xdr.h"
@@ -785,6 +787,7 @@ evpl_rpc2_accept(
     rpc2_conn->thread         = server_binding->thread;
     rpc2_conn->bind           = bind;
     rpc2_conn->protocol       = evpl_bind_get_protocol(bind);
+    rpc2_conn->rdma           = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
     *notify_callback   = evpl_rpc2_event;
     *segment_callback  = rpc2_segment_callback;
@@ -1012,6 +1015,7 @@ evpl_rpc2_client_connect(
     conn->thread         = thread;
     conn->thread_dbuf    = (struct xdr_dbuf *) thread->dbuf;
     conn->protocol       = protocol;
+    conn->rdma           = (protocol == EVPL_DATAGRAM_RDMACM_RC);
     conn->server_binding = NULL;
     conn->next_xid       = 1;
 
@@ -1044,25 +1048,28 @@ evpl_rpc2_client_disconnect(
 
 SYMBOL_EXPORT int
 evpl_rpc2_call(
-    struct evpl              *evpl,
-    struct evpl_rpc2_program *program,
-    struct evpl_rpc2_conn    *conn,
-    uint32_t                  procedure,
-    struct evpl_iovec        *req_iov,
-    int                       req_niov,
-    int                       req_length,
-    void                     *callback,
-    void                     *private_data)
+    struct evpl                 *evpl,
+    struct evpl_rpc2_program    *program,
+    struct evpl_rpc2_conn       *conn,
+    uint32_t                     procedure,
+    struct evpl_iovec           *req_iov,
+    int                          req_niov,
+    int                          req_length,
+    struct evpl_rpc2_rdma_chunk *rdma_chunk,
+    void                        *callback,
+    void                        *private_data)
 {
     struct evpl_rpc2_thread *thread = conn->thread;
     struct evpl_rpc2_msg    *msg;
     struct rpc_msg           rpc_msg;
+    struct rdma_msg          rdma_msg;
     struct evpl_iovec        hdr_iov, hdr_out_iov;
-    int                      rpc_len;
+    struct xdr_read_list     read_list;
+    int                      transport_hdr_len, rpc_len;
     int                      out_niov   = 1;
-    int                      offset     = 4;    /* TCP record header offset */
     int                      pay_length = req_length - program->reserve;
     int                      total_length;
+    int                      rdma = (conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
     msg = evpl_rpc2_msg_alloc(thread);
 
@@ -1093,18 +1100,54 @@ evpl_rpc2_call(
     /* Calculate exact RPC header length first */
     rpc_len = marshall_length_rpc_msg(&rpc_msg);
 
-    total_length = offset + rpc_len + pay_length;
+    if (rdma) {
+        rdma_msg.rdma_xid                       = msg->xid;
+        rdma_msg.rdma_vers                      = 1;
+        rdma_msg.rdma_credit                    = 1;
+        rdma_msg.rdma_body.proc                 = RDMA_MSG;
+        rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
+        rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
+        rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
+
+        if (rdma_chunk) {
+
+            evpl_rpc2_abort_if(rdma_chunk->niov == 0, "rdma_chunk niov is 0");
+            evpl_rpc2_abort_if(rdma_chunk->niov > 1, "rdma_chunk niov is greater than 1");
+
+            rdma_msg.rdma_body.rdma_msg.rdma_reads = &read_list;
+            read_list.next                         = NULL;
+
+            read_list.entry.position = rdma_chunk->xdr_position + rpc_len;
+
+            evpl_rdma_get_address(evpl, conn->bind,
+                                  rdma_chunk->iov,
+                                  &read_list.entry.target.handle,
+                                  &read_list.entry.target.offset);
+
+            read_list.entry.target.length = rdma_chunk->length;
+        }
+
+        transport_hdr_len = marshall_length_rdma_msg(&rdma_msg);
+    } else {
+        transport_hdr_len = 4;
+    }
+
+    total_length = transport_hdr_len + rpc_len + pay_length;
 
     /* Adjust iovec to point to where payload data starts */
-    req_iov[0].data   = (char *) req_iov[0].data + (program->reserve - (rpc_len + offset));
-    req_iov[0].length = req_iov[0].length - (program->reserve - (rpc_len + offset));
+    req_iov[0].data   = (char *) req_iov[0].data + (program->reserve - (rpc_len + transport_hdr_len));
+    req_iov[0].length = req_iov[0].length - (program->reserve - (rpc_len + transport_hdr_len));
 
     hdr_iov = req_iov[0];
 
-    rpc_len = marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, offset);
+    rpc_len = marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, transport_hdr_len);
 
-    /* Add 4-byte record marking header for TCP at the start of the output buffer */
-    *(uint32_t *) req_iov[0].data = rpc2_hton32((total_length - 4) | 0x80000000);
+    if (rdma) {
+        marshall_rdma_msg(&rdma_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, 0);
+    } else {
+        /* Add 4-byte record marking header for TCP at the start of the output buffer */
+        *(uint32_t *) req_iov[0].data = rpc2_hton32((total_length - 4) | 0x80000000);
+    }
 
     /* Send the request - use out_iov which contains the marshalled header + payload */
     evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length);

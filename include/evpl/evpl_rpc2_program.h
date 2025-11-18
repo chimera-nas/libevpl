@@ -110,12 +110,13 @@ struct evpl_rpc2_program {
 
 int
 evpl_rpc2_call(
-    struct evpl              *evpl,
-    struct evpl_rpc2_program *program,
-    struct evpl_rpc2_conn    *conn,
-    uint32_t                  procedure,
-    struct evpl_iovec        *req_iov,
-    int                       req_niov,
-    int                       req_length,
-    void                     *callback,
-    void                     *private_data);
+    struct evpl                 *evpl,
+    struct evpl_rpc2_program    *program,
+    struct evpl_rpc2_conn       *conn,
+    uint32_t                     procedure,
+    struct evpl_iovec           *req_iov,
+    int                          req_niov,
+    int                          req_length,
+    struct evpl_rpc2_rdma_chunk *rdma_chunk,
+    void                        *callback,
+    void                        *private_data);

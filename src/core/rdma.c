@@ -10,6 +10,25 @@
 #include "core/evpl.h"
 #include "core/rdma_request.h"
 
+SYMBOL_EXPORT void
+evpl_rdma_get_address(
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iovec,
+    uint32_t          *r_key,
+    uint64_t          *r_address)
+{
+    struct evpl_protocol  *protocol  = bind->protocol;
+    struct evpl_framework *framework = protocol->framework;
+
+    if (unlikely(!protocol->rdma)) {
+        *r_key     = 0;
+        *r_address = 0;
+        return;
+    }
+
+    framework->get_rdma_address(bind, iovec, r_key, r_address);
+} /* evpl_rdma_get_address */
 
 SYMBOL_EXPORT void
 evpl_rdma_read(

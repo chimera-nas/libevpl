@@ -77,9 +77,10 @@ struct evpl_rdmacm_sr {
 };
 
 struct evpl_rdmacm_devices {
-    struct ibv_context **context;
-    struct ibv_pd      **pd;
-    int                  num_devices;
+    struct ibv_context    **context;
+    struct ibv_pd         **pd;
+    struct ibv_device_attr *device_attr;
+    int                     num_devices;
 };
 
 struct evpl_rdmacm_device {
@@ -306,9 +307,11 @@ evpl_rdmacm_event_callback(
             }
 
             memset(&conn_param, 0, sizeof(conn_param));
-            conn_param.private_data    = rdmacm_id;
-            conn_param.retry_count     = evpl_shared->config->rdmacm_retry_count;
-            conn_param.rnr_retry_count = evpl_shared->config->rdmacm_rnr_retry_count;
+            conn_param.private_data        = rdmacm_id;
+            conn_param.retry_count         = evpl_shared->config->rdmacm_retry_count;
+            conn_param.rnr_retry_count     = evpl_shared->config->rdmacm_rnr_retry_count;
+            conn_param.initiator_depth     = 0;
+            conn_param.responder_resources = 16;
 
             rc = rdma_connect(cm_event->id, &conn_param);
 
@@ -750,11 +753,15 @@ evpl_rdmacm_init()
 
     devices->pd = evpl_zalloc(sizeof(struct ibv_pd *) * devices->num_devices);
 
+    devices->device_attr = evpl_zalloc(sizeof(struct ibv_device_attr) * devices->num_devices);
+
     for (i = 0; i < devices->num_devices; ++i) {
         devices->pd[i] = ibv_alloc_pd(devices->context[i]);
 
         evpl_rdmacm_abort_if(!devices->pd[i],
                              "Failed to create parent protection domain for rdma device");
+
+        ibv_query_device(devices->context[i], &devices->device_attr[i]);
     }
 
     return devices;
@@ -771,6 +778,7 @@ evpl_rdmacm_cleanup(void *private_data)
     }
 
     rdma_free_devices(devices->context);
+    evpl_free(devices->device_attr);
     evpl_free(devices->pd);
     evpl_free(devices);
 
@@ -1192,6 +1200,22 @@ evpl_rdmacm_unregister(
     evpl_free(mrset);
 
 } /* evpl_rdmacm_unregister */
+
+static void
+evpl_rdmacm_get_rdma_address(
+    struct evpl_bind  *bind,
+    struct evpl_iovec *iov,
+    uint32_t          *r_key,
+    uint64_t          *r_address)
+{
+    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_buffer    *buffer    = evpl_iovec_buffer(iov);
+    struct ibv_mr        **mrset     = evpl_buffer_framework_private(buffer, EVPL_FRAMEWORK_RDMACM);
+    struct ibv_mr         *mr        = mrset[rdmacm_id->devindex];
+
+    *r_key     = mr->rkey;
+    *r_address = (uint64_t) iov->data;
+} /* evpl_rdmacm_get_rdma_address */
 
 static void
 evpl_rdmacm_ud_resolve(
@@ -1639,6 +1663,7 @@ struct evpl_framework evpl_framework_rdmacm = {
     .destroy           = evpl_rdmacm_destroy,
     .register_memory   = evpl_rdmacm_register,
     .unregister_memory = evpl_rdmacm_unregister,
+    .get_rdma_address  = evpl_rdmacm_get_rdma_address,
     .release_address   = evpl_rdmacm_release_address,
 };
 

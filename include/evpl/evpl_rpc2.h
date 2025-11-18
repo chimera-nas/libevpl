@@ -28,6 +28,7 @@ struct evpl_rpc2_notify {
 
 struct evpl_rpc2_conn {
     enum evpl_protocol_id protocol;
+    int                              rdma;
     struct evpl_rpc2_thread         *thread;
     struct evpl_rpc2_server_binding *server_binding;
     struct evpl_bind                *bind;
