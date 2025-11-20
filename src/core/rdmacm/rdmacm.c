@@ -1249,7 +1249,7 @@ evpl_rdmacm_flush_rdma_rw(
     struct evpl_iovec        *cur;
     struct evpl_rdmacm_sr    *sr;
     struct ibv_sge           *sge;
-    int                       len = 0, i, rc;
+    int                       len = 0, i;
 
     while (rdmacm_id->cur_rdma_rw < rdmacm_id->max_rdma_rw &&
            !evpl_rdma_request_ring_is_empty(&bind->rdma_rw)) {
@@ -1284,8 +1284,6 @@ evpl_rdmacm_flush_rdma_rw(
 
         sr->length = len;
 
-        ibv_wr_start(qp);
-
         qp->wr_id    = (uint64_t) sr;
         qp->wr_flags = 0;
 
@@ -1296,10 +1294,6 @@ evpl_rdmacm_flush_rdma_rw(
         }
 
         ibv_wr_set_sge_list(qp, req->niov, sge);
-
-        rc = ibv_wr_complete(qp);
-
-        evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(errno));
 
         evpl_rdma_request_ring_remove(&bind->rdma_rw);
 
@@ -1326,6 +1320,8 @@ evpl_rdmacm_flush_datagram(
     if (unlikely(!qp || !rdmacm_id->connected)) {
         return;
     }
+
+    ibv_wr_start(qp);
 
     evpl_rdmacm_flush_rdma_rw(evpl, bind);
 
@@ -1407,8 +1403,6 @@ evpl_rdmacm_flush_datagram(
         sr->nbufref = nsge;
         sr->length  = dgram->length;
 
-        ibv_wr_start(qp);
-
         qp->wr_id    = (uint64_t) sr;
         qp->wr_flags = 0;
 
@@ -1429,16 +1423,16 @@ evpl_rdmacm_flush_datagram(
             evpl_address_release(dgram->addr);
         }
 
-        rc = ibv_wr_complete(qp);
-
-        evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(
-                                 errno));
-
         evpl_dgram_ring_remove(&bind->dgram_send);
 
 
         ++rdmacm_id->active_sends;
     }
+
+    rc = ibv_wr_complete(qp);
+
+    evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(
+                             errno));
 
     if (unlikely(rdmacm_id->active_sends == 0 &&
                  evpl_iovec_ring_is_empty(&bind->iovec_send))) {

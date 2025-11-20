@@ -232,4 +232,28 @@ evpl_global_config_set_tls_ktls_enabled(
     config->tls_ktls_enabled = enabled;
 } /* evpl_global_config_set_tls_ktls_enabled */
 
+SYMBOL_EXPORT struct evpl_thread_config *
+evpl_thread_config_init(void)
+{
+    struct evpl_thread_config *config = evpl_zalloc(sizeof(*config));
+
+    *config = evpl_shared->config->thread_default;
+
+    return config;
+} /* evpl_thread_config_init */
+
+SYMBOL_EXPORT void
+evpl_thread_config_release(struct evpl_thread_config *config)
+{
+    evpl_free(config);
+} /* evpl_thread_config_release */
+
+
+SYMBOL_EXPORT void
+evpl_thread_config_set_poll_mode(
+    struct evpl_thread_config *config,
+    int                        poll_mode)
+{
+    config->poll_mode = poll_mode;
+} /* evpl_thread_config_set_poll_mode */
 

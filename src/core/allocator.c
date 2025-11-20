@@ -26,6 +26,7 @@ struct evpl_slab {
     uint64_t               refcnt;
     uint64_t               size      : 63;
     uint64_t               hugepages : 1;
+    struct evpl_buffer    *buffers;
     void                  *framework_private[EVPL_NUM_FRAMEWORK];
     struct evpl_slab      *next;
 };
@@ -53,20 +54,26 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
 
     while (allocator->free_buffers) {
         buffer = allocator->free_buffers;
-
-        evpl_core_abort_if(buffer->refcnt, "buffer %p has %d leaked references", buffer, buffer->refcnt);
-
-        buffer->slab->refcnt--;
         LL_DELETE(allocator->free_buffers, buffer);
-        evpl_free(buffer);
+        buffer->slab->refcnt--;
     }
 
     while (allocator->slabs) {
         slab = allocator->slabs;
 
+        if (slab->refcnt && slab->buffers) {
+            for (int i = 0; i < slab->size / evpl_shared->config->buffer_size; i++) {
+                buffer = &slab->buffers[i];
+                evpl_core_abort_if(buffer->refcnt != 0,
+                                   "evpl_allocator_destroy: buffer %p has %d leaked references",
+                                   buffer, buffer->refcnt);
+            }
+        }
+
         evpl_core_abort_if(slab->refcnt != 0,
                            "evpl_allocator_destroy: slab %p has %d leaked references",
                            slab, slab->refcnt);
+
 
         LL_DELETE(allocator->slabs, slab);
 
@@ -90,6 +97,12 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
         } else {
             evpl_free(slab->data);
         }
+
+        if (slab->buffers) {
+            /* Slabs we gave out whole will not have buffers associated with them */
+            evpl_free(slab->buffers);
+        }
+
         evpl_free(slab);
     }
 
@@ -160,7 +173,7 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
     struct evpl_global_config *config = evpl_shared->config;
     struct evpl_slab          *slab;
     struct evpl_buffer        *buffer;
-    void                      *ptr;
+    int                        num_buffers;
 
     pthread_mutex_lock(&allocator->lock);
 
@@ -168,24 +181,22 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
 
         slab = evpl_allocator_create_slab(allocator);
 
-        ptr = slab->data;
+        num_buffers = slab->size / config->buffer_size;
 
-        while (ptr + config->buffer_size <= slab->data + slab->size) {
+        slab->buffers = evpl_zalloc(num_buffers * sizeof(*slab->buffers));
 
-            buffer            = evpl_zalloc(sizeof(*buffer));
-            buffer->data      = ptr;
+        for (int i = 0; i < num_buffers; i++) {
+            buffer            = &slab->buffers[i];
+            buffer->data      = slab->data + i * config->buffer_size;
             buffer->slab      = slab;
             buffer->allocator = allocator;
             buffer->used      = 0;
             buffer->size      = config->buffer_size;
 
-            ptr += config->buffer_size;
-
             slab->refcnt++;
 
             LL_PREPEND(allocator->free_buffers, buffer);
         }
-
     }
 
     buffer = allocator->free_buffers;

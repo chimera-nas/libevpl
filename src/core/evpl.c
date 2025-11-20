@@ -20,6 +20,11 @@
 #include <sys/eventfd.h>
 #include <utlist.h>
 
+#ifdef __x86_64__
+#include <x86intrin.h>
+#endif /* ifdef __x86_64__ */
+
+
 #include "core/evpl.h"
 #include "core/event_fn.h"
 #include "core/poll.h"
@@ -275,6 +280,7 @@ evpl_create(struct evpl_thread_config *config)
 
     if (config) {
         evpl->config = *config;
+        evpl_thread_config_release(config);
     } else {
         evpl->config = evpl_shared->config->thread_default;
     }
@@ -305,47 +311,57 @@ evpl_continue(struct evpl *evpl)
     struct evpl_timer    *timer;
     int                   i, n;
     int                   msecs = evpl->config.wait_ms;
-    struct timespec       now;
     uint64_t              elapsed;
     int64_t               remain;
+    struct timespec       now;
 
-    clock_gettime(CLOCK_MONOTONIC, &now);
-
-    if (evpl->num_timers) {
-
-        do {
-            timer = evpl->timers[0];
-
-            remain = evpl_ts_interval(&timer->deadline, &now);
-
-            if (remain > 0) {
-                remain /= 1000000;
-
-                if (remain < msecs || msecs == -1) {
-                    msecs = remain;
-                    break;
-                }
-            }
-
-            timer->callback(evpl, timer);
-
-            evpl_pop_timer(evpl);
-
-            evpl_timer_insert(evpl, timer);
-
-        } while (evpl->num_timers);
-    }
-
-    if (evpl->config.poll_mode && evpl->num_poll) {
-
-        if (evpl->activity != evpl->last_activity) {
-            evpl->last_activity    = evpl->activity;
-            evpl->last_activity_ts = now;
-            elapsed                = 0;
-        } else {
-            elapsed = evpl_ts_interval(&now, &evpl->last_activity_ts);
+    if (evpl->poll_mode && evpl->poll_iterations < evpl->config.poll_iterations) {
+        for (i = 0; i < evpl->num_poll; ++i) {
+            poll = &evpl->poll[i];
+            poll->callback(evpl, poll->private_data);
         }
 
+        evpl->poll_iterations++;
+
+    } else {
+
+        evpl_get_hf_monotonic_time(evpl, &now);
+
+        if (evpl->num_timers) {
+
+            do {
+                timer = evpl->timers[0];
+
+                remain = evpl_ts_interval(&timer->deadline, &now);
+
+                if (remain > 0) {
+                    remain /= 1000000;
+
+                    if (remain < msecs || msecs == -1) {
+                        msecs = remain;
+                        break;
+                    }
+                }
+
+                timer->callback(evpl, timer);
+
+                evpl_pop_timer(evpl);
+
+                evpl_timer_insert(evpl, timer);
+
+            } while (evpl->num_timers);
+        }
+
+        if (evpl->config.poll_mode && evpl->num_poll) {
+
+            if (evpl->activity != evpl->last_activity) {
+                evpl->last_activity    = evpl->activity;
+                evpl->last_activity_ts = now;
+                elapsed                = 0;
+            } else {
+                elapsed = evpl_ts_interval(&now, &evpl->last_activity_ts);
+            }
+        }
 
         if (!evpl->force_poll_mode && elapsed > evpl->config.spin_ns) {
             if (evpl->poll_mode) {
@@ -372,22 +388,11 @@ evpl_continue(struct evpl *evpl)
                 evpl->poll_iterations = 0;
             }
         }
-    }
 
-    if (evpl->poll_mode || evpl->activity != evpl->last_activity ||
-        evpl->num_active_events || evpl->num_active_deferrals || evpl->pending_close_binds) {
-        msecs = 0;
-    }
-
-    if (evpl->poll_mode && evpl->poll_iterations < evpl->config.poll_iterations) {
-        for (i = 0; i < evpl->num_poll; ++i) {
-            poll = &evpl->poll[i];
-            poll->callback(evpl, poll->private_data);
+        if (evpl->poll_mode || (evpl->config.poll_mode && evpl->activity != evpl->last_activity) ||
+            evpl->num_active_events || evpl->num_active_deferrals || evpl->pending_close_binds) {
+            msecs = 0;
         }
-
-        evpl->poll_iterations++;
-
-    } else {
 
         n = evpl_core_wait(&evpl->core, msecs);
 
@@ -447,6 +452,73 @@ evpl_continue(struct evpl *evpl)
     }
 
 } /* evpl_continue */
+
+#define EVPL_TSC_SHIFT        32u
+#define EVPL_TSC_CALIBRATE_NS 100000000ULL     /* 100 ms */
+
+SYMBOL_EXPORT void
+evpl_get_hf_monotonic_time(
+    struct evpl     *evpl,
+    struct timespec *ts)
+{
+#ifdef __x86_64__
+    uint64_t tsc;
+
+    tsc = __rdtsc();
+
+    if (unlikely(evpl->hf_tsc_start.tv_sec == 0)) {
+        /* We need to calibrate TSC rate first */
+        clock_gettime(CLOCK_MONOTONIC, &evpl->hf_tsc_start);
+        evpl->hf_tsc_value = tsc;
+
+        evpl->hf_tsc_mult = 0;
+
+        *ts = evpl->hf_tsc_start;
+        return;
+    }
+
+    /* Calibrate once we have a long-enough baseline (≈100 ms). */
+    if (unlikely(evpl->hf_tsc_mult == 0)) {
+        uint64_t elapsed_ns, tsc_delta;
+
+        clock_gettime(CLOCK_MONOTONIC, ts);
+        elapsed_ns = evpl_ts_interval(ts, &evpl->hf_tsc_start);
+
+        if (elapsed_ns > EVPL_TSC_CALIBRATE_NS) {
+            tsc_delta = tsc - evpl->hf_tsc_value;
+
+            /* mult = round((elapsed_ns << SHIFT) / tsc_delta) */
+            __uint128_t num  = ((__uint128_t) elapsed_ns) << EVPL_TSC_SHIFT;
+            uint64_t    mult = (uint64_t) ((num + (tsc_delta / 2)) / tsc_delta);
+
+            evpl->hf_tsc_mult = mult;
+        }
+
+        return;
+    }
+
+    uint64_t    cycles   = tsc - evpl->hf_tsc_value;
+    __uint128_t prod     = (__uint128_t) cycles * (__uint128_t) evpl->hf_tsc_mult;
+    uint64_t    delta_ns = (uint64_t) (prod >> EVPL_TSC_SHIFT);
+
+    uint64_t    nsec = evpl->hf_tsc_start.tv_nsec + (delta_ns % NS_PER_S);
+
+    ts->tv_sec = evpl->hf_tsc_start.tv_sec + (delta_ns / NS_PER_S);
+
+    if (nsec >= NS_PER_S) {
+        ts->tv_sec++;
+        nsec -= NS_PER_S;
+    }
+
+    ts->tv_nsec = nsec;
+
+#else  /* __x86_64__ */
+
+    clock_gettime(CLOCK_MONOTONIC, ts);
+
+#endif /* __x86_64__ */
+} /* evpl_get_hf_monotonic_time */
+
 
 SYMBOL_EXPORT void
 evpl_run(struct evpl *evpl)
@@ -539,6 +611,7 @@ evpl_destroy(struct evpl *evpl)
     evpl_free(evpl->active_deferrals);
     evpl_free(evpl->timers);
     evpl_free(evpl->poll);
+
     evpl_free(evpl);
 } /* evpl_destroy */
 

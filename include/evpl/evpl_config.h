@@ -79,3 +79,7 @@ evpl_thread_config_init(
 
 void evpl_thread_config_release(
     struct evpl_thread_config *config);
+
+void evpl_thread_config_set_poll_mode(
+    struct evpl_thread_config *config,
+    int                        poll_mode);

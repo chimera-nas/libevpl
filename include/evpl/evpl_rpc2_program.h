@@ -40,7 +40,6 @@ struct evpl_rpc2_rdma_segment_list {
 struct evpl_rpc2_msg {
     uint32_t                              xid;
     uint32_t                              proc;
-    uint32_t                              rdma;
     uint32_t                              rdma_credits;
     uint32_t                              request_length;
     uint32_t                              reply_length;
@@ -118,5 +117,7 @@ evpl_rpc2_call(
     int                          req_niov,
     int                          req_length,
     struct evpl_rpc2_rdma_chunk *rdma_chunk,
+    int                          max_rdma_write_chunk,
+    int                          max_rdma_reply_chunk,
     void                        *callback,
     void                        *private_data);

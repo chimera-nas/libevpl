@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <time.h>
+
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_core.h directly, include evpl/evpl.h instead"
 #endif /* ifndef EVPL_INCLUDED */
@@ -44,6 +46,11 @@ void evpl_init(
 
 struct evpl * evpl_create(
     struct evpl_thread_config *config);
+
+void
+evpl_get_hf_monotonic_time(
+    struct evpl     *evpl,
+    struct timespec *ts);
 
 void evpl_destroy(
     struct evpl *evpl);

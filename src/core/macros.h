@@ -23,3 +23,7 @@
 #ifndef FORCE_INLINE
 #define FORCE_INLINE __attribute__((always_inline)) inline
 #endif // ifndef FORCE_INLINE
+
+#ifndef NEVER_INLINE
+#define NEVER_INLINE __attribute__((noinline))
+#endif // ifndef NEVER_INLINE

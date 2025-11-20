@@ -238,7 +238,7 @@ evpl_rpc2_send_reply(
     struct evpl_iovec       *segment_iov, *reply_segment_iov;
     struct timespec          now;
     uint64_t                 elapsed;
-    int                      i, reserve, reduce = 0, rdma = msg->rdma;
+    int                      i, reserve, reduce = 0, rdma = msg->conn->protocol == EVPL_DATAGRAM_RDMACM_RC;
 
     reserve = msg->program ? msg->program->reserve : 0;
 
@@ -352,7 +352,8 @@ evpl_rpc2_send_reply(
 
         reply_niov = 1;
         iov        = msg_iov[0];
-        offset     = marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, NULL, 0);
+
+        marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, NULL, 0);
 
     } else {
         offset = 4;
@@ -375,7 +376,7 @@ evpl_rpc2_send_reply(
         memcpy(msg_iov[0].data, &hdr, sizeof(hdr));
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    evpl_get_hf_monotonic_time(evpl, &now);
 
     elapsed = evpl_ts_interval(&now, &msg->timestamp);
 
@@ -473,7 +474,7 @@ evpl_rpc2_server_handle_msg(struct evpl_rpc2_msg *msg)
                                              server_binding->private_data);
 
     if (unlikely(error)) {
-        abort();
+        evpl_rpc2_abort("Failed to dispatch rpc2 call: %d", error);
     }
 
 } /* evpl_rpc2_server_handle_msg */
@@ -504,12 +505,37 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
     int                      error;
     struct evpl             *evpl = thread->evpl;
 
+    if (msg->read_chunk.niov) {
+        /* Since server has replied, it will have finished reading our read chunk.
+         * This is functionally necessary to free & null now otherwise the xdr
+         * unmarshalling code that comes next will incorrectly use it again
+         * when unmarshalling the reply.
+         */
+
+        for (int i = 0; i < msg->read_chunk.niov; i++) {
+            evpl_iovec_release(&msg->read_chunk.iov[i]);
+        }
+        msg->read_chunk.niov   = 0;
+        msg->read_chunk.length = 0;
+    }
+
+    if (msg->write_chunk.niov) {
+        /* Unmarshall code expects an RDMA chunk in this position */
+        msg->read_chunk.iov          = msg->write_chunk.iov;
+        msg->read_chunk.niov         = msg->write_chunk.niov;
+        msg->read_chunk.length       = msg->write_chunk.length;
+        msg->read_chunk.xdr_position = UINT32_MAX;
+
+        msg->write_chunk.niov   = 0;
+        msg->write_chunk.length = 0;
+    }
+
     error = msg->program->recv_reply_dispatch(evpl, conn, msg, msg->reply_iov, msg->reply_niov, msg->reply_length,
                                               msg->callback,
                                               msg->callback_arg);
 
     if (unlikely(error)) {
-        abort();
+        evpl_rpc2_abort("Failed to dispatch rpc2 reply: %d", error);
     }
 
     evpl_rpc2_msg_free(thread, msg);
@@ -546,7 +572,7 @@ evpl_rpc2_recv_msg(
 
     rdma = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
 
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    evpl_get_hf_monotonic_time(evpl, &now);
 
     if (rdma) {
         /* RPC2 on RDMA has no header since its message based,
@@ -593,7 +619,7 @@ evpl_rpc2_recv_msg(
             HASH_DELETE(hh, rpc2_conn->pending_calls, msg);
             break;
         default:
-            abort();
+            evpl_rpc2_abort("rpc2 received unexpected message type %d", rpc_msg.body.mtype);
     } /* switch */
 
     xdr_dbuf_alloc_space(msg->recv_iov, sizeof(*msg->recv_iov) * niov, msg->dbuf);
@@ -609,7 +635,6 @@ evpl_rpc2_recv_msg(
         case CALL:
             msg->conn           = rpc2_conn;
             msg->bind           = bind;
-            msg->rdma           = rdma;
             msg->xid            = rpc_msg.xid;
             msg->proc           = rpc_msg.body.cbody.proc;
             msg->timestamp      = now;
@@ -617,7 +642,7 @@ evpl_rpc2_recv_msg(
             msg->req_iov        = req_iov;
             msg->req_niov       = req_niov;
 
-            if (msg->rdma) {
+            if (rdma) {
                 if (rdma_msg.rdma_body.proc == RDMA_MSG) {
 
                     read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
@@ -710,9 +735,11 @@ evpl_rpc2_recv_msg(
             }
             break;
         case REPLY:
+
             msg->reply_iov    = req_iov;
             msg->reply_niov   = req_niov;
             msg->reply_length = request_length;
+
             evpl_rpc2_client_handle_msg(msg);
             break;
         default:
@@ -1056,6 +1083,8 @@ evpl_rpc2_call(
     int                          req_niov,
     int                          req_length,
     struct evpl_rpc2_rdma_chunk *rdma_chunk,
+    int                          max_rdma_write_chunk,
+    int                          max_rdma_reply_chunk,
     void                        *callback,
     void                        *private_data)
 {
@@ -1065,6 +1094,8 @@ evpl_rpc2_call(
     struct rdma_msg          rdma_msg;
     struct evpl_iovec        hdr_iov, hdr_out_iov;
     struct xdr_read_list     read_list;
+    struct xdr_write_list    write_list;
+    struct xdr_rdma_segment  write_chunk_segment;
     int                      transport_hdr_len, rpc_len;
     int                      out_niov   = 1;
     int                      pay_length = req_length - program->reserve;
@@ -1097,7 +1128,6 @@ evpl_rpc2_call(
     rpc_msg.body.cbody.verf.flavor   = AUTH_NONE;
     rpc_msg.body.cbody.verf.body.len = 0;
 
-    /* Calculate exact RPC header length first */
     rpc_len = marshall_length_rpc_msg(&rpc_msg);
 
     if (rdma) {
@@ -1110,9 +1140,15 @@ evpl_rpc2_call(
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
 
         if (rdma_chunk) {
-
             evpl_rpc2_abort_if(rdma_chunk->niov == 0, "rdma_chunk niov is 0");
             evpl_rpc2_abort_if(rdma_chunk->niov > 1, "rdma_chunk niov is greater than 1");
+
+            xdr_dbuf_alloc_space(msg->read_chunk.iov, sizeof(*msg->read_chunk.iov) * rdma_chunk->niov, msg->dbuf);
+            memcpy(msg->read_chunk.iov, rdma_chunk->iov, rdma_chunk->niov * sizeof(*msg->read_chunk.iov));
+            msg->read_chunk.niov         = rdma_chunk->niov;
+            msg->read_chunk.length       = rdma_chunk->length;
+            msg->read_chunk.max_length   = rdma_chunk->max_length;
+            msg->read_chunk.xdr_position = rdma_chunk->xdr_position;
 
             rdma_msg.rdma_body.rdma_msg.rdma_reads = &read_list;
             read_list.next                         = NULL;
@@ -1126,6 +1162,28 @@ evpl_rpc2_call(
 
             read_list.entry.target.length = rdma_chunk->length;
         }
+
+        if (max_rdma_write_chunk) {
+
+            xdr_dbuf_alloc_space(msg->write_chunk.iov, sizeof(*msg->write_chunk.iov), msg->dbuf);
+
+            msg->write_chunk.niov   = evpl_iovec_alloc(evpl, max_rdma_write_chunk, 4096, 1, msg->write_chunk.iov);
+            msg->write_chunk.length = max_rdma_write_chunk;
+
+            rdma_msg.rdma_body.rdma_msg.rdma_writes = &write_list;
+            write_list.next                         = NULL;
+            write_list.entry.num_target             = 1;
+            write_list.entry.target                 = &write_chunk_segment;
+
+            evpl_rdma_get_address(evpl, conn->bind,
+                                  msg->write_chunk.iov,
+                                  &write_chunk_segment.handle,
+                                  &write_chunk_segment.offset);
+
+            write_chunk_segment.length = max_rdma_write_chunk;
+
+        }
+
 
         transport_hdr_len = marshall_length_rdma_msg(&rdma_msg);
     } else {
@@ -1150,6 +1208,7 @@ evpl_rpc2_call(
     }
 
     /* Send the request - use out_iov which contains the marshalled header + payload */
+
     evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length);
 
     return 0;
