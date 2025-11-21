@@ -12,7 +12,6 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
-#include <uthash.h>
 #include <utlist.h>
 
 #include "core/evpl.h"
@@ -90,6 +89,11 @@ struct evpl_rdmacm_devices {
     int                     num_devices;
 };
 
+#define QP_LOOKUP_LEVEL2_SIZE  4096
+#define QP_LOOKUP_LEVEL1_SIZE  4096
+#define QP_LOOKUP_LEVEL1_SHIFT 12
+#define QP_LOOKUP_LEVEL2_MASK  0xFFF
+
 struct evpl_rdmacm_device {
     struct evpl_event           event;
     struct evpl_rdmacm         *rdmacm;
@@ -107,13 +111,13 @@ struct evpl_rdmacm_device {
     int                         srq_fill;
     int                         index;
     int                         num_qp;
+    struct evpl_rdmacm_id     **qp_lookup[QP_LOOKUP_LEVEL1_SIZE];
 };
 
 struct evpl_rdmacm {
     struct rdma_event_channel   *event_channel;
     struct evpl_event            event;
     struct evpl_poll            *poll;
-    struct evpl_rdmacm_id       *ids;
     struct evpl_rdmacm_listener *listener;
     struct evpl_rdmacm_device   *devices;
     int                          num_devices;
@@ -151,7 +155,6 @@ struct evpl_rdmacm_id {
     int                           devindex;
     int                           active_sends;
     struct evpl_rdmacm_sr_ring    sr_ring;
-    struct UT_hash_handle         hh;
 };
 
 static inline void
@@ -206,6 +209,79 @@ evpl_rdmacm_sr_alloc(struct evpl_rdmacm_id *rdmacm_id)
 
     return sr;
 } /* evpl_rdmacm_sr_alloc */
+
+static inline void
+evpl_rdmacm_qp_lookup_init(struct evpl_rdmacm_device *dev)
+{
+    uint32_t i;
+
+    for (i = 0; i < QP_LOOKUP_LEVEL1_SIZE; ++i) {
+        dev->qp_lookup[i] = NULL;
+    }
+} /* evpl_rdmacm_qp_lookup_init */
+
+static inline void
+evpl_rdmacm_qp_lookup_cleanup(struct evpl_rdmacm_device *dev)
+{
+    uint32_t i;
+
+    for (i = 0; i < QP_LOOKUP_LEVEL1_SIZE; ++i) {
+        if (dev->qp_lookup[i]) {
+            evpl_free(dev->qp_lookup[i]);
+            dev->qp_lookup[i] = NULL;
+        }
+    }
+} /* evpl_rdmacm_qp_lookup_cleanup */
+
+static inline void
+evpl_rdmacm_qp_lookup_add(
+    struct evpl_rdmacm_device *dev,
+    uint32_t                   qp_num,
+    struct evpl_rdmacm_id     *rdmacm_id)
+{
+    uint32_t level1_idx = qp_num >> QP_LOOKUP_LEVEL1_SHIFT;
+    uint32_t level2_idx = qp_num & QP_LOOKUP_LEVEL2_MASK;
+
+    evpl_rdmacm_abort_if(level1_idx >= QP_LOOKUP_LEVEL1_SIZE,
+                         "qp_num %u exceeds maximum 24-bit value", qp_num);
+
+    if (!dev->qp_lookup[level1_idx]) {
+        dev->qp_lookup[level1_idx] = evpl_zalloc(
+            QP_LOOKUP_LEVEL2_SIZE * sizeof(struct evpl_rdmacm_id *));
+    }
+
+    dev->qp_lookup[level1_idx][level2_idx] = rdmacm_id;
+} /* evpl_rdmacm_qp_lookup_add */
+
+static inline struct evpl_rdmacm_id *
+evpl_rdmacm_qp_lookup_find(
+    struct evpl_rdmacm_device *dev,
+    uint32_t                   qp_num)
+{
+    uint32_t level1_idx = qp_num >> QP_LOOKUP_LEVEL1_SHIFT;
+    uint32_t level2_idx = qp_num & QP_LOOKUP_LEVEL2_MASK;
+
+    if (level1_idx >= QP_LOOKUP_LEVEL1_SIZE || !dev->qp_lookup[level1_idx]) {
+        return NULL;
+    }
+
+    return dev->qp_lookup[level1_idx][level2_idx];
+} /* evpl_rdmacm_qp_lookup_find */
+
+static inline void
+evpl_rdmacm_qp_lookup_del(
+    struct evpl_rdmacm_device *dev,
+    uint32_t                   qp_num)
+{
+    uint32_t level1_idx = qp_num >> QP_LOOKUP_LEVEL1_SHIFT;
+    uint32_t level2_idx = qp_num & QP_LOOKUP_LEVEL2_MASK;
+
+    if (level1_idx >= QP_LOOKUP_LEVEL1_SIZE || !dev->qp_lookup[level1_idx]) {
+        return;
+    }
+
+    dev->qp_lookup[level1_idx][level2_idx] = NULL;
+} /* evpl_rdmacm_qp_lookup_del */
 
 static struct evpl_rdmacm_device *
 evpl_rdmacm_map_device(
@@ -284,7 +360,7 @@ evpl_rdmacm_create_qp(
     evpl_rdmacm_sr_ring_alloc(&rdmacm_id->sr_ring,
                               2 * evpl_shared->config->rdmacm_sq_size);
 
-    HASH_ADD(hh, rdmacm->ids, qp_num, sizeof(rdmacm_id->qp_num), rdmacm_id);
+    evpl_rdmacm_qp_lookup_add(dev, rdmacm_id->qp_num, rdmacm_id);
 
 } /* evpl_rdmacm_create_qp */
 
@@ -713,9 +789,7 @@ evpl_rdmacm_poll_cq(
 
                     qp_num = ibv_wc_read_qp_num(cq);
 
-
-
-                    HASH_FIND(hh, rdmacm->ids, &qp_num, sizeof(qp_num), rdmacm_id);
+                    rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
 
                     if (unlikely(!rdmacm_id)) {
                         evpl_iovec_decref(&req->iovec);
@@ -947,6 +1021,8 @@ evpl_rdmacm_create(
         dev->context = rdmacm_devices->context[i];
         dev->index   = i;
 
+        evpl_rdmacm_qp_lookup_init(dev);
+
         dev->parent_pd = rdmacm_devices->pd[i];
 
         dev->comp_channel = ibv_create_comp_channel(dev->context);
@@ -1077,6 +1153,8 @@ evpl_rdmacm_destroy(
         dev = &rdmacm->devices[i];
 
         evpl_remove_event(evpl, &dev->event);
+
+        evpl_rdmacm_qp_lookup_cleanup(dev);
 
         ibv_destroy_srq(dev->srq);
 
@@ -1689,7 +1767,7 @@ evpl_rdmacm_close(
     if (rdmacm) {
         --rdmacm_id->dev->num_qp;
 
-        HASH_DELETE(hh, rdmacm->ids, rdmacm_id);
+        evpl_rdmacm_qp_lookup_del(rdmacm_id->dev, rdmacm_id->qp_num);
     }
 } /* evpl_rdmacm_close */
 
