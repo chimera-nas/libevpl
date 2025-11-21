@@ -23,6 +23,7 @@
 #include "core/evpl_shared.h"
 #include "core/event_fn.h"
 #include "core/poll.h"
+
 #define EVPL_RDMACM_MAX_INLINE 250
 
 extern struct evpl_shared *evpl_shared;
@@ -63,6 +64,7 @@ struct evpl_rdmacm_request {
 struct evpl_rdmacm_sr {
     struct evpl_rdmacm_id *rdmacm_id;
     int                    nbufref;
+    int                    rw;
     uint64_t               length;
 
     void                   (*callback)(
@@ -70,10 +72,15 @@ struct evpl_rdmacm_sr {
         void *private_data);
     void                  *private_data;
 
-    struct evpl_rdmacm_sr *prev;
-    struct evpl_rdmacm_sr *next;
-
     struct evpl_buffer    *bufref[32];
+};
+
+struct evpl_rdmacm_sr_ring {
+    struct evpl_rdmacm_sr *sr;
+    int                    size;
+    int                    mask;
+    int                    head;
+    int                    tail;
 };
 
 struct evpl_rdmacm_devices {
@@ -110,8 +117,6 @@ struct evpl_rdmacm {
     struct evpl_rdmacm_listener *listener;
     struct evpl_rdmacm_device   *devices;
     int                          num_devices;
-    struct evpl_rdmacm_sr       *free_sr;
-    struct evpl_rdmacm_sr       *active_sr;
 };
 
 #define evpl_event_rdmacm(eventp) \
@@ -136,6 +141,7 @@ struct evpl_rdmacm_id {
     int                           connected;
     int                           max_rdma_rw;
     int                           cur_rdma_rw;
+    int                           cur_sends;
 
     struct evpl_address          *resolve_addr;
 
@@ -144,34 +150,62 @@ struct evpl_rdmacm_id {
     uint32_t                      qp_num;
     int                           devindex;
     int                           active_sends;
+    struct evpl_rdmacm_sr_ring    sr_ring;
     struct UT_hash_handle         hh;
 };
 
-static inline struct evpl_rdmacm_sr *
-evpl_rdmacm_sr_alloc(struct evpl_rdmacm *rdmacm)
+static inline void
+evpl_rdmacm_sr_ring_alloc(
+    struct evpl_rdmacm_sr_ring *ring,
+    int                         size)
 {
-    struct evpl_rdmacm_sr *sr;
+    size = 2;
 
-    if (rdmacm->free_sr) {
-        sr = rdmacm->free_sr;
-        LL_DELETE(rdmacm->free_sr, sr);
-    } else {
-        sr = evpl_zalloc(sizeof(*sr));
+    while (size <= evpl_shared->config->rdmacm_sq_size) {
+        size <<= 1;
     }
 
-    DL_APPEND(rdmacm->active_sr, sr);
+    ring->sr   = evpl_zalloc(size * sizeof(struct evpl_rdmacm_sr));
+    ring->size = size;
+    ring->mask = size - 1;
+    ring->head = 0;
+    ring->tail = 0;
+} /* evpl_rdmacm_sr_ring_alloc */
+
+static inline void
+evpl_rdmacm_sr_ring_free(struct evpl_rdmacm_sr_ring *ring)
+{
+    evpl_free(ring->sr);
+    ring->sr   = NULL;
+    ring->size = 0;
+    ring->mask = 0;
+    ring->head = 0;
+    ring->tail = 0;
+} /* evpl_rdmacm_sr_ring_free */
+
+static inline int
+evpl_rdmacm_sr_ring_is_full(const struct evpl_rdmacm_sr_ring *ring)
+{
+    return ((ring->head + 1) & ring->mask) == ring->tail;
+} /* evpl_rdmacm_sr_ring_is_full */
+
+static inline struct evpl_rdmacm_sr *
+evpl_rdmacm_sr_alloc(struct evpl_rdmacm_id *rdmacm_id)
+{
+    struct evpl_rdmacm_sr_ring *ring = &rdmacm_id->sr_ring;
+    struct evpl_rdmacm_sr      *sr;
+
+    evpl_rdmacm_abort_if(evpl_rdmacm_sr_ring_is_full(ring),
+                         "send record ringbuffer is full");
+
+    sr         = &ring->sr[ring->head];
+    ring->head = (ring->head + 1) & ring->mask;
+
+    sr->rdmacm_id = rdmacm_id;
+    sr->length    = 0;
 
     return sr;
 } /* evpl_rdmacm_sr_alloc */
-
-static inline void
-evpl_rdmacm_sr_free(
-    struct evpl_rdmacm    *rdmacm,
-    struct evpl_rdmacm_sr *sr)
-{
-    DL_DELETE(rdmacm->active_sr, sr);
-    LL_PREPEND(rdmacm->free_sr, sr);
-} /* evpl_rdmacm_sr_free */
 
 static struct evpl_rdmacm_device *
 evpl_rdmacm_map_device(
@@ -230,7 +264,7 @@ evpl_rdmacm_create_qp(
     qp_attr.cap.max_send_sge    = evpl_shared->config->rdmacm_max_sge;
     qp_attr.cap.max_recv_sge    = evpl_shared->config->rdmacm_max_sge;
     qp_attr.cap.max_inline_data = EVPL_RDMACM_MAX_INLINE;
-    qp_attr.sq_sig_all          = 1;
+    qp_attr.sq_sig_all          = 0;
 
     qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND |
         IBV_QP_EX_WITH_RDMA_READ |
@@ -246,6 +280,9 @@ evpl_rdmacm_create_qp(
 
     rdmacm_id->qp     = ibv_qp_to_qp_ex(rdmacm_id->id->qp);
     rdmacm_id->qp_num = rdmacm_id->id->qp->qp_num;
+
+    evpl_rdmacm_sr_ring_alloc(&rdmacm_id->sr_ring,
+                              2 * evpl_shared->config->rdmacm_sq_size);
 
     HASH_ADD(hh, rdmacm->ids, qp_num, sizeof(rdmacm_id->qp_num), rdmacm_id);
 
@@ -503,6 +540,106 @@ evpl_rdmacm_fill_all_srq(
     }
 } /* evpl_rdmacm_fill_all_srq */
 
+static const char *
+ibv_wc_opcode_str(enum ibv_wc_opcode opcode)
+{
+    switch (opcode) {
+        case IBV_WC_SEND:
+            return "send";
+        case IBV_WC_RECV:
+            return "recv";
+        case IBV_WC_RDMA_READ:
+            return "read";
+        case IBV_WC_RDMA_WRITE:
+            return "write";
+        default:
+            return "unknown";
+    } /* switch */
+} /* ibv_wc_opcode_str */
+
+static inline void
+evpl_rdmacm_process_send_completions(
+    struct evpl           *evpl,
+    struct evpl_rdmacm_id *rdmacm_id,
+    struct evpl_rdmacm_sr *completed_sr,
+    int                    status)
+{
+    struct evpl_rdmacm_sr_ring *ring = &rdmacm_id->sr_ring;
+    struct evpl_rdmacm_sr      *sr;
+    struct evpl_bind           *bind;
+    struct evpl_notify          notify;
+    int                         i;
+    uint64_t                    total_bytes = 0;
+    uint64_t                    total_msgs  = 0;
+
+    while (ring->tail != ring->head && &ring->sr[ring->tail] != completed_sr) {
+
+        sr = &ring->sr[ring->tail];
+
+        ring->tail = (ring->tail + 1) & ring->mask;
+
+        total_bytes += sr->length;
+
+        if (sr->rw) {
+            --rdmacm_id->cur_rdma_rw;
+            sr->callback(0, sr->private_data);
+        } else {
+            for (i = 0; i < sr->nbufref; ++i) {
+                evpl_buffer_release(sr->bufref[i]);
+            }
+
+            total_msgs++;
+            --rdmacm_id->cur_sends;
+        }
+
+    }
+
+    total_bytes += completed_sr->length;
+
+    if (completed_sr->rw) {
+        --rdmacm_id->cur_rdma_rw;
+
+        completed_sr->callback(status, completed_sr->private_data);
+    } else {
+
+        for (i = 0; i < completed_sr->nbufref; ++i) {
+            evpl_buffer_release(completed_sr->bufref[i]);
+        }
+
+        total_msgs++;
+        --rdmacm_id->cur_sends;
+    }
+
+    ring->tail = (ring->tail + 1) & ring->mask;
+
+    bind = evpl_private2bind(rdmacm_id);
+
+    if (!evpl_rdma_request_ring_is_empty(&bind->rdma_rw) &&
+        rdmacm_id->cur_rdma_rw < rdmacm_id->max_rdma_rw) {
+        evpl_defer(evpl, &bind->flush_deferral);
+    }
+
+
+    if (likely(rdmacm_id->id)) {
+
+        if ((total_bytes || total_msgs) && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
+            notify.notify_type   = EVPL_NOTIFY_SENT;
+            notify.notify_status = 0;
+            notify.sent.bytes    = total_bytes;
+            notify.sent.msgs     = total_msgs;
+
+            bind->notify_callback(evpl, bind, &notify,
+                                  bind->private_data);
+        }
+
+        if (unlikely(rdmacm_id->active_sends == 0 &&
+                     evpl_iovec_ring_is_empty(&bind->iovec_send))) {
+            if (bind->flags & EVPL_BIND_FINISH) {
+                evpl_close(evpl, bind);
+            }
+        }
+    }
+} /* evpl_rdmacm_process_send_completions */
 
 static void
 evpl_rdmacm_poll_cq(
@@ -518,7 +655,7 @@ evpl_rdmacm_poll_cq(
     struct evpl_notify          notify;
     struct ibv_cq_ex           *cq      = (struct ibv_cq_ex *) dev->cq;
     struct ibv_poll_cq_attr     cq_attr = { .comp_mask = 0 };
-    int                         rc, i, n;
+    int                         rc, n;
     uint32_t                    qp_num, wc_flags;
 
  again:
@@ -548,37 +685,20 @@ evpl_rdmacm_poll_cq(
                         ibv_wc_read_vendor_err(cq));
                     break;
                 case IBV_WC_SEND:
-                    evpl_rdmacm_error(
-                        "send completion error wr_id %lu type %u status %u vendor_err %u",
-                        cq->wr_id,
-                        ibv_wc_read_opcode(cq),
-                        cq->status,
-                        ibv_wc_read_vendor_err(cq));
-                    break;
                 case IBV_WC_RDMA_READ:
                 case IBV_WC_RDMA_WRITE:
                     evpl_rdmacm_error(
                         "rdma %s completion error wr_id %lu type %u status %u vendor_err %u",
-                        ibv_wc_read_opcode(cq) == IBV_WC_RDMA_READ ? "read" : "write",
+                        ibv_wc_opcode_str(ibv_wc_read_opcode(cq)),
                         cq->wr_id,
                         ibv_wc_read_opcode(cq),
                         cq->status,
                         ibv_wc_read_vendor_err(cq));
 
-                    sr = (struct evpl_rdmacm_sr *) cq->wr_id;
-                    sr->callback(EIO, sr->private_data);
-
+                    sr        = (struct evpl_rdmacm_sr *) cq->wr_id;
                     rdmacm_id = sr->rdmacm_id;
 
-                    evpl_rdmacm_sr_free(rdmacm, sr);
-
-                    bind = evpl_private2bind(rdmacm_id);
-
-                    --rdmacm_id->cur_rdma_rw;
-
-                    if (!evpl_rdma_request_ring_is_empty(&bind->rdma_rw)) {
-                        evpl_defer(evpl, &bind->flush_deferral);
-                    }
+                    evpl_rdmacm_process_send_completions(evpl, rdmacm_id, sr, EIO);
 
                     break;
                 default:
@@ -638,56 +758,13 @@ evpl_rdmacm_poll_cq(
 
                     break;
                 case IBV_WC_SEND:
-
-                    sr = (struct evpl_rdmacm_sr *) cq->wr_id;
-
-                    for (i = 0; i < sr->nbufref; ++i) {
-                        evpl_buffer_release(sr->bufref[i]);
-                    }
-
-                    rdmacm_id = sr->rdmacm_id;
-
-                    --rdmacm_id->active_sends;
-
-                    if (likely(rdmacm_id->id)) {
-                        bind = evpl_private2bind(rdmacm_id);
-
-                        if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
-                            notify.notify_type   = EVPL_NOTIFY_SENT;
-                            notify.notify_status = 0;
-                            notify.sent.bytes    = sr->length;
-                            notify.sent.msgs     = 1;
-
-                            bind->notify_callback(evpl, bind, &notify,
-                                                  bind->private_data);
-                        }
-
-                        if (unlikely(rdmacm_id->active_sends == 0 &&
-                                     evpl_iovec_ring_is_empty(&bind->iovec_send))) {
-                            if (bind->flags & EVPL_BIND_FINISH) {
-                                evpl_close(evpl, bind);
-                            }
-                        }
-                    }
-
-                    evpl_rdmacm_sr_free(rdmacm, sr);
-
-                    break;
                 case IBV_WC_RDMA_READ:
                 case IBV_WC_RDMA_WRITE:
-                    sr = (struct evpl_rdmacm_sr *) cq->wr_id;
 
+                    sr        = (struct evpl_rdmacm_sr *) cq->wr_id;
                     rdmacm_id = sr->rdmacm_id;
 
-                    sr->callback(0, sr->private_data);
-                    evpl_rdmacm_sr_free(rdmacm, sr);
-                    bind = evpl_private2bind(rdmacm_id);
-
-                    --rdmacm_id->cur_rdma_rw;
-
-                    if (!evpl_rdma_request_ring_is_empty(&bind->rdma_rw)) {
-                        evpl_defer(evpl, &bind->flush_deferral);
-                    }
+                    evpl_rdmacm_process_send_completions(evpl, rdmacm_id, sr, 0);
 
                     break;
                 default:
@@ -990,21 +1067,11 @@ evpl_rdmacm_destroy(
     struct evpl_rdmacm         *rdmacm = private_data;
     struct evpl_rdmacm_device  *dev;
     struct evpl_rdmacm_request *req;
-    struct evpl_rdmacm_sr      *sr;
     int                         i, j;
 
     evpl_remove_poll(evpl, rdmacm->poll);
 
     rdma_destroy_event_channel(rdmacm->event_channel);
-
-    while (rdmacm->active_sr) {
-        sr = rdmacm->active_sr;
-        for (int i = 0; i < sr->nbufref; ++i) {
-            evpl_buffer_release(sr->bufref[i]);
-        }
-        DL_DELETE(rdmacm->active_sr, sr);
-        LL_PREPEND(rdmacm->free_sr, sr);
-    }
 
     for (i = 0; i < rdmacm->num_devices; ++i) {
         dev = &rdmacm->devices[i];
@@ -1027,12 +1094,6 @@ evpl_rdmacm_destroy(
         ibv_dealloc_pd(dev->pd);
         ibv_destroy_comp_channel(dev->comp_channel);
         ibv_dealloc_td(dev->td);
-    }
-
-    while (rdmacm->free_sr) {
-        sr = rdmacm->free_sr;
-        LL_DELETE(rdmacm->free_sr, sr);
-        evpl_free(sr);
     }
 
     evpl_free(rdmacm->devices);
@@ -1243,8 +1304,7 @@ evpl_rdmacm_flush_rdma_rw(
 {
     struct evpl_rdmacm_id    *rdmacm_id = evpl_bind_private(bind);
     struct evpl_rdma_request *req;
-    struct evpl_rdmacm       *rdmacm = rdmacm_id->rdmacm;
-    struct ibv_qp_ex         *qp     = rdmacm_id->qp;
+    struct ibv_qp_ex         *qp = rdmacm_id->qp;
     struct ibv_mr           **mrset, *mr;
     struct evpl_iovec        *cur;
     struct evpl_rdmacm_sr    *sr;
@@ -1258,14 +1318,14 @@ evpl_rdmacm_flush_rdma_rw(
 
         rdmacm_id->cur_rdma_rw++;
 
-        sr = evpl_rdmacm_sr_alloc(rdmacm);
+        sr = evpl_rdmacm_sr_alloc(rdmacm_id);
 
-        sr->rdmacm_id    = rdmacm_id;
         sr->callback     = req->callback;
         sr->private_data = req->private_data;
 
         sge = alloca(sizeof(struct ibv_sge) * req->niov);
 
+        len = 0;
         for (i = 0; i < req->niov; ++i) {
 
             cur = &req->iov[i];
@@ -1285,7 +1345,7 @@ evpl_rdmacm_flush_rdma_rw(
         sr->length = len;
 
         qp->wr_id    = (uint64_t) sr;
-        qp->wr_flags = 0;
+        qp->wr_flags = IBV_SEND_SIGNALED;
 
         if (req->type == EVPL_RDMA_READ) {
             ibv_wr_rdma_read(qp, req->remote_key, req->remote_address);
@@ -1296,7 +1356,6 @@ evpl_rdmacm_flush_rdma_rw(
         ibv_wr_set_sge_list(qp, req->niov, sge);
 
         evpl_rdma_request_ring_remove(&bind->rdma_rw);
-
     }
 } /* evpl_rdmacm_flush_rdma_rw */
 
@@ -1306,7 +1365,6 @@ evpl_rdmacm_flush_datagram(
     struct evpl_bind *bind)
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
     struct evpl_rdmacm_sr *sr;
     struct evpl_iovec     *cur;
     struct evpl_dgram     *dgram;
@@ -1315,7 +1373,7 @@ evpl_rdmacm_flush_datagram(
     struct ibv_sge        *sge;
     struct ibv_data_buf   *dbuf;
     struct evpl_rdmacm_ah *ah;
-    int                    nsge, rc, send_inline;
+    int                    nsge, rc, send_inline, need_signal;
 
     if (unlikely(!qp || !rdmacm_id->connected)) {
         return;
@@ -1325,7 +1383,8 @@ evpl_rdmacm_flush_datagram(
 
     evpl_rdmacm_flush_rdma_rw(evpl, bind);
 
-    while (!evpl_dgram_ring_is_empty(&bind->dgram_send)) {
+    while (rdmacm_id->cur_sends < evpl_shared->config->rdmacm_sq_size &&
+           !evpl_dgram_ring_is_empty(&bind->dgram_send)) {
 
         dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
@@ -1345,9 +1404,7 @@ evpl_rdmacm_flush_datagram(
             }
         }
 
-        sr = evpl_rdmacm_sr_alloc(rdmacm);
-
-        sr->rdmacm_id = rdmacm_id;
+        sr = evpl_rdmacm_sr_alloc(rdmacm_id);
 
         if (dgram->length <= EVPL_RDMACM_MAX_INLINE) {
             send_inline = 1;
@@ -1402,9 +1459,18 @@ evpl_rdmacm_flush_datagram(
 
         sr->nbufref = nsge;
         sr->length  = dgram->length;
+        sr->rw      = 0;
 
-        qp->wr_id    = (uint64_t) sr;
-        qp->wr_flags = 0;
+        ++rdmacm_id->cur_sends;
+
+        evpl_dgram_ring_remove(&bind->dgram_send);
+
+        qp->wr_id = (uint64_t) sr;
+
+        need_signal =  rdmacm_id->cur_sends == evpl_shared->config->rdmacm_sq_size ||
+            evpl_dgram_ring_is_empty(&bind->dgram_send);
+
+        qp->wr_flags = need_signal ? IBV_SEND_SIGNALED : 0;
 
         ibv_wr_send(qp);
 
@@ -1422,9 +1488,6 @@ evpl_rdmacm_flush_datagram(
 
             evpl_address_release(dgram->addr);
         }
-
-        evpl_dgram_ring_remove(&bind->dgram_send);
-
 
         ++rdmacm_id->active_sends;
     }
@@ -1449,7 +1512,6 @@ evpl_rdmacm_flush_stream(
     struct evpl_bind *bind)
 {
     struct evpl_rdmacm_id     *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_rdmacm        *rdmacm    = rdmacm_id->rdmacm;
     struct evpl_global_config *config    = evpl_shared->config;
     struct evpl_rdmacm_sr     *sr;
     struct evpl_iovec         *cur;
@@ -1468,9 +1530,7 @@ evpl_rdmacm_flush_stream(
 
     while (!evpl_iovec_ring_is_empty(&bind->iovec_send)) {
 
-        sr = evpl_rdmacm_sr_alloc(rdmacm);
-
-        sr->rdmacm_id = rdmacm_id;
+        sr = evpl_rdmacm_sr_alloc(rdmacm_id);
 
         nsge = 0;
 
@@ -1503,11 +1563,13 @@ evpl_rdmacm_flush_stream(
         }
 
         sr->nbufref = nsge;
+        sr->length  = 0;
+        sr->rw      = 1;
 
         ibv_wr_start(qp);
 
         qp->wr_id    = (uint64_t) sr;
-        qp->wr_flags = 0;
+        qp->wr_flags = evpl_iovec_ring_is_empty(&bind->iovec_send) ? IBV_SEND_SIGNALED : 0;
         ibv_wr_send(qp);
         ibv_wr_set_sge_list(qp, nsge, sge);
 
@@ -1540,8 +1602,8 @@ evpl_rdmacm_bind(
     rdmacm_id->stream      = 0;
     rdmacm_id->ud          = 1;
     rdmacm_id->cur_rdma_rw = 0;
-
-    rdmacm = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
+    rdmacm_id->cur_sends   = 0;
+    rdmacm                 = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
     rdmacm_id->rdmacm = rdmacm;
 
@@ -1582,6 +1644,8 @@ evpl_rdmacm_destroy_qp(
         ibv_destroy_qp((struct ibv_qp *) rdmacm_id->qp);
         rdmacm_id->qp = NULL;
     }
+
+    evpl_rdmacm_sr_ring_free(&rdmacm_id->sr_ring);
 
     if (rdmacm_id->id) {
         rdma_destroy_id(rdmacm_id->id);

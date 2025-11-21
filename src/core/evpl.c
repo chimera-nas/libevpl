@@ -301,7 +301,7 @@ evpl_create(struct evpl_thread_config *config)
     return evpl;
 } /* evpl_init */
 
-SYMBOL_EXPORT void
+SYMBOL_EXPORT FORCE_INLINE void
 evpl_continue(struct evpl *evpl)
 {
     struct evpl_event    *event;
@@ -361,6 +361,8 @@ evpl_continue(struct evpl *evpl)
             } else {
                 elapsed = evpl_ts_interval(&now, &evpl->last_activity_ts);
             }
+        } else {
+            elapsed = 0;
         }
 
         if (!evpl->force_poll_mode && elapsed > evpl->config.spin_ns) {
@@ -405,7 +407,7 @@ evpl_continue(struct evpl *evpl)
         }
 
         evpl->poll_iterations = 0;
-    }
+    } /* evpl_continue */
 
     for (i = 0; i < evpl->num_active_events;) {
         event = evpl->active_events[i];
