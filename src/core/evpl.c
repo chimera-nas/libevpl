@@ -75,6 +75,27 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_shared->config = config;
 
+    if (evpl_shared->config->hf_time_mode == 2) {
+        /* Deetect if nonstop_tsc is supported, enable iff so */
+
+        /* Assume the worst until proven otherwise*/
+        evpl_shared->config->hf_time_mode = 0;
+
+        FILE *cpuinfo = fopen("/proc/cpuinfo", "r");
+
+        if (cpuinfo) {
+            char line[160];
+            while (fgets(line, sizeof(line), cpuinfo)) {
+                if (strstr(line, "nonstop_tsc")) {
+                    evpl_shared->config->hf_time_mode = 1;
+                    break;
+                }
+            }
+
+            fclose(cpuinfo);
+        }
+    }
+
     evpl_shared->numa_config = evpl_numa_discover();
 
     evpl_shared->allocator = evpl_allocator_create();
@@ -464,55 +485,60 @@ evpl_get_hf_monotonic_time(
     struct timespec *ts)
 {
 #ifdef __x86_64__
-    uint64_t tsc;
 
-    tsc = __rdtsc();
+    if (evpl->config.hf_time_mode > 0) {
+        uint64_t tsc;
 
-    if (unlikely(evpl->hf_tsc_start.tv_sec == 0)) {
-        /* We need to calibrate TSC rate first */
-        clock_gettime(CLOCK_MONOTONIC, &evpl->hf_tsc_start);
-        evpl->hf_tsc_value = tsc;
+        tsc = __rdtsc();
 
-        evpl->hf_tsc_mult = 0;
+        if (unlikely(evpl->hf_tsc_start.tv_sec == 0)) {
+            /* We need to calibrate TSC rate first */
+            clock_gettime(CLOCK_MONOTONIC, &evpl->hf_tsc_start);
+            evpl->hf_tsc_value = tsc;
 
-        *ts = evpl->hf_tsc_start;
-        return;
-    }
+            evpl->hf_tsc_mult = 0;
 
-    /* Calibrate once we have a long-enough baseline (≈100 ms). */
-    if (unlikely(evpl->hf_tsc_mult == 0)) {
-        uint64_t elapsed_ns, tsc_delta;
-
-        clock_gettime(CLOCK_MONOTONIC, ts);
-        elapsed_ns = evpl_ts_interval(ts, &evpl->hf_tsc_start);
-
-        if (elapsed_ns > EVPL_TSC_CALIBRATE_NS) {
-            tsc_delta = tsc - evpl->hf_tsc_value;
-
-            /* mult = round((elapsed_ns << SHIFT) / tsc_delta) */
-            __uint128_t num  = ((__uint128_t) elapsed_ns) << EVPL_TSC_SHIFT;
-            uint64_t    mult = (uint64_t) ((num + (tsc_delta / 2)) / tsc_delta);
-
-            evpl->hf_tsc_mult = mult;
+            *ts = evpl->hf_tsc_start;
+            return;
         }
 
-        return;
+        /* Calibrate once we have a long-enough baseline (≈100 ms). */
+        if (unlikely(evpl->hf_tsc_mult == 0)) {
+            uint64_t elapsed_ns, tsc_delta;
+
+            clock_gettime(CLOCK_MONOTONIC, ts);
+            elapsed_ns = evpl_ts_interval(ts, &evpl->hf_tsc_start);
+
+            if (elapsed_ns > EVPL_TSC_CALIBRATE_NS) {
+                tsc_delta = tsc - evpl->hf_tsc_value;
+
+                /* mult = round((elapsed_ns << SHIFT) / tsc_delta) */
+                __uint128_t num  = ((__uint128_t) elapsed_ns) << EVPL_TSC_SHIFT;
+                uint64_t    mult = (uint64_t) ((num + (tsc_delta / 2)) / tsc_delta);
+
+                evpl->hf_tsc_mult = mult;
+            }
+
+            return;
+        }
+
+        uint64_t    cycles   = tsc - evpl->hf_tsc_value;
+        __uint128_t prod     = (__uint128_t) cycles * (__uint128_t) evpl->hf_tsc_mult;
+        uint64_t    delta_ns = (uint64_t) (prod >> EVPL_TSC_SHIFT);
+
+        uint64_t    nsec = evpl->hf_tsc_start.tv_nsec + (delta_ns % NS_PER_S);
+
+        ts->tv_sec = evpl->hf_tsc_start.tv_sec + (delta_ns / NS_PER_S);
+
+        if (nsec >= NS_PER_S) {
+            ts->tv_sec++;
+            nsec -= NS_PER_S;
+        }
+
+        ts->tv_nsec = nsec;
+    } else {
+        clock_gettime(CLOCK_MONOTONIC, ts);
     }
-
-    uint64_t    cycles   = tsc - evpl->hf_tsc_value;
-    __uint128_t prod     = (__uint128_t) cycles * (__uint128_t) evpl->hf_tsc_mult;
-    uint64_t    delta_ns = (uint64_t) (prod >> EVPL_TSC_SHIFT);
-
-    uint64_t    nsec = evpl->hf_tsc_start.tv_nsec + (delta_ns % NS_PER_S);
-
-    ts->tv_sec = evpl->hf_tsc_start.tv_sec + (delta_ns / NS_PER_S);
-
-    if (nsec >= NS_PER_S) {
-        ts->tv_sec++;
-        nsec -= NS_PER_S;
-    }
-
-    ts->tv_nsec = nsec;
 
 #else  /* __x86_64__ */
 

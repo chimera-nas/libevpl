@@ -23,6 +23,7 @@ evpl_global_config_init(void)
     config->thread_default.spin_ns         = 1000000UL;
     config->thread_default.wait_ms         = -1;
 
+    config->hf_time_mode           = 2;
     config->max_pending            = 16;
     config->max_poll_fd            = 16;
     config->max_num_iovec          = 128;
@@ -53,6 +54,7 @@ evpl_global_config_init(void)
     config->rdmacm_srq_size               = 8192;
     config->rdmacm_srq_min                = 256;
     config->rdmacm_srq_batch              = 16;
+    config->rdmacm_max_inline             = 250;
     config->rdmacm_datagram_size_override = 0;
     config->rdmacm_srq_prefill            = 0;
     config->rdmacm_retry_count            = 4;

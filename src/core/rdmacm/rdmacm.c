@@ -23,8 +23,6 @@
 #include "core/event_fn.h"
 #include "core/poll.h"
 
-#define EVPL_RDMACM_MAX_INLINE 250
-
 extern struct evpl_shared *evpl_shared;
 
 #define evpl_rdmacm_debug(...) evpl_debug("rdmacm", __FILE__, __LINE__, \
@@ -121,6 +119,9 @@ struct evpl_rdmacm {
     struct evpl_rdmacm_listener *listener;
     struct evpl_rdmacm_device   *devices;
     int                          num_devices;
+    int                          num_active_devices;
+    struct evpl_rdmacm_device  **active_devices;
+
 };
 
 #define evpl_event_rdmacm(eventp) \
@@ -317,6 +318,10 @@ evpl_rdmacm_create_qp(
 
     dev = evpl_rdmacm_map_device(rdmacm, rdmacm_id->id->verbs);
 
+    if (dev->num_qp == 0) {
+        rdmacm->active_devices[rdmacm->num_active_devices++] = dev;
+    }
+
     dev->num_qp++;
 
     rdmacm_id->dev      = dev;
@@ -339,7 +344,7 @@ evpl_rdmacm_create_qp(
     qp_attr.cap.max_recv_wr     = evpl_shared->config->rdmacm_sq_size;
     qp_attr.cap.max_send_sge    = evpl_shared->config->rdmacm_max_sge;
     qp_attr.cap.max_recv_sge    = evpl_shared->config->rdmacm_max_sge;
-    qp_attr.cap.max_inline_data = EVPL_RDMACM_MAX_INLINE;
+    qp_attr.cap.max_inline_data = evpl_shared->config->rdmacm_max_inline;
     qp_attr.sq_sig_all          = 0;
 
     qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND |
@@ -717,22 +722,22 @@ evpl_rdmacm_process_send_completions(
     }
 } /* evpl_rdmacm_process_send_completions */
 
-static void
+static FORCE_INLINE void
 evpl_rdmacm_poll_cq(
     struct evpl               *evpl,
     struct evpl_rdmacm_device *dev,
     int                        drain)
 {
-    struct evpl_rdmacm         *rdmacm = dev->rdmacm;
-    struct evpl_rdmacm_id      *rdmacm_id;
-    struct evpl_rdmacm_request *req;
-    struct evpl_rdmacm_sr      *sr;
-    struct evpl_bind           *bind;
-    struct evpl_notify          notify;
-    struct ibv_cq_ex           *cq      = (struct ibv_cq_ex *) dev->cq;
-    struct ibv_poll_cq_attr     cq_attr = { .comp_mask = 0 };
-    int                         rc, n;
-    uint32_t                    qp_num, wc_flags;
+    struct evpl_rdmacm            *rdmacm = dev->rdmacm;
+    struct evpl_rdmacm_id         *rdmacm_id;
+    struct evpl_rdmacm_request    *req;
+    struct evpl_rdmacm_sr         *sr;
+    struct evpl_bind              *bind;
+    struct evpl_notify             notify;
+    struct ibv_cq_ex              *cq      = (struct ibv_cq_ex *) dev->cq;
+    static struct ibv_poll_cq_attr cq_attr = { .comp_mask = 0 };
+    int                            rc, n;
+    uint32_t                       qp_num, wc_flags;
 
  again:
 
@@ -982,12 +987,9 @@ evpl_rdmacm_poll(
     struct evpl_rdmacm_device *dev;
     int                        i;
 
-    for (i = 0; i < rdmacm->num_devices; ++i) {
-        dev = &rdmacm->devices[i];
-
-        if (dev->num_qp) {
-            evpl_rdmacm_poll_cq(evpl, dev, 1);
-        }
+    for (i = 0; i < rdmacm->num_active_devices; ++i) {
+        dev = rdmacm->active_devices[i];
+        evpl_rdmacm_poll_cq(evpl, dev, 0);
     }
 
 } /* evpl_rdmacm_poll */
@@ -1012,6 +1014,11 @@ evpl_rdmacm_create(
 
     rdmacm->devices = evpl_zalloc(
         sizeof(struct evpl_rdmacm_device) * rdmacm->num_devices);
+
+    rdmacm->active_devices = evpl_zalloc(
+        sizeof(struct evpl_rdmacm_device *) * rdmacm->num_devices);
+
+    rdmacm->num_active_devices = 0;
 
     for (i = 0; i < rdmacm->num_devices; ++i) {
         dev = &rdmacm->devices[i];
@@ -1175,6 +1182,7 @@ evpl_rdmacm_destroy(
     }
 
     evpl_free(rdmacm->devices);
+    evpl_free(rdmacm->active_devices);
     evpl_free(rdmacm);
 } /* evpl_rdmacm_destroy */
 
@@ -1484,7 +1492,7 @@ evpl_rdmacm_flush_datagram(
 
         sr = evpl_rdmacm_sr_alloc(rdmacm_id);
 
-        if (dgram->length <= EVPL_RDMACM_MAX_INLINE) {
+        if (dgram->length <= evpl_shared->config->rdmacm_max_inline) {
             send_inline = 1;
 
             nsge = 0;
@@ -1761,11 +1769,26 @@ evpl_rdmacm_close(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
-    struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_rdmacm    *rdmacm    = rdmacm_id->rdmacm;
+    struct evpl_rdmacm_id     *rdmacm_id = evpl_bind_private(bind);
+    struct evpl_rdmacm        *rdmacm    = rdmacm_id->rdmacm;
+    struct evpl_rdmacm_device *dev       = rdmacm_id->dev;
 
     if (rdmacm) {
-        --rdmacm_id->dev->num_qp;
+        --dev->num_qp;
+
+        if (dev->num_qp == 0) {
+            if (rdmacm->num_active_devices > 1) {
+                for (int i = 0; i < rdmacm->num_active_devices; ++i) {
+                    if (rdmacm->active_devices[i] == dev) {
+                        if (i < rdmacm->num_active_devices - 1) {
+                            rdmacm->active_devices[i] = rdmacm->active_devices[rdmacm->num_active_devices - 1];
+                        }
+                        break;
+                    }
+                }
+            }
+            rdmacm->num_active_devices--;
+        }
 
         evpl_rdmacm_qp_lookup_del(rdmacm_id->dev, rdmacm_id->qp_num);
     }

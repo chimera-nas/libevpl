@@ -31,6 +31,7 @@ struct evpl_global_config {
 
     struct evpl_thread_config thread_default;
 
+    unsigned int              hf_time_mode;
     unsigned int              max_pending;
     unsigned int              max_poll_fd;
     unsigned int              max_num_iovec;
@@ -56,6 +57,7 @@ struct evpl_global_config {
     unsigned int              rdmacm_datagram_size_override;
     unsigned int              rdmacm_srq_size;
     unsigned int              rdmacm_srq_min;
+    unsigned int              rdmacm_max_inline;
     unsigned int              rdmacm_srq_batch;
     unsigned int              rdmacm_srq_prefill;
     unsigned int              rdmacm_retry_count;
