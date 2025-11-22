@@ -404,20 +404,23 @@ evpl_iovec_ring_append(
          * appended and they are contiguous. Extend the head iovec.
          */
         head->length += length;
+
+        if (length == append->length) {
+            evpl_iovec_decref(append);
+        }
     } else {
         head               = evpl_iovec_ring_add_new(ring);
         head->data         = append->data;
         head->private_data = append->private_data;
         head->length       = length;
-        evpl_iovec_incref(head);
+
+        if (length != append->length) {
+            evpl_iovec_incref(head);
+        }
     }
 
     append->data   += length;
     append->length -= length;
-
-    if (append->length == 0) {
-        evpl_iovec_decref(append);
-    }
 
     ring->length += length;
 

@@ -58,6 +58,10 @@ client_callback(
                            state->sent, state->recv,
                            *(uint32_t *) notify->recv_msg.iovec[0].data);
 
+            for (int i = 0; i < notify->recv_msg.niov; i++) {
+                evpl_iovec_release(&notify->recv_msg.iovec[i]);
+            }
+
             break;
     } /* switch */
 
@@ -123,6 +127,10 @@ server_callback(
             evpl_test_info("server received %u, echoing", value);
 
             evpl_send(evpl, bind, &value, sizeof(value));
+
+            for (int i = 0; i < notify->recv_msg.niov; i++) {
+                evpl_iovec_release(&notify->recv_msg.iovec[i]);
+            }
 
             break;
     } /* switch */

@@ -63,10 +63,17 @@ evpl_address_get_address(
     char                *str,
     int                  len)
 {
-    struct sockaddr     *sa = address->addr;
+    struct sockaddr     *sa;
     struct sockaddr_in  *sin;
     struct sockaddr_in6 *sin6;
     char                 addr_str[INET6_ADDRSTRLEN];
+
+    if (address == NULL) {
+        snprintf(str, len, "(NULL)");
+        return;
+    }
+
+    sa = address->addr;
 
     if (sa->sa_family == AF_INET) {
         sin = (struct sockaddr_in *) sa;

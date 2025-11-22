@@ -45,6 +45,11 @@ client_callback(
 
             evpl_test_info("client received '%s'",
                            notify->recv_msg.iovec[0].data);
+
+            for (int i = 0; i < notify->recv_msg.niov; i++) {
+                evpl_iovec_release(&notify->recv_msg.iovec[i]);
+            }
+
             break;
 
         case EVPL_NOTIFY_DISCONNECTED:
@@ -101,6 +106,10 @@ server_callback(
                            notify->recv_msg.iovec[0].data);
 
             evpl_send(evpl, bind, hello, hellolen);
+
+            for (int i = 0; i < notify->recv_msg.niov; i++) {
+                evpl_iovec_release(&notify->recv_msg.iovec[i]);
+            }
 
             evpl_finish(evpl, bind);
             break;

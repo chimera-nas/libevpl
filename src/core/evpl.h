@@ -31,6 +31,7 @@ struct evpl_global_config {
 
     struct evpl_thread_config thread_default;
 
+    unsigned int              hf_time_mode;
     unsigned int              max_pending;
     unsigned int              max_poll_fd;
     unsigned int              max_num_iovec;
@@ -56,6 +57,7 @@ struct evpl_global_config {
     unsigned int              rdmacm_datagram_size_override;
     unsigned int              rdmacm_srq_size;
     unsigned int              rdmacm_srq_min;
+    unsigned int              rdmacm_max_inline;
     unsigned int              rdmacm_srq_batch;
     unsigned int              rdmacm_srq_prefill;
     unsigned int              rdmacm_retry_count;
@@ -82,6 +84,13 @@ typedef void (*evpl_accept_callback_t)(
 
 struct evpl {
     struct evpl_core              core; /* must be first */
+
+
+    uint64_t                      hf_tsc_value;
+    uint64_t                      hf_tsc_mult;
+    struct timespec               hf_tsc_start;
+
+    uint64_t                      poll_iters;
 
     struct timespec               last_activity_ts;
     uint64_t                      activity;

@@ -100,6 +100,98 @@ libevpl will emit a warning and automatically fall back to normal memory.
 
 ---
 
+#### `evpl_global_config_set_slab_size`
+
+```c
+void evpl_global_config_set_slab_size(
+    struct evpl_global_config *config,
+    uint64_t                   size);
+```
+
+Set the total size of the slab allocator used for buffer allocation.
+
+**Parameters:**
+- `config` - Configuration object
+- `size` - Slab size in bytes
+
+**Default:** 1GB (1,073,741,824 bytes)
+
+---
+
+#### `evpl_global_config_set_max_num_iovec`
+
+```c
+void evpl_global_config_set_max_num_iovec(
+    struct evpl_global_config *config,
+    unsigned int               max);
+```
+
+Set the maximum number of iovecs that can be used in a single operation.
+
+**Parameters:**
+- `config` - Configuration object
+- `max` - Maximum number of iovecs
+
+**Default:** 128
+
+---
+
+### Ring Buffer Settings
+
+#### `evpl_global_config_set_iovec_ring_size`
+
+```c
+void evpl_global_config_set_iovec_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+```
+
+Set the size of the iovec ring buffer.
+
+**Parameters:**
+- `config` - Configuration object
+- `size` - Ring size (must be power of 2)
+
+**Default:** 1024
+
+---
+
+#### `evpl_global_config_set_dgram_ring_size`
+
+```c
+void evpl_global_config_set_dgram_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+```
+
+Set the size of the datagram ring buffer.
+
+**Parameters:**
+- `config` - Configuration object
+- `size` - Ring size (must be power of 2)
+
+**Default:** 256
+
+---
+
+#### `evpl_global_config_set_rdma_request_ring_size`
+
+```c
+void evpl_global_config_set_rdma_request_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+```
+
+Set the size of the RDMA request ring buffer.
+
+**Parameters:**
+- `config` - Configuration object
+- `size` - Ring size (must be power of 2)
+
+**Default:** 64
+
+---
+
 ### Polling Behavior
 
 #### `evpl_global_config_set_spin_ns`
@@ -127,6 +219,71 @@ that don't need to make system calls to perform work (io_uring, XLIO, RDMA, ...)
 - `0` - Event-driven only (sleep immediately)
 - `> 0` - Poll for this duration before sleeping
 
+---
+
+#### `evpl_global_config_set_hf_time_mode`
+
+```c
+void evpl_global_config_set_hf_time_mode(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+```
+
+Set the method used for obtaining timestamps at high frequency.
+
+0 -- Use OS provided high-precision clock API, eg clock_gettime()
+1 -- Use built-in TSC based time measurement, may be unreliable depending on hardware
+2 -- Use TSC based time measurement only if /proc/cpuinfo exists and indicates nonstop_tsc support, otherwise use OS method
+
+**Parameters:**
+- `config` - Configuration object
+- `mode` - Time mode: 0 = disabled, 1 = TSC (Time Stamp Counter), 2 = auto-detect
+
+**Default:** 2 (auto-detect)
+
+**Behavior:**
+- `0` - Disable high-frequency timing
+- `1` - Use TSC (requires nonstop_tsc CPU feature)
+- `2` - Auto-detect: check for nonstop_tsc support and enable if available
+
+---
+
+#### `evpl_global_config_set_max_pending`
+
+```c
+void evpl_global_config_set_max_pending(
+    struct evpl_global_config *config,
+    unsigned int               max);
+```
+
+Set the maximum number of pending connections for listening sockets.
+
+**Parameters:**
+- `config` - Configuration object
+- `max` - Maximum pending connections
+
+**Default:** 16
+
+---
+
+#### `evpl_global_config_set_max_poll_fd`
+
+```c
+void evpl_global_config_set_max_poll_fd(
+    struct evpl_global_config *config,
+    unsigned int               max);
+```
+
+Set the maximum number of file descriptors to poll in a single operation.
+
+**Parameters:**
+- `config` - Configuration object
+- `max` - Maximum file descriptors per poll
+
+**Default:** 16
+
+---
+
 ### Protocol-Specific Settings
 
 #### `evpl_global_config_set_max_datagram_size`
@@ -143,7 +300,99 @@ Set the maximum size for datagram protocols (UDP, RDMA UD).
 - `config` - Configuration object
 - `size` - Maximum datagram size in bytes
 
-**Default:** Protocol-dependent
+**Default:** 65536 bytes
+
+---
+
+#### `evpl_global_config_set_max_datagram_batch`
+
+```c
+void evpl_global_config_set_max_datagram_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch);
+```
+
+Set the maximum number of datagrams to process in a single batch.
+
+**Parameters:**
+- `config` - Configuration object
+- `batch` - Maximum batch size
+
+**Default:** 16
+
+---
+
+#### `evpl_global_config_set_resolve_timeout_ms`
+
+```c
+void evpl_global_config_set_resolve_timeout_ms(
+    struct evpl_global_config *config,
+    unsigned int               timeout_ms);
+```
+
+Set the timeout for address resolution operations.
+
+**Parameters:**
+- `config` - Configuration object
+- `timeout_ms` - Timeout in milliseconds
+
+**Default:** 5000 ms
+
+---
+
+### Backend Settings
+
+#### `evpl_global_config_set_io_uring_enabled`
+
+```c
+void evpl_global_config_set_io_uring_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+```
+
+Enable or disable io_uring backend. If disabled, libevpl will fall back to epoll.
+
+**Parameters:**
+- `config` - Configuration object
+- `enabled` - 1 to enable, 0 to disable
+
+**Default:** 1 (enabled)
+
+---
+
+#### `evpl_global_config_set_xlio_enabled`
+
+```c
+void evpl_global_config_set_xlio_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+```
+
+Enable or disable XLIO (Accelio) backend for network acceleration.
+
+**Parameters:**
+- `config` - Configuration object
+- `enabled` - 1 to enable, 0 to disable
+
+**Default:** 1 (enabled)
+
+---
+
+#### `evpl_global_config_set_vfio_enabled`
+
+```c
+void evpl_global_config_set_vfio_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+```
+
+Enable or disable VFIO for direct device access.
+
+**Parameters:**
+- `config` - Configuration object
+- `enabled` - 1 to enable, 0 to disable
+
+**Default:** 1 (enabled)
 
 ---
 
@@ -208,6 +457,186 @@ If true, the shared receive queue is synchronously filled with receive requests 
 - `prefill` - 1 to enable, 0 to disable
 
 **Default:** 0 (disabled)
+
+---
+
+#### `evpl_global_config_set_rdmacm_enabled`
+
+```c
+void evpl_global_config_set_rdmacm_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+```
+
+Enable or disable RDMA CM (Connection Manager) support.
+
+**Parameters:**
+- `config` - Configuration object
+- `enabled` - 1 to enable, 0 to disable
+
+**Default:** 1 (enabled)
+
+---
+
+#### `evpl_global_config_set_rdmacm_max_sge`
+
+```c
+void evpl_global_config_set_rdmacm_max_sge(
+    struct evpl_global_config *config,
+    unsigned int               max_sge);
+```
+
+Set the maximum number of scatter-gather elements (SGE) per RDMA work request.
+
+**Parameters:**
+- `config` - Configuration object
+- `max_sge` - Maximum SGE count
+
+**Default:** 31
+
+---
+
+#### `evpl_global_config_set_rdmacm_cq_size`
+
+```c
+void evpl_global_config_set_rdmacm_cq_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+```
+
+Set the size of RDMA completion queues.
+
+**Parameters:**
+- `config` - Configuration object
+- `size` - Completion queue size
+
+**Default:** 8192
+
+---
+
+#### `evpl_global_config_set_rdmacm_sq_size`
+
+```c
+void evpl_global_config_set_rdmacm_sq_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+```
+
+Set the size of RDMA send queues.
+
+**Parameters:**
+- `config` - Configuration object
+- `size` - Send queue size
+
+**Default:** 256
+
+---
+
+#### `evpl_global_config_set_rdmacm_srq_size`
+
+```c
+void evpl_global_config_set_rdmacm_srq_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+```
+
+Set the size of RDMA shared receive queues.
+
+**Parameters:**
+- `config` - Configuration object
+- `size` - Shared receive queue size
+
+**Default:** 8192
+
+---
+
+#### `evpl_global_config_set_rdmacm_srq_min`
+
+```c
+void evpl_global_config_set_rdmacm_srq_min(
+    struct evpl_global_config *config,
+    unsigned int               min);
+```
+
+Set the minimum number of entries in RDMA shared receive queues.
+
+**Parameters:**
+- `config` - Configuration object
+- `min` - Minimum SRQ entries
+
+**Default:** 256
+
+---
+
+#### `evpl_global_config_set_rdmacm_max_inline`
+
+```c
+void evpl_global_config_set_rdmacm_max_inline(
+    struct evpl_global_config *config,
+    unsigned int               max_inline);
+```
+
+Set the maximum inline data size for RDMA operations. Inline data is sent directly in the work request without a separate memory registration.
+
+**Parameters:**
+- `config` - Configuration object
+- `max_inline` - Maximum inline size in bytes
+
+**Default:** 250 bytes
+
+---
+
+#### `evpl_global_config_set_rdmacm_srq_batch`
+
+```c
+void evpl_global_config_set_rdmacm_srq_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch);
+```
+
+Set the batch size for posting receive requests to shared receive queues.
+
+**Parameters:**
+- `config` - Configuration object
+- `batch` - Batch size
+
+**Default:** 16
+
+---
+
+#### `evpl_global_config_set_rdmacm_retry_count`
+
+```c
+void evpl_global_config_set_rdmacm_retry_count(
+    struct evpl_global_config *config,
+    unsigned int               retry_count);
+```
+
+Set the RDMA retry count for connection attempts.
+
+**Parameters:**
+- `config` - Configuration object
+- `retry_count` - Number of retries
+
+**Default:** 4
+
+---
+
+#### `evpl_global_config_set_rdmacm_rnr_retry_count`
+
+```c
+void evpl_global_config_set_rdmacm_rnr_retry_count(
+    struct evpl_global_config *config,
+    unsigned int               retry_count);
+```
+
+Set the RDMA receiver-not-ready (RNR) retry count.
+
+**Parameters:**
+- `config` - Configuration object
+- `retry_count` - Number of RNR retries
+
+**Default:** 4
 
 ---
 
@@ -345,14 +774,93 @@ evpl_create() takes ownership of the config.
 
 ---
 
+#### `evpl_thread_config_set_poll_mode`
+
+```c
+void evpl_thread_config_set_poll_mode(
+    struct evpl_thread_config *config,
+    int                        poll_mode);
+```
+
+Set the polling mode for the event loop. When enabled, the event loop will actively poll for events rather than waiting for system notifications.
+
+**Parameters:**
+- `config` - Configuration object
+- `poll_mode` - 1 to enable polling mode, 0 to disable
+
+**Default:** 1 (enabled)
+
+---
+
+#### `evpl_thread_config_set_poll_iterations`
+
+```c
+void evpl_thread_config_set_poll_iterations(
+    struct evpl_thread_config *config,
+    int                        iterations);
+```
+
+Set the number of polling iterations before checking for events.
+
+**Parameters:**
+- `config` - Configuration object
+- `iterations` - Number of poll iterations
+
+**Default:** 1000
+
+---
+
+#### `evpl_thread_config_set_wait_ms`
+
+```c
+void evpl_thread_config_set_wait_ms(
+    struct evpl_thread_config *config,
+    int                        wait_ms);
+```
+
+Set the wait timeout in milliseconds when no events are available. A value of -1 means wait indefinitely.
+
+**Parameters:**
+- `config` - Configuration object
+- `wait_ms` - Wait timeout in milliseconds, or -1 for infinite wait
+
+**Default:** -1 (infinite wait)
+
+---
+
 ## Default Values
 
 | Setting | Default | Notes |
 |---------|---------|-------|
 | Buffer size | 2MB | Fixed size |
+| Slab size | 1GB | Total allocator size |
+| Max iovecs | 128 | Per operation |
 | Spin time | 1ms | Hybrid polling/event mode |
+| Poll iterations | 1000 | Per poll cycle |
+| Wait timeout | Infinite | -1 means wait indefinitely |
+| HF time mode | Auto-detect | TSC if available |
+| Max pending | 16 | Listen backlog |
+| Max poll FD | 16 | Per poll operation |
 | Huge pages | Disabled | Requires kernel support |
 | Max datagram size | 64KB | Fixed size |
+| Max datagram batch | 16 | Per batch |
+| Resolve timeout | 5000ms | Address resolution |
+| Iovec ring size | 1024 | Power of 2 |
+| Datagram ring size | 256 | Power of 2 |
+| RDMA request ring size | 64 | Power of 2 |
+| io_uring | Enabled | Fallback to epoll if unavailable |
+| XLIO | Enabled | Network acceleration |
+| VFIO | Enabled | Direct device access |
+| RDMA CM | Enabled | Connection manager |
+| RDMA max SGE | 31 | Scatter-gather elements |
+| RDMA CQ size | 8192 | Completion queue |
+| RDMA SQ size | 256 | Send queue |
+| RDMA SRQ size | 8192 | Shared receive queue |
+| RDMA SRQ min | 256 | Minimum SRQ entries |
+| RDMA max inline | 250 bytes | Inline data size |
+| RDMA SRQ batch | 16 | Receive request batch |
+| RDMA retry count | 4 | Connection retries |
+| RDMA RNR retry count | 4 | Receiver-not-ready retries |
 | TLS verify peer | Enabled | Security best practice |
 | kTLS | Enabled | Requires kernel 4.13+ |
 | RDMA SRQ prefill | Disabled | Performance vs init time trade-off |

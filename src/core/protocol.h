@@ -59,6 +59,15 @@ struct evpl_framework {
         void *buffer_private,
         void *thread_private);
 
+
+    /* Fetch key and address for registered memory */
+    void         (*get_rdma_address)(
+        struct evpl_bind  *bind,
+        struct evpl_iovec *iov,
+        uint32_t          *r_key,
+        uint64_t          *r_address);
+
+
     /* release per-address state */
     void         (*release_address)(
         void *address_private,

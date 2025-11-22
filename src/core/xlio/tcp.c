@@ -82,7 +82,7 @@ evpl_xlio_tcp_read(
     struct evpl_bind  *bind = evpl_private2bind(s);
     struct evpl_notify notify;
     struct evpl_iovec *iovec;
-    int                i, length, niov;
+    int                length, niov;
 
     if (bind->segment_callback) {
 
@@ -112,10 +112,6 @@ evpl_xlio_tcp_read(
             notify.recv_msg.addr   = bind->remote;
 
             bind->notify_callback(evpl, bind, &notify, bind->private_data);
-
-            for (i = 0; i < niov; ++i) {
-                evpl_iovec_decref(&iovec[i]);
-            }
 
         }
 

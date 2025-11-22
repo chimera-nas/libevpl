@@ -54,7 +54,8 @@ evpl_buffer_release(struct evpl_buffer *buffer)
 
     refset = atomic_fetch_sub_explicit(&buffer->refcnt, 1, memory_order_relaxed);
 
-    evpl_core_abort_if(refset < 0, "refcnt underflow for buffer %p", buffer);
+    evpl_core_abort_if(refset <= 0, "refcnt underflow for buffer %p", buffer);
+
 
     if (refset == 1) {
         if (buffer->external1) {

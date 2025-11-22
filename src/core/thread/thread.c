@@ -36,7 +36,7 @@ struct evpl_thread {
     pthread_mutex_t                 lock;
     pthread_cond_t                  cond;
     int                             ready;
-    struct evpl_thread_config       config;
+    struct evpl_thread_config      *config;
     struct evpl                    *evpl;
     evpl_thread_init_callback_t     init_callback;
     evpl_thread_shutdown_callback_t shutdown_callback;
@@ -70,7 +70,7 @@ evpl_thread_function(void *ptr)
     struct evpl_thread *evpl_thread = ptr;
     struct evpl        *evpl;
 
-    evpl = evpl_create(&evpl_thread->config);
+    evpl = evpl_create(evpl_thread->config);
 
     evpl_thread->evpl = evpl;
 
@@ -111,12 +111,7 @@ evpl_thread_create(
 
     evpl_thread = evpl_zalloc(sizeof(*evpl_thread));
 
-    if (config) {
-        evpl_thread->config = *config;
-    } else {
-        evpl_thread->config = evpl_shared->config->thread_default;
-    }
-
+    evpl_thread->config            = config;
     evpl_thread->init_callback     = init_function;
     evpl_thread->shutdown_callback = shutdown_function;
     evpl_thread->private_data      = private_data;
