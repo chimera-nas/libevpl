@@ -83,3 +83,103 @@ void evpl_thread_config_release(
 void evpl_thread_config_set_poll_mode(
     struct evpl_thread_config *config,
     int                        poll_mode);
+
+void evpl_thread_config_set_poll_iterations(
+    struct evpl_thread_config *config,
+    int                        iterations);
+
+void evpl_thread_config_set_wait_ms(
+    struct evpl_thread_config *config,
+    int                        wait_ms);
+
+void evpl_global_config_set_slab_size(
+    struct evpl_global_config *config,
+    uint64_t                   size);
+
+void evpl_global_config_set_max_num_iovec(
+    struct evpl_global_config *config,
+    unsigned int               max);
+
+void evpl_global_config_set_iovec_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_dgram_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_rdma_request_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_max_datagram_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch);
+
+void evpl_global_config_set_resolve_timeout_ms(
+    struct evpl_global_config *config,
+    unsigned int               timeout_ms);
+
+void evpl_global_config_set_io_uring_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+void evpl_global_config_set_rdmacm_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+void evpl_global_config_set_rdmacm_max_sge(
+    struct evpl_global_config *config,
+    unsigned int               max_sge);
+
+void evpl_global_config_set_rdmacm_cq_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_rdmacm_sq_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_rdmacm_srq_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_rdmacm_srq_min(
+    struct evpl_global_config *config,
+    unsigned int               min);
+
+void evpl_global_config_set_rdmacm_max_inline(
+    struct evpl_global_config *config,
+    unsigned int               max_inline);
+
+void evpl_global_config_set_rdmacm_srq_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch);
+
+void evpl_global_config_set_rdmacm_retry_count(
+    struct evpl_global_config *config,
+    unsigned int               retry_count);
+
+void evpl_global_config_set_rdmacm_rnr_retry_count(
+    struct evpl_global_config *config,
+    unsigned int               retry_count);
+
+void evpl_global_config_set_xlio_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+void evpl_global_config_set_vfio_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+void evpl_global_config_set_hf_time_mode(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+void evpl_global_config_set_max_pending(
+    struct evpl_global_config *config,
+    unsigned int               max);
+
+void evpl_global_config_set_max_poll_fd(
+    struct evpl_global_config *config,
+    unsigned int               max);

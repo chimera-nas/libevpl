@@ -259,3 +259,203 @@ evpl_thread_config_set_poll_mode(
     config->poll_mode = poll_mode;
 } /* evpl_thread_config_set_poll_mode */
 
+SYMBOL_EXPORT void
+evpl_thread_config_set_poll_iterations(
+    struct evpl_thread_config *config,
+    int                        iterations)
+{
+    config->poll_iterations = iterations;
+} /* evpl_thread_config_set_poll_iterations */
+
+SYMBOL_EXPORT void
+evpl_thread_config_set_wait_ms(
+    struct evpl_thread_config *config,
+    int                        wait_ms)
+{
+    config->wait_ms = wait_ms;
+} /* evpl_thread_config_set_wait_ms */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_slab_size(
+    struct evpl_global_config *config,
+    uint64_t                   size)
+{
+    config->slab_size = size;
+} /* evpl_global_config_set_slab_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_max_num_iovec(
+    struct evpl_global_config *config,
+    unsigned int               max)
+{
+    config->max_num_iovec = max;
+} /* evpl_global_config_set_max_num_iovec */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_iovec_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->iovec_ring_size = size;
+} /* evpl_global_config_set_iovec_ring_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_dgram_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->dgram_ring_size = size;
+} /* evpl_global_config_set_dgram_ring_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdma_request_ring_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->rdma_request_ring_size = size;
+} /* evpl_global_config_set_rdma_request_ring_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_max_datagram_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch)
+{
+    config->max_datagram_batch = batch;
+} /* evpl_global_config_set_max_datagram_batch */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_resolve_timeout_ms(
+    struct evpl_global_config *config,
+    unsigned int               timeout_ms)
+{
+    config->resolve_timeout_ms = timeout_ms;
+} /* evpl_global_config_set_resolve_timeout_ms */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->io_uring_enabled = enabled;
+} /* evpl_global_config_set_io_uring_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->rdmacm_enabled = enabled;
+} /* evpl_global_config_set_rdmacm_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_max_sge(
+    struct evpl_global_config *config,
+    unsigned int               max_sge)
+{
+    config->rdmacm_max_sge = max_sge;
+} /* evpl_global_config_set_rdmacm_max_sge */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_cq_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->rdmacm_cq_size = size;
+} /* evpl_global_config_set_rdmacm_cq_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_sq_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->rdmacm_sq_size = size;
+} /* evpl_global_config_set_rdmacm_sq_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_srq_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->rdmacm_srq_size = size;
+} /* evpl_global_config_set_rdmacm_srq_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_srq_min(
+    struct evpl_global_config *config,
+    unsigned int               min)
+{
+    config->rdmacm_srq_min = min;
+} /* evpl_global_config_set_rdmacm_srq_min */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_max_inline(
+    struct evpl_global_config *config,
+    unsigned int               max_inline)
+{
+    config->rdmacm_max_inline = max_inline;
+} /* evpl_global_config_set_rdmacm_max_inline */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_srq_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch)
+{
+    config->rdmacm_srq_batch = batch;
+} /* evpl_global_config_set_rdmacm_srq_batch */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_retry_count(
+    struct evpl_global_config *config,
+    unsigned int               retry_count)
+{
+    config->rdmacm_retry_count = retry_count;
+} /* evpl_global_config_set_rdmacm_retry_count */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_rnr_retry_count(
+    struct evpl_global_config *config,
+    unsigned int               retry_count)
+{
+    config->rdmacm_rnr_retry_count = retry_count;
+} /* evpl_global_config_set_rdmacm_rnr_retry_count */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_xlio_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->xlio_enabled = enabled;
+} /* evpl_global_config_set_xlio_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_vfio_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->vfio_enabled = enabled;
+} /* evpl_global_config_set_vfio_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_hf_time_mode(
+    struct evpl_global_config *config,
+    unsigned int               mode)
+{
+    config->hf_time_mode = mode;
+} /* evpl_global_config_set_hf_time_mode */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_max_pending(
+    struct evpl_global_config *config,
+    unsigned int               max)
+{
+    config->max_pending = max;
+} /* evpl_global_config_set_max_pending */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_max_poll_fd(
+    struct evpl_global_config *config,
+    unsigned int               max)
+{
+    config->max_poll_fd = max;
+} /* evpl_global_config_set_max_poll_fd */
+
