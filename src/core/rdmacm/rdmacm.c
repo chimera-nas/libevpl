@@ -60,16 +60,22 @@ struct evpl_rdmacm_request {
 
 struct evpl_rdmacm_sr {
     struct evpl_rdmacm_id *rdmacm_id;
-    int                    nbufref;
-    int                    rw;
-    uint64_t               length;
+    int                    is_rw;
 
-    void                   (*callback)(
-        int   status,
-        void *private_data);
-    void                  *private_data;
+    union {
+        struct {
+            void  (*callback)(
+                int   status,
+                void *private_data);
+            void *private_data;
+        } rw;
+        struct {
+            uint64_t            length;
+            int                 nbufref;
+            struct evpl_buffer *bufref[32];
+        } send;
 
-    struct evpl_buffer    *bufref[32];
+    };
 };
 
 struct evpl_rdmacm_sr_ring {
@@ -206,7 +212,6 @@ evpl_rdmacm_sr_alloc(struct evpl_rdmacm_id *rdmacm_id)
     ring->head = (ring->head + 1) & ring->mask;
 
     sr->rdmacm_id = rdmacm_id;
-    sr->length    = 0;
 
     return sr;
 } /* evpl_rdmacm_sr_alloc */
@@ -659,34 +664,31 @@ evpl_rdmacm_process_send_completions(
 
         ring->tail = (ring->tail + 1) & ring->mask;
 
-        total_bytes += sr->length;
-
-        if (sr->rw) {
+        if (sr->is_rw) {
             --rdmacm_id->cur_rdma_rw;
-            sr->callback(0, sr->private_data);
+            sr->rw.callback(0, sr->rw.private_data);
         } else {
-            for (i = 0; i < sr->nbufref; ++i) {
-                evpl_buffer_release(sr->bufref[i]);
+            for (i = 0; i < sr->send.nbufref; ++i) {
+                evpl_buffer_release(sr->send.bufref[i]);
             }
-
+            total_bytes += sr->send.length;
             total_msgs++;
             --rdmacm_id->cur_sends;
         }
 
     }
 
-    total_bytes += completed_sr->length;
-
-    if (completed_sr->rw) {
+    if (completed_sr->is_rw) {
         --rdmacm_id->cur_rdma_rw;
 
-        completed_sr->callback(status, completed_sr->private_data);
+        completed_sr->rw.callback(status, completed_sr->rw.private_data);
     } else {
 
-        for (i = 0; i < completed_sr->nbufref; ++i) {
-            evpl_buffer_release(completed_sr->bufref[i]);
+        for (i = 0; i < completed_sr->send.nbufref; ++i) {
+            evpl_buffer_release(completed_sr->send.bufref[i]);
         }
 
+        total_bytes += completed_sr->send.length;
         total_msgs++;
         --rdmacm_id->cur_sends;
     }
@@ -1406,8 +1408,9 @@ evpl_rdmacm_flush_rdma_rw(
 
         sr = evpl_rdmacm_sr_alloc(rdmacm_id);
 
-        sr->callback     = req->callback;
-        sr->private_data = req->private_data;
+        sr->rw.callback     = req->callback;
+        sr->rw.private_data = req->private_data;
+        sr->is_rw           = 1;
 
         sge = alloca(sizeof(struct ibv_sge) * req->niov);
 
@@ -1428,7 +1431,7 @@ evpl_rdmacm_flush_rdma_rw(
             len += cur->length;
         }
 
-        sr->length = len;
+        evpl_rdmacm_info("flushing rdma read of length %u sr %p", len, sr);
 
         qp->wr_id    = (uint64_t) sr;
         qp->wr_flags = IBV_SEND_SIGNALED;
@@ -1506,7 +1509,7 @@ evpl_rdmacm_flush_datagram(
                 dbuf[nsge].addr   = cur->data;
                 dbuf[nsge].length = cur->length;
 
-                sr->bufref[nsge] = evpl_iovec_buffer(cur);
+                sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
 
                 nsge++;
 
@@ -1534,7 +1537,7 @@ evpl_rdmacm_flush_datagram(
                 sge[nsge].length = cur->length;
                 sge[nsge].lkey   = mr->lkey;
 
-                sr->bufref[nsge] = evpl_iovec_buffer(cur);
+                sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
 
                 nsge++;
 
@@ -1543,9 +1546,9 @@ evpl_rdmacm_flush_datagram(
 
         }
 
-        sr->nbufref = nsge;
-        sr->length  = dgram->length;
-        sr->rw      = 0;
+        sr->send.nbufref = nsge;
+        sr->send.length  = dgram->length;
+        sr->is_rw        = 0;
 
         ++rdmacm_id->cur_sends;
 
@@ -1620,14 +1623,14 @@ evpl_rdmacm_flush_stream(
 
         nsge = 0;
 
-        sr->length = 0;
+        sr->send.length = 0;
 
         while (nsge < config->max_num_iovec &&
                !evpl_iovec_ring_is_empty(&bind->iovec_send)) {
 
             cur = evpl_iovec_ring_tail(&bind->iovec_send);
 
-            if (sr->length + cur->length > config->max_datagram_size) {
+            if (sr->send.length + cur->length > config->max_datagram_size) {
                 break;
             }
 
@@ -1640,17 +1643,17 @@ evpl_rdmacm_flush_stream(
             sge[nsge].length = cur->length;
             sge[nsge].lkey   = mr->lkey;
 
-            sr->bufref[nsge] = evpl_iovec_buffer(cur);
+            sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
 
             nsge++;
-            sr->length += cur->length;
+            sr->send.length += cur->length;
 
             evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
-        sr->nbufref = nsge;
-        sr->length  = 0;
-        sr->rw      = 1;
+        sr->send.nbufref = nsge;
+        sr->send.length  = 0;
+        sr->is_rw        = 0;
 
         ibv_wr_start(qp);
 
