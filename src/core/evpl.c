@@ -337,6 +337,7 @@ evpl_continue(struct evpl *evpl)
     struct timespec       now;
 
     if (evpl->poll_mode && evpl->poll_iterations < evpl->config.poll_iterations) {
+
         for (i = 0; i < evpl->num_poll; ++i) {
             poll = &evpl->poll[i];
             poll->callback(evpl, poll->private_data);
@@ -399,7 +400,7 @@ evpl_continue(struct evpl *evpl)
             }
         } else {
 
-            if (!evpl->poll_mode) {
+            if (evpl->config.poll_mode && evpl->num_poll && !evpl->poll_mode) {
                 for (i = 0; i < evpl->num_poll; ++i) {
                     poll = &evpl->poll[i];
                     if (poll->enter_callback) {
