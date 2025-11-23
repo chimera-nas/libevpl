@@ -487,7 +487,7 @@ evpl_get_hf_monotonic_time(
 {
 #ifdef __x86_64__
 
-    if (evpl->config.hf_time_mode > 0) {
+    if (evpl_shared->config->hf_time_mode > 0) {
         uint64_t tsc;
 
         tsc = __rdtsc();
