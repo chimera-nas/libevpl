@@ -1431,8 +1431,6 @@ evpl_rdmacm_flush_rdma_rw(
             len += cur->length;
         }
 
-        evpl_rdmacm_info("flushing rdma read of length %u sr %p", len, sr);
-
         qp->wr_id    = (uint64_t) sr;
         qp->wr_flags = IBV_SEND_SIGNALED;
 
