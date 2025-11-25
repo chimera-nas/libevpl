@@ -67,7 +67,6 @@ struct evpl_rpc2_msg {
     struct evpl_rpc2_rdma_segment_list    reply_segments;
     struct evpl_rpc2_rdma_segment_list    write_segments;
     struct evpl_iovec                     reply_segment_iov;
-    struct evpl_iovec                     segment_iov[64];
 };
 
 struct evpl_rpc2_program {

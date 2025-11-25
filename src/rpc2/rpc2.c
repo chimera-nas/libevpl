@@ -22,6 +22,8 @@
 
 #include "prometheus-c.h"
 
+#include "rpc2/rpc2_cursor.h"
+
 struct evpl_rpc2_server {
     struct evpl_listener      *listener;
     struct evpl_rpc2_program **programs;
@@ -227,18 +229,20 @@ evpl_rpc2_send_reply(
     int                   length,
     int                   rpc2_stat)
 {
-    struct evpl_iovec        iov, reply_iov;
-    int                      reply_len, reply_niov, offset, rpc_len;
-    uint32_t                 hdr, segment_offset, write_left, left, chunk, reply_offset;
-    struct rpc_msg           rpc_reply;
-    struct rdma_msg          rdma_msg;
-    struct xdr_write_chunk   reply_chunk;
-    struct xdr_write_list    write_list;
-    struct xdr_rdma_segment *target;
-    struct evpl_iovec       *segment_iov, *reply_segment_iov;
-    struct timespec          now;
-    uint64_t                 elapsed;
-    int                      i, reserve, reduce = 0, rdma = msg->conn->protocol == EVPL_DATAGRAM_RDMACM_RC;
+    struct evpl_iovec             iov, reply_iov;
+    int                           reply_len, reply_niov, offset, rpc_len;
+    uint32_t                      hdr, write_left, left, chunk, reply_offset;
+    struct rpc_msg                rpc_reply;
+    struct rdma_msg               rdma_msg;
+    struct xdr_write_chunk        reply_chunk;
+    struct xdr_write_list         write_list;
+    struct xdr_rdma_segment      *target;
+    struct evpl_iovec            *segment_iov, *reply_segment_iov;
+    struct evpl_rpc2_iovec_cursor write_cursor;
+    int                           segment_niov;
+    struct timespec               now;
+    uint64_t                      elapsed;
+    int                           i, reserve, reduce = 0, rdma = msg->conn->protocol == EVPL_DATAGRAM_RDMACM_RC;
 
     reserve = msg->program ? msg->program->reserve : 0;
 
@@ -275,12 +279,11 @@ evpl_rpc2_send_reply(
             rdma_msg.rdma_body.rdma_msg.rdma_reply = &reply_chunk;
         }
 
-        segment_offset = 0;
-        write_left     = msg->write_chunk.length;
-
-        segment_iov = msg->segment_iov;
+        write_left = msg->write_chunk.length;
 
         if (msg->write_segments.num_segments > 0) {
+
+            evpl_rpc2_iovec_cursor_init(&write_cursor, msg->write_chunk.iov, msg->write_chunk.niov);
 
             for (i = 0; i < write_list.entry.num_target; i++) {
                 target = &write_list.entry.target[i];
@@ -293,22 +296,18 @@ evpl_rpc2_send_reply(
                 }
 
                 if (target->length) {
-                    segment_iov->data         = msg->write_chunk.iov->data + segment_offset;
-                    segment_iov->length       = target->length;
-                    segment_iov->private_data = msg->write_chunk.iov->private_data;
 
-                    evpl_rpc2_abort_if(msg->write_chunk.niov > 1, "write_chunk.niov > 1 unsupported atm");
+                    segment_niov = evpl_rpc2_iovec_cursor_move(&write_cursor, msg->dbuf, &segment_iov, target->length);
 
-                    /* XXX this logic is wrong if write_chunk contains many small IOV */
+                    if (unlikely(segment_niov < 0)) {
+                        evpl_rpc2_abort("Failed to move segment iovec");
+                    }
+
                     evpl_rdma_write(evpl, msg->bind,
                                     target->handle, target->offset,
-                                    segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+                                    segment_iov, segment_niov, evpl_rpc2_write_segment_callback, msg);
 
                     msg->pending_writes++;
-
-                    segment_offset += target->length;
-
-                    segment_iov++;
                 }
             }
         }
@@ -665,9 +664,9 @@ evpl_rpc2_recv_msg(
 
                     segment_offset = 0;
 
-                    segment_iov = msg->segment_iov;
-
                     while (read_list) {
+
+                        xdr_dbuf_alloc_space(segment_iov, sizeof(*segment_iov), msg->dbuf);
 
                         segment_iov->data         = msg->read_chunk.iov->data + segment_offset;
                         segment_iov->length       = read_list->entry.target.length;
@@ -680,8 +679,6 @@ evpl_rpc2_recv_msg(
                         msg->pending_reads++;
 
                         segment_offset += read_list->entry.target.length;
-
-                        segment_iov++;
 
                         read_list = read_list->next;
                     }
