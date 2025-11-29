@@ -87,19 +87,9 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_msg    *msg)
 {
-    int i;
-
-    for (i = 0; i < msg->recv_niov; ++i) {
-        evpl_iovec_release(&msg->recv_iov[i]);
-    }
-
-    for (i = 0; i < msg->read_chunk.niov; ++i) {
-        evpl_iovec_release(&msg->read_chunk.iov[i]);
-    }
-
-    for (i = 0; i < msg->write_chunk.niov; ++i) {
-        evpl_iovec_release(&msg->write_chunk.iov[i]);
-    }
+    evpl_iovecs_release(msg->recv_iov, msg->recv_niov);
+    evpl_iovecs_release(msg->read_chunk.iov, msg->read_chunk.niov);
+    evpl_iovecs_release(msg->write_chunk.iov, msg->write_chunk.niov);
 
     LL_PREPEND(thread->free_msg, msg);
 } /* evpl_rpc2_msg_free */
@@ -511,9 +501,7 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
          * when unmarshalling the reply.
          */
 
-        for (int i = 0; i < msg->read_chunk.niov; i++) {
-            evpl_iovec_release(&msg->read_chunk.iov[i]);
-        }
+        evpl_iovecs_release(msg->read_chunk.iov, msg->read_chunk.niov);
         msg->read_chunk.niov   = 0;
         msg->read_chunk.length = 0;
     }

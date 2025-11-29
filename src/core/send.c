@@ -107,9 +107,7 @@ evpl_sendv(
 
     evpl_defer(evpl, &bind->flush_deferral);
 
-    for (; i < niovs; ++i) {
-        evpl_iovec_release(&iovecs[i]);
-    }
+    evpl_iovecs_release(&iovecs[i], niovs - i);
 
 } /* evpl_sendv */
 
@@ -154,9 +152,7 @@ evpl_sendtov(
 
     evpl_defer(evpl, &bind->flush_deferral);
 
-    for (; i < niovs; ++i) {
-        evpl_iovec_release(&iovecs[i]);
-    }
+    evpl_iovecs_release(&iovecs[i], niovs - i);
 
 } /* evpl_sendtov */
 

@@ -29,7 +29,7 @@ struct evpl_buffer {
     struct evpl_iovec_ref ref;
 
     struct evpl_buffer   *next;
-};
+} __attribute__((aligned(64), packed));
 
 
 struct evpl_allocator *

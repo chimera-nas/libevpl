@@ -267,7 +267,7 @@ evpl_io_uring_destroy(
 {
     struct evpl_io_uring_context *ctx = private_data;
     struct evpl_io_uring_request *req;
-    int                           i, n;
+    int                           n;
 
     while (ctx->free_requests) {
         req = ctx->free_requests;
@@ -287,9 +287,7 @@ evpl_io_uring_destroy(
 
     close(ctx->eventfd);
 
-    for (i = 0; i < ctx->recv_ring_size; i++) {
-        evpl_iovec_release(&ctx->recv_ring_iov[i]);
-    }
+    evpl_iovecs_release(ctx->recv_ring_iov, ctx->recv_ring_size);
 
     evpl_free(ctx->recv_ring_iov_empty);
     evpl_free(ctx->recv_ring_iov);

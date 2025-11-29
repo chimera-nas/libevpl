@@ -189,9 +189,7 @@ client_callback(
             printf("[Client] Received %d bytes\n", notify->recv_msg.length);
 
             /* Release buffers - we're done with them */
-            for (int i = 0; i < notify->recv_msg.niov; i++) {
-                evpl_iovec_release(&notify->recv_msg.iovec[i]);
-            }
+            evpl_iovecs_release(notify->recv_msg.iovec, notify->recv_msg.niov);
 
             state->done = 1;
 

@@ -170,9 +170,7 @@ client_callback(
                 state->bytes_received += chunk_size;
 
                 /* Release buffers - we're done with them */
-                for (int i = 0; i < niov; i++) {
-                    evpl_iovec_release(&iov[i]);
-                }
+                evpl_iovecs_release(iov, niov);
 
                 printf("[Client] Received %d bytes now %d bytes total\n", chunk_size, state->bytes_received);
 

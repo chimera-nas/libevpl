@@ -29,7 +29,7 @@ struct evpl_slab {
     struct evpl_buffer    *buffers;
     void                  *framework_private[EVPL_NUM_FRAMEWORK];
     struct evpl_slab      *next;
-};
+} __attribute__((aligned(64), packed));
 
 struct evpl_allocator *
 evpl_allocator_create()
@@ -55,7 +55,7 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
     while (allocator->free_buffers) {
         buffer = allocator->free_buffers;
         LL_DELETE(allocator->free_buffers, buffer);
-        buffer->ref.refcnt--;
+        buffer->ref.slab->refcnt--;
     }
 
     while (allocator->slabs) {

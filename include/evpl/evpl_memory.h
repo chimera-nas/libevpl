@@ -55,6 +55,16 @@ evpl_iovec_ref_release(struct evpl_iovec_ref *ref)
 } // evpl_iovec_release
 
 static inline void
+evpl_iovecs_release(
+    struct evpl_iovec *iov,
+    int                niov)
+{
+    for (int i = 0; i < niov; i++) {
+        evpl_iovec_ref_release(iov[i].ref);
+    }
+} // evpl_iovecs_release
+
+static inline void
 evpl_iovec_release(struct evpl_iovec *iovec)
 {
     evpl_iovec_ref_release(iovec->ref);

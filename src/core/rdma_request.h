@@ -92,15 +92,12 @@ evpl_rdma_request_ring_clear(
     struct evpl_rdma_request_ring *ring)
 {
     struct evpl_rdma_request *request;
-    int                       i;
 
     while (ring->tail != ring->head) {
 
         request = &ring->request[ring->tail];
 
-        for (i = 0; i < request->niov; i++) {
-            evpl_iovec_release(&request->iov[i]);
-        }
+        evpl_iovecs_release(request->iov, request->niov);
 
         ring->tail = (ring->tail + 1) & ring->mask;
     }
