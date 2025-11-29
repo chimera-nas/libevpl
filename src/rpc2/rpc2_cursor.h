@@ -74,9 +74,9 @@ evpl_rpc2_iovec_cursor_move(
             chunk = left;
         }
 
-        (*iov)[cur_niov].data         = cursor->iov->data + cursor->offset;
-        (*iov)[cur_niov].length       = chunk;
-        (*iov)[cur_niov].private_data = cursor->iov->private_data;
+        (*iov)[cur_niov].data   = cursor->iov->data + cursor->offset;
+        (*iov)[cur_niov].length = chunk;
+        (*iov)[cur_niov].ref    = cursor->iov->ref;
 
         cur_niov++;
         left -= chunk;

@@ -5,7 +5,6 @@
 set(CORE_SRC
     evpl.c
     allocator.c
-    buffer.c
     iovec.c
     config.c
     protocol.c

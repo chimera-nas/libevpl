@@ -8,13 +8,20 @@
 #error "Do not include evpl_memory.h directly, include evpl/evpl.h instead"
 #endif /* ifndef EVPL_INCLUDED */
 
-struct evpl_buffer;
+struct evpl_iovec_ref;
+
+struct evpl_iovec_ref {
+    unsigned int      refcnt;
+    struct evpl_slab *slab;
+    void              (*release)(
+        struct evpl_iovec_ref *ref);
+};
 
 struct evpl_iovec {
-    void        *data;
-    unsigned int length;
-    unsigned int pad;
-    void        *private_data; /* for internal use by livbevpl only */
+    void                  *data;
+    unsigned int           length;
+    unsigned int           pad;
+    struct evpl_iovec_ref *ref;
 };
 
 int evpl_iovec_alloc(
@@ -37,8 +44,21 @@ void evpl_iovec_commit(
     struct evpl_iovec *iovecs,
     int                niovs);
 
-void evpl_iovec_release(
-    struct evpl_iovec *iovec);
+
+static inline void
+evpl_iovec_ref_release(struct evpl_iovec_ref *ref)
+{
+    --ref->refcnt;
+    if (ref->refcnt == 0) {
+        ref->release(ref);
+    }
+} // evpl_iovec_release
+
+static inline void
+evpl_iovec_release(struct evpl_iovec *iovec)
+{
+    evpl_iovec_ref_release(iovec->ref);
+} // evpl_iovec_release
 
 static inline void *
 evpl_iovec_data(const struct evpl_iovec *iovec)
@@ -60,8 +80,11 @@ evpl_iovec_set_length(
     iovec->length = length;
 } /* evpl_iovec_set_length */
 
-void evpl_iovec_addref(
-    struct evpl_iovec *iovec);
+static inline void
+evpl_iovec_addref(struct evpl_iovec *iovec)
+{
+    ++iovec->ref->refcnt;
+} // evpl_iovec_addref
 
 void *
 evpl_slab_alloc(

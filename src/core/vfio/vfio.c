@@ -771,7 +771,7 @@ evpl_vfio_prepare_sgls(
     int                   i;
 
     if (niov == 1) {
-        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[0]), EVPL_FRAMEWORK_VFIO);
+        mr = evpl_memory_framework_private(&iov[0], EVPL_FRAMEWORK_VFIO);
 
         cmd->common.psdt       = 1;
         cmd->common.sgl.addr   = mr->iova + (iov[0].data - mr->buffer);
@@ -795,7 +795,7 @@ evpl_vfio_prepare_sgls(
         list = (struct nvme_sgl_desc *) (queue->prplist->buffer + (cid << 12));
 
         for (i = 0; i < niov; ++i) {
-            mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[i]), EVPL_FRAMEWORK_VFIO);
+            mr = evpl_memory_framework_private(&iov[i], EVPL_FRAMEWORK_VFIO);
 
             addr = mr->iova + (iov[i].data - mr->buffer);
 
@@ -849,7 +849,7 @@ evpl_vfio_prepare_prplist(
 
         total_len += iov[i].length;
 
-        mr = evpl_buffer_framework_private(evpl_iovec_buffer(&iov[i]), EVPL_FRAMEWORK_VFIO);
+        mr = evpl_memory_framework_private(&iov[i], EVPL_FRAMEWORK_VFIO);
 
         prpv = mr->iova + (iov[i].data - mr->buffer);
         end  = prpv + iov[i].length;

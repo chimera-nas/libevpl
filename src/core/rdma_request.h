@@ -99,7 +99,7 @@ evpl_rdma_request_ring_clear(
         request = &ring->request[ring->tail];
 
         for (i = 0; i < request->niov; i++) {
-            evpl_iovec_decref(&request->iov[i]);
+            evpl_iovec_release(&request->iov[i]);
         }
 
         ring->tail = (ring->tail + 1) & ring->mask;

@@ -167,9 +167,9 @@ evpl_rpc2_iovec_skip(
             left -= inc->length;
             inc++;
         } else {
-            outc->data         = inc->data + left;
-            outc->length       = inc->length - left;
-            outc->private_data = inc->private_data;
+            outc->data   = inc->data + left;
+            outc->length = inc->length - left;
+            outc->ref    = inc->ref;
             inc++;
             outc++;
             left = 0;
@@ -177,9 +177,9 @@ evpl_rpc2_iovec_skip(
     }
 
     while (inc < in_iov + niov) {
-        outc->data         = inc->data;
-        outc->length       = inc->length;
-        outc->private_data = inc->private_data;
+        outc->data   = inc->data;
+        outc->length = inc->length;
+        outc->ref    = inc->ref;
         inc++;
         outc++;
     }
@@ -387,11 +387,11 @@ evpl_rpc2_send_reply(
 
         xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
 
-        msg->reply_iov->data         = msg_iov[0].data;
-        msg->reply_iov->length       = offset;
-        msg->reply_iov->private_data = msg_iov[0].private_data;
-        msg->reply_niov              = 1;
-        msg->reply_length            = offset;
+        msg->reply_iov->data   = msg_iov[0].data;
+        msg->reply_iov->length = offset;
+        msg->reply_iov->ref    = msg_iov[0].ref;
+        msg->reply_niov        = 1;
+        msg->reply_length      = offset;
 
         msg_iov[0].data   += offset;
         msg_iov[0].length -= offset;
@@ -406,9 +406,9 @@ evpl_rpc2_send_reply(
 
             reply_segment_iov = &msg->reply_segment_iov;
 
-            reply_segment_iov->data         = msg_iov[0].data + reply_offset;
-            reply_segment_iov->length       = reply_chunk.target[i].length;
-            reply_segment_iov->private_data = msg_iov[0].private_data;
+            reply_segment_iov->data   = msg_iov[0].data + reply_offset;
+            reply_segment_iov->length = reply_chunk.target[i].length;
+            reply_segment_iov->ref    = msg_iov[0].ref;
 
             evpl_rdma_write(evpl, msg->bind,
                             reply_chunk.target[i].handle,
@@ -668,9 +668,9 @@ evpl_rpc2_recv_msg(
 
                         xdr_dbuf_alloc_space(segment_iov, sizeof(*segment_iov), msg->dbuf);
 
-                        segment_iov->data         = msg->read_chunk.iov->data + segment_offset;
-                        segment_iov->length       = read_list->entry.target.length;
-                        segment_iov->private_data = msg->read_chunk.iov->private_data;
+                        segment_iov->data   = msg->read_chunk.iov->data + segment_offset;
+                        segment_iov->length = read_list->entry.target.length;
+                        segment_iov->ref    = msg->read_chunk.iov->ref;
 
                         evpl_rdma_read(evpl, msg->bind,
                                        read_list->entry.target.handle, read_list->entry.target.offset,

@@ -34,12 +34,12 @@ extern struct evpl_shared *evpl_shared;
 void *
 evpl_xlio_mem_alloc(size_t size)
 {
-
     evpl_xlio_abort_if(size != evpl_shared->config->slab_size,
                        "XLIO requested allocation of %ld bytes which is not the slab size of %lu bytes",
                        size, evpl_shared->config->slab_size);
 
     return evpl_allocator_alloc_slab(evpl_shared->allocator);
+
 
 } /* evpl_xlio_mem_alloc */
 
@@ -185,7 +185,7 @@ evpl_xlio_socket_completion(
 
     evpl_xlio_send_completion(evpl, s, zc->length);
 
-    evpl_buffer_release(zc->buffer);
+    evpl_iovec_ref_release(&zc->buffer->ref);
 
     --s->zc_pending;
 
@@ -243,7 +243,7 @@ evpl_xlio_socket_rx(
     struct evpl_xlio        *xlio;
     struct evpl_bind        *bind = evpl_private2bind(s);
     struct evpl_iovec       *iovec;
-    struct evpl_buffer      *buffer;
+    struct evpl_xlio_buffer *buffer;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
@@ -253,7 +253,7 @@ evpl_xlio_socket_rx(
 
     iovec->data              = data;
     iovec->length            = len;
-    iovec->private_data      = buffer;
+    iovec->ref               = &buffer->ref;
     bind->iovec_recv.length += len;
 
     s->readable = 1;

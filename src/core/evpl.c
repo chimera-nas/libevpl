@@ -738,6 +738,5 @@ SYMBOL_EXPORT void *
 evpl_slab_alloc(void)
 {
     return evpl_allocator_alloc_slab(evpl_shared->allocator);
-
 }      /* evpl_slab_alloc */
 

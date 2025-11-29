@@ -57,7 +57,7 @@ evpl_iovec_ring_check(const struct evpl_iovec_ring *ring)
         bytes += iovec->length;
 
         evpl_core_abort_if(iovec->length < 1, "zero length iovec in ring");
-        evpl_core_abort_if(evpl_iovec_buffer(iovec)->refcnt < 1,
+        evpl_core_abort_if(iovec->ref->refcnt < 1,
                            "iovec in ring with no refcnt!");
 
         cur = (cur + 1) & ring->mask;
@@ -211,7 +211,7 @@ evpl_iovec_ring_clear(
 
     while (ring->tail != ring->head) {
         iovec = &ring->iovec[ring->tail];
-        evpl_iovec_decref(iovec);
+        evpl_iovec_release(iovec);
         ring->tail = (ring->tail + 1) & ring->mask;
     }
 
@@ -243,7 +243,7 @@ evpl_iovec_ring_iov(
         iovec = &ring->iovec[pos];
 
         evpl_core_assert(iovec->length > 0);
-        evpl_core_assert(((struct evpl_buffer *) iovec->private_data)->refcnt > 0);
+        evpl_core_assert(iovec->ref->refcnt > 0);
 
         iov[niov].iov_base = iovec->data;
         iov[niov].iov_len  = iovec->length;
@@ -279,7 +279,7 @@ evpl_iovec_ring_move_iov(
         iovec = &ring->iovec[ring->tail];
 
         evpl_core_assert(iovec->length > 0);
-        evpl_core_assert(((struct evpl_buffer *) iovec->private_data)->refcnt > 0);
+        evpl_core_assert(iovec->ref->refcnt > 0);
 
         iov[niov].iov_base = iovec->data;
         iov[niov].iov_len  = iovec->length;
@@ -309,10 +309,10 @@ evpl_iovec_ring_consume(
 
         iovec = &ring->iovec[ring->tail];
 
-        evpl_core_assert(((struct evpl_buffer *) iovec->private_data)->refcnt > 0);
+        evpl_core_assert(iovec->ref->refcnt > 0);
 
         if (iovec->length <= length) {
-            evpl_iovec_decref(iovec);
+            evpl_iovec_release(iovec);
             length    -= iovec->length;
             ring->tail = (ring->tail + 1) & ring->mask;
             n++;
@@ -341,12 +341,12 @@ evpl_iovec_ring_copyv(
 
         iovec = &ring->iovec[ring->tail];
 
-        out[niov].private_data = iovec->private_data;
-        out[niov].data         = iovec->data;
+        out[niov].ref  = iovec->ref;
+        out[niov].data = iovec->data;
 
         if (left < iovec->length) {
             chunk = left;
-            evpl_iovec_incref(iovec);
+            evpl_iovec_addref(iovec);
             iovec->data   += left;
             iovec->length -= left;
         } else {
@@ -380,7 +380,7 @@ evpl_iovec_ring_consumev(
 
         ring->length -= iovec->length;
 
-        evpl_iovec_decref(iovec);
+        evpl_iovec_release(iovec);
         ring->tail = (ring->tail + 1) & ring->mask;
 
         niov--;
@@ -398,7 +398,7 @@ evpl_iovec_ring_append(
 
     head = evpl_iovec_ring_head(ring);
 
-    if (head && head->private_data == append->private_data &&
+    if (head && head->ref == append->ref &&
         head->data + head->length == append->data) {
         /* The head iovec is from the same buffer as the one to be
          * appended and they are contiguous. Extend the head iovec.
@@ -406,16 +406,16 @@ evpl_iovec_ring_append(
         head->length += length;
 
         if (length == append->length) {
-            evpl_iovec_decref(append);
+            evpl_iovec_release(append);
         }
     } else {
-        head               = evpl_iovec_ring_add_new(ring);
-        head->data         = append->data;
-        head->private_data = append->private_data;
-        head->length       = length;
+        head         = evpl_iovec_ring_add_new(ring);
+        head->data   = append->data;
+        head->ref    = append->ref;
+        head->length = length;
 
         if (length != append->length) {
-            evpl_iovec_incref(head);
+            evpl_iovec_addref(head);
         }
     }
 

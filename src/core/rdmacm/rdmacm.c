@@ -70,9 +70,9 @@ struct evpl_rdmacm_sr {
             void *private_data;
         } rw;
         struct {
-            uint64_t            length;
-            int                 nbufref;
-            struct evpl_buffer *bufref[32];
+            uint64_t               length;
+            int                    n_iov_ref;
+            struct evpl_iovec_ref *iov_ref[32];
         } send;
 
     };
@@ -586,8 +586,7 @@ evpl_rdmacm_fill_srq(
 
         evpl_iovec_alloc_datagram(evpl, &req->iovec, size);
 
-        mrset = evpl_buffer_framework_private(evpl_iovec_buffer(&req->iovec),
-                                              EVPL_FRAMEWORK_RDMACM);
+        mrset = evpl_memory_framework_private(&req->iovec, EVPL_FRAMEWORK_RDMACM);
 
         mr = mrset[dev->index];
 
@@ -668,8 +667,8 @@ evpl_rdmacm_process_send_completions(
             --rdmacm_id->cur_rdma_rw;
             sr->rw.callback(0, sr->rw.private_data);
         } else {
-            for (i = 0; i < sr->send.nbufref; ++i) {
-                evpl_buffer_release(sr->send.bufref[i]);
+            for (i = 0; i < sr->send.n_iov_ref; ++i) {
+                evpl_iovec_ref_release(sr->send.iov_ref[i]);
             }
             total_bytes += sr->send.length;
             total_msgs++;
@@ -684,8 +683,8 @@ evpl_rdmacm_process_send_completions(
         completed_sr->rw.callback(status, completed_sr->rw.private_data);
     } else {
 
-        for (i = 0; i < completed_sr->send.nbufref; ++i) {
-            evpl_buffer_release(completed_sr->send.bufref[i]);
+        for (i = 0; i < completed_sr->send.n_iov_ref; ++i) {
+            evpl_iovec_ref_release(completed_sr->send.iov_ref[i]);
         }
 
         total_bytes += completed_sr->send.length;
@@ -799,7 +798,7 @@ evpl_rdmacm_poll_cq(
                     rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
 
                     if (unlikely(!rdmacm_id)) {
-                        evpl_iovec_decref(&req->iovec);
+                        evpl_iovec_release(&req->iovec);
                     } else if (rdmacm_id->stream) {
 
                         bind = evpl_private2bind(rdmacm_id);
@@ -1171,7 +1170,7 @@ evpl_rdmacm_destroy(
             req = &dev->srq_reqs[j];
 
             if (req->used) {
-                evpl_iovec_decref(&req->iovec);
+                evpl_iovec_release(&req->iovec);
             }
         }
 
@@ -1358,8 +1357,7 @@ evpl_rdmacm_get_rdma_address(
     uint64_t          *r_address)
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_buffer    *buffer    = evpl_iovec_buffer(iov);
-    struct ibv_mr        **mrset     = evpl_buffer_framework_private(buffer, EVPL_FRAMEWORK_RDMACM);
+    struct ibv_mr        **mrset     = evpl_memory_framework_private(iov, EVPL_FRAMEWORK_RDMACM);
     struct ibv_mr         *mr        = mrset[rdmacm_id->devindex];
 
     *r_key     = mr->rkey;
@@ -1419,8 +1417,7 @@ evpl_rdmacm_flush_rdma_rw(
 
             cur = &req->iov[i];
 
-            mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
-                                                  EVPL_FRAMEWORK_RDMACM);
+            mrset = evpl_memory_framework_private(cur, EVPL_FRAMEWORK_RDMACM);
 
             mr = mrset[rdmacm_id->devindex];
 
@@ -1507,7 +1504,7 @@ evpl_rdmacm_flush_datagram(
                 dbuf[nsge].addr   = cur->data;
                 dbuf[nsge].length = cur->length;
 
-                sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
+                sr->send.iov_ref[nsge] = cur->ref;
 
                 nsge++;
 
@@ -1526,8 +1523,7 @@ evpl_rdmacm_flush_datagram(
 
                 cur = evpl_iovec_ring_tail(&bind->iovec_send);
 
-                mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
-                                                      EVPL_FRAMEWORK_RDMACM);
+                mrset = evpl_memory_framework_private(cur, EVPL_FRAMEWORK_RDMACM);
 
                 mr = mrset[rdmacm_id->devindex];
 
@@ -1535,7 +1531,7 @@ evpl_rdmacm_flush_datagram(
                 sge[nsge].length = cur->length;
                 sge[nsge].lkey   = mr->lkey;
 
-                sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
+                sr->send.iov_ref[nsge] = cur->ref;
 
                 nsge++;
 
@@ -1544,9 +1540,9 @@ evpl_rdmacm_flush_datagram(
 
         }
 
-        sr->send.nbufref = nsge;
-        sr->send.length  = dgram->length;
-        sr->is_rw        = 0;
+        sr->send.n_iov_ref = nsge;
+        sr->send.length    = dgram->length;
+        sr->is_rw          = 0;
 
         ++rdmacm_id->cur_sends;
 
@@ -1632,7 +1628,7 @@ evpl_rdmacm_flush_stream(
                 break;
             }
 
-            mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
+            mrset = evpl_memory_framework_private(cur,
                                                   EVPL_FRAMEWORK_RDMACM);
 
             mr = mrset[rdmacm_id->devindex];
@@ -1641,7 +1637,7 @@ evpl_rdmacm_flush_stream(
             sge[nsge].length = cur->length;
             sge[nsge].lkey   = mr->lkey;
 
-            sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
+            sr->send.iov_ref[nsge] = cur->ref;
 
             nsge++;
             sr->send.length += cur->length;
@@ -1649,9 +1645,9 @@ evpl_rdmacm_flush_stream(
             evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
-        sr->send.nbufref = nsge;
-        sr->send.length  = 0;
-        sr->is_rw        = 0;
+        sr->send.n_iov_ref = nsge;
+        sr->send.length    = 0;
+        sr->is_rw          = 0;
 
         ibv_wr_start(qp);
 
