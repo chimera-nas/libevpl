@@ -75,7 +75,7 @@ void evpl_listener_detach(
     struct evpl                  *evpl,
     struct evpl_listener_binding *binding);
 
-void
+int
 evpl_listen(
     struct evpl_listener *listener,
     enum evpl_protocol_id protocol,
@@ -178,8 +178,8 @@ int evpl_recvv(
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
     int                maxiovecs,
-    int maxlength,
-    int *length);
+    int                maxlength,
+    int               *length);
 
 void evpl_close(
     struct evpl      *evpl,
