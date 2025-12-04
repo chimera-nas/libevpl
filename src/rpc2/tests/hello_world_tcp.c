@@ -55,9 +55,14 @@ server_recv_greet(
 
     /* Send reply */
     rc = prog->send_reply_GREET(evpl, &reply, msg);
-    assert(rc == 0);
 
-    evpl_info("Server sent GREET reply");
+    if (unlikely(rc)) {
+        fprintf(stderr, "Failed to send reply for GREET: %d\n", rc);
+        exit(1);
+    }
+
+    evpl_info(
+        "Server sent GREET reply");
 } /* server_recv_greet */
 
 /* Client-side: Handle GREET reply */
