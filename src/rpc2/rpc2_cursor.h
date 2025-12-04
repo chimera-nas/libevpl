@@ -61,7 +61,11 @@ evpl_rpc2_iovec_cursor_move(
         return -1;
     }
 
-    xdr_dbuf_alloc_space(*iov, sizeof(**iov) * niov, dbuf);
+    iov = xdr_dbuf_alloc_space(sizeof(*iov) * niov, dbuf);
+
+    if (unlikely(iov == NULL)) {
+        return -1;
+    }
 
     left = length;
 

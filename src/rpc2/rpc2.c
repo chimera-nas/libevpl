@@ -385,7 +385,9 @@ evpl_rpc2_send_reply(
 
     if (reduce) {
 
-        xdr_dbuf_alloc_space(msg->reply_iov, sizeof(*msg->reply_iov), msg->dbuf);
+        msg->reply_iov = xdr_dbuf_alloc_space(sizeof(*msg->reply_iov), msg->dbuf);
+
+        evpl_rpc2_abort_if(msg->reply_iov == NULL, "Failed to allocate reply iovec");
 
         msg->reply_iov->data         = msg_iov[0].data;
         msg->reply_iov->length       = offset;
@@ -597,7 +599,10 @@ evpl_rpc2_recv_msg(
                            (hdr & 0x7FFFFFFF) + 4, length);
     }
 
-    xdr_dbuf_alloc_space(hdr_iov, sizeof(*hdr_iov) * niov, thread->dbuf);
+    hdr_iov = xdr_dbuf_alloc_space(sizeof(*hdr_iov) * niov, thread->dbuf);
+
+    evpl_rpc2_abort_if(hdr_iov == NULL, "Failed to allocate hdr iovec");
+
     hdr_niov = evpl_rpc2_iovec_skip(hdr_iov, iovec, niov, offset);
 
     rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, thread->dbuf);
@@ -621,11 +626,17 @@ evpl_rpc2_recv_msg(
             evpl_rpc2_abort("rpc2 received unexpected message type %d", rpc_msg.body.mtype);
     } /* switch */
 
-    xdr_dbuf_alloc_space(msg->recv_iov, sizeof(*msg->recv_iov) * niov, msg->dbuf);
+    msg->recv_iov = xdr_dbuf_alloc_space(sizeof(*msg->recv_iov) * niov, msg->dbuf);
+
+    evpl_rpc2_abort_if(msg->recv_iov == NULL, "Failed to allocate recv iovec");
+
     memcpy(msg->recv_iov, iovec, niov * sizeof(*msg->recv_iov));
     msg->recv_niov = niov;
 
-    xdr_dbuf_alloc_space(req_iov, sizeof(*req_iov) * hdr_niov, msg->dbuf);
+    req_iov = xdr_dbuf_alloc_space(sizeof(*req_iov) * hdr_niov, msg->dbuf);
+
+    evpl_rpc2_abort_if(req_iov == NULL, "Failed to allocate req iovec");
+
     req_niov = evpl_rpc2_iovec_skip(req_iov, hdr_iov, hdr_niov, rc);
 
     request_length = length - (rc + offset);
@@ -656,7 +667,9 @@ evpl_rpc2_recv_msg(
                         read_list = read_list->next;
                     }
 
-                    xdr_dbuf_alloc_space(msg->read_chunk.iov, sizeof(*msg->read_chunk.iov), msg->dbuf);
+                    msg->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->read_chunk.iov), msg->dbuf);
+
+                    evpl_rpc2_abort_if(msg->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
 
                     msg->read_chunk.niov = evpl_iovec_alloc(evpl, msg->read_chunk.length, 4096, 1, msg->read_chunk.iov);
 
@@ -666,7 +679,9 @@ evpl_rpc2_recv_msg(
 
                     while (read_list) {
 
-                        xdr_dbuf_alloc_space(segment_iov, sizeof(*segment_iov), msg->dbuf);
+                        segment_iov = xdr_dbuf_alloc_space(sizeof(*segment_iov), msg->dbuf);
+
+                        evpl_rpc2_abort_if(segment_iov == NULL, "Failed to allocate segment iovec");
 
                         segment_iov->data         = msg->read_chunk.iov->data + segment_offset;
                         segment_iov->length       = read_list->entry.target.length;
@@ -1101,7 +1116,10 @@ evpl_rpc2_call(
 
     msg = evpl_rpc2_msg_alloc(thread);
 
-    xdr_dbuf_alloc_space(msg->req_iov, sizeof(*msg->req_iov) * req_niov, msg->dbuf);
+    msg->req_iov = xdr_dbuf_alloc_space(sizeof(*msg->req_iov) * req_niov, msg->dbuf);
+
+    evpl_rpc2_abort_if(msg->req_iov == NULL, "Failed to allocate req iovec");
+
     memcpy(msg->req_iov, req_iov, req_niov * sizeof(*msg->req_iov));
 
     msg->conn         = conn;
@@ -1140,7 +1158,10 @@ evpl_rpc2_call(
             evpl_rpc2_abort_if(rdma_chunk->niov == 0, "rdma_chunk niov is 0");
             evpl_rpc2_abort_if(rdma_chunk->niov > 1, "rdma_chunk niov is greater than 1");
 
-            xdr_dbuf_alloc_space(msg->read_chunk.iov, sizeof(*msg->read_chunk.iov) * rdma_chunk->niov, msg->dbuf);
+            msg->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->read_chunk.iov) * rdma_chunk->niov, msg->dbuf);
+
+            evpl_rpc2_abort_if(msg->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
+
             memcpy(msg->read_chunk.iov, rdma_chunk->iov, rdma_chunk->niov * sizeof(*msg->read_chunk.iov));
             msg->read_chunk.niov         = rdma_chunk->niov;
             msg->read_chunk.length       = rdma_chunk->length;
@@ -1162,7 +1183,9 @@ evpl_rpc2_call(
 
         if (max_rdma_write_chunk) {
 
-            xdr_dbuf_alloc_space(msg->write_chunk.iov, sizeof(*msg->write_chunk.iov), msg->dbuf);
+            msg->write_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->write_chunk.iov), msg->dbuf);
+
+            evpl_rpc2_abort_if(msg->write_chunk.iov == NULL, "Failed to allocate write chunk iovec");
 
             msg->write_chunk.niov   = evpl_iovec_alloc(evpl, max_rdma_write_chunk, 4096, 1, msg->write_chunk.iov);
             msg->write_chunk.length = max_rdma_write_chunk;

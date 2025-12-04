@@ -38,6 +38,7 @@ server_recv_greet(
     struct test_state *state = private_data;
     struct HELLO_V1   *prog  = msg->program->program_data;
     struct Hello       reply;
+    int                rc;
 
     evpl_info("Server received GREET request: id=%u, greeting='%s'",
               request->id, request->greeting.str);
@@ -53,9 +54,15 @@ server_recv_greet(
     xdr_set_str_static(&reply, greeting, "Hello from server!", strlen("Hello from server!"));
 
     /* Send reply */
-    prog->send_reply_GREET(evpl, &reply, msg);
+    rc = prog->send_reply_GREET(evpl, &reply, msg);
 
-    evpl_info("Server sent GREET reply");
+    if (unlikely(rc)) {
+        fprintf(stderr, "Failed to send reply for GREET: %d\n", rc);
+        exit(1);
+    }
+
+    evpl_info(
+        "Server sent GREET reply");
 } /* server_recv_greet */
 
 /* Client-side: Handle GREET reply */
