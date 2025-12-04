@@ -1397,7 +1397,7 @@ evpl_rdmacm_flush_rdma_rw(
     struct evpl_iovec        *cur;
     struct evpl_rdmacm_sr    *sr;
     struct ibv_sge           *sge;
-    int                       len = 0, i;
+    int                       i;
 
     while (rdmacm_id->cur_rdma_rw < rdmacm_id->max_rdma_rw &&
            !evpl_rdma_request_ring_is_empty(&bind->rdma_rw)) {
@@ -1414,7 +1414,6 @@ evpl_rdmacm_flush_rdma_rw(
 
         sge = alloca(sizeof(struct ibv_sge) * req->niov);
 
-        len = 0;
         for (i = 0; i < req->niov; ++i) {
 
             cur = &req->iov[i];
@@ -1427,8 +1426,6 @@ evpl_rdmacm_flush_rdma_rw(
             sge[i].addr   = (uint64_t) cur->data;
             sge[i].length = cur->length;
             sge[i].lkey   = mr->lkey;
-
-            len += cur->length;
         }
 
         qp->wr_id    = (uint64_t) sr;
