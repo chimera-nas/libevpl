@@ -250,13 +250,17 @@ evpl_allocator_free(
 } /* evpl_allocator_free */
 
 void *
-evpl_allocator_alloc_slab(struct evpl_allocator *allocator)
+evpl_allocator_alloc_slab(
+    struct evpl_allocator *allocator,
+    void                 **slab_private)
 {
     struct evpl_slab *slab;
 
     pthread_mutex_lock(&allocator->lock);
     slab = evpl_allocator_create_slab(allocator);
     pthread_mutex_unlock(&allocator->lock);
+
+    *slab_private = slab;
 
     return slab->data;
 
@@ -289,6 +293,7 @@ evpl_buffer_alloc(struct evpl *evpl)
     buffer = evpl_allocator_alloc(evpl_shared->allocator);
 
     buffer->ref.refcnt  = 1;
+    buffer->ref.flags   = 0;
     buffer->ref.release = evpl_buffer_free;
     buffer->used        = 0;
 

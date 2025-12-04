@@ -29,7 +29,7 @@ struct evpl_buffer {
     struct evpl_iovec_ref ref;
 
     struct evpl_buffer   *next;
-} __attribute__((aligned(64), packed));
+} __attribute__((aligned(64)));
 
 
 struct evpl_allocator *
@@ -49,7 +49,8 @@ evpl_allocator_alloc(
 
 void *
 evpl_allocator_alloc_slab(
-    struct evpl_allocator *allocator);
+    struct evpl_allocator *allocator,
+    void                 **slab_private);
 
 void
 evpl_allocator_free(
@@ -69,6 +70,7 @@ evpl_buffer_release(struct evpl_buffer *buffer)
     buffer->ref.refcnt--;
 
     if (buffer->ref.refcnt == 0) {
+        buffer->ref.flags = EVPL_IOVEC_REC_FLAG_FREE;
         buffer->ref.release(&buffer->ref);
     }
 

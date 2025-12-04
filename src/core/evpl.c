@@ -734,9 +734,18 @@ evpl_protocol_lookup(
     return -1;
 } /* evpl_protocol_lookup */
 
-SYMBOL_EXPORT void *
-evpl_slab_alloc(void)
+SYMBOL_EXPORT uint64_t
+evpl_get_slab_size(void)
 {
-    return evpl_allocator_alloc_slab(evpl_shared->allocator);
+    __evpl_init();
+    return evpl_shared->config->slab_size;
+} /* evpl_get_slab_size */
+
+SYMBOL_EXPORT void *
+evpl_slab_alloc(void **slab_private)
+{
+    __evpl_init();
+
+    return evpl_allocator_alloc_slab(evpl_shared->allocator, slab_private);
 }      /* evpl_slab_alloc */
 

@@ -85,6 +85,9 @@ evpl_sendv(
     }
 
     for (i = 0; left && i < niovs; ++i) {
+
+        evpl_core_abort_if(iovecs[i].ref->refcnt == 0, "iovec refcnt is 0 at send");
+        evpl_core_abort_if(iovecs[i].ref->flags & EVPL_IOVEC_REC_FLAG_FREE, "iovec ref is already free at send");
         iovec = evpl_iovec_ring_add(&bind->iovec_send, &iovecs[i]);
 
         if (iovec->length <= left) {

@@ -34,11 +34,13 @@ extern struct evpl_shared *evpl_shared;
 void *
 evpl_xlio_mem_alloc(size_t size)
 {
+    void *slab_private;
+
     evpl_xlio_abort_if(size != evpl_shared->config->slab_size,
                        "XLIO requested allocation of %ld bytes which is not the slab size of %lu bytes",
                        size, evpl_shared->config->slab_size);
 
-    return evpl_allocator_alloc_slab(evpl_shared->allocator);
+    return evpl_allocator_alloc_slab(evpl_shared->allocator, &slab_private);
 
 
 } /* evpl_xlio_mem_alloc */

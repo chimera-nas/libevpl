@@ -10,8 +10,11 @@
 
 struct evpl_iovec_ref;
 
+#define EVPL_IOVEC_REC_FLAG_FREE 0x1
+
 struct evpl_iovec_ref {
     unsigned int      refcnt;
+    unsigned int      flags;
     struct evpl_slab *slab;
     void              (*release)(
         struct evpl_iovec_ref *ref);
@@ -48,8 +51,14 @@ void evpl_iovec_commit(
 static inline void
 evpl_iovec_ref_release(struct evpl_iovec_ref *ref)
 {
+    if (__builtin_expect(ref->flags & EVPL_IOVEC_REC_FLAG_FREE, 0)) {
+        evpl_abort("core", __FILE__, __LINE__, "iovec ref is already free");
+        return;
+    }
+
     --ref->refcnt;
     if (ref->refcnt == 0) {
+        ref->flags |= EVPL_IOVEC_REC_FLAG_FREE;
         ref->release(ref);
     }
 } // evpl_iovec_release
@@ -93,9 +102,18 @@ evpl_iovec_set_length(
 static inline void
 evpl_iovec_addref(struct evpl_iovec *iovec)
 {
+    if (__builtin_expect(iovec->ref->flags & EVPL_IOVEC_REC_FLAG_FREE, 0)) {
+        evpl_abort("core", __FILE__, __LINE__, "iovec ref is already free");
+        return;
+    }
+
     ++iovec->ref->refcnt;
+    iovec->ref->flags &= ~EVPL_IOVEC_REC_FLAG_FREE;
 } // evpl_iovec_addref
+
+uint64_t evpl_get_slab_size(
+    void);
 
 void *
 evpl_slab_alloc(
-    void);
+    void **slab_private);
