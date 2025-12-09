@@ -6,10 +6,21 @@
 
 #include "core/endpoint.h"
 
+#define EVPL_DGRAM_TYPE_SEND       0
+#define EVPL_DGRAM_TYPE_RDMA_WRITE 1
+
 struct evpl_dgram {
-    int                  niov;
-    int                  length;
+    uint8_t              dgram_type;
+    uint8_t              pad;
+    uint16_t             niov;
+    uint32_t             length;
+    uint32_t             remote_key;
+    uint64_t             remote_address;
     struct evpl_address *addr;
+    void                 (*callback)(
+        int   status,
+        void *private_data);
+    void                *private_data;
 };
 
 struct evpl_dgram_ring {

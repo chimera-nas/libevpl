@@ -43,6 +43,8 @@ typedef void (*evpl_notify_callback_t)(
     struct evpl_notify *notify,
     void               *private_data);
 
+#define EVPL_SEND_FLAG_TAKE_REF  0x01
+
 typedef int (*evpl_segment_callback_t)(
     struct evpl      *evpl,
     struct evpl_bind *bind,
@@ -114,7 +116,8 @@ void evpl_sendv(
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
     int                nbufvecs,
-    int                length);
+    int                length,
+    unsigned int       flags);
 
 void evpl_sendto(
     struct evpl         *evpl,
@@ -136,7 +139,8 @@ void evpl_sendtov(
     struct evpl_address *address,
     struct evpl_iovec   *iovecs,
     int                  nbufvecs,
-    int                  length);
+    int                  length,
+    unsigned int         flags);
 
 void evpl_sendtoepv(
     struct evpl          *evpl,
@@ -144,7 +148,8 @@ void evpl_sendtoepv(
     struct evpl_endpoint *endpoint,
     struct evpl_iovec    *iovecs,
     int                   nbufvecs,
-    int                   length);
+    int                   length,
+    unsigned int          flags);
 
 int evpl_peek(
     struct evpl      *evpl,
@@ -178,8 +183,8 @@ int evpl_recvv(
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
     int                maxiovecs,
-    int maxlength,
-    int *length);
+    int                maxlength,
+    int               *length);
 
 void evpl_close(
     struct evpl      *evpl,

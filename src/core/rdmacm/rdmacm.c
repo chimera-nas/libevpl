@@ -60,22 +60,17 @@ struct evpl_rdmacm_request {
 
 struct evpl_rdmacm_sr {
     struct evpl_rdmacm_id *rdmacm_id;
-    int                    is_rw;
-
-    union {
-        struct {
-            void  (*callback)(
-                int   status,
-                void *private_data);
-            void *private_data;
-        } rw;
-        struct {
-            uint64_t            length;
-            int                 nbufref;
-            struct evpl_buffer *bufref[32];
-        } send;
-
-    };
+    uint8_t                is_read;
+    uint8_t                is_write;
+    uint8_t                active;
+    uint8_t                signaled;
+    uint16_t               nbufref;
+    uint32_t               length;
+    void                   (*callback)(
+        int   status,
+        void *private_data);
+    void                  *private_data;
+    struct evpl_buffer    *bufref[32];
 };
 
 struct evpl_rdmacm_sr_ring {
@@ -150,8 +145,8 @@ struct evpl_rdmacm_id {
     int                           stream;
     int                           ud;
     int                           connected;
-    int                           max_rdma_rw;
-    int                           cur_rdma_rw;
+    int                           max_rdma_reads;
+    int                           cur_rdma_reads;
     int                           cur_sends;
 
     struct evpl_address          *resolve_addr;
@@ -516,6 +511,8 @@ evpl_rdmacm_event_callback(
             break;
         case RDMA_CM_EVENT_DISCONNECTED:
 
+            evpl_rdmacm_info("disconnected");
+
             bind = evpl_private2bind(rdmacm_id);
 
             rdmacm_id->connected = 0;
@@ -654,54 +651,66 @@ evpl_rdmacm_process_send_completions(
     struct evpl_rdmacm_sr      *sr;
     struct evpl_bind           *bind;
     struct evpl_notify          notify;
-    int                         i;
+    int                         i, seen_completed_sr = 0;
     uint64_t                    total_bytes = 0;
     uint64_t                    total_msgs  = 0;
+    int                         n           = 0;
 
-    while (ring->tail != ring->head && &ring->sr[ring->tail] != completed_sr) {
+    if (unlikely(!completed_sr->active)) {
+        evpl_rdmacm_error("completed_sr %p not active", completed_sr);
+        return;
+    }
+
+    while (ring->tail != ring->head && !seen_completed_sr) {
 
         sr = &ring->sr[ring->tail];
 
+        if (sr == completed_sr) {
+            seen_completed_sr = 1;
+        }
+
+        evpl_rdmacm_abort_if(!sr->active, "found inactive sr before completed_sr");
+
+        if (sr != completed_sr && sr->signaled) {
+            evpl_rdmacm_error("found signaled sr before completed_sr");
+        }
+
+        //evpl_rdmacm_info("completed_sr %p next sr %p signaled %d", completed_sr, sr, sr->signaled);
+
+        sr->active = 0;
+
+
         ring->tail = (ring->tail + 1) & ring->mask;
 
-        if (sr->is_rw) {
-            --rdmacm_id->cur_rdma_rw;
-            sr->rw.callback(0, sr->rw.private_data);
+        for (i = 0; i < sr->nbufref; ++i) {
+            evpl_buffer_release(sr->bufref[i]);
+        }
+
+        if (sr->is_read) {
+            --rdmacm_id->cur_rdma_reads;
         } else {
-            for (i = 0; i < sr->send.nbufref; ++i) {
-                evpl_buffer_release(sr->send.bufref[i]);
-            }
-            total_bytes += sr->send.length;
-            total_msgs++;
             --rdmacm_id->cur_sends;
         }
 
-    }
-
-    if (completed_sr->is_rw) {
-        --rdmacm_id->cur_rdma_rw;
-
-        completed_sr->rw.callback(status, completed_sr->rw.private_data);
-    } else {
-
-        for (i = 0; i < completed_sr->send.nbufref; ++i) {
-            evpl_buffer_release(completed_sr->send.bufref[i]);
+        if (sr->is_read || sr->is_write) {
+            if (sr->callback) {
+                sr->callback(status, sr->private_data);
+            }
+        } else {
+            total_bytes += sr->length;
+            total_msgs++;
         }
 
-        total_bytes += completed_sr->send.length;
-        total_msgs++;
-        --rdmacm_id->cur_sends;
+        n++;
+
     }
 
-    ring->tail = (ring->tail + 1) & ring->mask;
+    if (unlikely(!seen_completed_sr)) {
+        evpl_rdmacm_error("completed_sr %p not found after processing %d srs", completed_sr, n);
+        return;
+    }
 
     bind = evpl_private2bind(rdmacm_id);
-
-    if (!evpl_rdma_request_ring_is_empty(&bind->rdma_rw) &&
-        rdmacm_id->cur_rdma_rw < rdmacm_id->max_rdma_rw) {
-        evpl_defer(evpl, &bind->flush_deferral);
-    }
-
 
     if (likely(rdmacm_id->id)) {
 
@@ -721,6 +730,11 @@ evpl_rdmacm_process_send_completions(
                 evpl_close(evpl, bind);
             }
         }
+    }
+
+    if (!evpl_dgram_ring_is_empty(&bind->dgram_send) ||
+        !evpl_rdma_request_ring_is_empty(&bind->rdma_reads)) {
+        evpl_defer(evpl, &bind->flush_deferral);
     }
 } /* evpl_rdmacm_process_send_completions */
 
@@ -1223,8 +1237,8 @@ evpl_rdmacm_attach(
     conn_param.responder_resources = accepted_id->conn_param.initiator_depth;
     conn_param.initiator_depth     = accepted_id->conn_param.initiator_depth;//responder_resources;
 
-    rdmacm_id->max_rdma_rw = accepted_id->conn_param.initiator_depth;
-    rdmacm_id->cur_rdma_rw = 0;
+    rdmacm_id->max_rdma_reads = accepted_id->conn_param.initiator_depth;
+    rdmacm_id->cur_rdma_reads = 0;
 
     rc = rdma_accept(accepted_id->id, &conn_param);
 
@@ -1242,9 +1256,9 @@ evpl_rdmacm_listen(
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     int                    rc;
 
-    rdmacm_id->stream      = bind->protocol->stream;
-    rdmacm_id->ud          = 0;
-    rdmacm_id->cur_rdma_rw = 0;
+    rdmacm_id->stream         = bind->protocol->stream;
+    rdmacm_id->ud             = 0;
+    rdmacm_id->cur_rdma_reads = 0;
 
     rdmacm_id->resolve_id = NULL;
 
@@ -1386,7 +1400,7 @@ evpl_rdmacm_ud_resolve(
 } /* evpl_rdmacm_ud_resolve */
 
 static inline void
-evpl_rdmacm_flush_rdma_rw(
+evpl_rdmacm_flush_rdma_reads(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
@@ -1399,18 +1413,21 @@ evpl_rdmacm_flush_rdma_rw(
     struct ibv_sge           *sge;
     int                       i;
 
-    while (rdmacm_id->cur_rdma_rw < rdmacm_id->max_rdma_rw &&
-           !evpl_rdma_request_ring_is_empty(&bind->rdma_rw)) {
+    while (rdmacm_id->cur_rdma_reads < rdmacm_id->max_rdma_reads &&
+           !evpl_rdma_request_ring_is_empty(&bind->rdma_reads)) {
 
-        req = evpl_rdma_request_ring_tail(&bind->rdma_rw);
+        req = evpl_rdma_request_ring_tail(&bind->rdma_reads);
 
-        rdmacm_id->cur_rdma_rw++;
+        rdmacm_id->cur_rdma_reads++;
 
         sr = evpl_rdmacm_sr_alloc(rdmacm_id);
 
-        sr->rw.callback     = req->callback;
-        sr->rw.private_data = req->private_data;
-        sr->is_rw           = 1;
+        sr->callback     = req->callback;
+        sr->private_data = req->private_data;
+        sr->is_read      = 1;
+        sr->is_write     = 0;
+        sr->nbufref      = 0;
+        sr->active       = 1;
 
         sge = alloca(sizeof(struct ibv_sge) * req->niov);
 
@@ -1431,15 +1448,11 @@ evpl_rdmacm_flush_rdma_rw(
         qp->wr_id    = (uint64_t) sr;
         qp->wr_flags = IBV_SEND_SIGNALED;
 
-        if (req->type == EVPL_RDMA_READ) {
-            ibv_wr_rdma_read(qp, req->remote_key, req->remote_address);
-        } else {
-            ibv_wr_rdma_write(qp, req->remote_key, req->remote_address);
-        }
+        ibv_wr_rdma_read(qp, req->remote_key, req->remote_address);
 
         ibv_wr_set_sge_list(qp, req->niov, sge);
 
-        evpl_rdma_request_ring_remove(&bind->rdma_rw);
+        evpl_rdma_request_ring_remove(&bind->rdma_reads);
     }
 } /* evpl_rdmacm_flush_rdma_rw */
 
@@ -1458,6 +1471,7 @@ evpl_rdmacm_flush_datagram(
     struct ibv_data_buf   *dbuf;
     struct evpl_rdmacm_ah *ah;
     int                    nsge, rc, send_inline, need_signal;
+    int                    send_limit = 64;
 
     if (unlikely(!qp || !rdmacm_id->connected)) {
         return;
@@ -1465,9 +1479,9 @@ evpl_rdmacm_flush_datagram(
 
     ibv_wr_start(qp);
 
-    evpl_rdmacm_flush_rdma_rw(evpl, bind);
+    evpl_rdmacm_flush_rdma_reads(evpl, bind);
 
-    while (rdmacm_id->cur_sends < evpl_shared->config->rdmacm_sq_size &&
+    while (rdmacm_id->cur_sends < send_limit &&
            !evpl_dgram_ring_is_empty(&bind->dgram_send)) {
 
         dgram = evpl_dgram_ring_tail(&bind->dgram_send);
@@ -1490,7 +1504,8 @@ evpl_rdmacm_flush_datagram(
 
         sr = evpl_rdmacm_sr_alloc(rdmacm_id);
 
-        if (dgram->length <= evpl_shared->config->rdmacm_max_inline) {
+        if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND &&
+            dgram->length <= evpl_shared->config->rdmacm_max_inline) {
             send_inline = 1;
 
             nsge = 0;
@@ -1504,7 +1519,7 @@ evpl_rdmacm_flush_datagram(
                 dbuf[nsge].addr   = cur->data;
                 dbuf[nsge].length = cur->length;
 
-                sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
+                sr->bufref[nsge] = evpl_iovec_buffer(cur);
 
                 nsge++;
 
@@ -1532,7 +1547,7 @@ evpl_rdmacm_flush_datagram(
                 sge[nsge].length = cur->length;
                 sge[nsge].lkey   = mr->lkey;
 
-                sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
+                sr->bufref[nsge] = evpl_iovec_buffer(cur);
 
                 nsge++;
 
@@ -1541,22 +1556,39 @@ evpl_rdmacm_flush_datagram(
 
         }
 
-        sr->send.nbufref = nsge;
-        sr->send.length  = dgram->length;
-        sr->is_rw        = 0;
+        sr->nbufref = nsge;
+        sr->length  = dgram->length;
+        sr->active  = 1;
+
+        sr->is_read = 0;
+
+        if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
+            sr->is_write = 0;
+        } else {
+
+            sr->callback     = dgram->callback;
+            sr->private_data = dgram->private_data;
+            sr->is_write     = 1;
+        }
 
         ++rdmacm_id->cur_sends;
 
         evpl_dgram_ring_remove(&bind->dgram_send);
 
-        qp->wr_id = (uint64_t) sr;
-
-        need_signal =  rdmacm_id->cur_sends == evpl_shared->config->rdmacm_sq_size ||
+        need_signal =  rdmacm_id->cur_sends == send_limit ||
             evpl_dgram_ring_is_empty(&bind->dgram_send);
+
+        sr->signaled = need_signal;
+
+        qp->wr_id = (uint64_t) sr;
 
         qp->wr_flags = need_signal ? IBV_SEND_SIGNALED : 0;
 
-        ibv_wr_send(qp);
+        if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
+            ibv_wr_send(qp);
+        } else {
+            ibv_wr_rdma_write(qp, dgram->remote_key, dgram->remote_address);
+        }
 
         if (send_inline) {
             ibv_wr_set_inline_data_list(qp, nsge, dbuf);
@@ -1608,7 +1640,7 @@ evpl_rdmacm_flush_stream(
         return;
     }
 
-    evpl_rdmacm_flush_rdma_rw(evpl, bind);
+    evpl_rdmacm_flush_rdma_reads(evpl, bind);
 
     sge = alloca(sizeof(struct ibv_sge) * config->max_num_iovec);
 
@@ -1618,14 +1650,14 @@ evpl_rdmacm_flush_stream(
 
         nsge = 0;
 
-        sr->send.length = 0;
+        sr->length = 0;
 
         while (nsge < config->max_num_iovec &&
                !evpl_iovec_ring_is_empty(&bind->iovec_send)) {
 
             cur = evpl_iovec_ring_tail(&bind->iovec_send);
 
-            if (sr->send.length + cur->length > config->max_datagram_size) {
+            if (sr->length + cur->length > config->max_datagram_size) {
                 break;
             }
 
@@ -1638,22 +1670,29 @@ evpl_rdmacm_flush_stream(
             sge[nsge].length = cur->length;
             sge[nsge].lkey   = mr->lkey;
 
-            sr->send.bufref[nsge] = evpl_iovec_buffer(cur);
+            sr->bufref[nsge] = evpl_iovec_buffer(cur);
 
             nsge++;
-            sr->send.length += cur->length;
+            sr->length += cur->length;
 
             evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
-        sr->send.nbufref = nsge;
-        sr->send.length  = 0;
-        sr->is_rw        = 0;
+        sr->nbufref  = nsge;
+        sr->length   = 0;
+        sr->is_read  = 0;
+        sr->is_write = 0;
+
+        sr->active = 1;
+
+        sr->signaled = evpl_iovec_ring_is_empty(&bind->iovec_send) ? 1 : 0;
+
 
         ibv_wr_start(qp);
 
         qp->wr_id    = (uint64_t) sr;
-        qp->wr_flags = evpl_iovec_ring_is_empty(&bind->iovec_send) ? IBV_SEND_SIGNALED : 0;
+        qp->wr_flags = sr->signaled ? IBV_SEND_SIGNALED : 0;
+
         ibv_wr_send(qp);
         ibv_wr_set_sge_list(qp, nsge, sge);
 
@@ -1683,11 +1722,11 @@ evpl_rdmacm_bind(
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
     int                    rc;
 
-    rdmacm_id->stream      = 0;
-    rdmacm_id->ud          = 1;
-    rdmacm_id->cur_rdma_rw = 0;
-    rdmacm_id->cur_sends   = 0;
-    rdmacm                 = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
+    rdmacm_id->stream         = 0;
+    rdmacm_id->ud             = 1;
+    rdmacm_id->cur_rdma_reads = 0;
+    rdmacm_id->cur_sends      = 0;
+    rdmacm                    = evpl_framework_private(evpl, EVPL_FRAMEWORK_RDMACM);
 
     rdmacm_id->rdmacm = rdmacm;
 
@@ -1755,6 +1794,7 @@ evpl_rdmacm_pending_close(
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
 
     if (rdmacm_id->connected) {
+        evpl_rdmacm_info("disconnecting");
         rdma_disconnect(rdmacm_id->id);
     } else {
         evpl_rdmacm_destroy_qp(evpl, rdmacm_id);

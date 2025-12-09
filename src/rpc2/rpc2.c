@@ -70,7 +70,6 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_thread *thread)
 
     msg->recv_niov                   = 0;
     msg->pending_reads               = 0;
-    msg->pending_writes              = 0;
     msg->read_chunk.niov             = 0;
     msg->read_chunk.length           = 0;
     msg->write_chunk.niov            = 0;
@@ -95,10 +94,6 @@ evpl_rpc2_msg_free(
 
     for (i = 0; i < msg->read_chunk.niov; ++i) {
         evpl_iovec_release(&msg->read_chunk.iov[i]);
-    }
-
-    for (i = 0; i < msg->write_chunk.niov; ++i) {
-        evpl_iovec_release(&msg->write_chunk.iov[i]);
     }
 
     LL_PREPEND(thread->free_msg, msg);
@@ -198,27 +193,12 @@ evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
         msg->bind,
         msg->reply_iov,
         msg->reply_niov,
-        msg->reply_length);
+        msg->reply_length,
+        EVPL_SEND_FLAG_TAKE_REF);
 
 
     evpl_rpc2_msg_free(thread, msg);
 } /* evpl_rpc2_dispatch_reply */
-
-static void
-evpl_rpc2_write_segment_callback(
-    int   status,
-    void *private_data)
-{
-    struct evpl_rpc2_msg *msg = private_data;
-
-    evpl_rpc2_abort_if(status, "Failed to write rdma segment");
-
-    msg->pending_writes--;
-
-    if (msg->pending_writes == 0) {
-        evpl_rpc2_dispatch_reply(msg);
-    }
-} /* evpl_rpc2_write_segment_callback */
 
 static int
 evpl_rpc2_send_reply(
@@ -305,10 +285,14 @@ evpl_rpc2_send_reply(
 
                     evpl_rdma_write(evpl, msg->bind,
                                     target->handle, target->offset,
-                                    segment_iov, segment_niov, evpl_rpc2_write_segment_callback, msg);
-
-                    msg->pending_writes++;
+                                    segment_iov, segment_niov,
+                                    0,
+                                    NULL, NULL);
                 }
+            }
+
+            for (i = 0; i < msg->write_chunk.niov; i++) {
+                evpl_iovec_release(&msg->write_chunk.iov[i]);
             }
         }
 
@@ -415,11 +399,11 @@ evpl_rpc2_send_reply(
             evpl_rdma_write(evpl, msg->bind,
                             reply_chunk.target[i].handle,
                             reply_chunk.target[i].offset,
-                            reply_segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+                            reply_segment_iov, 1,
+                            EVPL_RDMA_FLAG_TAKE_REF,
+                            NULL, NULL);
 
             reply_offset += reply_chunk.target[i].length;
-
-            msg->pending_writes++;
         }
 
     } else {
@@ -428,9 +412,7 @@ evpl_rpc2_send_reply(
         msg->reply_length = length;
     }
 
-    if (msg->pending_writes == 0) {
-        evpl_rpc2_dispatch_reply(msg);
-    }
+    evpl_rpc2_dispatch_reply(msg);
 
     return 0;
 } /* evpl_rpc2_send_reply */
@@ -687,7 +669,8 @@ evpl_rpc2_recv_msg(
 
                         evpl_rdma_read(evpl, msg->bind,
                                        read_list->entry.target.handle, read_list->entry.target.offset,
-                                       segment_iov, 1, evpl_rpc2_read_segment_callback, msg);
+                                       segment_iov, 1,
+                                       evpl_rpc2_read_segment_callback, msg);
 
                         msg->pending_reads++;
 
@@ -1246,7 +1229,7 @@ evpl_rpc2_call(
 
     /* Send the request - use out_iov which contains the marshalled header + payload */
 
-    evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length);
+    evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length, EVPL_SEND_FLAG_TAKE_REF);
 
     return 0;
 } /* evpl_rpc2_call */

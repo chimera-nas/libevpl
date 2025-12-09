@@ -33,7 +33,7 @@ struct evpl_bind {
     struct evpl_iovec_ring        iovec_send;
     struct evpl_iovec_ring        iovec_recv;
 
-    struct evpl_rdma_request_ring rdma_rw;
+    struct evpl_rdma_request_ring rdma_reads;
 
     struct evpl_dgram_ring        dgram_send;
 

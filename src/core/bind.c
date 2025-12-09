@@ -137,7 +137,7 @@ evpl_bind_prepare(
             evpl_shared->config->page_size);
 
         evpl_rdma_request_ring_alloc(
-            &bind->rdma_rw,
+            &bind->rdma_reads,
             evpl_shared->config->rdma_request_ring_size,
             evpl_shared->config->page_size);
 
@@ -213,7 +213,7 @@ evpl_bind_destroy(
     evpl_iovec_ring_clear(evpl, &bind->iovec_recv);
     evpl_iovec_ring_clear(evpl, &bind->iovec_send);
     evpl_dgram_ring_clear(evpl, &bind->dgram_send);
-    evpl_rdma_request_ring_clear(evpl, &bind->rdma_rw);
+    evpl_rdma_request_ring_clear(evpl, &bind->rdma_reads);
 
     bind->flags |= EVPL_BIND_CLOSED;
 

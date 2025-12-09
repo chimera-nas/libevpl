@@ -13,15 +13,14 @@ enum evpl_rdma_request_type {
 };
 
 struct evpl_rdma_request {
-    enum evpl_rdma_request_type type;
-    uint32_t                    remote_key;
-    uint64_t                    remote_address;
-    struct evpl_iovec          *iov;
-    int                         niov;
-    void                        (*callback)(
+    uint32_t           remote_key;
+    uint64_t           remote_address;
+    struct evpl_iovec *iov;
+    int                niov;
+    void               (*callback)(
         int   status,
         void *private_data);
-    void                       *private_data;
+    void              *private_data;
 };
 
 struct evpl_rdma_request_ring {
@@ -151,7 +150,6 @@ evpl_rdma_request_ring_elements(const struct evpl_rdma_request_ring *ring)
 static inline struct evpl_rdma_request *
 evpl_rdma_request_ring_add(
     struct evpl_rdma_request_ring *ring,
-    enum evpl_rdma_request_type    type,
     uint32_t                       remote_key,
     uint64_t                       remote_address,
     struct evpl_iovec             *iov,
@@ -169,7 +167,6 @@ evpl_rdma_request_ring_add(
 
     res = &ring->request[ring->head];
 
-    res->type           = type;
     res->remote_key     = remote_key;
     res->remote_address = remote_address;
     res->iov            = iov;
