@@ -132,13 +132,18 @@ evpl_bind_prepare(
             evpl_shared->config->page_size);
 
         evpl_iovec_ring_alloc(
+            &bind->iovec_rdma_read,
+            evpl_shared->config->iovec_ring_size,
+            evpl_shared->config->page_size);
+
+        evpl_iovec_ring_alloc(
             &bind->iovec_recv,
             evpl_shared->config->iovec_ring_size,
             evpl_shared->config->page_size);
 
-        evpl_rdma_request_ring_alloc(
-            &bind->rdma_rw,
-            evpl_shared->config->rdma_request_ring_size,
+        evpl_dgram_ring_alloc(
+            &bind->dgram_read,
+            evpl_shared->config->dgram_ring_size,
             evpl_shared->config->page_size);
 
         evpl_deferral_init(&bind->close_deferral,
@@ -213,7 +218,7 @@ evpl_bind_destroy(
     evpl_iovec_ring_clear(evpl, &bind->iovec_recv);
     evpl_iovec_ring_clear(evpl, &bind->iovec_send);
     evpl_dgram_ring_clear(evpl, &bind->dgram_send);
-    evpl_rdma_request_ring_clear(evpl, &bind->rdma_rw);
+    evpl_dgram_ring_clear(evpl, &bind->dgram_read);
 
     bind->flags |= EVPL_BIND_CLOSED;
 

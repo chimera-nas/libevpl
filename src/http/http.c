@@ -740,7 +740,7 @@ evpl_http_server_send_headers(
 
     iov.length = rsp - rsp_base;
 
-    evpl_sendv(evpl, bind, &iov, 1, iov.length);
+    evpl_sendv(evpl, bind, &iov, 1, iov.length, EVPL_SEND_FLAG_TAKE_REF);
 } /* evpl_http_server_send_headers */
 
 static void
@@ -774,7 +774,7 @@ evpl_http_server_flush(
 
             while (request->response_left  && !evpl_iovec_ring_is_empty(&request->send_ring)) {
                 iovp = evpl_iovec_ring_tail(&request->send_ring);
-                evpl_sendv(evpl, bind, iovp, 1, iovp->length);
+                evpl_sendv(evpl, bind, iovp, 1, iovp->length, EVPL_SEND_FLAG_TAKE_REF);
 
                 request->response_left -= iovp->length;
                 evpl_iovec_ring_remove(&request->send_ring);
@@ -815,11 +815,11 @@ evpl_http_server_flush(
 
                 evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 
-                evpl_sendv(evpl, bind, &iov, 1, chunk_hdr_len);
+                evpl_sendv(evpl, bind, &iov, 1, chunk_hdr_len, EVPL_SEND_FLAG_TAKE_REF);
 
                 while (!evpl_iovec_ring_is_empty(&request->send_ring)) {
                     iovp = evpl_iovec_ring_tail(&request->send_ring);
-                    evpl_sendv(evpl, bind, iovp, 1, iovp->length);
+                    evpl_sendv(evpl, bind, iovp, 1, iovp->length, EVPL_SEND_FLAG_TAKE_REF);
                     evpl_iovec_ring_remove(&request->send_ring);
                 }
 
@@ -830,7 +830,7 @@ evpl_http_server_flush(
                 ((char *) iov.data)[0] = '\r';
                 ((char *) iov.data)[1] = '\n';
 
-                evpl_sendv(evpl, bind, &iov, 1, 2);
+                evpl_sendv(evpl, bind, &iov, 1, 2, EVPL_SEND_FLAG_TAKE_REF);
             }
 
             if (request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED) {
@@ -844,7 +844,7 @@ evpl_http_server_flush(
                 ((char *) iov.data)[3] = '\r';
                 ((char *) iov.data)[4] = '\n';
 
-                evpl_sendv(evpl, bind, &iov, 1, 5);
+                evpl_sendv(evpl, bind, &iov, 1, 5, EVPL_SEND_FLAG_TAKE_REF);
 
                 DL_DELETE(conn->pending_requests, request);
                 evpl_http_request_free(conn->agent, request);

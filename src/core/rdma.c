@@ -8,7 +8,6 @@
 #include "core/bind.h"
 #include "core/protocol.h"
 #include "core/evpl.h"
-#include "core/rdma_request.h"
 
 SYMBOL_EXPORT void
 evpl_rdma_get_address(
@@ -42,22 +41,32 @@ evpl_rdma_read(
     void *private_data)
 {
     struct evpl_protocol *protocol = bind->protocol;
+    int                   i, length = 0;
+    struct evpl_dgram    *dgram;
+    struct evpl_iovec    *iovec;
 
     if (unlikely(!protocol->rdma)) {
         callback(ENOTSUP, private_data);
         return;
     }
 
-    evpl_rdma_request_ring_add(
-        &bind->rdma_rw,
-        EVPL_RDMA_READ,
-        remote_key,
-        remote_address,
-        iov,
-        niov,
-        callback,
-        private_data);
+    for (i = 0; i < niov; ++i) {
+        iovec = evpl_iovec_ring_add(&bind->iovec_rdma_read, &iov[i]);
 
+        length += iovec->length;
+    }
+
+    dgram = evpl_dgram_ring_add(&bind->dgram_read);
+
+    dgram->dgram_type     = EVPL_DGRAM_TYPE_RDMA_READ;
+    dgram->bind           = bind;
+    dgram->niov           = niov;
+    dgram->length         = length;
+    dgram->addr           = bind->remote;
+    dgram->remote_key     = remote_key;
+    dgram->remote_address = remote_address;
+    dgram->callback       = callback;
+    dgram->private_data   = private_data;
 
     evpl_defer(evpl, &bind->flush_deferral);
 } /* evpl_rdma_read */
@@ -70,9 +79,13 @@ evpl_rdma_write(
     uint64_t remote_address,
     struct evpl_iovec *iov,
     int niov,
+    unsigned int flags,
     void ( *callback )(int status, void *private_data),
     void *private_data)
 {
+    struct evpl_dgram    *dgram;
+    struct evpl_iovec    *iovec;
+    int                   i, length = 0;
     struct evpl_protocol *protocol = bind->protocol;
 
     if (unlikely(!protocol->rdma)) {
@@ -80,15 +93,31 @@ evpl_rdma_write(
         return;
     }
 
-    evpl_rdma_request_ring_add(
-        &bind->rdma_rw,
-        EVPL_RDMA_WRITE,
-        remote_key,
-        remote_address,
-        iov,
-        niov,
-        callback,
-        private_data);
+    if (unlikely(niov == 0)) {
+        return;
+    }
+
+    for (i = 0; i < niov; ++i) {
+        iovec = evpl_iovec_ring_add(&bind->iovec_send, &iov[i]);
+
+        if (!(flags & EVPL_RDMA_FLAG_TAKE_REF)) {
+            evpl_iovec_addref(iovec);
+        }
+
+        length += iovec->length;
+    }
+
+    dgram = evpl_dgram_ring_add(&bind->dgram_send);
+
+    dgram->dgram_type     = EVPL_DGRAM_TYPE_RDMA_WRITE;
+    dgram->bind           = bind;
+    dgram->niov           = niov;
+    dgram->length         = length;
+    dgram->addr           = bind->remote;
+    dgram->remote_key     = remote_key;
+    dgram->remote_address = remote_address;
+    dgram->callback       = callback;
+    dgram->private_data   = private_data;
 
     evpl_defer(evpl, &bind->flush_deferral);
 } /* evpl_rdma_write */
