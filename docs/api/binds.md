@@ -375,12 +375,11 @@ void evpl_sendv(
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
     int                nbufvecs,
-    int                length);
+    int                length,
+    unsigned int       flags);
 ```
 
 Send data from multiple buffers allocated from evpl previously.  This allows zero-copy with supported underlying protocols.
-
-Transfers ownership of a reference to the iovecs to libevpl.  If the application wishes to retain a reference to the sent data it should increment the reference count on the iovecs beforehand.
 
 **Parameters:**
 - `evpl` - Event loop
@@ -388,6 +387,10 @@ Transfers ownership of a reference to the iovecs to libevpl.  If the application
 - `iovecs` - Array of iovec structures
 - `nbufvecs` - Number of iovecs
 - `length` - Total bytes to send
+- `flags` - Send flags (see below)
+
+**Flags:**
+- `EVPL_SEND_FLAG_TAKE_REF` - Transfer ownership of a reference to the iovecs to libevpl. When set, libevpl takes ownership and will decrement the reference count when the send completes. When not set, libevpl adds its own reference and the caller retains ownership.
 
 ### `evpl_sendto`
 
@@ -435,9 +438,57 @@ Send a datagram to an endpoint (address + port).  This API is provided for conve
 - `buffer` - Data
 - `length` - Message length
 
-### `evpl_sendtov` / `evpl_sendtoepv`
+### `evpl_sendtov`
 
-Scatter-gather versions of `evpl_sendto` and `evpl_sendtoep`.
+```c
+void evpl_sendtov(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct evpl_address *address,
+    struct evpl_iovec   *iovecs,
+    int                  nbufvecs,
+    int                  length,
+    unsigned int         flags);
+```
+
+Scatter-gather version of `evpl_sendto` that sends data from multiple buffers to a specific address.
+
+**Parameters:**
+- `evpl` - Event loop
+- `bind` - Datagram socket
+- `address` - Destination address
+- `iovecs` - Array of iovec structures
+- `nbufvecs` - Number of iovecs
+- `length` - Total bytes to send
+- `flags` - Send flags (see `evpl_sendv` for flag descriptions)
+
+**Note:** This allows zero-copy with supported underlying protocols.
+
+### `evpl_sendtoepv`
+
+```c
+void evpl_sendtoepv(
+    struct evpl          *evpl,
+    struct evpl_bind     *bind,
+    struct evpl_endpoint *endpoint,
+    struct evpl_iovec    *iovecs,
+    int                   nbufvecs,
+    int                   length,
+    unsigned int          flags);
+```
+
+Scatter-gather version of `evpl_sendtoep` that sends data from multiple buffers to an endpoint.
+
+**Parameters:**
+- `evpl` - Event loop
+- `bind` - Datagram socket
+- `endpoint` - Destination endpoint
+- `iovecs` - Array of iovec structures
+- `nbufvecs` - Number of iovecs
+- `length` - Total bytes to send
+- `flags` - Send flags (see `evpl_sendv` for flag descriptions)
+
+**Note:** This allows zero-copy with supported underlying protocols.
 
 ## Receive Functions
 
