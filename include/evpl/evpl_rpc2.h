@@ -27,7 +27,7 @@ struct evpl_rpc2_notify {
 
 
 struct evpl_rpc2_conn {
-    enum evpl_protocol_id protocol;
+    enum evpl_protocol_id            protocol;
     int                              rdma;
     struct evpl_rpc2_thread         *thread;
     struct evpl_rpc2_server_binding *server_binding;
@@ -39,6 +39,9 @@ struct evpl_rpc2_conn {
     void                            *private_data;
     struct evpl_rpc2_conn           *prev;
     struct evpl_rpc2_conn           *next;
+    void                            *server_private_data;
+    int                              num_server_programs;
+    struct evpl_rpc2_program        *server_programs[4];
 };
 
 typedef void (*evpl_rpc2_reply_callback_t)(
@@ -104,9 +107,12 @@ evpl_rpc2_server_destroy(
 
 struct evpl_rpc2_conn *
 evpl_rpc2_client_connect(
-    struct evpl_rpc2_thread *thread,
-    int                      protocol,
-    struct evpl_endpoint    *endpoint);
+    struct evpl_rpc2_thread   *thread,
+    int                        protocol,
+    struct evpl_endpoint      *endpoint,
+    struct evpl_rpc2_program **server_programs,
+    int                        num_server_programs,
+    void                      *server_private_data);
 
 void
 evpl_rpc2_client_disconnect(

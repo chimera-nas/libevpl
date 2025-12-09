@@ -133,7 +133,7 @@ main(
     evpl_rpc2_server_attach(thread, server, &state);
 
     /* Connect to server */
-    conn = evpl_rpc2_client_connect(thread, EVPL_STREAM_SOCKET_TCP, endpoint);
+    conn = evpl_rpc2_client_connect(thread, EVPL_STREAM_SOCKET_TCP, endpoint, NULL, 0, NULL);
 
     if (!conn) {
         evpl_error("Failed to create RPC2 client");
