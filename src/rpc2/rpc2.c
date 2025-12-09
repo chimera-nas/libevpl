@@ -465,14 +465,13 @@ evpl_rpc2_send_reply_success(
 static void
 evpl_rpc2_server_handle_msg(struct evpl_rpc2_msg *msg)
 {
-    struct evpl_rpc2_conn           *conn           = msg->conn;
-    struct evpl_rpc2_thread         *thread         = msg->thread;
-    struct evpl                     *evpl           = thread->evpl;
-    struct evpl_rpc2_server_binding *server_binding = conn->server_binding;
-    int                              error;
+    struct evpl_rpc2_conn   *conn   = msg->conn;
+    struct evpl_rpc2_thread *thread = msg->thread;
+    struct evpl             *evpl   = thread->evpl;
+    int                      error;
 
     error = msg->program->recv_call_dispatch(evpl, conn, msg, msg->req_iov, msg->req_niov, msg->request_length,
-                                             server_binding->private_data);
+                                             conn->server_private_data);
 
     if (unlikely(error)) {
         evpl_rpc2_abort("Failed to dispatch rpc2 call: %d", error);
@@ -555,7 +554,6 @@ evpl_rpc2_recv_msg(
     struct evpl_rpc2_thread         *thread    = rpc2_conn->thread;
     struct evpl_rpc2_msg            *msg;
     struct evpl_rpc2_server_binding *server_binding = rpc2_conn->server_binding;
-    struct evpl_rpc2_server         *server         = server_binding ? server_binding->server : NULL;
     struct evpl_rpc2_program        *program;
     struct rpc_msg                   rpc_msg;
     struct rdma_msg                  rdma_msg;
@@ -720,14 +718,14 @@ evpl_rpc2_recv_msg(
 
             msg->program = NULL;
 
-            for (i  = 0; i < server->nprograms; i++) {
-                program = server->programs[i];
+            for (i = 0; i < rpc2_conn->num_server_programs; i++) {
+                program = rpc2_conn->server_programs[i];
 
                 if (program->program == rpc_msg.body.cbody.prog &&
                     program->version == rpc_msg.body.cbody.vers) {
 
                     msg->program = program;
-                    msg->metric  = server_binding->metrics[i][msg->proc];
+                    msg->metric  = server_binding ? server_binding->metrics[i][msg->proc] : NULL;
                     break;
                 }
             }
@@ -827,6 +825,13 @@ evpl_rpc2_accept(
     rpc2_conn->bind           = bind;
     rpc2_conn->protocol       = evpl_bind_get_protocol(bind);
     rpc2_conn->rdma           = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
+
+    memcpy(rpc2_conn->server_programs,
+           server_binding->server->programs,
+           server_binding->server->nprograms * sizeof(*rpc2_conn->server_programs));
+
+    rpc2_conn->num_server_programs = server_binding->server->nprograms;
+    rpc2_conn->server_private_data = server_binding->private_data;
 
     *notify_callback   = evpl_rpc2_event;
     *segment_callback  = rpc2_segment_callback;
@@ -1043,11 +1048,15 @@ evpl_rpc2_server_destroy(struct evpl_rpc2_server *server)
 
 SYMBOL_EXPORT struct evpl_rpc2_conn *
 evpl_rpc2_client_connect(
-    struct evpl_rpc2_thread *thread,
-    int                      protocol,
-    struct evpl_endpoint    *endpoint)
+    struct evpl_rpc2_thread   *thread,
+    int                        protocol,
+    struct evpl_endpoint      *endpoint,
+    struct evpl_rpc2_program **server_programs,
+    int                        num_server_programs,
+    void                      *server_private_data)
 {
     struct evpl_rpc2_conn *conn;
+    int                    i;
 
     conn = evpl_zalloc(sizeof(*conn));
 
@@ -1057,6 +1066,14 @@ evpl_rpc2_client_connect(
     conn->rdma           = (protocol == EVPL_DATAGRAM_RDMACM_RC);
     conn->server_binding = NULL;
     conn->next_xid       = 1;
+
+    memcpy(conn->server_programs, server_programs, num_server_programs * sizeof(*conn->server_programs));
+    conn->num_server_programs = num_server_programs;
+    conn->server_private_data = server_private_data;
+
+    for (i = 0; i < num_server_programs; i++) {
+        conn->server_programs[i]->send_reply_dispatch = evpl_rpc2_send_reply_success;
+    }
 
     DL_APPEND(thread->conns, conn);
 

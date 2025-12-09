@@ -19,6 +19,7 @@
 #include <arpa/inet.h>
 #include <sys/eventfd.h>
 #include <utlist.h>
+#include <signal.h>
 
 #ifdef __x86_64__
 #include <x86intrin.h>
@@ -95,6 +96,8 @@ evpl_shared_init(struct evpl_global_config *config)
             fclose(cpuinfo);
         }
     }
+
+    signal(SIGPIPE, SIG_IGN);
 
     evpl_shared->numa_config = evpl_numa_discover();
 
