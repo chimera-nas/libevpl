@@ -612,7 +612,8 @@ evpl_destroy(struct evpl *evpl)
 
         evpl_iovec_ring_free(&bind->iovec_send);
         evpl_iovec_ring_free(&bind->iovec_recv);
-        evpl_rdma_request_ring_free(&bind->rdma_reads);
+        evpl_iovec_ring_free(&bind->iovec_rdma_read);
+        evpl_dgram_ring_free(&bind->dgram_read);
         evpl_dgram_ring_free(&bind->dgram_send);
         evpl_free(bind);
     }

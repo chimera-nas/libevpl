@@ -101,6 +101,7 @@ evpl_sendtov(
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
     dgram->dgram_type   = EVPL_DGRAM_TYPE_SEND;
+    dgram->bind         = bind;
     dgram->niov         = i;
     dgram->length       = length;
     dgram->addr         = address;

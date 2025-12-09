@@ -7,7 +7,6 @@
 #include "core/allocator.h"
 #include "core/iovec_ring.h"
 #include "core/dgram_ring.h"
-#include "core/rdma_request.h"
 #include "core/evpl.h"
 
 #define EVPL_MAX_PRIVATE         4096
@@ -18,27 +17,26 @@
 #define EVPL_BIND_SENT_NOTIFY    0x08
 
 struct evpl_bind {
-    struct evpl_protocol         *protocol;
-    uint64_t                      flags;
-    struct evpl_deferral          flush_deferral;
-    struct evpl_deferral          close_deferral;
-    evpl_notify_callback_t        notify_callback;
-    evpl_segment_callback_t       segment_callback; /* only for dgram-on-stream */
-    evpl_accept_callback_t        accept_callback; /* only for listeners */
-    void                         *private_data;
+    struct evpl_protocol   *protocol;
+    uint64_t                flags;
+    struct evpl_deferral    flush_deferral;
+    struct evpl_deferral    close_deferral;
+    evpl_notify_callback_t  notify_callback;
+    evpl_segment_callback_t segment_callback;       /* only for dgram-on-stream */
+    evpl_accept_callback_t  accept_callback;       /* only for listeners */
+    void                   *private_data;
 
-    struct evpl_bind             *prev;
-    struct evpl_bind             *next;
+    struct evpl_bind       *prev;
+    struct evpl_bind       *next;
 
-    struct evpl_iovec_ring        iovec_send;
-    struct evpl_iovec_ring        iovec_recv;
+    struct evpl_iovec_ring  iovec_send;
+    struct evpl_iovec_ring  iovec_recv;
+    struct evpl_iovec_ring  iovec_rdma_read;
+    struct evpl_dgram_ring  dgram_read;
+    struct evpl_dgram_ring  dgram_send;
 
-    struct evpl_rdma_request_ring rdma_reads;
-
-    struct evpl_dgram_ring        dgram_send;
-
-    struct evpl_address          *local;
-    struct evpl_address          *remote;
+    struct evpl_address    *local;
+    struct evpl_address    *remote;
     /* protocol specific private data follows */
 };
 

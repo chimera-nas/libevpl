@@ -8,6 +8,7 @@
 
 #define EVPL_DGRAM_TYPE_SEND       0
 #define EVPL_DGRAM_TYPE_RDMA_WRITE 1
+#define EVPL_DGRAM_TYPE_RDMA_READ  2
 
 struct evpl_dgram {
     uint8_t              dgram_type;
@@ -16,6 +17,7 @@ struct evpl_dgram {
     uint32_t             length;
     uint32_t             remote_key;
     uint64_t             remote_address;
+    struct evpl_bind    *bind;
     struct evpl_address *addr;
     void                 (*callback)(
         int   status,
@@ -29,6 +31,7 @@ struct evpl_dgram_ring {
     int                mask;
     int                alignment;
     int                head;
+    int                waist;
     int                tail;
 };
 
@@ -45,6 +48,7 @@ evpl_dgram_ring_alloc(
     ring->mask      = size - 1;
     ring->alignment = alignment;
     ring->head      = 0;
+    ring->waist     = 0;
     ring->tail      = 0;
 
 } // evpl_dgram_ring_alloc
@@ -66,8 +70,9 @@ evpl_dgram_ring_resize(struct evpl_dgram_ring *ring)
                sizeof(struct evpl_dgram));
     }
 
-    ring->head = ring->size - 1;
-    ring->tail = 0;
+    ring->head  = ring->size - 1;
+    ring->waist = ((ring->waist + ring->size)  - ring->tail) - ring->size;
+    ring->tail  = 0;
 
     evpl_free(ring->dgram);
 
@@ -103,6 +108,16 @@ evpl_dgram_ring_head(struct evpl_dgram_ring *ring)
         return &ring->dgram[ring->head];
     }
 } // evpl_dgram_ring_head
+
+static inline struct evpl_dgram *
+evpl_dgram_ring_waist(struct evpl_dgram_ring *ring)
+{
+    if (ring->waist == ring->head) {
+        return NULL;
+    } else {
+        return &ring->dgram[ring->waist];
+    }
+} // evpl_dgram_ring_waist
 
 static inline struct evpl_dgram *
 evpl_dgram_ring_tail(struct evpl_dgram_ring *ring)
@@ -155,6 +170,7 @@ evpl_dgram_ring_clear(
     struct evpl            *evpl,
     struct evpl_dgram_ring *ring)
 {
-    ring->head = 0;
-    ring->tail = 0;
+    ring->head  = 0;
+    ring->waist = 0;
+    ring->tail  = 0;
 } // evpl_dgram_ring_clear
