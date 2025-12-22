@@ -456,7 +456,16 @@ evpl_rpc2_server_handle_msg(struct evpl_rpc2_msg *msg)
                                              conn->server_private_data);
 
     if (unlikely(error)) {
-        evpl_rpc2_abort("Failed to dispatch rpc2 call: %d", error);
+        if (error == 1) {
+            evpl_rpc2_error("rpc2 procedure %u not implemented", msg->proc);
+            evpl_rpc2_send_reply_error(evpl, msg, PROC_UNAVAIL);
+        } else if (error == 2) {
+            evpl_rpc2_error("rpc2 failed to decode procedure %u arguments", msg->proc);
+            evpl_rpc2_send_reply_error(evpl, msg, GARBAGE_ARGS);
+        } else {
+            evpl_rpc2_error("Failed to dispatch rpc2 call: %d", error);
+            evpl_rpc2_send_reply_error(evpl, msg, SYSTEM_ERR);
+        }
     }
 
 } /* evpl_rpc2_server_handle_msg */
