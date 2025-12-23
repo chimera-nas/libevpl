@@ -1182,6 +1182,12 @@ evpl_rdmacm_attach(
 
     evpl_rdmacm_abort_if(rc, "rdma_migrate_id error %s", strerror(errno));
 
+    /* Set the local address to the actual interface address from the RDMA CM ID.
+     * This is important when the server binds to 0.0.0.0/:: because the route.addr.src_addr
+     * contains the actual interface IP the client connected to. */
+    bind->local = evpl_address_init(&accepted_id->id->route.addr.src_addr,
+                                    sizeof(accepted_id->id->route.addr.src_addr));
+
     rdmacm_id->rdmacm      = rdmacm;
     rdmacm_id->stream      = rdmacm_id->stream;
     rdmacm_id->connected   = 0;

@@ -558,10 +558,21 @@ evpl_io_uring_attach(
     struct evpl_io_uring_socket          *s               = evpl_bind_private(bind);
     struct evpl_io_uring_accepted_socket *accepted_socket = accepted;
     struct evpl_notify                    notify;
+    struct sockaddr_storage               ss;
+    socklen_t                             sslen = sizeof(ss);
+    int                                   rc;
 
     s->fd = accepted_socket->fd;
 
     evpl_free(accepted_socket);
+
+    rc = getsockname(s->fd, (struct sockaddr *) &ss, &sslen);
+
+    evpl_io_uring_abort_if(rc < 0, "getsockname failed: %s", strerror(errno));
+
+    bind->local          = evpl_address_alloc();
+    bind->local->addrlen = sslen;
+    memcpy(bind->local->addr, &ss, sslen);
 
     evpl_io_uring_setup_socket(evpl, ctx, s, 0);
 
