@@ -207,6 +207,7 @@ evpl_rpc2_send_reply(
     struct evpl_iovec    *msg_iov,
     int                   msg_niov,
     int                   length,
+    int                   reserve,
     int                   rpc2_stat)
 {
     struct evpl_iovec             iov, reply_iov;
@@ -222,9 +223,7 @@ evpl_rpc2_send_reply(
     int                           segment_niov;
     struct timespec               now;
     uint64_t                      elapsed;
-    int                           i, reserve, reduce = 0, rdma = msg->conn->protocol == EVPL_DATAGRAM_RDMACM_RC;
-
-    reserve = msg->program ? msg->program->reserve : 0;
+    int                           i, reduce = 0, rdma = msg->conn->protocol == EVPL_DATAGRAM_RDMACM_RC;
 
     rpc_reply.xid                               = msg->xid;
     rpc_reply.body.mtype                        = REPLY;
@@ -429,7 +428,7 @@ evpl_rpc2_send_reply_error(
 
     msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, &msg_iov);
 
-    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov,  msg->program->reserve, rpc2_stat);
+    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov,  4096, 4096, rpc2_stat);
 } /* evpl_rpc2_send_reply_error */
 
 
@@ -441,7 +440,7 @@ evpl_rpc2_send_reply_success(
     int                   msg_niov,
     int                   length)
 {
-    return evpl_rpc2_send_reply(evpl, msg, msg_iov, msg_niov, length, SUCCESS);
+    return evpl_rpc2_send_reply(evpl, msg, msg_iov, msg_niov, length, msg->program->reserve, SUCCESS);
 } /* evpl_rpc2_send_reply_success */
 
 static void
