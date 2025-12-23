@@ -429,7 +429,7 @@ evpl_rpc2_send_reply_error(
 
     msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, &msg_iov);
 
-    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov, 0, rpc2_stat);
+    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov,  msg->program->reserve, rpc2_stat);
 } /* evpl_rpc2_send_reply_error */
 
 

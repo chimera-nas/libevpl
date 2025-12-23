@@ -247,6 +247,8 @@ evpl_xlio_tcp_attach(
     struct evpl_xlio_accepted_socket *accepted_socket = (struct evpl_xlio_accepted_socket *) accepted;
     xlio_socket_t                     sock            = accepted_socket->socket;
     struct evpl_xlio_socket          *s               = evpl_bind_private(bind);
+    struct sockaddr_storage           ss;
+    socklen_t                         sslen = sizeof(ss);
     int                               rc;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
@@ -257,6 +259,14 @@ evpl_xlio_tcp_attach(
     rc = xlio->extra->xlio_socket_attach_group(sock, xlio->poll_group);
 
     evpl_xlio_abort_if(rc, "Failed to attach socket to group");
+
+    /* Get the actual local address of the accepted socket */
+    rc = xlio->extra->xlio_socket_getsockname(sock, (struct sockaddr *) &ss, &sslen);
+    evpl_xlio_abort_if(rc < 0, "xlio_socket_getsockname failed");
+
+    bind->local          = evpl_address_alloc();
+    bind->local->addrlen = sslen;
+    memcpy(bind->local->addr, &ss, sslen);
 
     rc = xlio->extra->xlio_socket_update(s->socket, 0, (uintptr_t) s);
 
@@ -269,7 +279,7 @@ evpl_xlio_tcp_attach(
     s->readable = 1;
 
     evpl_free(accepted_socket);
-} /* evpl_rdmacm_attach */
+} /* evpl_xlio_tcp_attach */
 
 extern struct evpl_framework evpl_framework_xlio;
 

@@ -314,10 +314,20 @@ evpl_socket_tcp_attach(
     struct evpl_notify           notify;
     int                          fd = accepted_socket->fd;
     int                          rc, yes = 1;
+    struct sockaddr_storage      ss;
+    socklen_t                    sslen = sizeof(ss);
 
     evpl_free(accepted_socket);
 
     evpl_socket_init(evpl, s, fd, 1);
+
+    rc = getsockname(fd, (struct sockaddr *) &ss, &sslen);
+
+    evpl_socket_abort_if(rc < 0, "getsockname failed: %s", strerror(errno));
+
+    bind->local          = evpl_address_alloc();
+    bind->local->addrlen = sslen;
+    memcpy(bind->local->addr, &ss, sslen);
 
     rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
