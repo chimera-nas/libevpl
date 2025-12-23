@@ -45,8 +45,8 @@ evpl_listener_accept(
     request = evpl_zalloc(sizeof(struct evpl_connect_request));
 
     /* Note: local_address is left NULL here. The protocol attach function
-     * will set it to the actual interface address using getsockname() or
-     * equivalent. This is important when the server binds to 0.0.0.0/:: */
+    * will set it to the actual interface address using getsockname() or
+    * equivalent. This is important when the server binds to 0.0.0.0/:: */
     request->local_address   = NULL;
     request->remote_address  = remote_address;
     request->protocol        = listen_bind->protocol;
