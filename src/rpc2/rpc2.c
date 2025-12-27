@@ -86,8 +86,6 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_msg    *msg)
 {
-    int i;
-
     evpl_iovecs_release(msg->recv_iov, msg->recv_niov);
     evpl_iovecs_release(msg->read_chunk.iov, msg->read_chunk.niov);
 

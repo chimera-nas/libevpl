@@ -57,46 +57,7 @@ evpl_sendv(
     int                length,
     unsigned int       flags)
 {
-        << << << < HEAD
-        struct evpl_dgram *dgram;
-    struct evpl_iovec     *iovec;
-    int                    i, left = length;
-
-    if (unlikely(niovs == 0)) {
-        return;
-    }
-
-    for (i = 0; left && i < niovs; ++i) {
-
-        evpl_core_abort_if(iovecs[i].ref->refcnt == 0, "iovec refcnt is 0 at send");
-        evpl_core_abort_if(iovecs[i].ref->flags & EVPL_IOVEC_REC_FLAG_FREE, "iovec ref is already free at send");
-        iovec = evpl_iovec_ring_add(&bind->iovec_send, &iovecs[i]);
-
-        if (iovec->length <= left) {
-            left -= iovec->length;
-        } else {
-            bind->iovec_send.length -= iovec->length - left;
-            iovec->length            = left;
-            left                     = 0;
-        }
-    }
-
-    evpl_core_abort_if(left,
-                       "evpl_send provided iov %d bytes short of covering length of %d",
-                       left, length);
-
-    dgram         = evpl_dgram_ring_add(&bind->dgram_send);
-    dgram->niov   = i;
-    dgram->length = length;
-    dgram->addr   = bind->remote;
-
-    evpl_defer(evpl, &bind->flush_deferral);
-
-    evpl_iovecs_release(&iovecs[i], niovs - i);
-
-    == == == =
-        evpl_sendtov(evpl, bind, bind->remote, iovecs, niovs, length, flags);
-    >> >> >> > origin / main
+    evpl_sendtov(evpl, bind, bind->remote, iovecs, niovs, length, flags);
 } /* evpl_sendv */
 
 SYMBOL_EXPORT void

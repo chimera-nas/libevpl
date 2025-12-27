@@ -29,7 +29,7 @@ struct evpl_slab {
     struct evpl_buffer    *buffers;
     void                  *framework_private[EVPL_NUM_FRAMEWORK];
     struct evpl_slab      *next;
-} __attribute__((aligned(64), packed));
+} __attribute__((aligned(64)));
 
 struct evpl_allocator *
 evpl_allocator_create()

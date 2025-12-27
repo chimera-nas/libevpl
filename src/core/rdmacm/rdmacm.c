@@ -58,29 +58,6 @@ struct evpl_rdmacm_request {
     struct evpl_rdmacm_request *next;
 };
 
-<<<<<<< HEAD
-struct evpl_rdmacm_sr {
-    struct evpl_rdmacm_id *rdmacm_id;
-    int                    is_rw;
-
-    union {
-        struct {
-            void  (*callback)(
-                int   status,
-                void *private_data);
-            void *private_data;
-        } rw;
-        struct {
-            uint64_t               length;
-            int                    n_iov_ref;
-            struct evpl_iovec_ref *iov_ref[32];
-        } send;
-
-    };
-};
-
-=======
->>>>>>> origin/main
 struct evpl_rdmacm_sr_ring {
     struct evpl_rdmacm_sr *sr;
     int                    size;
@@ -608,42 +585,16 @@ evpl_rdmacm_process_send_completions(
 
         dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
-<<<<<<< HEAD
-        ring->tail = (ring->tail + 1) & ring->mask;
-
-        if (sr->is_rw) {
-            --rdmacm_id->cur_rdma_rw;
-            sr->rw.callback(0, sr->rw.private_data);
-        } else {
-            for (i = 0; i < sr->send.n_iov_ref; ++i) {
-                evpl_iovec_ref_release(sr->send.iov_ref[i]);
-            }
-            total_bytes += sr->send.length;
-            total_msgs++;
-            --rdmacm_id->cur_sends;
-=======
         if (dgram == signaled_dgram) {
             seen_completed = 1;
->>>>>>> origin/main
         }
 
         evpl_dgram_ring_remove(&bind->dgram_send);
 
-<<<<<<< HEAD
-    if (completed_sr->is_rw) {
-        --rdmacm_id->cur_rdma_rw;
-
-        completed_sr->rw.callback(status, completed_sr->rw.private_data);
-    } else {
-
-        for (i = 0; i < completed_sr->send.n_iov_ref; ++i) {
-            evpl_iovec_ref_release(completed_sr->send.iov_ref[i]);
-=======
         for (i = 0; i < dgram->niov; ++i) {
             iovec = evpl_iovec_ring_tail(&bind->iovec_send);
-            evpl_iovec_decref(iovec);
+            evpl_iovec_release(iovec);
             evpl_iovec_ring_remove(&bind->iovec_send);
->>>>>>> origin/main
         }
 
         --rdmacm_id->cur_sends;
@@ -1526,11 +1477,6 @@ evpl_rdmacm_flush_datagram(
                 dbuf[nsge].addr   = cur->data;
                 dbuf[nsge].length = cur->length;
 
-<<<<<<< HEAD
-                sr->send.iov_ref[nsge] = cur->ref;
-
-=======
->>>>>>> origin/main
                 nsge++;
 
                 bind->iovec_send.waist = (bind->iovec_send.waist + 1) & bind->iovec_send.mask;
@@ -1558,11 +1504,6 @@ evpl_rdmacm_flush_datagram(
                 sge[nsge].length = cur->length;
                 sge[nsge].lkey   = mr->lkey;
 
-<<<<<<< HEAD
-                sr->send.iov_ref[nsge] = cur->ref;
-
-=======
->>>>>>> origin/main
                 nsge++;
 
                 bind->iovec_send.waist = (bind->iovec_send.waist + 1) & bind->iovec_send.mask;
@@ -1570,13 +1511,6 @@ evpl_rdmacm_flush_datagram(
 
         }
 
-<<<<<<< HEAD
-        sr->send.n_iov_ref = nsge;
-        sr->send.length    = dgram->length;
-        sr->is_rw          = 0;
-
-=======
->>>>>>> origin/main
         ++rdmacm_id->cur_sends;
 
         bind->dgram_send.waist = (bind->dgram_send.waist + 1) & bind->dgram_send.mask;
@@ -1626,93 +1560,6 @@ evpl_rdmacm_flush_datagram(
 } /* evpl_rdmacm_datagram */
 
 void
-<<<<<<< HEAD
-evpl_rdmacm_flush_stream(
-    struct evpl      *evpl,
-    struct evpl_bind *bind)
-{
-    struct evpl_rdmacm_id     *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_global_config *config    = evpl_shared->config;
-    struct evpl_rdmacm_sr     *sr;
-    struct evpl_iovec         *cur;
-    struct ibv_qp_ex          *qp = rdmacm_id->qp;
-    struct ibv_mr             *mr, **mrset;
-    struct ibv_sge            *sge;
-    int                        nsge, rc;
-
-    if (unlikely(!qp || !rdmacm_id->connected)) {
-        return;
-    }
-
-    evpl_rdmacm_flush_rdma_rw(evpl, bind);
-
-    sge = alloca(sizeof(struct ibv_sge) * config->max_num_iovec);
-
-    while (!evpl_iovec_ring_is_empty(&bind->iovec_send)) {
-
-        sr = evpl_rdmacm_sr_alloc(rdmacm_id);
-
-        nsge = 0;
-
-        sr->send.length = 0;
-
-        while (nsge < config->max_num_iovec &&
-               !evpl_iovec_ring_is_empty(&bind->iovec_send)) {
-
-            cur = evpl_iovec_ring_tail(&bind->iovec_send);
-
-            if (sr->send.length + cur->length > config->max_datagram_size) {
-                break;
-            }
-
-            mrset = evpl_memory_framework_private(cur,
-                                                  EVPL_FRAMEWORK_RDMACM);
-
-            mr = mrset[rdmacm_id->devindex];
-
-            sge[nsge].addr   = (uint64_t) cur->data;
-            sge[nsge].length = cur->length;
-            sge[nsge].lkey   = mr->lkey;
-
-            sr->send.iov_ref[nsge] = cur->ref;
-
-            nsge++;
-            sr->send.length += cur->length;
-
-            evpl_iovec_ring_remove(&bind->iovec_send);
-        }
-
-        sr->send.n_iov_ref = nsge;
-        sr->send.length    = 0;
-        sr->is_rw          = 0;
-
-        ibv_wr_start(qp);
-
-        qp->wr_id    = (uint64_t) sr;
-        qp->wr_flags = evpl_iovec_ring_is_empty(&bind->iovec_send) ? IBV_SEND_SIGNALED : 0;
-        ibv_wr_send(qp);
-        ibv_wr_set_sge_list(qp, nsge, sge);
-
-        rc = ibv_wr_complete(qp);
-
-        evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(
-                                 errno));
-
-        ++rdmacm_id->active_sends;
-    }
-
-    if (rdmacm_id->active_sends == 0 &&
-        evpl_iovec_ring_is_empty(&bind->iovec_send)) {
-        if (bind->flags & EVPL_BIND_FINISH) {
-            evpl_close(evpl, bind);
-        }
-    }
-
-} /* evpl_rdmacm_flush_strean */
-
-void
-=======
->>>>>>> origin/main
 evpl_rdmacm_bind(
     struct evpl      *evpl,
     struct evpl_bind *bind)
