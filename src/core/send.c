@@ -111,10 +111,7 @@ evpl_sendtov(
     evpl_defer(evpl, &bind->flush_deferral);
 
     if (flags & EVPL_SEND_FLAG_TAKE_REF) {
-
-        for (; i < niovs; ++i) {
-            evpl_iovec_decref(&iovecs[i]);
-        }
+        evpl_iovecs_release(&iovecs[i], niovs - i);
     }
 
 } /* evpl_sendtov */

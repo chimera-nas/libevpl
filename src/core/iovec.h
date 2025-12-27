@@ -6,13 +6,9 @@
 
 #include <string.h>
 
-#include "core/buffer.h"
 #include "core/allocator.h"
 #include "core/iovec.h"
 #include "evpl/evpl.h"
-
-#define evpl_iovec_buffer(iov) ((struct evpl_buffer *) (iov)->private_data)
-
 
 /* Allocate a iovec representing an entire evpl_buffer
  * guaranteed to be contiguous
@@ -63,25 +59,3 @@ evpl_iovec_memcpy(
     }
 
 } // evpl_iovec_memcpy
-
-static inline void
-evpl_iovec_decref(struct evpl_iovec *iovec)
-{
-    struct evpl_buffer *buffer = evpl_iovec_buffer(iovec);
-
-    if (!buffer) {
-        return;
-    }
-
-    evpl_buffer_release(buffer);
-
-} // evpl_iovec_decref
-
-static inline void
-evpl_iovec_incref(struct evpl_iovec *iovec)
-{
-    struct evpl_buffer *buffer = evpl_iovec_buffer(iovec);
-
-    atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
-
-} // evpl_iovec_incref

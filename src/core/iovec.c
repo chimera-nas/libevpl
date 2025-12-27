@@ -4,23 +4,10 @@
 
 #include "core/evpl.h"
 #include "core/iovec.h"
-#include "core/buffer.h"
+#include "core/allocator.h"
 #include "core/macros.h"
 #include "core/evpl_shared.h"
 #include "evpl/evpl.h"
-
-SYMBOL_EXPORT void
-evpl_iovec_release(struct evpl_iovec *iovec)
-{
-    evpl_iovec_decref(iovec);
-} /* evpl_iovec_release */
-
-SYMBOL_EXPORT void
-evpl_iovec_addref(struct evpl_iovec *iovec)
-{
-    evpl_iovec_incref(iovec);
-} /* evpl_iovec_addref */
-
 
 SYMBOL_EXPORT int
 evpl_iovec_reserve(
@@ -39,9 +26,13 @@ evpl_iovec_reserve(
 
         if (evpl->current_buffer == NULL) {
             evpl->current_buffer = evpl_buffer_alloc(evpl);
+            evpl_core_abort_if(evpl->current_buffer->ref.flags & EVPL_IOVEC_REC_FLAG_FREE,
+                               "buffer ref is already free at buffer allo");
         }
 
         buffer = evpl->current_buffer;
+
+        evpl_core_abort_if(buffer->ref.flags & EVPL_IOVEC_REC_FLAG_FREE, "buffer ref is already free at iovec reserve");
 
         pad = evpl_buffer_pad(buffer, alignment);
 
@@ -63,9 +54,12 @@ evpl_iovec_reserve(
 
         iovec = &r_iovec[niovs++];
 
-        iovec->private_data = buffer;
-        iovec->data         = buffer->data + buffer->used + pad;
-        iovec->length       = chunk - pad;
+        iovec->ref    = &buffer->ref;
+        iovec->data   = buffer->data + buffer->used + pad;
+        iovec->length = chunk - pad;
+
+        iovec->ref->refcnt++;
+
 
         left -= chunk - pad;
 
@@ -94,20 +88,12 @@ evpl_iovec_commit(
 
         iovec = &iovecs[i];
 
-        buffer = evpl_iovec_buffer(iovec);
-
-        atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
+        buffer = container_of(iovec->ref, struct evpl_buffer, ref);
 
         buffer->used  = (iovec->data + iovec->length) - buffer->data;
         buffer->used += evpl_buffer_pad(buffer, alignment);
     }
 
-    buffer = evpl->current_buffer;
-
-    if (buffer && buffer->size - buffer->used < 64) {
-        evpl_buffer_release(buffer);
-        evpl->current_buffer = NULL;
-    }
 } /* evpl_iovec_commit */
 
 SYMBOL_EXPORT int
@@ -140,9 +126,9 @@ evpl_iovec_alloc_whole(
 
     buffer = evpl_buffer_alloc(evpl);
 
-    r_iovec->data         = buffer->data;
-    r_iovec->length       = buffer->size;
-    r_iovec->private_data = buffer;
+    r_iovec->data   = buffer->data;
+    r_iovec->length = buffer->size;
+    r_iovec->ref    = &buffer->ref;
 } /* evpl_iovec_alloc_whole */
 
 void
@@ -159,12 +145,13 @@ evpl_iovec_alloc_datagram(
 
     buffer = evpl->datagram_buffer;
 
-    r_iovec->data         = buffer->data + buffer->used;
-    r_iovec->length       = size;
-    r_iovec->private_data = buffer;
+    r_iovec->data   = buffer->data + buffer->used;
+    r_iovec->length = size;
+    r_iovec->ref    = &buffer->ref;
 
     buffer->used += size;
-    atomic_fetch_add_explicit(&buffer->refcnt, 1, memory_order_relaxed);
+
+    buffer->ref.refcnt++;
 
     if (buffer->size - buffer->used < evpl_shared->config->max_datagram_size) {
         evpl_buffer_release(evpl->datagram_buffer);

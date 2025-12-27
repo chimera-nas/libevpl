@@ -86,15 +86,8 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_msg    *msg)
 {
-    int i;
-
-    for (i = 0; i < msg->recv_niov; ++i) {
-        evpl_iovec_release(&msg->recv_iov[i]);
-    }
-
-    for (i = 0; i < msg->read_chunk.niov; ++i) {
-        evpl_iovec_release(&msg->read_chunk.iov[i]);
-    }
+    evpl_iovecs_release(msg->recv_iov, msg->recv_niov);
+    evpl_iovecs_release(msg->read_chunk.iov, msg->read_chunk.niov);
 
     LL_PREPEND(thread->free_msg, msg);
 } /* evpl_rpc2_msg_free */
@@ -162,9 +155,9 @@ evpl_rpc2_iovec_skip(
             left -= inc->length;
             inc++;
         } else {
-            outc->data         = inc->data + left;
-            outc->length       = inc->length - left;
-            outc->private_data = inc->private_data;
+            outc->data   = inc->data + left;
+            outc->length = inc->length - left;
+            outc->ref    = inc->ref;
             inc++;
             outc++;
             left = 0;
@@ -172,9 +165,9 @@ evpl_rpc2_iovec_skip(
     }
 
     while (inc < in_iov + niov) {
-        outc->data         = inc->data;
-        outc->length       = inc->length;
-        outc->private_data = inc->private_data;
+        outc->data   = inc->data;
+        outc->length = inc->length;
+        outc->ref    = inc->ref;
         inc++;
         outc++;
     }
@@ -372,11 +365,11 @@ evpl_rpc2_send_reply(
 
         evpl_rpc2_abort_if(msg->reply_iov == NULL, "Failed to allocate reply iovec");
 
-        msg->reply_iov->data         = msg_iov[0].data;
-        msg->reply_iov->length       = offset;
-        msg->reply_iov->private_data = msg_iov[0].private_data;
-        msg->reply_niov              = 1;
-        msg->reply_length            = offset;
+        msg->reply_iov->data   = msg_iov[0].data;
+        msg->reply_iov->length = offset;
+        msg->reply_iov->ref    = msg_iov[0].ref;
+        msg->reply_niov        = 1;
+        msg->reply_length      = offset;
 
         msg_iov[0].data   += offset;
         msg_iov[0].length -= offset;
@@ -391,9 +384,9 @@ evpl_rpc2_send_reply(
 
             reply_segment_iov = &msg->reply_segment_iov;
 
-            reply_segment_iov->data         = msg_iov[0].data + reply_offset;
-            reply_segment_iov->length       = reply_chunk.target[i].length;
-            reply_segment_iov->private_data = msg_iov[0].private_data;
+            reply_segment_iov->data   = msg_iov[0].data + reply_offset;
+            reply_segment_iov->length = reply_chunk.target[i].length;
+            reply_segment_iov->ref    = msg_iov[0].ref;
 
             evpl_rdma_write(evpl, msg->bind,
                             reply_chunk.target[i].handle,
@@ -502,9 +495,7 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
          * when unmarshalling the reply.
          */
 
-        for (int i = 0; i < msg->read_chunk.niov; i++) {
-            evpl_iovec_release(&msg->read_chunk.iov[i]);
-        }
+        evpl_iovecs_release(msg->read_chunk.iov, msg->read_chunk.niov);
         msg->read_chunk.niov   = 0;
         msg->read_chunk.length = 0;
     }
@@ -671,9 +662,9 @@ evpl_rpc2_recv_msg(
 
                         evpl_rpc2_abort_if(segment_iov == NULL, "Failed to allocate segment iovec");
 
-                        segment_iov->data         = msg->read_chunk.iov->data + segment_offset;
-                        segment_iov->length       = read_list->entry.target.length;
-                        segment_iov->private_data = msg->read_chunk.iov->private_data;
+                        segment_iov->data   = msg->read_chunk.iov->data + segment_offset;
+                        segment_iov->length = read_list->entry.target.length;
+                        segment_iov->ref    = msg->read_chunk.iov->ref;
 
                         evpl_rdma_read(evpl, msg->bind,
                                        read_list->entry.target.handle, read_list->entry.target.offset,

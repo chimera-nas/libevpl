@@ -77,7 +77,7 @@ void evpl_listener_detach(
     struct evpl                  *evpl,
     struct evpl_listener_binding *binding);
 
-void
+int
 evpl_listen(
     struct evpl_listener *listener,
     enum evpl_protocol_id protocol,
