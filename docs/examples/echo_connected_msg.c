@@ -69,7 +69,8 @@ server_callback(
             printf("[Server] Echoing %d bytes\n", notify->recv_msg.length);
 
             /* sendv takes ownership of the iovecs, so no release needed */
-            evpl_sendv(evpl, bind, notify->recv_msg.iovec, notify->recv_msg.niov, notify->recv_msg.length);
+            evpl_sendv(evpl, bind, notify->recv_msg.iovec, notify->recv_msg.niov, notify->recv_msg.length,
+                       EVPL_SEND_FLAG_TAKE_REF);
 
             break;
 
@@ -178,7 +179,7 @@ client_callback(
             }
 
             /* evpl owns iovecs after send */
-            evpl_sendv(evpl, bind, iov, niov, TRANSFER_SIZE + sizeof(uint32_t));
+            evpl_sendv(evpl, bind, iov, niov, TRANSFER_SIZE + sizeof(uint32_t), EVPL_SEND_FLAG_TAKE_REF);
 
             break;
 

@@ -32,7 +32,7 @@ evpl_global_config_init(void)
     config->slab_size              = 1 * 1024 * 1024 * 1024;
     config->refcnt                 = 1;
     config->iovec_ring_size        = 1024;
-    config->dgram_ring_size        = 256;
+    config->dgram_ring_size        = 1024;
     config->rdma_request_ring_size = 64;
     config->max_datagram_size      = 65536;
     config->max_datagram_batch     = 16;

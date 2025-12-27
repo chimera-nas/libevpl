@@ -41,3 +41,6 @@ endmacro()
 
 # RPC2 test with both client and server
 unit_test_rpc2(hello_world_tcp hello_world.x hello_world_tcp.c)
+
+# RPC2 test for builtin bool type
+unit_test_rpc2(builtin_bool_tcp builtin_bool.x builtin_bool_tcp.c)

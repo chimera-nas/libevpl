@@ -8,6 +8,8 @@
 #error "Do not include evpl_rdma.h directly, include evpl/evpl.h instead"
 #endif // ifndef EVPL_INCLUDED
 
+#define EVPL_RDMA_FLAG_TAKE_REF 0x01
+
 void evpl_rdma_get_address(
     struct evpl       *evpl,
     struct evpl_bind  *bind,
@@ -32,5 +34,6 @@ void evpl_rdma_write(
     uint64_t remote_address,
     struct evpl_iovec *iov,
     int niov,
+    unsigned int flags,
     void ( *callback )(int status, void *private_data),
     void *private_data);

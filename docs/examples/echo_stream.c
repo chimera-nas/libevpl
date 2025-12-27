@@ -51,7 +51,7 @@ server_callback(
                  * release them here. The buffers will be freed automatically
                  * after the send completes.
                  */
-                evpl_sendv(evpl, bind, iovecs, niov, length);
+                evpl_sendv(evpl, bind, iovecs, niov, length, EVPL_SEND_FLAG_TAKE_REF);
 
                 printf("[Server] Echoed %d bytes\n", length);
             }
@@ -155,7 +155,7 @@ client_callback(
             state->bytes_sent = TRANSFER_SIZE;
 
             /* evpl owns iovecs after send */
-            evpl_sendv(evpl, bind, iov, niov, TRANSFER_SIZE);
+            evpl_sendv(evpl, bind, iov, niov, TRANSFER_SIZE, EVPL_SEND_FLAG_TAKE_REF);
 
             break;
 

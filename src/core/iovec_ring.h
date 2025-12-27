@@ -17,6 +17,7 @@ struct evpl_iovec_ring {
     int                mask;
     int                alignment;
     int                head;
+    int                waist;
     int                tail;
     uint64_t           length;
 };
@@ -33,6 +34,7 @@ evpl_iovec_ring_alloc(
     ring->mask      = size - 1;
     ring->alignment = alignment;
     ring->head      = 0;
+    ring->waist     = 0;
     ring->tail      = 0;
     ring->length    = 0;
 
@@ -87,8 +89,9 @@ evpl_iovec_ring_resize(struct evpl_iovec_ring *ring)
                sizeof(struct evpl_iovec));
     }
 
-    ring->head = ring->size - 1;
-    ring->tail = 0;
+    ring->head  = ring->size - 1;
+    ring->waist = ((ring->waist + ring->size)  - ring->tail) - ring->size;
+    ring->tail  = 0;
 
     evpl_free(ring->iovec);
 
@@ -130,6 +133,16 @@ evpl_iovec_ring_head(struct evpl_iovec_ring *ring)
         return &ring->iovec[(ring->head + ring->size - 1) & ring->mask];
     }
 } // evpl_iovec_ring_head
+
+static inline struct evpl_iovec *
+evpl_iovec_ring_waist(struct evpl_iovec_ring *ring)
+{
+    if (ring->waist == ring->head) {
+        return NULL;
+    } else {
+        return &ring->iovec[ring->waist];
+    }
+} // evpl_iovec_ring_waist
 
 static inline struct evpl_iovec *
 evpl_iovec_ring_tail(struct evpl_iovec_ring *ring)
@@ -216,6 +229,7 @@ evpl_iovec_ring_clear(
     }
 
     ring->head   = 0;
+    ring->waist  = 0;
     ring->tail   = 0;
     ring->length = 0;
 } // evpl_iovec_ring_clear

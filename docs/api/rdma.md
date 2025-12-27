@@ -55,6 +55,7 @@ void evpl_rdma_write(
     uint64_t remote_address,
     struct evpl_iovec *iov,
     int niov,
+    unsigned int flags,
     void (*callback)(int status, void *private_data),
     void *private_data);
 ```
@@ -68,8 +69,12 @@ Write data from local buffers to remote memory (RDMA WRITE operation).
 - `remote_address` - Address of remote buffer
 - `iov` - Local buffers containing data to write
 - `niov` - Number of local buffers
+- `flags` - RDMA flags (see below)
 - `callback` - Completion callback
 - `private_data` - User context
+
+**Flags:**
+- `EVPL_RDMA_FLAG_TAKE_REF` - Transfer ownership of a reference to the iovecs to libevpl. When set, libevpl takes ownership and will decrement the reference count when the RDMA write completes. When not set, libevpl adds its own reference and the caller retains ownership.
 
 **Behavior:**
 - Pushes data from local iovecs to remote memory

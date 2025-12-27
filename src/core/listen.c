@@ -44,14 +44,15 @@ evpl_listener_accept(
 
     request = evpl_zalloc(sizeof(struct evpl_connect_request));
 
-    request->local_address   = listen_bind->local;
+    /* Note: local_address is left NULL here. The protocol attach function
+    * will set it to the actual interface address using getsockname() or
+    * equivalent. This is important when the server binds to 0.0.0.0/:: */
+    request->local_address   = NULL;
     request->remote_address  = remote_address;
     request->protocol        = listen_bind->protocol;
     request->attach_callback = binding->attach_callback;
     request->accepted        = accepted;
     request->private_data    = binding->private_data;
-
-    evpl_address_incref(request->local_address);
 
     pthread_mutex_lock(&binding->evpl->lock);
     DL_APPEND(binding->evpl->connect_requests, request);

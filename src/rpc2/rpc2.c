@@ -70,7 +70,6 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_thread *thread)
 
     msg->recv_niov                   = 0;
     msg->pending_reads               = 0;
-    msg->pending_writes              = 0;
     msg->read_chunk.niov             = 0;
     msg->read_chunk.length           = 0;
     msg->write_chunk.niov            = 0;
@@ -87,9 +86,10 @@ evpl_rpc2_msg_free(
     struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_msg    *msg)
 {
+    int i;
+
     evpl_iovecs_release(msg->recv_iov, msg->recv_niov);
     evpl_iovecs_release(msg->read_chunk.iov, msg->read_chunk.niov);
-    evpl_iovecs_release(msg->write_chunk.iov, msg->write_chunk.niov);
 
     LL_PREPEND(thread->free_msg, msg);
 } /* evpl_rpc2_msg_free */
@@ -188,27 +188,12 @@ evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
         msg->bind,
         msg->reply_iov,
         msg->reply_niov,
-        msg->reply_length);
+        msg->reply_length,
+        EVPL_SEND_FLAG_TAKE_REF);
 
 
     evpl_rpc2_msg_free(thread, msg);
 } /* evpl_rpc2_dispatch_reply */
-
-static void
-evpl_rpc2_write_segment_callback(
-    int   status,
-    void *private_data)
-{
-    struct evpl_rpc2_msg *msg = private_data;
-
-    evpl_rpc2_abort_if(status, "Failed to write rdma segment");
-
-    msg->pending_writes--;
-
-    if (msg->pending_writes == 0) {
-        evpl_rpc2_dispatch_reply(msg);
-    }
-} /* evpl_rpc2_write_segment_callback */
 
 static int
 evpl_rpc2_send_reply(
@@ -217,6 +202,7 @@ evpl_rpc2_send_reply(
     struct evpl_iovec    *msg_iov,
     int                   msg_niov,
     int                   length,
+    int                   reserve,
     int                   rpc2_stat)
 {
     struct evpl_iovec             iov, reply_iov;
@@ -232,9 +218,7 @@ evpl_rpc2_send_reply(
     int                           segment_niov;
     struct timespec               now;
     uint64_t                      elapsed;
-    int                           i, reserve, reduce = 0, rdma = msg->conn->protocol == EVPL_DATAGRAM_RDMACM_RC;
-
-    reserve = msg->program ? msg->program->reserve : 0;
+    int                           i, reduce = 0, rdma = msg->conn->protocol == EVPL_DATAGRAM_RDMACM_RC;
 
     rpc_reply.xid                               = msg->xid;
     rpc_reply.body.mtype                        = REPLY;
@@ -295,10 +279,14 @@ evpl_rpc2_send_reply(
 
                     evpl_rdma_write(evpl, msg->bind,
                                     target->handle, target->offset,
-                                    segment_iov, segment_niov, evpl_rpc2_write_segment_callback, msg);
-
-                    msg->pending_writes++;
+                                    segment_iov, segment_niov,
+                                    0,
+                                    NULL, NULL);
                 }
+            }
+
+            for (i = 0; i < msg->write_chunk.niov; i++) {
+                evpl_iovec_release(&msg->write_chunk.iov[i]);
             }
         }
 
@@ -405,11 +393,11 @@ evpl_rpc2_send_reply(
             evpl_rdma_write(evpl, msg->bind,
                             reply_chunk.target[i].handle,
                             reply_chunk.target[i].offset,
-                            reply_segment_iov, 1, evpl_rpc2_write_segment_callback, msg);
+                            reply_segment_iov, 1,
+                            EVPL_RDMA_FLAG_TAKE_REF,
+                            NULL, NULL);
 
             reply_offset += reply_chunk.target[i].length;
-
-            msg->pending_writes++;
         }
 
     } else {
@@ -418,9 +406,7 @@ evpl_rpc2_send_reply(
         msg->reply_length = length;
     }
 
-    if (msg->pending_writes == 0) {
-        evpl_rpc2_dispatch_reply(msg);
-    }
+    evpl_rpc2_dispatch_reply(msg);
 
     return 0;
 } /* evpl_rpc2_send_reply */
@@ -437,7 +423,7 @@ evpl_rpc2_send_reply_error(
 
     msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, &msg_iov);
 
-    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov, 0, rpc2_stat);
+    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov,  4096, 4096, rpc2_stat);
 } /* evpl_rpc2_send_reply_error */
 
 
@@ -449,23 +435,31 @@ evpl_rpc2_send_reply_success(
     int                   msg_niov,
     int                   length)
 {
-    return evpl_rpc2_send_reply(evpl, msg, msg_iov, msg_niov, length, SUCCESS);
+    return evpl_rpc2_send_reply(evpl, msg, msg_iov, msg_niov, length, msg->program->reserve, SUCCESS);
 } /* evpl_rpc2_send_reply_success */
 
 static void
 evpl_rpc2_server_handle_msg(struct evpl_rpc2_msg *msg)
 {
-    struct evpl_rpc2_conn           *conn           = msg->conn;
-    struct evpl_rpc2_thread         *thread         = msg->thread;
-    struct evpl                     *evpl           = thread->evpl;
-    struct evpl_rpc2_server_binding *server_binding = conn->server_binding;
-    int                              error;
+    struct evpl_rpc2_conn   *conn   = msg->conn;
+    struct evpl_rpc2_thread *thread = msg->thread;
+    struct evpl             *evpl   = thread->evpl;
+    int                      error;
 
     error = msg->program->recv_call_dispatch(evpl, conn, msg, msg->req_iov, msg->req_niov, msg->request_length,
-                                             server_binding->private_data);
+                                             conn->server_private_data);
 
     if (unlikely(error)) {
-        evpl_rpc2_abort("Failed to dispatch rpc2 call: %d", error);
+        if (error == 1) {
+            evpl_rpc2_error("rpc2 procedure %u not implemented", msg->proc);
+            evpl_rpc2_send_reply_error(evpl, msg, PROC_UNAVAIL);
+        } else if (error == 2) {
+            evpl_rpc2_error("rpc2 failed to decode procedure %u arguments", msg->proc);
+            evpl_rpc2_send_reply_error(evpl, msg, GARBAGE_ARGS);
+        } else {
+            evpl_rpc2_error("Failed to dispatch rpc2 call: %d", error);
+            evpl_rpc2_send_reply_error(evpl, msg, SYSTEM_ERR);
+        }
     }
 
 } /* evpl_rpc2_server_handle_msg */
@@ -543,7 +537,6 @@ evpl_rpc2_recv_msg(
     struct evpl_rpc2_thread         *thread    = rpc2_conn->thread;
     struct evpl_rpc2_msg            *msg;
     struct evpl_rpc2_server_binding *server_binding = rpc2_conn->server_binding;
-    struct evpl_rpc2_server         *server         = server_binding ? server_binding->server : NULL;
     struct evpl_rpc2_program        *program;
     struct rpc_msg                   rpc_msg;
     struct rdma_msg                  rdma_msg;
@@ -677,7 +670,8 @@ evpl_rpc2_recv_msg(
 
                         evpl_rdma_read(evpl, msg->bind,
                                        read_list->entry.target.handle, read_list->entry.target.offset,
-                                       segment_iov, 1, evpl_rpc2_read_segment_callback, msg);
+                                       segment_iov, 1,
+                                       evpl_rpc2_read_segment_callback, msg);
 
                         msg->pending_reads++;
 
@@ -708,14 +702,14 @@ evpl_rpc2_recv_msg(
 
             msg->program = NULL;
 
-            for (i  = 0; i < server->nprograms; i++) {
-                program = server->programs[i];
+            for (i = 0; i < rpc2_conn->num_server_programs; i++) {
+                program = rpc2_conn->server_programs[i];
 
                 if (program->program == rpc_msg.body.cbody.prog &&
                     program->version == rpc_msg.body.cbody.vers) {
 
                     msg->program = program;
-                    msg->metric  = server_binding->metrics[i][msg->proc];
+                    msg->metric  = server_binding ? server_binding->metrics[i][msg->proc] : NULL;
                     break;
                 }
             }
@@ -815,6 +809,13 @@ evpl_rpc2_accept(
     rpc2_conn->bind           = bind;
     rpc2_conn->protocol       = evpl_bind_get_protocol(bind);
     rpc2_conn->rdma           = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
+
+    memcpy(rpc2_conn->server_programs,
+           server_binding->server->programs,
+           server_binding->server->nprograms * sizeof(*rpc2_conn->server_programs));
+
+    rpc2_conn->num_server_programs = server_binding->server->nprograms;
+    rpc2_conn->server_private_data = server_binding->private_data;
 
     *notify_callback   = evpl_rpc2_event;
     *segment_callback  = rpc2_segment_callback;
@@ -1031,11 +1032,15 @@ evpl_rpc2_server_destroy(struct evpl_rpc2_server *server)
 
 SYMBOL_EXPORT struct evpl_rpc2_conn *
 evpl_rpc2_client_connect(
-    struct evpl_rpc2_thread *thread,
-    int                      protocol,
-    struct evpl_endpoint    *endpoint)
+    struct evpl_rpc2_thread   *thread,
+    int                        protocol,
+    struct evpl_endpoint      *endpoint,
+    struct evpl_rpc2_program **server_programs,
+    int                        num_server_programs,
+    void                      *server_private_data)
 {
     struct evpl_rpc2_conn *conn;
+    int                    i;
 
     conn = evpl_zalloc(sizeof(*conn));
 
@@ -1045,6 +1050,14 @@ evpl_rpc2_client_connect(
     conn->rdma           = (protocol == EVPL_DATAGRAM_RDMACM_RC);
     conn->server_binding = NULL;
     conn->next_xid       = 1;
+
+    memcpy(conn->server_programs, server_programs, num_server_programs * sizeof(*conn->server_programs));
+    conn->num_server_programs = num_server_programs;
+    conn->server_private_data = server_private_data;
+
+    for (i = 0; i < num_server_programs; i++) {
+        conn->server_programs[i]->send_reply_dispatch = evpl_rpc2_send_reply_success;
+    }
 
     DL_APPEND(thread->conns, conn);
 
@@ -1206,7 +1219,7 @@ evpl_rpc2_call(
 
     hdr_iov = req_iov[0];
 
-    rpc_len = marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, transport_hdr_len);
+    marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, transport_hdr_len);
 
     if (rdma) {
         marshall_rdma_msg(&rdma_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, 0);
@@ -1217,7 +1230,7 @@ evpl_rpc2_call(
 
     /* Send the request - use out_iov which contains the marshalled header + payload */
 
-    evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length);
+    evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length, EVPL_SEND_FLAG_TAKE_REF);
 
     return 0;
 } /* evpl_rpc2_call */

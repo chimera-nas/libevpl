@@ -208,13 +208,13 @@ evpl_xlio_socket_accept(
     struct evpl_xlio_accepted_socket *accepted_socket;
     int                               rc;
 
-    accepted_socket = evpl_zalloc(sizeof(*accepted_socket));
-
-    accepted_socket->socket = sock;
-
     ls = (struct evpl_xlio_socket *) parent_userdata_sq;
 
     listen_bind = evpl_private2bind(ls);
+
+    accepted_socket = evpl_zalloc(sizeof(*accepted_socket));
+
+    accepted_socket->socket = sock;
 
     evpl = ls->evpl;
 

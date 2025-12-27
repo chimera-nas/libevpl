@@ -13,17 +13,7 @@ evpl_send(
     const void       *buffer,
     unsigned int      length)
 {
-    struct evpl_iovec iovecs[4];
-    int               niov;
-
-    niov = evpl_iovec_alloc(evpl, length, 0, 4, iovecs);
-
-    evpl_core_abort_if(niov < 1, "failed to allocate bounce space");
-
-    evpl_iovec_memcpy(iovecs, buffer, length);
-
-    evpl_sendv(evpl, bind, iovecs, niov, length);
-
+    evpl_sendto(evpl, bind, bind->remote, buffer, length);
 } /* evpl_send */
 
 SYMBOL_EXPORT void
@@ -43,7 +33,7 @@ evpl_sendto(
 
     evpl_iovec_memcpy(iovecs, buffer, length);
 
-    evpl_sendtov(evpl, bind, address, iovecs, niov, length);
+    evpl_sendtov(evpl, bind, address, iovecs, niov, length, EVPL_SEND_FLAG_TAKE_REF);
 
 } /* evpl_sendto */
 
@@ -55,17 +45,7 @@ evpl_sendtoep(
     const void           *buffer,
     unsigned int          length)
 {
-    struct evpl_iovec iovecs[4];
-    int               niov;
-
-    niov = evpl_iovec_alloc(evpl, length, 0, 4, iovecs);
-
-    evpl_core_abort_if(niov < 1, "failed to allocate bounce space");
-
-    evpl_iovec_memcpy(iovecs, buffer, length);
-
-    evpl_sendtoepv(evpl, bind, endpoint, iovecs, niov, length);
-
+    evpl_sendto(evpl, bind, evpl_endpoint_resolve(endpoint), buffer, length);
 } /* evpl_sendto */
 
 SYMBOL_EXPORT void
@@ -74,11 +54,13 @@ evpl_sendv(
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
     int                niovs,
-    int                length)
+    int                length,
+    unsigned int       flags)
 {
-    struct evpl_dgram *dgram;
-    struct evpl_iovec *iovec;
-    int                i, left = length;
+        << << << < HEAD
+        struct evpl_dgram *dgram;
+    struct evpl_iovec     *iovec;
+    int                    i, left = length;
 
     if (unlikely(niovs == 0)) {
         return;
@@ -112,6 +94,9 @@ evpl_sendv(
 
     evpl_iovecs_release(&iovecs[i], niovs - i);
 
+    == == == =
+        evpl_sendtov(evpl, bind, bind->remote, iovecs, niovs, length, flags);
+    >> >> >> > origin / main
 } /* evpl_sendv */
 
 SYMBOL_EXPORT void
@@ -121,7 +106,8 @@ evpl_sendtov(
     struct evpl_address *address,
     struct evpl_iovec   *iovecs,
     int                  niovs,
-    int                  length)
+    int                  length,
+    unsigned int         flags)
 {
     struct evpl_dgram *dgram;
     struct evpl_iovec *iovec;
@@ -141,6 +127,10 @@ evpl_sendtov(
             iovec->length            = left;
             left                     = 0;
         }
+
+        if (!(flags & EVPL_SEND_FLAG_TAKE_REF)) {
+            evpl_iovec_addref(iovec);
+        }
     }
 
     evpl_core_abort_if(left,
@@ -149,13 +139,19 @@ evpl_sendtov(
 
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
-    dgram->niov   = i;
-    dgram->length = length;
-    dgram->addr   = address;
+    dgram->dgram_type   = EVPL_DGRAM_TYPE_SEND;
+    dgram->bind         = bind;
+    dgram->niov         = i;
+    dgram->length       = length;
+    dgram->addr         = address;
+    dgram->callback     = NULL;
+    dgram->private_data = NULL;
 
     evpl_defer(evpl, &bind->flush_deferral);
 
-    evpl_iovecs_release(&iovecs[i], niovs - i);
+    if (flags & EVPL_SEND_FLAG_TAKE_REF) {
+        evpl_iovecs_release(&iovecs[i], niovs - i);
+    }
 
 } /* evpl_sendtov */
 
@@ -166,7 +162,8 @@ evpl_sendtoepv(
     struct evpl_endpoint *endpoint,
     struct evpl_iovec    *iovecs,
     int                   nbufvecs,
-    int                   length)
+    int                   length,
+    unsigned int          flags)
 {
-    evpl_sendtov(evpl, bind, evpl_endpoint_resolve(endpoint), iovecs, nbufvecs, length);
+    evpl_sendtov(evpl, bind, evpl_endpoint_resolve(endpoint), iovecs, nbufvecs, length, flags);
 } /* evpl_sendtoepv */

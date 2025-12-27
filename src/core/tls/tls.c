@@ -902,8 +902,19 @@ evpl_tls_attach(
     struct evpl_tls          *t            = evpl_bind_private(bind);
     struct evpl_accepted_tls *accepted_tls = accepted;
     int                       fd           = accepted_tls->fd;
+    struct sockaddr_storage   ss;
+    socklen_t                 sslen = sizeof(ss);
+    int                       rc;
 
     evpl_free(accepted_tls);
+
+    rc = getsockname(fd, (struct sockaddr *) &ss, &sslen);
+
+    evpl_tls_abort_if(rc < 0, "getsockname failed: %s", strerror(errno));
+
+    bind->local          = evpl_address_alloc();
+    bind->local->addrlen = sslen;
+    memcpy(bind->local->addr, &ss, sslen);
 
     evpl_tls_init(evpl, t, fd, 1, 0);
 

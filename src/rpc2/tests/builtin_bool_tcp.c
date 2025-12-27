@@ -12,7 +12,7 @@
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"
 
-#include "hello_world_tcp_xdr.h"
+#include "builtin_bool_tcp_xdr.h"
 
 /* RPC2 logging macros */
 #define evpl_info(fmt, ...)  printf("[INFO] " fmt "\n", ## __VA_ARGS__)
@@ -26,62 +26,57 @@ struct test_state {
     int test_passed;
 };
 
-/* Server-side: Handle GREET request */
+/* Server-side: Handle PING request */
 void
-server_recv_greet(
+server_recv_ping(
     struct evpl           *evpl,
     struct evpl_rpc2_conn *conn,
-    struct Hello          *request,
+    xdr_bool               request,
     struct evpl_rpc2_msg  *msg,
     void                  *private_data)
 {
-    struct test_state *state = private_data;
-    struct HELLO_V1   *prog  = msg->program->program_data;
-    struct Hello       reply;
-    int                rc;
+    struct test_state      *state = private_data;
+    struct BUILTIN_BOOL_V1 *prog  = msg->program->program_data;
+    xdr_bool                reply;
+    int                     rc;
 
-    evpl_info("Server received GREET request: id=%u, greeting='%s'",
-              request->id, request->greeting.str);
+    evpl_info("Server received PING request: value=%s", request ? "true" : "false");
 
     /* Validate request */
-    assert(request->id == 42);
-    assert(strcmp(request->greeting.str, "Hello from client!") == 0);
+    assert(request == 1);
 
     state->server_received = 1;
 
     /* Prepare reply */
-    reply.id = 100;
-    xdr_set_str_static(&reply, greeting, "Hello from server!", strlen("Hello from server!"));
+    reply = 1;
 
     /* Send reply */
-    rc = prog->send_reply_GREET(evpl, &reply, msg);
+    rc = prog->send_reply_PING(evpl, reply, msg);
 
     if (unlikely(rc)) {
-        fprintf(stderr, "Failed to send reply for GREET: %d\n", rc);
+        fprintf(stderr, "Failed to send reply for PING: %d\n", rc);
         exit(1);
     }
 
-    evpl_info(
-        "Server sent GREET reply");
-} /* server_recv_greet */
+    evpl_info("Server sent PING reply");
+} /* server_recv_ping */
 
-/* Client-side: Handle GREET reply */
+/* Client-side: Handle PING reply */
 void
-client_recv_reply_greet(
-    struct evpl  *evpl,
-    struct Hello *reply,
-    int           status,
-    void         *callback_private_data)
+client_recv_reply_ping(
+    struct evpl *evpl,
+    xdr_bool     reply,
+    int          status,
+    void        *callback_private_data)
 {
     struct test_state *state = callback_private_data;
 
-    evpl_info("Client received GREET reply: status=%d, id=%u, greeting='%s'",
-              status, reply->id, reply->greeting.str);
+    evpl_info("Client received PING reply: status=%d, value=%s",
+              status, reply ? "true" : "false");
 
     /* Validate reply */
     assert(status == 0);  /* SUCCESS */
-    assert(reply->id == 100);
-    assert(strcmp(reply->greeting.str, "Hello from server!") == 0);
+    assert(reply == 1);
 
     state->client_received = 1;
 
@@ -91,7 +86,7 @@ client_recv_reply_greet(
         state->test_passed   = 1;
         evpl_info("Test PASSED!");
     }
-} /* client_recv_reply_greet */
+} /* client_recv_reply_ping */
 
 int
 main(
@@ -103,8 +98,8 @@ main(
     struct evpl_rpc2_conn    *conn;
     struct evpl_rpc2_thread  *thread;
     struct evpl_endpoint     *endpoint;
-    struct HELLO_V1           prog;
-    struct Hello              request;
+    struct BUILTIN_BOOL_V1    prog;
+    xdr_bool                  request;
     struct evpl_rpc2_program *programs[1];
     struct test_state         state = { 0 };
 
@@ -112,20 +107,20 @@ main(
     evpl = evpl_create(NULL);
 
     /* Initialize server program */
-    HELLO_V1_init(&prog);
-    prog.recv_call_GREET = server_recv_greet;
-    programs[0]          = &prog.rpc2;
+    BUILTIN_BOOL_V1_init(&prog);
+    prog.recv_call_PING = server_recv_ping;
+    programs[0]         = &prog.rpc2;
 
     /* Create RPC2 server */
     server = evpl_rpc2_server_init(programs, 1);
 
-    /* Create endpoint for 0.0.0.0:8000 */
-    endpoint = evpl_endpoint_create("0.0.0.0", 8000);
+    /* Create endpoint for 0.0.0.0:8001 */
+    endpoint = evpl_endpoint_create("0.0.0.0", 8001);
 
     /* Start listening */
     evpl_rpc2_server_start(server, EVPL_STREAM_SOCKET_TCP, endpoint);
 
-    evpl_info("Server listening on port 8000");
+    evpl_info("Server listening on port 8001");
 
     thread = evpl_rpc2_thread_init(evpl, programs, 1, NULL, NULL);
 
@@ -144,12 +139,11 @@ main(
     evpl_info("Client connected to server");
 
     /* Prepare request */
-    request.id = 42;
-    xdr_set_str_static(&request, greeting, "Hello from client!", strlen("Hello from client!"));
+    request = 1;
 
     /* Make RPC call */
-    evpl_info("Client sending GREET request");
-    prog.send_call_GREET(&prog.rpc2, evpl, conn, &request, 0, 0, 0, client_recv_reply_greet, &state);
+    evpl_info("Client sending PING request");
+    prog.send_call_PING(&prog.rpc2, evpl, conn, request, 0, 0, 0, client_recv_reply_ping, &state);
 
     /* Wait for reply */
     while (!state.test_complete) {
