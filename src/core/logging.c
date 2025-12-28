@@ -157,4 +157,3 @@ evpl_abort(
 
     abort();
 } /* evpl_abort */
-

@@ -22,6 +22,10 @@ evpl_connect(
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
+    if (!protocol) {
+        return NULL;
+    }
+
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
