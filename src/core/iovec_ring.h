@@ -59,7 +59,7 @@ evpl_iovec_ring_check(const struct evpl_iovec_ring *ring)
         bytes += iovec->length;
 
         evpl_core_abort_if(iovec->length < 1, "zero length iovec in ring");
-        evpl_core_abort_if(iovec->ref->refcnt < 1,
+        evpl_core_abort_if(evpl_iovec_get_ref(iovec)->refcnt < 1,
                            "iovec in ring with no refcnt!");
 
         cur = (cur + 1) & ring->mask;
@@ -68,7 +68,7 @@ evpl_iovec_ring_check(const struct evpl_iovec_ring *ring)
     evpl_core_abort_if(bytes != ring->length,
                        "ring length %lu does not match actual length %lu",
                        ring->length, bytes);
-} // evpl_iovec_ring_check
+} /* evpl_iovec_ring_check */
 
 static inline void
 evpl_iovec_ring_resize(struct evpl_iovec_ring *ring)
@@ -76,29 +76,34 @@ evpl_iovec_ring_resize(struct evpl_iovec_ring *ring)
     int                new_size  = ring->size << 1;
     struct evpl_iovec *new_iovec = evpl_valloc(
         new_size * sizeof(struct evpl_iovec), ring->alignment);
+    struct evpl_iovec *old_iovec = ring->iovec;
 
     evpl_core_assert(ring->iovec);
 
     if (ring->head > ring->tail) {
-        memcpy(new_iovec, &ring->iovec[ring->tail], (ring->head - ring->tail) *
-               sizeof(struct evpl_iovec));
+        for (int i = 0; i < ring->head - ring->tail; i++) {
+            evpl_iovec_move(&new_iovec[i], &ring->iovec[ring->tail + i]);
+        }
     } else {
-        memcpy(new_iovec, &ring->iovec[ring->tail], (ring->size - ring->tail) *
-               sizeof(struct evpl_iovec));
-        memcpy(&new_iovec[ring->size - ring->tail], ring->iovec, ring->head *
-               sizeof(struct evpl_iovec));
+        for (int i = 0; i < ring->size - ring->tail; i++) {
+            evpl_iovec_move(&new_iovec[i], &ring->iovec[ring->tail + i]);
+        }
+        for (int i = 0; i < ring->head; i++) {
+            evpl_iovec_move(&new_iovec[ring->size - ring->tail + i],
+                            &ring->iovec[i]);
+        }
     }
 
     ring->head  = ring->size - 1;
     ring->waist = ((ring->waist + ring->size)  - ring->tail) - ring->size;
     ring->tail  = 0;
 
-    evpl_free(ring->iovec);
+    evpl_free(old_iovec);
 
     ring->iovec = new_iovec;
     ring->size  = new_size;
     ring->mask  = new_size - 1;
-} // evpl_iovec_ring_resize
+} /* evpl_iovec_ring_resize */
 
 static inline int
 evpl_iovec_ring_is_empty(const struct evpl_iovec_ring *ring)
@@ -170,8 +175,8 @@ evpl_iovec_ring_next(
 
 static inline struct evpl_iovec *
 evpl_iovec_ring_add(
-    struct evpl_iovec_ring  *ring,
-    const struct evpl_iovec *iovec)
+    struct evpl_iovec_ring *ring,
+    struct evpl_iovec      *iovec)
 {
     struct evpl_iovec *res;
 
@@ -181,13 +186,38 @@ evpl_iovec_ring_add(
 
     res = &ring->iovec[ring->head];
 
-    ring->iovec[ring->head] = *iovec;
-    ring->head              = (ring->head + 1) & ring->mask;
+    evpl_iovec_move(res, iovec);
+    ring->head = (ring->head + 1) & ring->mask;
 
-    ring->length += iovec->length;
+    ring->length += res->length;
 
     return res;
-} // evpl_iovec_ring_add
+} /* evpl_iovec_ring_add */
+
+/*
+ * Add an iovec to the ring by cloning (taking a new reference).
+ * The source iovec retains its reference and can be released by caller.
+ */
+static inline struct evpl_iovec *
+evpl_iovec_ring_add_clone(
+    struct evpl_iovec_ring *ring,
+    struct evpl_iovec      *iovec)
+{
+    struct evpl_iovec *res;
+
+    if (unlikely(evpl_iovec_ring_is_full(ring))) {
+        evpl_iovec_ring_resize(ring);
+    }
+
+    res = &ring->iovec[ring->head];
+
+    evpl_iovec_clone(res, iovec);
+    ring->head = (ring->head + 1) & ring->mask;
+
+    ring->length += res->length;
+
+    return res;
+} /* evpl_iovec_ring_add_clone */
 
 static inline struct evpl_iovec *
 evpl_iovec_ring_add_new(struct evpl_iovec_ring *ring)
@@ -257,7 +287,7 @@ evpl_iovec_ring_iov(
         iovec = &ring->iovec[pos];
 
         evpl_core_assert(iovec->length > 0);
-        evpl_core_assert(iovec->ref->refcnt > 0);
+        evpl_core_assert(evpl_iovec_get_ref(iovec)->refcnt > 0);
 
         iov[niov].iov_base = iovec->data;
         iov[niov].iov_len  = iovec->length;
@@ -270,7 +300,7 @@ evpl_iovec_ring_iov(
     *r_total = total;
 
     return niov;
-} // evpl_iovec_ring_iov
+} /* evpl_iovec_ring_iov */
 
 
 static inline int
@@ -293,7 +323,7 @@ evpl_iovec_ring_move_iov(
         iovec = &ring->iovec[ring->tail];
 
         evpl_core_assert(iovec->length > 0);
-        evpl_core_assert(iovec->ref->refcnt > 0);
+        evpl_core_assert(evpl_iovec_get_ref(iovec)->refcnt > 0);
 
         iov[niov].iov_base = iovec->data;
         iov[niov].iov_len  = iovec->length;
@@ -306,7 +336,7 @@ evpl_iovec_ring_move_iov(
     *r_total = total;
 
     return niov;
-} // evpl_iovec_ring_iov
+} /* evpl_iovec_ring_move_iov */
 
 static inline int
 evpl_iovec_ring_consume(
@@ -323,7 +353,7 @@ evpl_iovec_ring_consume(
 
         iovec = &ring->iovec[ring->tail];
 
-        evpl_core_assert(iovec->ref->refcnt > 0);
+        evpl_core_assert(evpl_iovec_get_ref(iovec)->refcnt > 0);
 
         if (iovec->length <= length) {
             evpl_iovec_release(iovec);
@@ -339,7 +369,7 @@ evpl_iovec_ring_consume(
     }
 
     return n;
-} // evpl_iovec_ring_consume
+} /* evpl_iovec_ring_consume */
 
 static inline int
 evpl_iovec_ring_copyv(
@@ -355,16 +385,23 @@ evpl_iovec_ring_copyv(
 
         iovec = &ring->iovec[ring->tail];
 
-        out[niov].ref  = iovec->ref;
         out[niov].data = iovec->data;
 
-        if (left < iovec->length) {
+        if (left < (int) iovec->length) {
+            /*
+             * Partial copy: take a new reference for out[niov],
+             * and keep the original in the ring (with adjusted data/length).
+             */
             chunk = left;
-            evpl_iovec_addref(iovec);
+            evpl_iovec_clone_segment(&out[niov], iovec, 0, left);
             iovec->data   += left;
             iovec->length -= left;
         } else {
-            chunk      = iovec->length;
+            /*
+             * Full move: transfer the reference from ring to out[niov].
+             */
+            chunk = iovec->length;
+            evpl_iovec_move(&out[niov], iovec);
             ring->tail = (ring->tail + 1) & ring->mask;
         }
 
@@ -378,7 +415,7 @@ evpl_iovec_ring_copyv(
     ring->length -= length;
 
     return niov;
-} // evpl_iovec_ring_copyv
+} /* evpl_iovec_ring_copyv */
 
 static inline void
 evpl_iovec_ring_consumev(
@@ -412,24 +449,28 @@ evpl_iovec_ring_append(
 
     head = evpl_iovec_ring_head(ring);
 
-    if (head && head->ref == append->ref &&
+    if (head && evpl_iovec_get_ref(head) == evpl_iovec_get_ref(append) &&
         head->data + head->length == append->data) {
-        /* The head iovec is from the same buffer as the one to be
+        /*
+         * The head iovec is from the same buffer as the one to be
          * appended and they are contiguous. Extend the head iovec.
          */
         head->length += length;
 
-        if (length == append->length) {
+        if ((int) length == (int) append->length) {
             evpl_iovec_release(append);
         }
     } else {
-        head         = evpl_iovec_ring_add_new(ring);
-        head->data   = append->data;
-        head->ref    = append->ref;
-        head->length = length;
+        head = evpl_iovec_ring_add_new(ring);
 
-        if (length != append->length) {
-            evpl_iovec_addref(head);
+        if ((int) length != (int) append->length) {
+            /*
+             * Partial append: take a new reference for head,
+             * append keeps its reference.
+             */
+            evpl_iovec_clone_segment(head, append, 0, length);
+        } else {
+            evpl_iovec_move(head, append);
         }
     }
 
@@ -438,4 +479,4 @@ evpl_iovec_ring_append(
 
     ring->length += length;
 
-} // evpl_iovec_ring_append
+} /* evpl_iovec_ring_append */

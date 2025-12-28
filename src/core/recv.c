@@ -224,10 +224,7 @@ evpl_recvv(
 
         out = &iovecs[niovs++];
 
-        out->data   = cur->data;
-        out->length = chunk;
-        out->ref    = cur->ref;
-        evpl_iovec_addref(out);
+        evpl_iovec_clone_segment(out, cur, 0, chunk);
 
         left -= chunk;
 

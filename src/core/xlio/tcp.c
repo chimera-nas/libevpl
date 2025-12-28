@@ -59,7 +59,8 @@ evpl_xlio_prepare_iov(
 
         zc = evpl_xlio_alloc_zc(xlio);
 
-        zc->buffer = container_of(iovec->ref, struct evpl_xlio_buffer, ref);
+        zc->buffer = container_of(evpl_iovec_get_ref(iovec),
+                                   struct evpl_xlio_buffer, ref);
         zc->length = iovec->length;
         evpl_iovec_addref(iovec);
 

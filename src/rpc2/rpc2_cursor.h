@@ -5,6 +5,7 @@
 #pragma once
 
 #include "evpl/evpl.h"
+#include "rpc2/xdr_iovec.h"
 
 #include "rpc2_xdr.h"
 #include "rpcrdma1_xdr.h"
@@ -80,18 +81,21 @@ evpl_rpc2_iovec_cursor_move(
 
         (*iov)[cur_niov].data   = cursor->iov->data + cursor->offset;
         (*iov)[cur_niov].length = chunk;
-        (*iov)[cur_niov].ref    = cursor->iov->ref;
-
-        cur_niov++;
-        left -= chunk;
 
         cursor->offset += chunk;
 
         if (cursor->offset == cursor->iov->length) {
+            evpl_iovec_move(&(*iov)[cur_niov], cursor->iov);
+
             cursor->iov++;
             cursor->niov--;
             cursor->offset = 0;
+        } else {
+            evpl_iovec_clone_segment(&(*iov)[cur_niov], cursor->iov, cursor->offset, chunk);
         }
+
+        cur_niov++;
+        left -= chunk;
     }
 
     return niov;

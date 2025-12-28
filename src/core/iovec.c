@@ -26,13 +26,9 @@ evpl_iovec_reserve(
 
         if (evpl->current_buffer == NULL) {
             evpl->current_buffer = evpl_buffer_alloc(evpl);
-            evpl_core_abort_if(evpl->current_buffer->ref.flags & EVPL_IOVEC_REC_FLAG_FREE,
-                               "buffer ref is already free at buffer allo");
         }
 
         buffer = evpl->current_buffer;
-
-        evpl_core_abort_if(buffer->ref.flags & EVPL_IOVEC_REC_FLAG_FREE, "buffer ref is already free at iovec reserve");
 
         pad = evpl_buffer_pad(buffer, alignment);
 
@@ -54,12 +50,10 @@ evpl_iovec_reserve(
 
         iovec = &r_iovec[niovs++];
 
-        iovec->ref    = &buffer->ref;
         iovec->data   = buffer->data + buffer->used + pad;
         iovec->length = chunk - pad;
 
-        iovec->ref->refcnt++;
-
+        evpl_iovec_take_ref(iovec, &buffer->ref);
 
         left -= chunk - pad;
 
@@ -88,7 +82,7 @@ evpl_iovec_commit(
 
         iovec = &iovecs[i];
 
-        buffer = container_of(iovec->ref, struct evpl_buffer, ref);
+        buffer = container_of(evpl_iovec_get_ref(iovec), struct evpl_buffer, ref);
 
         buffer->used  = (iovec->data + iovec->length) - buffer->data;
         buffer->used += evpl_buffer_pad(buffer, alignment);
@@ -128,7 +122,7 @@ evpl_iovec_alloc_whole(
 
     r_iovec->data   = buffer->data;
     r_iovec->length = buffer->size;
-    r_iovec->ref    = &buffer->ref;
+    evpl_iovec_set_ref(r_iovec, &buffer->ref);
 } /* evpl_iovec_alloc_whole */
 
 void
@@ -147,11 +141,10 @@ evpl_iovec_alloc_datagram(
 
     r_iovec->data   = buffer->data + buffer->used;
     r_iovec->length = size;
-    r_iovec->ref    = &buffer->ref;
 
     buffer->used += size;
 
-    buffer->ref.refcnt++;
+    evpl_iovec_take_ref(r_iovec, &buffer->ref);
 
     if (buffer->size - buffer->used < evpl_shared->config->max_datagram_size) {
         evpl_buffer_release(evpl->datagram_buffer);

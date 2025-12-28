@@ -64,15 +64,30 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
         if (slab->refcnt && slab->buffers) {
             for (int i = 0; i < slab->size / evpl_shared->config->buffer_size; i++) {
                 buffer = &slab->buffers[i];
+#if defined(EVPL_IOVEC_TRACE)
+                if (buffer->ref.refcnt != 0) {
+                    evpl_core_error("evpl_allocator_destroy: buffer %p has %d leaked references",
+                                    buffer, buffer->ref.refcnt);
+                }
+#else  /* if defined(EVPL_IOVEC_TRACE) */
                 evpl_core_abort_if(buffer->ref.refcnt != 0,
                                    "evpl_allocator_destroy: buffer %p has %d leaked references",
                                    buffer, buffer->ref.refcnt);
+#endif /* if defined(EVPL_IOVEC_TRACE) */
+
             }
         }
 
+#if defined(EVPL_IOVEC_TRACE)
+        if (slab->refcnt != 0) {
+            evpl_core_error("evpl_allocator_destroy: slab %p has %d leaked references",
+                            slab, slab->refcnt);
+        }
+#else  /* if defined(EVPL_IOVEC_TRACE) */
         evpl_core_abort_if(slab->refcnt != 0,
                            "evpl_allocator_destroy: slab %p has %d leaked references",
                            slab, slab->refcnt);
+#endif /* if defined(EVPL_IOVEC_TRACE) */
 
 
         LL_DELETE(allocator->slabs, slab);

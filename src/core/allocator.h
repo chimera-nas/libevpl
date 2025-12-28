@@ -70,7 +70,6 @@ evpl_buffer_release(struct evpl_buffer *buffer)
     buffer->ref.refcnt--;
 
     if (buffer->ref.refcnt == 0) {
-        buffer->ref.flags = EVPL_IOVEC_REC_FLAG_FREE;
         buffer->ref.release(&buffer->ref);
     }
 
