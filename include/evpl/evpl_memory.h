@@ -258,7 +258,7 @@ evpl_iovec_clone_segment(
     ++real_ref->refcnt;
     evpl_iovec_canary_alloc(dst, real_ref);
 #else // ifdef EVPL_IOVEC_TRACE
-    dst->ref = evpl_iovec_take_ref(src->ref);
+    evpl_iovec_take_ref(dst, src->ref);
 #endif // ifdef EVPL_IOVEC_TRACE
 
     if (offset + length > src->length) {
@@ -282,7 +282,7 @@ evpl_iovec_clone(
     ++real_ref->refcnt;
     evpl_iovec_canary_alloc(dst, real_ref);
 #else // ifdef EVPL_IOVEC_TRACE
-    dst->ref = evpl_iovec_take_ref(src->ref);
+    evpl_iovec_take_ref(dst, src->ref);
 #endif // ifdef EVPL_IOVEC_TRACE
 } /* evpl_iovec_clone */
 
