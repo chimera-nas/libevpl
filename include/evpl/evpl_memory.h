@@ -238,7 +238,7 @@ evpl_iovec_take_ref(
 #ifdef EVPL_IOVEC_TRACE
     evpl_iovec_canary_alloc(dst, src);
 #else // ifdef EVPL_IOVEC_TRACE
-    dst->ref = src->ref;
+    dst->ref = src;
 #endif // ifdef EVPL_IOVEC_TRACE
 } /* evpl_iovec_take_ref */
 
