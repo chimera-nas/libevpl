@@ -50,35 +50,46 @@ struct tcp_rdma_header {
 } __attribute__((packed));
 
 /*
- * Memory registration structures
+ * Memory registration structures using direct lookup table.
+ * The rkey is simply the index in the table.
+ * We expect few MRs since memory is registered in large chunks (1GB+).
  */
-#define TCP_RDMA_MR_HASH_SIZE 256
+#define TCP_RDMA_MR_TABLE_INITIAL_SIZE 1024
 
 struct tcp_rdma_mr {
-    void               *base;
-    size_t              size;
-    uint32_t            rkey;
-    struct tcp_rdma_mr *next;
+    void     *base;
+    size_t    size;
+    uint32_t  rkey;  /* Table index, stored for get_rdma_address lookup */
 };
 
 struct tcp_rdma_mr_table {
-    struct tcp_rdma_mr *buckets[TCP_RDMA_MR_HASH_SIZE];
-    uint32_t            next_rkey;
-    pthread_mutex_t     lock;
+    struct tcp_rdma_mr **entries;  /* Array of pointers, NULL = unused slot */
+    uint32_t             size;     /* Current table size (power of 2) */
+    uint32_t             next_rkey; /* Next rkey to allocate (slots not reused) */
+    pthread_mutex_t      lock;
 };
 
 /*
- * Pending operation tracking
+ * Pending operation tracking using a ring buffer.
+ * Since TCP guarantees in-order delivery, operations complete in FIFO order.
+ * Only READ and WRITE requests are tracked (SEND is fire-and-forget).
+ * We don't need to track the opcode because the first reply received
+ * must correspond to the first request sent.
  */
 struct tcp_rdma_pending_op {
-    uint64_t                    id;
-    int                         opcode;
     struct evpl_iovec          *iov;
     int                         niov;
     int                         length;
     void                      (*callback)(int status, void *private_data);
     void                       *private_data;
-    struct tcp_rdma_pending_op *next;
+};
+
+struct tcp_rdma_pending_ring {
+    struct tcp_rdma_pending_op *ops;
+    int                         size;
+    int                         mask;
+    int                         head;
+    int                         tail;
 };
 
 /*
@@ -86,8 +97,7 @@ struct tcp_rdma_pending_op {
  */
 struct evpl_tcp_rdma_socket {
     struct evpl_socket          socket;
-    struct tcp_rdma_pending_op *pending_ops;
-    uint64_t                    next_op_id;
+    struct tcp_rdma_pending_ring pending_ring;
 };
 
 #define evpl_event_tcp_rdma_socket(eventp) \
@@ -113,27 +123,22 @@ static void evpl_tcp_rdma_error(struct evpl *evpl, struct evpl_event *event);
 void evpl_tcp_rdma_flush(struct evpl *evpl, struct evpl_bind *bind);
 
 /*
- * Memory registration functions
+ * Memory registration functions - direct table lookup by rkey (index)
  */
 static struct tcp_rdma_mr *
 tcp_rdma_mr_lookup(
     struct evpl_tcp_rdma_global *global,
     uint32_t                     rkey)
 {
-    struct tcp_rdma_mr *mr;
-    int                 bucket = rkey % TCP_RDMA_MR_HASH_SIZE;
+    struct tcp_rdma_mr *mr = NULL;
 
     pthread_mutex_lock(&global->mr_table.lock);
-    mr = global->mr_table.buckets[bucket];
-    while (mr) {
-        if (mr->rkey == rkey) {
-            pthread_mutex_unlock(&global->mr_table.lock);
-            return mr;
-        }
-        mr = mr->next;
+    if (rkey < global->mr_table.size) {
+        mr = global->mr_table.entries[rkey];
     }
     pthread_mutex_unlock(&global->mr_table.lock);
-    return NULL;
+
+    return mr;
 }
 
 static int
@@ -160,29 +165,90 @@ tcp_rdma_validate_access(
 }
 
 /*
- * Pending operation management
+ * Pending operation ring buffer management
  */
-static struct tcp_rdma_pending_op *
+#define TCP_RDMA_PENDING_RING_INITIAL_SIZE 16
+
+static inline void
+tcp_rdma_pending_ring_init(struct tcp_rdma_pending_ring *ring)
+{
+    ring->ops  = evpl_zalloc(TCP_RDMA_PENDING_RING_INITIAL_SIZE * sizeof(*ring->ops));
+    ring->size = TCP_RDMA_PENDING_RING_INITIAL_SIZE;
+    ring->mask = TCP_RDMA_PENDING_RING_INITIAL_SIZE - 1;
+    ring->head = 0;
+    ring->tail = 0;
+}
+
+static inline void
+tcp_rdma_pending_ring_free(struct tcp_rdma_pending_ring *ring)
+{
+    if (ring->ops) {
+        evpl_free(ring->ops);
+        ring->ops = NULL;
+    }
+}
+
+static inline int
+tcp_rdma_pending_ring_is_empty(const struct tcp_rdma_pending_ring *ring)
+{
+    return ring->head == ring->tail;
+}
+
+static inline int
+tcp_rdma_pending_ring_is_full(const struct tcp_rdma_pending_ring *ring)
+{
+    return ((ring->head + 1) & ring->mask) == ring->tail;
+}
+
+static inline void
+tcp_rdma_pending_ring_resize(struct tcp_rdma_pending_ring *ring)
+{
+    int                         new_size = ring->size << 1;
+    struct tcp_rdma_pending_op *new_ops  = evpl_zalloc(new_size * sizeof(*new_ops));
+    int                         i, j;
+
+    /* Copy elements from tail to head in order */
+    for (i = ring->tail, j = 0; i != ring->head; i = (i + 1) & ring->mask, j++) {
+        new_ops[j] = ring->ops[i];
+    }
+
+    evpl_free(ring->ops);
+    ring->ops  = new_ops;
+    ring->size = new_size;
+    ring->mask = new_size - 1;
+    ring->tail = 0;
+    ring->head = j;
+}
+
+/*
+ * Add a pending operation to the ring.
+ * Returns the ring index which can be used as the message ID.
+ */
+static uint64_t
 tcp_rdma_pending_add(
     struct evpl_tcp_rdma_socket *ts,
-    int                          opcode,
     struct evpl_iovec           *iov,
     int                          niov,
     int                          length,
     void                       (*callback)(int status, void *private_data),
     void                        *private_data)
 {
-    struct tcp_rdma_pending_op *op = evpl_zalloc(sizeof(*op));
-    int                         i;
+    struct tcp_rdma_pending_ring *ring = &ts->pending_ring;
+    struct tcp_rdma_pending_op   *op;
+    uint64_t                      id;
+    int                           i;
 
-    op->id           = ts->next_op_id++;
-    op->opcode       = opcode;
+    if (tcp_rdma_pending_ring_is_full(ring)) {
+        tcp_rdma_pending_ring_resize(ring);
+    }
+
+    id = ring->head;
+    op = &ring->ops[ring->head];
+
     op->niov         = niov;
     op->length       = length;
     op->callback     = callback;
     op->private_data = private_data;
-    op->next         = ts->pending_ops;
-    ts->pending_ops  = op;
 
     /* Move iovecs (they may be stack-allocated, so we need to properly
      * transfer ownership including canary tracking) */
@@ -195,68 +261,69 @@ tcp_rdma_pending_add(
         op->iov = NULL;
     }
 
-    return op;
+    ring->head = (ring->head + 1) & ring->mask;
+
+    return id;
 }
 
-static struct tcp_rdma_pending_op *
-tcp_rdma_pending_find(
-    struct evpl_tcp_rdma_socket *ts,
-    uint64_t                     id)
+/*
+ * Get the pending operation at the tail (oldest operation).
+ * Returns NULL if the ring is empty.
+ */
+static inline struct tcp_rdma_pending_op *
+tcp_rdma_pending_tail(struct evpl_tcp_rdma_socket *ts)
 {
-    struct tcp_rdma_pending_op *op = ts->pending_ops;
+    struct tcp_rdma_pending_ring *ring = &ts->pending_ring;
 
-    while (op) {
-        if (op->id == id) {
-            return op;
-        }
-        op = op->next;
+    if (tcp_rdma_pending_ring_is_empty(ring)) {
+        return NULL;
     }
-    return NULL;
+    return &ring->ops[ring->tail];
 }
 
+/*
+ * Complete and remove the operation at the tail.
+ * Since TCP is in-order, we always complete from the tail.
+ */
 static void
-tcp_rdma_pending_remove(
-    struct evpl_tcp_rdma_socket *ts,
-    struct tcp_rdma_pending_op  *op)
+tcp_rdma_pending_complete(struct evpl_tcp_rdma_socket *ts)
 {
-    struct tcp_rdma_pending_op **pp = &ts->pending_ops;
+    struct tcp_rdma_pending_ring *ring = &ts->pending_ring;
+    struct tcp_rdma_pending_op   *op   = &ring->ops[ring->tail];
 
-    while (*pp) {
-        if (*pp == op) {
-            *pp = op->next;
-            if (op->iov) {
-                /* Release the library's reference to the iovecs.
-                 * For RDMA READ: we cloned the app's iovec, now release our ref.
-                 * For RDMA WRITE: we moved the iovec, releasing is correct. */
-                evpl_iovecs_release(op->iov, op->niov);
-                evpl_free(op->iov);
-            }
-            evpl_free(op);
-            return;
-        }
-        pp = &(*pp)->next;
+    if (op->iov) {
+        /* Release the library's reference to the iovecs.
+         * For RDMA READ: we cloned the app's iovec, now release our ref.
+         * For RDMA WRITE: we moved the iovec, releasing is correct. */
+        evpl_iovecs_release(op->iov, op->niov);
+        evpl_free(op->iov);
+        op->iov = NULL;
     }
+
+    ring->tail = (ring->tail + 1) & ring->mask;
 }
 
+/*
+ * Clear all pending operations (on connection close).
+ */
 static void
 tcp_rdma_pending_clear(struct evpl_tcp_rdma_socket *ts)
 {
-    struct tcp_rdma_pending_op *op, *next;
+    struct tcp_rdma_pending_ring *ring = &ts->pending_ring;
+    struct tcp_rdma_pending_op   *op;
 
-    op = ts->pending_ops;
-    while (op) {
-        next = op->next;
+    while (!tcp_rdma_pending_ring_is_empty(ring)) {
+        op = &ring->ops[ring->tail];
         if (op->callback) {
             op->callback(ECONNRESET, op->private_data);
         }
         if (op->iov) {
             evpl_iovecs_release(op->iov, op->niov);
             evpl_free(op->iov);
+            op->iov = NULL;
         }
-        evpl_free(op);
-        op = next;
+        ring->tail = (ring->tail + 1) & ring->mask;
     }
-    ts->pending_ops = NULL;
 }
 
 /*
@@ -547,7 +614,8 @@ tcp_rdma_handle_read_reply(
     struct tcp_rdma_pending_op *op;
     int                         i, remaining, chunk;
 
-    op = tcp_rdma_pending_find(ts, hdr->id);
+    /* TCP guarantees in-order delivery, so the reply is for the tail op */
+    op = tcp_rdma_pending_tail(ts);
     if (!op) {
         /* Unexpected reply - discard */
         evpl_iovec_ring_consume(evpl, &bind->iovec_recv,
@@ -594,7 +662,7 @@ tcp_rdma_handle_read_reply(
         op->callback(0, op->private_data);
     }
 
-    tcp_rdma_pending_remove(ts, op);
+    tcp_rdma_pending_complete(ts);
 }
 
 static void
@@ -683,7 +751,8 @@ tcp_rdma_handle_write_reply(
     /* Consume message (header only) */
     evpl_iovec_ring_consume(evpl, &bind->iovec_recv, TCP_RDMA_HEADER_SIZE);
 
-    op = tcp_rdma_pending_find(ts, hdr->id);
+    /* TCP guarantees in-order delivery, so the reply is for the tail op */
+    op = tcp_rdma_pending_tail(ts);
     if (!op) {
         return;
     }
@@ -693,7 +762,7 @@ tcp_rdma_handle_write_reply(
         op->callback(0, op->private_data);
     }
 
-    tcp_rdma_pending_remove(ts, op);
+    tcp_rdma_pending_complete(ts);
 }
 
 static void
@@ -708,7 +777,8 @@ tcp_rdma_handle_error(
     /* Consume message (header only) */
     evpl_iovec_ring_consume(evpl, &bind->iovec_recv, TCP_RDMA_HEADER_SIZE);
 
-    op = tcp_rdma_pending_find(ts, hdr->id);
+    /* TCP guarantees in-order delivery, so the error is for the tail op */
+    op = tcp_rdma_pending_tail(ts);
     if (!op) {
         return;
     }
@@ -718,7 +788,7 @@ tcp_rdma_handle_error(
         op->callback(hdr->length, op->private_data); /* length contains error code */
     }
 
-    tcp_rdma_pending_remove(ts, op);
+    tcp_rdma_pending_complete(ts);
 }
 
 /*
@@ -1004,8 +1074,7 @@ evpl_tcp_rdma_attach(
     evpl_socket_init(evpl, &ts->socket, fd, 1);
 
     /* Initialize TCP_RDMA specific state */
-    ts->pending_ops = NULL;
-    ts->next_op_id  = 1;
+    tcp_rdma_pending_ring_init(&ts->pending_ring);
 
     rc = getsockname(fd, (struct sockaddr *) &ss, &sslen);
     evpl_socket_abort_if(rc < 0, "getsockname failed: %s", strerror(errno));
@@ -1062,8 +1131,7 @@ evpl_tcp_rdma_connect(
     evpl_socket_init(evpl, &ts->socket, ts->socket.fd, 0);
 
     /* Initialize TCP_RDMA specific state */
-    ts->pending_ops = NULL;
-    ts->next_op_id  = 1;
+    tcp_rdma_pending_ring_init(&ts->pending_ring);
 
     rc = setsockopt(ts->socket.fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
     evpl_socket_abort_if(rc, "Failed to set TCP_NODELAY on socket");
@@ -1089,7 +1157,7 @@ evpl_tcp_rdma_flush(
     struct evpl_dgram           *dgram;
     struct evpl_iovec           *iov;
     struct tcp_rdma_header       hdr;
-    struct tcp_rdma_pending_op  *op;
+    uint64_t                     id;
     int                          i;
 
 
@@ -1107,9 +1175,8 @@ evpl_tcp_rdma_flush(
                 }
             }
 
-            /* Create pending operation */
-            op = tcp_rdma_pending_add(ts, TCP_RDMA_OP_READ_REQUEST,
-                                      iov, dgram->niov, dgram->length,
+            /* Create pending operation - returns ring index as message ID */
+            id = tcp_rdma_pending_add(ts, iov, dgram->niov, dgram->length,
                                       dgram->callback, dgram->private_data);
 
             /* Send read request - payload contains the read length */
@@ -1120,7 +1187,7 @@ evpl_tcp_rdma_flush(
             hdr.length         = sizeof(read_len_payload); /* 4-byte payload */
             hdr.remote_key     = dgram->remote_key;
             hdr.remote_address = dgram->remote_address;
-            hdr.id             = op->id;
+            hdr.id             = id;
             tcp_rdma_queue_message(evpl, bind, &hdr, &read_len_payload,
                                    sizeof(read_len_payload));
         }
@@ -1155,9 +1222,8 @@ evpl_tcp_rdma_flush(
                 evpl_iovec_release(&iov[i]);
             }
         } else if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_WRITE) {
-            /* Create pending operation */
-            op = tcp_rdma_pending_add(ts, TCP_RDMA_OP_WRITE_REQUEST,
-                                      NULL, 0, dgram->length,
+            /* Create pending operation - returns ring index as message ID */
+            id = tcp_rdma_pending_add(ts, NULL, 0, dgram->length,
                                       dgram->callback, dgram->private_data);
 
             /* Send write request with data */
@@ -1166,7 +1232,7 @@ evpl_tcp_rdma_flush(
             hdr.length         = dgram->length;
             hdr.remote_key     = dgram->remote_key;
             hdr.remote_address = dgram->remote_address;
-            hdr.id             = op->id;
+            hdr.id             = id;
             tcp_rdma_queue_message_iov(evpl, bind, &hdr, iov, dgram->niov);
 
             /* Release iovecs */
@@ -1195,6 +1261,9 @@ evpl_tcp_rdma_close(
     /* Clear pending operations with error */
     tcp_rdma_pending_clear(ts);
 
+    /* Free the pending ring */
+    tcp_rdma_pending_ring_free(&ts->pending_ring);
+
     /* Call base socket close */
     evpl_socket_close(evpl, bind);
 }
@@ -1208,7 +1277,10 @@ tcp_rdma_init(void)
     struct evpl_tcp_rdma_global *global = evpl_zalloc(sizeof(*global));
 
     pthread_mutex_init(&global->mr_table.lock, NULL);
-    global->mr_table.next_rkey = 1;
+    global->mr_table.size     = TCP_RDMA_MR_TABLE_INITIAL_SIZE;
+    global->mr_table.next_rkey = 1;  /* Start at 1, 0 is reserved */
+    global->mr_table.entries  = evpl_zalloc(
+        global->mr_table.size * sizeof(struct tcp_rdma_mr *));
 
     return global;
 }
@@ -1217,18 +1289,16 @@ static void
 tcp_rdma_cleanup(void *private_data)
 {
     struct evpl_tcp_rdma_global *global = private_data;
-    struct tcp_rdma_mr          *mr, *next;
-    int                          i;
+    uint32_t                     i;
 
-    for (i = 0; i < TCP_RDMA_MR_HASH_SIZE; i++) {
-        mr = global->mr_table.buckets[i];
-        while (mr) {
-            next = mr->next;
-            evpl_free(mr);
-            mr = next;
+    /* Only need to check up to next_rkey since slots are not reused */
+    for (i = 1; i < global->mr_table.next_rkey; i++) {
+        if (global->mr_table.entries[i]) {
+            evpl_free(global->mr_table.entries[i]);
         }
     }
 
+    evpl_free(global->mr_table.entries);
     pthread_mutex_destroy(&global->mr_table.lock);
     evpl_free(global);
 }
@@ -1254,6 +1324,25 @@ tcp_rdma_destroy(
     evpl_free(private_data);
 }
 
+/*
+ * Resize the MR table to the next power of two.
+ * Called with lock held.
+ */
+static void
+tcp_rdma_mr_table_resize(struct tcp_rdma_mr_table *table)
+{
+    uint32_t             new_size = table->size << 1;
+    struct tcp_rdma_mr **new_entries;
+
+    new_entries = evpl_zalloc(new_size * sizeof(struct tcp_rdma_mr *));
+    memcpy(new_entries, table->entries,
+           table->size * sizeof(struct tcp_rdma_mr *));
+
+    evpl_free(table->entries);
+    table->entries = new_entries;
+    table->size    = new_size;
+}
+
 static void *
 tcp_rdma_register_memory(
     void *buffer,
@@ -1263,7 +1352,7 @@ tcp_rdma_register_memory(
 {
     struct evpl_tcp_rdma_global *global = framework_private;
     struct tcp_rdma_mr          *mr;
-    int                          bucket;
+    uint32_t                     rkey;
 
     if (buffer_private) {
         /* Already registered */
@@ -1275,10 +1364,19 @@ tcp_rdma_register_memory(
     mr->size = size;
 
     pthread_mutex_lock(&global->mr_table.lock);
-    mr->rkey = global->mr_table.next_rkey++;
-    bucket   = mr->rkey % TCP_RDMA_MR_HASH_SIZE;
-    mr->next = global->mr_table.buckets[bucket];
-    global->mr_table.buckets[bucket] = mr;
+
+    /* Allocate next rkey (slots are not reused since we only
+     * unregister memory on process shutdown) */
+    rkey = global->mr_table.next_rkey++;
+
+    /* Resize table if needed */
+    if (rkey >= global->mr_table.size) {
+        tcp_rdma_mr_table_resize(&global->mr_table);
+    }
+
+    mr->rkey                       = rkey;
+    global->mr_table.entries[rkey] = mr;
+
     pthread_mutex_unlock(&global->mr_table.lock);
 
     return mr;
@@ -1291,19 +1389,14 @@ tcp_rdma_unregister_memory(
 {
     struct tcp_rdma_mr          *mr     = buffer_private;
     struct evpl_tcp_rdma_global *global = framework_private;
-    struct tcp_rdma_mr         **pp;
-    int                          bucket;
 
     pthread_mutex_lock(&global->mr_table.lock);
-    bucket = mr->rkey % TCP_RDMA_MR_HASH_SIZE;
-    pp     = &global->mr_table.buckets[bucket];
-    while (*pp) {
-        if (*pp == mr) {
-            *pp = mr->next;
-            break;
-        }
-        pp = &(*pp)->next;
+
+    /* Clear the table entry (direct lookup via rkey) */
+    if (mr->rkey < global->mr_table.size) {
+        global->mr_table.entries[mr->rkey] = NULL;
     }
+
     pthread_mutex_unlock(&global->mr_table.lock);
 
     evpl_free(mr);
