@@ -51,7 +51,9 @@ evpl_rdma_read(
     }
 
     for (i = 0; i < niov; ++i) {
-        iovec = evpl_iovec_ring_add(&bind->iovec_rdma_read, &iov[i]);
+        /* Clone instead of move so app keeps their reference.
+         * After operation completes, library releases its reference. */
+        iovec = evpl_iovec_ring_add_clone(&bind->iovec_rdma_read, &iov[i]);
 
         length += iovec->length;
     }

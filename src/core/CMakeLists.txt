@@ -35,7 +35,7 @@ endif()
 
 set(BACKEND_LIBDEPS)
 
-set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h)
+set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/tcp_rdma.c socket/tcp_rdma.h)
 add_subdirectory(socket)
 
 set(CORE_SRC ${CORE_SRC} tls/tls.c tls/tls.h)

@@ -206,3 +206,6 @@ void evpl_bind_get_remote_address(
 
 enum evpl_protocol_id evpl_bind_get_protocol(
     struct evpl_bind *bind);
+
+int evpl_bind_is_rdma(
+    struct evpl_bind *bind);

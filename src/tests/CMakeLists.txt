@@ -22,4 +22,5 @@ evpl_test(bulk_connected_msg)
 evpl_test(bulk_stream)
 evpl_test(rand_full_duplex_msg)
 evpl_test(rand_full_duplex_stream)
+evpl_test(rdma_ops)
 

@@ -58,6 +58,7 @@
 
 #include "socket/udp.h"
 #include "socket/tcp.h"
+#include "socket/tcp_rdma.h"
 #include "tls/tls.h"
 
 pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
@@ -114,6 +115,12 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TLS,
                        &evpl_socket_tls);
+
+    evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TCP_RDMA,
+                        &evpl_framework_tcp_rdma);
+
+    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
+                       &evpl_tcp_rdma_datagram);
 
 #ifdef HAVE_IO_URING
     if (config->io_uring_enabled) {

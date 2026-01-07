@@ -664,6 +664,9 @@ evpl_rdmacm_process_rdma_read_completions(
         evpl_dgram_ring_remove(&bind->dgram_read);
 
         for (i = 0; i < dgram->niov; ++i) {
+            struct evpl_iovec *iovec = evpl_iovec_ring_tail(&bind->iovec_rdma_read);
+
+            evpl_iovec_release(iovec);
             evpl_iovec_ring_remove(&bind->iovec_rdma_read);
         }
 

@@ -8,15 +8,19 @@
 #include <sys/uio.h>
 #include <assert.h>
 #include <unistd.h>
+#include <getopt.h>
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"
 
-#include "builtin_bool_tcp_xdr.h"
+#include "core/test_log.h"
+#include "test_common.h"
 
-/* RPC2 logging macros */
-#define evpl_info(fmt, ...)  printf("[INFO] " fmt "\n", ## __VA_ARGS__)
-#define evpl_error(fmt, ...) fprintf(stderr, "[ERROR] " fmt "\n", ## __VA_ARGS__)
+#include "builtin_bool_xdr.h"
+
+/* Default protocol and port */
+static enum evpl_protocol_id proto = EVPL_STREAM_SOCKET_TCP;
+static int                   port  = 8001;
 
 /* Test state shared between client and server */
 struct test_state {
@@ -40,7 +44,7 @@ server_recv_ping(
     xdr_bool                reply;
     int                     rc;
 
-    evpl_info("Server received PING request: value=%s", request ? "true" : "false");
+    evpl_test_info("Server received PING request: value=%s", request ? "true" : "false");
 
     /* Validate request */
     assert(request == 1);
@@ -58,7 +62,7 @@ server_recv_ping(
         exit(1);
     }
 
-    evpl_info("Server sent PING reply");
+    evpl_test_info("Server sent PING reply");
 } /* server_recv_ping */
 
 /* Client-side: Handle PING reply */
@@ -71,8 +75,8 @@ client_recv_reply_ping(
 {
     struct test_state *state = callback_private_data;
 
-    evpl_info("Client received PING reply: status=%d, value=%s",
-              status, reply ? "true" : "false");
+    evpl_test_info("Client received PING reply: status=%d, value=%s",
+                   status, reply ? "true" : "false");
 
     /* Validate reply */
     assert(status == 0);  /* SUCCESS */
@@ -84,9 +88,18 @@ client_recv_reply_ping(
     if (state->server_received && state->client_received) {
         state->test_complete = 1;
         state->test_passed   = 1;
-        evpl_info("Test PASSED!");
+        evpl_test_info("Test PASSED!");
     }
 } /* client_recv_reply_ping */
+
+static void
+usage(const char *prog_name)
+{
+    fprintf(stderr, "Usage: %s [-r protocol] [-p port]\n", prog_name);
+    fprintf(stderr, "  -r protocol  Protocol to use (default: STREAM_SOCKET_TCP)\n");
+    fprintf(stderr, "  -p port      Port to use (default: 8001)\n");
+    exit(1);
+}
 
 int
 main(
@@ -102,8 +115,29 @@ main(
     xdr_bool                  request;
     struct evpl_rpc2_program *programs[1];
     struct test_state         state = { 0 };
+    int                       opt, rc;
 
-    evpl_init(NULL);
+    /* Initialize evpl first, before any evpl functions are called */
+    test_evpl_config();
+
+    /* Parse command line arguments */
+    while ((opt = getopt(argc, argv, "r:p:")) != -1) {
+        switch (opt) {
+            case 'r':
+                rc = evpl_protocol_lookup(&proto, optarg);
+                if (rc) {
+                    fprintf(stderr, "Invalid protocol '%s'\n", optarg);
+                    return 1;
+                }
+                break;
+            case 'p':
+                port = atoi(optarg);
+                break;
+            default:
+                usage(argv[0]);
+        }
+    }
+
     evpl = evpl_create(NULL);
 
     /* Initialize server program */
@@ -114,13 +148,13 @@ main(
     /* Create RPC2 server */
     server = evpl_rpc2_server_init(programs, 1);
 
-    /* Create endpoint for 0.0.0.0:8001 */
-    endpoint = evpl_endpoint_create("0.0.0.0", 8001);
+    /* Create endpoint */
+    endpoint = evpl_endpoint_create("0.0.0.0", port);
 
     /* Start listening */
-    evpl_rpc2_server_start(server, EVPL_STREAM_SOCKET_TCP, endpoint);
+    evpl_rpc2_server_start(server, proto, endpoint);
 
-    evpl_info("Server listening on port 8001");
+    evpl_test_info("Server listening on port %d with protocol %d", port, proto);
 
     thread = evpl_rpc2_thread_init(evpl, programs, 1, NULL, NULL);
 
@@ -128,21 +162,21 @@ main(
     evpl_rpc2_server_attach(thread, server, &state);
 
     /* Connect to server */
-    conn = evpl_rpc2_client_connect(thread, EVPL_STREAM_SOCKET_TCP, endpoint, NULL, 0, NULL);
+    conn = evpl_rpc2_client_connect(thread, proto, endpoint, NULL, 0, NULL);
 
     if (!conn) {
-        evpl_error("Failed to create RPC2 client");
+        evpl_test_error("Failed to create RPC2 client");
         evpl_destroy(evpl);
         return -1;
     }
 
-    evpl_info("Client connected to server");
+    evpl_test_info("Client connected to server");
 
     /* Prepare request */
     request = 1;
 
     /* Make RPC call */
-    evpl_info("Client sending PING request");
+    evpl_test_info("Client sending PING request");
     prog.send_call_PING(&prog.rpc2, evpl, conn, request, 0, 0, 0, client_recv_reply_ping, &state);
 
     /* Wait for reply */

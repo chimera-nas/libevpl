@@ -261,6 +261,12 @@ evpl_bind_get_protocol(struct evpl_bind *bind)
     return bind->protocol->id;
 } /* evpl_bind_get_protocol */
 
+SYMBOL_EXPORT int
+evpl_bind_is_rdma(struct evpl_bind *bind)
+{
+    return bind->protocol->rdma;
+} /* evpl_bind_is_rdma */
+
 SYMBOL_EXPORT void
 evpl_bind_request_send_notifications(
     struct evpl      *evpl,

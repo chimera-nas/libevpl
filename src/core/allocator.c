@@ -287,7 +287,9 @@ evpl_memory_framework_private(
     const struct evpl_iovec *iov,
     int                      framework_id)
 {
-    return iov->ref->slab->framework_private[framework_id];
+    struct evpl_iovec_ref *ref = evpl_iovec_get_ref(iov);
+
+    return ref->slab->framework_private[framework_id];
 } // evpl_buffer_framework_private
 
 

@@ -16,3 +16,6 @@ unit_test_bin(socket bulk_stream_tcp bulk_stream -r STREAM_SOCKET_TCP)
 
 unit_test_bin(socket rand_full_duplex_msg_udp rand_full_duplex_msg -r DATAGRAM_SOCKET_UDP)
 unit_test_bin(socket rand_full_duplex_stream_tcp rand_full_duplex_stream -r STREAM_SOCKET_TCP)
+
+# TCP_RDMA tests
+unit_test_bin(socket rdma_ops_tcp_rdma rdma_ops -r DATAGRAM_TCP_RDMA)

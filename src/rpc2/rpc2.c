@@ -218,7 +218,7 @@ evpl_rpc2_send_reply(
     int                           segment_niov;
     struct timespec               now;
     uint64_t                      elapsed;
-    int                           i, reduce = 0, rdma = msg->conn->protocol == EVPL_DATAGRAM_RDMACM_RC;
+    int                           i, reduce = 0, rdma = msg->conn->rdma;
 
     rpc_reply.xid                               = msg->xid;
     rpc_reply.body.mtype                        = REPLY;
@@ -331,6 +331,9 @@ evpl_rpc2_send_reply(
         iov        = msg_iov[0];
 
         marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, NULL, 0);
+
+        /* Release the RDMA header iovec - marshall_rpc_msg will create its own */
+        evpl_iovec_release(&reply_iov);
 
     } else {
         offset = 4;
@@ -556,7 +559,7 @@ evpl_rpc2_recv_msg(
 
     xdr_dbuf_reset(thread->dbuf);
 
-    rdma = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
+    rdma = rpc2_conn->rdma;
 
     evpl_get_hf_monotonic_time(evpl, &now);
 
@@ -683,6 +686,9 @@ evpl_rpc2_recv_msg(
                                        read_list->entry.target.handle, read_list->entry.target.offset,
                                        segment_iov, 1,
                                        evpl_rpc2_read_segment_callback, msg);
+
+                        /* evpl_rdma_read takes its own clone, so release our reference */
+                        evpl_iovec_release(segment_iov);
 
                         msg->pending_reads++;
 
@@ -819,7 +825,7 @@ evpl_rpc2_accept(
     rpc2_conn->thread         = server_binding->thread;
     rpc2_conn->bind           = bind;
     rpc2_conn->protocol       = evpl_bind_get_protocol(bind);
-    rpc2_conn->rdma           = (rpc2_conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
+    rpc2_conn->rdma           = evpl_bind_is_rdma(bind);
 
     memcpy(rpc2_conn->server_programs,
            server_binding->server->programs,
@@ -1058,7 +1064,6 @@ evpl_rpc2_client_connect(
     conn->thread         = thread;
     conn->thread_dbuf    = (struct xdr_dbuf *) thread->dbuf;
     conn->protocol       = protocol;
-    conn->rdma           = (protocol == EVPL_DATAGRAM_RDMACM_RC);
     conn->server_binding = NULL;
     conn->next_xid       = 1;
 
@@ -1082,9 +1087,12 @@ evpl_rpc2_client_connect(
         conn);
 
     if (!conn->bind) {
+        DL_DELETE(thread->conns, conn);
         evpl_free(conn);
         return NULL;
     }
+
+    conn->rdma = evpl_bind_is_rdma(conn->bind);
 
     return conn;
 } /* evpl_rpc2_client_connect */
@@ -1124,7 +1132,7 @@ evpl_rpc2_call(
     int                      out_niov   = 1;
     int                      pay_length = req_length - program->reserve;
     int                      total_length;
-    int                      rdma = (conn->protocol == EVPL_DATAGRAM_RDMACM_RC);
+    int                      rdma = conn->rdma;
 
     msg = evpl_rpc2_msg_alloc(thread);
 
@@ -1163,8 +1171,7 @@ evpl_rpc2_call(
         rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
 
-        if (rdma_chunk) {
-            evpl_rpc2_abort_if(rdma_chunk->niov == 0, "rdma_chunk niov is 0");
+        if (rdma_chunk && rdma_chunk->niov > 0) {
             evpl_rpc2_abort_if(rdma_chunk->niov > 1, "rdma_chunk niov is greater than 1");
 
             msg->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->read_chunk.iov) * rdma_chunk->niov, msg->dbuf);
@@ -1235,6 +1242,8 @@ evpl_rpc2_call(
 
     if (rdma) {
         marshall_rdma_msg(&rdma_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, 0);
+        /* Release the RDMA header iovec - the actual data is in req_iov which gets sent */
+        evpl_iovec_release(&hdr_out_iov);
     } else {
         /* Add 4-byte record marking header for TCP at the start of the output buffer */
         *(uint32_t *) req_iov[0].data = rpc2_hton32((total_length - 4) | 0x80000000);
