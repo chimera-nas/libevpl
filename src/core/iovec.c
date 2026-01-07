@@ -98,15 +98,55 @@ evpl_iovec_alloc(
     unsigned int       max_iovecs,
     struct evpl_iovec *r_iovec)
 {
-    int niovs;
+    struct evpl_buffer *buffer;
+    int                 pad, left = length, chunk;
+    int                 niovs = 0;
+    struct evpl_iovec  *iovec;
 
-    niovs = evpl_iovec_reserve(evpl, length, alignment, max_iovecs, r_iovec);
+    do {
 
-    if (unlikely(niovs < 0)) {
-        return niovs;
-    }
+        if (evpl->current_buffer == NULL) {
+            evpl->current_buffer = evpl_buffer_alloc(evpl);
+        }
 
-    evpl_iovec_commit(evpl, alignment, r_iovec, niovs);
+        buffer = evpl->current_buffer;
+
+        pad = evpl_buffer_pad(buffer, alignment);
+
+        chunk = (buffer->size - buffer->used);
+
+        if (chunk < pad + left && niovs + 1 <= max_iovecs) {
+            evpl_buffer_release(buffer);
+            evpl->current_buffer = NULL;
+            continue;
+        }
+
+        if (chunk > pad + left) {
+            chunk = pad + left;
+        }
+
+        if (unlikely(niovs + 1 > max_iovecs)) {
+            return -1;
+        }
+
+        iovec = &r_iovec[niovs++];
+
+        iovec->data   = buffer->data + buffer->used + pad;
+        iovec->length = chunk - pad;
+
+        evpl_iovec_take_ref(iovec, &buffer->ref);
+
+        buffer->used += chunk;
+        buffer->used += evpl_buffer_pad(buffer, alignment);
+
+        left -= chunk - pad;
+
+        if (left) {
+            evpl_buffer_release(buffer);
+            evpl->current_buffer = NULL;
+        }
+
+    } while (left);
 
     return niovs;
 } /* evpl_iovec_alloc */
