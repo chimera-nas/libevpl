@@ -116,26 +116,6 @@ evpl_iovec_canary_free(struct evpl_iovec *iovec)
     free(canary);
 } /* evpl_iovec_canary_free */
 
-/*
- * Discard a canary without verification.
- * Used for scratch iovecs whose reference was "moved" (borrowed) to outputs.
- * Does NOT decrement refcount - caller must ensure reference accounting is correct.
- */
-static inline void
-evpl_iovec_canary_discard(struct evpl_iovec *iovec)
-{
-    struct evpl_iovec_canary *canary = evpl_iovec_canary_get(iovec);
-
-    evpl_iovec_trace_abort_if(canary->magic != EVPL_IOVEC_CANARY_MAGIC,
-                              "iovec canary magic mismatch: expected 0x%x, got 0x%x",
-                              EVPL_IOVEC_CANARY_MAGIC, canary->magic);
-
-    canary->magic = 0xDEADBEEF;
-    canary->owner = NULL;
-
-    free(canary);
-} /* evpl_iovec_canary_discard */
-
 static inline void
 evpl_iovec_canary_move(
     struct evpl_iovec       *dst,
@@ -294,16 +274,10 @@ evpl_iovec_move_segment(
     unsigned int       length)
 {
 #ifdef EVPL_IOVEC_TRACE
-    struct evpl_iovec_ref    *real_ref = evpl_iovec_real_ref(src);
-    struct evpl_iovec_canary *canary   = evpl_iovec_canary_get(src);
+    struct evpl_iovec_ref *real_ref = evpl_iovec_real_ref(src);
 
-    /*
-     * Only free the source canary if src owns it.
-     * If canary->owner != src, this is a borrowed ref (e.g., from XDR move).
-     */
-    if (canary->owner == src) {
-        evpl_iovec_canary_free(src);
-    }
+
+    evpl_iovec_canary_free(src);
 
     dst->data   = src->data;
     dst->length = src->length;
@@ -323,9 +297,6 @@ evpl_iovec_move_segment(
 /*
  * Move ownership of an iovec from src to dst.
  * The src iovec should not be used after this call.
- * In tracing mode, allocates a new canary for dst. If src owns its canary,
- * the old canary is freed. If src has a borrowed ref (canary owner != src),
- * the canary is left intact and a new one is created for dst.
  */
 static inline void
 evpl_iovec_move(
@@ -333,16 +304,9 @@ evpl_iovec_move(
     struct evpl_iovec *src)
 {
 #ifdef EVPL_IOVEC_TRACE
-    struct evpl_iovec_ref    *real_ref = evpl_iovec_real_ref(src);
-    struct evpl_iovec_canary *canary   = evpl_iovec_canary_get(src);
+    struct evpl_iovec_ref *real_ref = evpl_iovec_real_ref(src);
 
-    /*
-     * Only free the source canary if src owns it.
-     * If canary->owner != src, this is a borrowed ref (e.g., from XDR move).
-     */
-    if (canary->owner == src) {
-        evpl_iovec_canary_free(src);
-    }
+    evpl_iovec_canary_free(src);
 
     dst->data   = src->data;
     dst->length = src->length;
