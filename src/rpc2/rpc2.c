@@ -282,7 +282,7 @@ evpl_rpc2_send_reply(
                     evpl_rdma_write(evpl, msg->bind,
                                     target->handle, target->offset,
                                     segment_iov, segment_niov,
-                                    0,
+                                    EVPL_RDMA_FLAG_TAKE_REF,
                                     NULL, NULL);
                 }
             }

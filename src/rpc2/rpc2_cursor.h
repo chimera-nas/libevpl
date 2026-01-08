@@ -73,25 +73,22 @@ evpl_rpc2_iovec_cursor_move(
     cur_niov = 0;
 
     while (left && cursor->niov) {
+        int start_offset = cursor->offset;
+
         chunk = cursor->iov->length - cursor->offset;
 
         if (left < chunk) {
             chunk = left;
         }
 
-        (*iov)[cur_niov].data   = cursor->iov->data + cursor->offset;
-        (*iov)[cur_niov].length = chunk;
-
         cursor->offset += chunk;
 
-        if (cursor->offset == cursor->iov->length) {
-            evpl_iovec_clone(&(*iov)[cur_niov], cursor->iov);
+        evpl_iovec_clone_segment(&(*iov)[cur_niov], cursor->iov, start_offset, chunk);
 
+        if (cursor->offset == cursor->iov->length) {
             cursor->iov++;
             cursor->niov--;
             cursor->offset = 0;
-        } else {
-            evpl_iovec_clone_segment(&(*iov)[cur_niov], cursor->iov, cursor->offset, chunk);
         }
 
         cur_niov++;
