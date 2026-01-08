@@ -578,7 +578,7 @@ tcp_rdma_handle_read_request(
     struct tcp_rdma_header       reply;
     void                        *ptr;
     int                          rc;
-    uint32_t                     read_len_payload;
+    uint32_t                     read_len_payload = 0;
     uint32_t                     read_len;
 
     /* Consume the header */
@@ -1183,10 +1183,10 @@ evpl_tcp_rdma_flush(
             for (i = 0; i < dgram->niov; i++) {
                 struct evpl_iovec *src = evpl_iovec_ring_tail(&bind->iovec_rdma_read);
 
-                if (src) {
-                    evpl_iovec_move(&iov[i], src);
-                    evpl_iovec_ring_remove(&bind->iovec_rdma_read);
-                }
+                evpl_socket_abort_if(!src, "src is NULL");
+
+                evpl_iovec_move(&iov[i], src);
+                evpl_iovec_ring_remove(&bind->iovec_rdma_read);
             }
 
             /* Create pending operation - returns ring index as message ID */
@@ -1215,10 +1215,10 @@ evpl_tcp_rdma_flush(
         for (i = 0; i < dgram->niov; i++) {
             struct evpl_iovec *src = evpl_iovec_ring_tail(&bind->iovec_send);
 
-            if (src) {
-                evpl_iovec_move(&iov[i], src);
-                evpl_iovec_ring_remove(&bind->iovec_send);
-            }
+            evpl_socket_abort_if(!src, "src is NULL");
+
+            evpl_iovec_move(&iov[i], src);
+            evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
         if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
@@ -1230,11 +1230,6 @@ evpl_tcp_rdma_flush(
             hdr.remote_address = 0;
             hdr.id             = 0;
             tcp_rdma_queue_message_iov(evpl, bind, &hdr, iov, dgram->niov);
-
-            /* Release iovecs */
-            for (i = 0; i < dgram->niov; i++) {
-                evpl_iovec_release(evpl, &iov[i]);
-            }
         } else if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_WRITE) {
             /* Create pending operation - returns ring index as message ID */
             id = tcp_rdma_pending_add(ts, NULL, 0, dgram->length,
@@ -1248,11 +1243,11 @@ evpl_tcp_rdma_flush(
             hdr.remote_address = dgram->remote_address;
             hdr.id             = id;
             tcp_rdma_queue_message_iov(evpl, bind, &hdr, iov, dgram->niov);
+        }
 
-            /* Release iovecs */
-            for (i = 0; i < dgram->niov; i++) {
-                evpl_iovec_release(evpl, &iov[i]);
-            }
+        /* Release iovecs */
+        for (i = 0; i < dgram->niov; i++) {
+            evpl_iovec_release(evpl, &iov[i]);
         }
 
         evpl_dgram_ring_remove(&bind->dgram_send);

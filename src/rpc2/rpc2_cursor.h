@@ -85,7 +85,7 @@ evpl_rpc2_iovec_cursor_move(
         cursor->offset += chunk;
 
         if (cursor->offset == cursor->iov->length) {
-            evpl_iovec_move(&(*iov)[cur_niov], cursor->iov);
+            evpl_iovec_clone(&(*iov)[cur_niov], cursor->iov);
 
             cursor->iov++;
             cursor->niov--;
