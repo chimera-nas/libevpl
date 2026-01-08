@@ -10,6 +10,13 @@ permalink: /api/rdma
 
 libevpl supports one-sided READ/WRITE RDMA operations, wherein the initiator reads from or writes to memory in a remote machine without software involvement on the remote system.
 
+## Backends
+
+libevpl provides two backends for RDMA operations:
+
+- **Native RDMA** (`EVPL_STREAM_RDMACM_RC`) - Hardware-accelerated RDMA via RDMACM
+- **TCP-RDMA** (`EVPL_DATAGRAM_TCP_RDMA`) - RDMA emulation over TCP for development and testing without RDMA hardware
+
 ## Functions
 
 ### `evpl_rdma_read`
@@ -26,7 +33,7 @@ void evpl_rdma_read(
     void *private_data);
 ```
 
-Read data from remote memory into local buffers (RDMA READ operation).
+Read data from remote memory into local buffers.
 
 **Parameters:**
 - `evpl` - Event loop
@@ -37,11 +44,6 @@ Read data from remote memory into local buffers (RDMA READ operation).
 - `niov` - Number of local buffers
 - `callback` - Completion callback
 - `private_data` - User context
-
-**Behavior:**
-- Fetches data from remote memory into local iovecs
-- Remote side does not participate (one-sided)
-- Completes asynchronously via callback
 
 ---
 
@@ -60,7 +62,7 @@ void evpl_rdma_write(
     void *private_data);
 ```
 
-Write data from local buffers to remote memory (RDMA WRITE operation).
+Write data from local buffers to remote memory.
 
 **Parameters:**
 - `evpl` - Event loop
@@ -74,17 +76,27 @@ Write data from local buffers to remote memory (RDMA WRITE operation).
 - `private_data` - User context
 
 **Flags:**
-- `EVPL_RDMA_FLAG_TAKE_REF` - Transfer ownership of a reference to the iovecs to libevpl. When set, libevpl takes ownership and will decrement the reference count when the RDMA write completes. When not set, libevpl adds its own reference and the caller retains ownership.
+- `EVPL_RDMA_FLAG_TAKE_REF` - Transfer iovec ownership to libevpl
 
-**Behavior:**
-- Pushes data from local iovecs to remote memory
-- Remote side CPU does not participate (one-sided)
-- Completes asynchronously via callback
+---
+
+### `evpl_bind_is_rdma`
+
+```c
+int evpl_bind_is_rdma(struct evpl_bind *bind);
+```
+
+Check if a bind supports RDMA operations.
+
+**Parameters:**
+- `bind` - Connection to check
+
+**Returns:** Non-zero if RDMA operations are supported, 0 otherwise
+
+---
 
 ## See Also
 
 - [Binds & Connections API](/api/binds) - RDMA connection setup
-- [Memory API](/api/memory) - Buffer management and registration
-- [Configuration API](/api/config) - RDMA-specific settings
-- [Architecture](/architecture) - RDMA protocol overview
-- [Performance](/performance) - RDMA benchmark results
+- [Memory API](/api/memory) - Buffer management
+- [Protocols](/api/protocols) - Available protocols including TCP-RDMA
