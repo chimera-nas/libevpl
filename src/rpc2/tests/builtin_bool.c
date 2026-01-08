@@ -99,7 +99,7 @@ usage(const char *prog_name)
     fprintf(stderr, "  -r protocol  Protocol to use (default: STREAM_SOCKET_TCP)\n");
     fprintf(stderr, "  -p port      Port to use (default: 8001)\n");
     exit(1);
-}
+} /* usage */
 
 int
 main(
@@ -135,7 +135,7 @@ main(
                 break;
             default:
                 usage(argv[0]);
-        }
+        } /* switch */
     }
 
     evpl = evpl_create(NULL);

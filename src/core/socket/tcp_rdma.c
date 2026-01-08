@@ -28,8 +28,8 @@
 /*
  * TCP_RDMA Message Header - 32 bytes, network byte order
  */
-#define TCP_RDMA_MAGIC          0x54524D41 /* "TRMA" */
-#define TCP_RDMA_HEADER_SIZE    32
+#define TCP_RDMA_MAGIC       0x54524D41    /* "TRMA" */
+#define TCP_RDMA_HEADER_SIZE 32
 
 enum tcp_rdma_opcode {
     TCP_RDMA_OP_SEND          = 1,
@@ -57,9 +57,9 @@ struct tcp_rdma_header {
 #define TCP_RDMA_MR_TABLE_INITIAL_SIZE 1024
 
 struct tcp_rdma_mr {
-    void     *base;
-    size_t    size;
-    uint32_t  rkey;  /* Table index, stored for get_rdma_address lookup */
+    void    *base;
+    size_t   size;
+    uint32_t rkey;   /* Table index, stored for get_rdma_address lookup */
 };
 
 struct tcp_rdma_mr_table {
@@ -77,11 +77,13 @@ struct tcp_rdma_mr_table {
  * must correspond to the first request sent.
  */
 struct tcp_rdma_pending_op {
-    struct evpl_iovec          *iov;
-    int                         niov;
-    int                         length;
-    void                      (*callback)(int status, void *private_data);
-    void                       *private_data;
+    struct evpl_iovec *iov;
+    int                niov;
+    int                length;
+    void               (*callback)(
+        int   status,
+        void *private_data);
+    void              *private_data;
 };
 
 struct tcp_rdma_pending_ring {
@@ -96,12 +98,12 @@ struct tcp_rdma_pending_ring {
  * Per-connection state (extends evpl_socket)
  */
 struct evpl_tcp_rdma_socket {
-    struct evpl_socket          socket;
+    struct evpl_socket           socket;
     struct tcp_rdma_pending_ring pending_ring;
 };
 
 #define evpl_event_tcp_rdma_socket(eventp) \
-    container_of((eventp), struct evpl_tcp_rdma_socket, socket.event)
+        container_of((eventp), struct evpl_tcp_rdma_socket, socket.event)
 
 /*
  * Global and per-thread framework state
@@ -117,10 +119,18 @@ struct evpl_tcp_rdma {
 /*
  * Forward declarations
  */
-static void evpl_tcp_rdma_read(struct evpl *evpl, struct evpl_event *event);
-static void evpl_tcp_rdma_write(struct evpl *evpl, struct evpl_event *event);
-static void evpl_tcp_rdma_error(struct evpl *evpl, struct evpl_event *event);
-void evpl_tcp_rdma_flush(struct evpl *evpl, struct evpl_bind *bind);
+static void evpl_tcp_rdma_read(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+static void evpl_tcp_rdma_write(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+static void evpl_tcp_rdma_error(
+    struct evpl       *evpl,
+    struct evpl_event *event);
+void evpl_tcp_rdma_flush(
+    struct evpl      *evpl,
+    struct evpl_bind *bind);
 
 /*
  * Memory registration functions - direct table lookup by rkey (index)
@@ -139,7 +149,7 @@ tcp_rdma_mr_lookup(
     pthread_mutex_unlock(&global->mr_table.lock);
 
     return mr;
-}
+} /* tcp_rdma_mr_lookup */
 
 static int
 tcp_rdma_validate_access(
@@ -162,7 +172,7 @@ tcp_rdma_validate_access(
 
     *out_ptr = (void *) address;
     return 0;
-}
+} /* tcp_rdma_validate_access */
 
 /*
  * Pending operation ring buffer management
@@ -177,7 +187,7 @@ tcp_rdma_pending_ring_init(struct tcp_rdma_pending_ring *ring)
     ring->mask = TCP_RDMA_PENDING_RING_INITIAL_SIZE - 1;
     ring->head = 0;
     ring->tail = 0;
-}
+} /* tcp_rdma_pending_ring_init */
 
 static inline void
 tcp_rdma_pending_ring_free(struct tcp_rdma_pending_ring *ring)
@@ -186,19 +196,19 @@ tcp_rdma_pending_ring_free(struct tcp_rdma_pending_ring *ring)
         evpl_free(ring->ops);
         ring->ops = NULL;
     }
-}
+} /* tcp_rdma_pending_ring_free */
 
 static inline int
 tcp_rdma_pending_ring_is_empty(const struct tcp_rdma_pending_ring *ring)
 {
     return ring->head == ring->tail;
-}
+} /* tcp_rdma_pending_ring_is_empty */
 
 static inline int
 tcp_rdma_pending_ring_is_full(const struct tcp_rdma_pending_ring *ring)
 {
     return ((ring->head + 1) & ring->mask) == ring->tail;
-}
+} /* tcp_rdma_pending_ring_is_full */
 
 static inline void
 tcp_rdma_pending_ring_resize(struct tcp_rdma_pending_ring *ring)
@@ -218,7 +228,7 @@ tcp_rdma_pending_ring_resize(struct tcp_rdma_pending_ring *ring)
     ring->mask = new_size - 1;
     ring->tail = 0;
     ring->head = j;
-}
+} /* tcp_rdma_pending_ring_resize */
 
 /*
  * Add a pending operation to the ring.
@@ -227,11 +237,11 @@ tcp_rdma_pending_ring_resize(struct tcp_rdma_pending_ring *ring)
 static uint64_t
 tcp_rdma_pending_add(
     struct evpl_tcp_rdma_socket *ts,
-    struct evpl_iovec           *iov,
-    int                          niov,
-    int                          length,
-    void                       (*callback)(int status, void *private_data),
-    void                        *private_data)
+    struct evpl_iovec *iov,
+    int niov,
+    int length,
+    void ( *callback )(int status, void *private_data),
+    void *private_data)
 {
     struct tcp_rdma_pending_ring *ring = &ts->pending_ring;
     struct tcp_rdma_pending_op   *op;
@@ -264,7 +274,7 @@ tcp_rdma_pending_add(
     ring->head = (ring->head + 1) & ring->mask;
 
     return id;
-}
+} /* tcp_rdma_pending_add */
 
 /*
  * Get the pending operation at the tail (oldest operation).
@@ -279,7 +289,7 @@ tcp_rdma_pending_tail(struct evpl_tcp_rdma_socket *ts)
         return NULL;
     }
     return &ring->ops[ring->tail];
-}
+} /* tcp_rdma_pending_tail */
 
 /*
  * Complete and remove the operation at the tail.
@@ -303,7 +313,7 @@ tcp_rdma_pending_complete(
     }
 
     ring->tail = (ring->tail + 1) & ring->mask;
-}
+} /* tcp_rdma_pending_complete */
 
 /*
  * Clear all pending operations (on connection close).
@@ -328,7 +338,7 @@ tcp_rdma_pending_clear(
         }
         ring->tail = (ring->tail + 1) & ring->mask;
     }
-}
+} /* tcp_rdma_pending_clear */
 
 /*
  * Helper to peek at bytes in iovec_recv ring without consuming
@@ -377,7 +387,7 @@ tcp_rdma_peek_bytes(
     }
 
     return copied;
-}
+} /* tcp_rdma_peek_bytes */
 
 /*
  * Helper to copy payload from ring to contiguous buffer
@@ -392,7 +402,7 @@ tcp_rdma_copy_payload_to_buffer(
 {
     /* Use peek to copy, then consume */
     tcp_rdma_peek_bytes(ring, buf, offset, length);
-}
+} /* tcp_rdma_copy_payload_to_buffer */
 
 /*
  * Helper to copy payload from ring to iovec array
@@ -446,7 +456,7 @@ tcp_rdma_copy_payload_to_iovec(
             }
         }
     }
-}
+} /* tcp_rdma_copy_payload_to_iovec */
 
 /*
  * Queue a header + optional payload for sending
@@ -459,9 +469,9 @@ tcp_rdma_queue_message(
     void                   *payload,
     int                     payload_len)
 {
-    struct evpl_iovec iov;
-    char             *buf;
-    int               alloc_len = TCP_RDMA_HEADER_SIZE + payload_len;
+    struct evpl_iovec       iov;
+    char                   *buf;
+    int                     alloc_len = TCP_RDMA_HEADER_SIZE + payload_len;
 
     /* Allocate buffer for header + payload */
     evpl_iovec_alloc(evpl, alloc_len, 1, 1, 0, &iov);
@@ -486,7 +496,7 @@ tcp_rdma_queue_message(
 
     /* Add to send ring */
     evpl_iovec_ring_add(&bind->iovec_send, &iov);
-}
+} /* tcp_rdma_queue_message */
 
 /*
  * Queue header + iovecs for sending (for RDMA write)
@@ -499,9 +509,9 @@ tcp_rdma_queue_message_iov(
     struct evpl_iovec      *payload_iov,
     int                     niov)
 {
-    struct evpl_iovec iov;
-    char             *buf;
-    int               i;
+    struct evpl_iovec       iov;
+    char                   *buf;
+    int                     i;
 
     /* Allocate buffer for header only */
     evpl_iovec_alloc(evpl, TCP_RDMA_HEADER_SIZE, 1, 1, 0, &iov);
@@ -526,7 +536,7 @@ tcp_rdma_queue_message_iov(
     for (i = 0; i < niov; i++) {
         evpl_iovec_ring_add_clone(&bind->iovec_send, &payload_iov[i]);
     }
-}
+} /* tcp_rdma_queue_message_iov */
 
 /*
  * Message handlers
@@ -537,9 +547,9 @@ tcp_rdma_handle_send(
     struct evpl_bind *bind,
     uint32_t          length)
 {
-    struct evpl_notify  notify;
-    struct evpl_iovec  *iovec;
-    int                 niov;
+    struct evpl_notify notify;
+    struct evpl_iovec *iovec;
+    int                niov;
 
     /* Skip header, extract payload */
     evpl_iovec_ring_consume(evpl, &bind->iovec_recv, TCP_RDMA_HEADER_SIZE);
@@ -554,7 +564,7 @@ tcp_rdma_handle_send(
     notify.recv_msg.addr   = bind->remote;
 
     bind->notify_callback(evpl, bind, &notify, bind->private_data);
-}
+} /* tcp_rdma_handle_send */
 
 static void
 tcp_rdma_handle_read_request(
@@ -606,7 +616,7 @@ tcp_rdma_handle_read_request(
     }
 
     evpl_defer(evpl, &bind->flush_deferral);
-}
+} /* tcp_rdma_handle_read_request */
 
 static void
 tcp_rdma_handle_read_reply(
@@ -667,7 +677,7 @@ tcp_rdma_handle_read_reply(
     }
 
     tcp_rdma_pending_complete(evpl, ts);
-}
+} /* tcp_rdma_handle_read_reply */
 
 static void
 tcp_rdma_handle_write_request(
@@ -704,9 +714,9 @@ tcp_rdma_handle_write_request(
         evpl_iovec_ring_consume(evpl, &bind->iovec_recv, TCP_RDMA_HEADER_SIZE);
 
         /* Copy payload directly to registered memory */
-        int       remaining = req_hdr->length;
-        int       copied    = 0;
-        char     *dst       = ptr;
+        int   remaining = req_hdr->length;
+        int   copied    = 0;
+        char *dst       = ptr;
 
         while (remaining > 0 && bind->iovec_recv.tail != bind->iovec_recv.head) {
             struct evpl_iovec *src_iov = &bind->iovec_recv.iovec[bind->iovec_recv.tail];
@@ -722,7 +732,7 @@ tcp_rdma_handle_write_request(
             if (chunk == (int) src_iov->length) {
                 evpl_iovec_release(evpl, src_iov);
                 bind->iovec_recv.tail = (bind->iovec_recv.tail + 1) &
-                                        bind->iovec_recv.mask;
+                    bind->iovec_recv.mask;
             } else {
                 src_iov->data   += chunk;
                 src_iov->length -= chunk;
@@ -741,7 +751,7 @@ tcp_rdma_handle_write_request(
     }
 
     evpl_defer(evpl, &bind->flush_deferral);
-}
+} /* tcp_rdma_handle_write_request */
 
 static void
 tcp_rdma_handle_write_reply(
@@ -767,7 +777,7 @@ tcp_rdma_handle_write_reply(
     }
 
     tcp_rdma_pending_complete(evpl, ts);
-}
+} /* tcp_rdma_handle_write_reply */
 
 static void
 tcp_rdma_handle_error(
@@ -793,7 +803,7 @@ tcp_rdma_handle_error(
     }
 
     tcp_rdma_pending_complete(evpl, ts);
-}
+} /* tcp_rdma_handle_error */
 
 /*
  * Connection check (from TCP)
@@ -823,7 +833,7 @@ evpl_tcp_rdma_check_conn(
 
         ts->socket.connected = 1;
     }
-}
+} /* evpl_tcp_rdma_check_conn */
 
 /*
  * Read handler - peek-based message parsing
@@ -922,36 +932,36 @@ evpl_tcp_rdma_read(
 
         /* Dispatch based on opcode */
         switch (hdr.opcode) {
-        case TCP_RDMA_OP_SEND:
-            tcp_rdma_handle_send(evpl, bind, hdr.length);
-            break;
-        case TCP_RDMA_OP_READ_REQUEST:
-            tcp_rdma_handle_read_request(evpl, bind, ts, &hdr);
-            break;
-        case TCP_RDMA_OP_READ_REPLY:
-            tcp_rdma_handle_read_reply(evpl, bind, ts, &hdr);
-            break;
-        case TCP_RDMA_OP_WRITE_REQUEST:
-            tcp_rdma_handle_write_request(evpl, bind, ts, &hdr);
-            break;
-        case TCP_RDMA_OP_WRITE_REPLY:
-            tcp_rdma_handle_write_reply(evpl, bind, ts, &hdr);
-            break;
-        case TCP_RDMA_OP_ERROR:
-            tcp_rdma_handle_error(evpl, bind, ts, &hdr);
-            break;
-        default:
-            evpl_socket_error("Unknown TCP_RDMA opcode: %u", hdr.opcode);
-            evpl_close(evpl, bind);
-            goto out;
-        }
+            case TCP_RDMA_OP_SEND:
+                tcp_rdma_handle_send(evpl, bind, hdr.length);
+                break;
+            case TCP_RDMA_OP_READ_REQUEST:
+                tcp_rdma_handle_read_request(evpl, bind, ts, &hdr);
+                break;
+            case TCP_RDMA_OP_READ_REPLY:
+                tcp_rdma_handle_read_reply(evpl, bind, ts, &hdr);
+                break;
+            case TCP_RDMA_OP_WRITE_REQUEST:
+                tcp_rdma_handle_write_request(evpl, bind, ts, &hdr);
+                break;
+            case TCP_RDMA_OP_WRITE_REPLY:
+                tcp_rdma_handle_write_reply(evpl, bind, ts, &hdr);
+                break;
+            case TCP_RDMA_OP_ERROR:
+                tcp_rdma_handle_error(evpl, bind, ts, &hdr);
+                break;
+            default:
+                evpl_socket_error("Unknown TCP_RDMA opcode: %u", hdr.opcode);
+                evpl_close(evpl, bind);
+                goto out;
+        } /* switch */
     }
 
  out:
     if (res < total) {
         evpl_event_mark_unreadable(evpl, event);
     }
-}
+} /* evpl_tcp_rdma_read */
 
 /*
  * Write handler - same as TCP
@@ -1035,7 +1045,7 @@ evpl_tcp_rdma_write(
     if (res != total) {
         evpl_event_mark_unwritable(evpl, event);
     }
-}
+} /* evpl_tcp_rdma_write */
 
 /*
  * Error handler
@@ -1053,7 +1063,7 @@ evpl_tcp_rdma_error(
     }
 
     evpl_close(evpl, bind);
-}
+} /* evpl_tcp_rdma_error */
 
 /*
  * Attach handler - custom version that registers tcp_rdma callbacks
@@ -1101,7 +1111,7 @@ evpl_tcp_rdma_attach(
     notify.notify_type   = EVPL_NOTIFY_CONNECTED;
     notify.notify_status = 0;
     bind->notify_callback(evpl, bind, &notify, bind->private_data);
-}
+} /* evpl_tcp_rdma_attach */
 
 /*
  * Connect handler - custom version that registers tcp_rdma callbacks
@@ -1147,7 +1157,7 @@ evpl_tcp_rdma_connect(
 
     evpl_event_read_interest(evpl, &ts->socket.event);
     evpl_event_write_interest(evpl, &ts->socket.event);
-}
+} /* evpl_tcp_rdma_connect */
 
 /*
  * Flush handler - process dgram rings and create headers
@@ -1250,7 +1260,7 @@ evpl_tcp_rdma_flush(
 
     /* Enable write interest to send queued data */
     evpl_event_write_interest(evpl, &ts->socket.event);
-}
+} /* evpl_tcp_rdma_flush */
 
 /*
  * Close handler - cleanup pending ops
@@ -1270,7 +1280,7 @@ evpl_tcp_rdma_close(
 
     /* Call base socket close */
     evpl_socket_close(evpl, bind);
-}
+} /* evpl_tcp_rdma_close */
 
 /*
  * Framework functions
@@ -1281,13 +1291,13 @@ tcp_rdma_init(void)
     struct evpl_tcp_rdma_global *global = evpl_zalloc(sizeof(*global));
 
     pthread_mutex_init(&global->mr_table.lock, NULL);
-    global->mr_table.size     = TCP_RDMA_MR_TABLE_INITIAL_SIZE;
+    global->mr_table.size      = TCP_RDMA_MR_TABLE_INITIAL_SIZE;
     global->mr_table.next_rkey = 1;  /* Start at 1, 0 is reserved */
-    global->mr_table.entries  = evpl_zalloc(
+    global->mr_table.entries   = evpl_zalloc(
         global->mr_table.size * sizeof(struct tcp_rdma_mr *));
 
     return global;
-}
+} /* tcp_rdma_init */
 
 static void
 tcp_rdma_cleanup(void *private_data)
@@ -1305,7 +1315,7 @@ tcp_rdma_cleanup(void *private_data)
     evpl_free(global->mr_table.entries);
     pthread_mutex_destroy(&global->mr_table.lock);
     evpl_free(global);
-}
+} /* tcp_rdma_cleanup */
 
 static void *
 tcp_rdma_create(
@@ -1318,7 +1328,7 @@ tcp_rdma_create(
     tcp_rdma->global = global;
 
     return tcp_rdma;
-}
+} /* tcp_rdma_create */
 
 static void
 tcp_rdma_destroy(
@@ -1326,7 +1336,7 @@ tcp_rdma_destroy(
     void        *private_data)
 {
     evpl_free(private_data);
-}
+} /* tcp_rdma_destroy */
 
 /*
  * Resize the MR table to the next power of two.
@@ -1345,7 +1355,7 @@ tcp_rdma_mr_table_resize(struct tcp_rdma_mr_table *table)
     evpl_free(table->entries);
     table->entries = new_entries;
     table->size    = new_size;
-}
+} /* tcp_rdma_mr_table_resize */
 
 static void *
 tcp_rdma_register_memory(
@@ -1384,7 +1394,7 @@ tcp_rdma_register_memory(
     pthread_mutex_unlock(&global->mr_table.lock);
 
     return mr;
-}
+} /* tcp_rdma_register_memory */
 
 static void
 tcp_rdma_unregister_memory(
@@ -1404,7 +1414,7 @@ tcp_rdma_unregister_memory(
     pthread_mutex_unlock(&global->mr_table.lock);
 
     evpl_free(mr);
-}
+} /* tcp_rdma_unregister_memory */
 
 static void
 tcp_rdma_get_rdma_address(
@@ -1423,7 +1433,7 @@ tcp_rdma_get_rdma_address(
         *r_key     = 0;
         *r_address = 0;
     }
-}
+} /* tcp_rdma_get_rdma_address */
 
 /*
  * Framework and Protocol definitions
@@ -1440,7 +1450,7 @@ struct evpl_framework evpl_framework_tcp_rdma = {
     .get_rdma_address  = tcp_rdma_get_rdma_address,
 };
 
-struct evpl_protocol evpl_tcp_rdma_datagram = {
+struct evpl_protocol  evpl_tcp_rdma_datagram = {
     .id            = EVPL_DATAGRAM_TCP_RDMA,
     .connected     = 1,
     .stream        = 0,

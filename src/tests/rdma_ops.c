@@ -18,16 +18,16 @@ const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8100;
 
-#define BUFFER_SIZE     4096
-#define PATTERN_SERVER  0xAB
-#define PATTERN_CLIENT  0xCD
+#define BUFFER_SIZE         4096
+#define PATTERN_SERVER      0xAB
+#define PATTERN_CLIENT      0xCD
 
 /* Message types for our simple protocol */
-#define MSG_TYPE_RDMA_INFO    1
-#define MSG_TYPE_READ_DONE    2
-#define MSG_TYPE_WRITE_DONE   3
-#define MSG_TYPE_VERIFY_OK    4
-#define MSG_TYPE_COMPLETE     5
+#define MSG_TYPE_RDMA_INFO  1
+#define MSG_TYPE_READ_DONE  2
+#define MSG_TYPE_WRITE_DONE 3
+#define MSG_TYPE_VERIFY_OK  4
+#define MSG_TYPE_COMPLETE   5
 
 struct rdma_info_msg {
     uint32_t msg_type;
@@ -42,28 +42,28 @@ struct simple_msg {
 };
 
 struct server_state {
-    struct evpl       *evpl;
-    struct evpl_bind  *bind;
-    struct evpl_iovec  rdma_buffer;
-    int                rdma_buffer_valid;
-    int                phase;
-    int                complete;
+    struct evpl      *evpl;
+    struct evpl_bind *bind;
+    struct evpl_iovec rdma_buffer;
+    int               rdma_buffer_valid;
+    int               phase;
+    int               complete;
 };
 
 struct client_state {
-    struct evpl       *server_evpl;
-    struct evpl       *evpl;
-    struct evpl_bind  *bind;
-    struct evpl_iovec  local_buffer;
-    int                local_buffer_valid;
-    uint32_t           remote_rkey;
-    uint64_t           remote_raddr;
-    uint32_t           remote_length;
-    int                phase;
-    int                read_complete;
-    int                write_complete;
-    int                complete;
-    int                passed;
+    struct evpl      *server_evpl;
+    struct evpl      *evpl;
+    struct evpl_bind *bind;
+    struct evpl_iovec local_buffer;
+    int               local_buffer_valid;
+    uint32_t          remote_rkey;
+    uint64_t          remote_raddr;
+    uint32_t          remote_length;
+    int               phase;
+    int               read_complete;
+    int               write_complete;
+    int               complete;
+    int               passed;
 };
 
 int
@@ -76,7 +76,9 @@ test_segment_callback(
 } /* test_segment_callback */
 
 /* Forward declaration */
-static void rdma_write_callback(int status, void *private_data);
+static void rdma_write_callback(
+    int   status,
+    void *private_data);
 
 static void
 rdma_read_callback(
@@ -167,10 +169,10 @@ client_callback(
     struct evpl_notify *notify,
     void               *private_data)
 {
-    struct client_state   *state = private_data;
-    struct rdma_info_msg  *rdma_info;
-    struct simple_msg     *msg;
-    struct simple_msg      reply;
+    struct client_state  *state = private_data;
+    struct rdma_info_msg *rdma_info;
+    struct simple_msg    *msg;
+    struct simple_msg     reply;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -232,7 +234,7 @@ client_thread(void *arg)
     struct evpl_bind     *bind;
     struct client_state  *state = arg;
 
-    evpl = evpl_create(NULL);
+    evpl        = evpl_create(NULL);
     state->evpl = evpl;
 
     server = evpl_endpoint_create(address, port);
@@ -266,11 +268,11 @@ server_callback(
     struct evpl_notify *notify,
     void               *private_data)
 {
-    struct server_state  *state = private_data;
-    struct simple_msg    *msg;
-    struct simple_msg     reply;
-    unsigned char        *buf;
-    int                   i, match;
+    struct server_state *state = private_data;
+    struct simple_msg   *msg;
+    struct simple_msg    reply;
+    unsigned char       *buf;
+    int                  i, match;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_MSG:
@@ -322,10 +324,10 @@ accept_callback(
     void                   **conn_private_data,
     void                    *private_data)
 {
-    struct server_state  *state = private_data;
-    struct rdma_info_msg  rdma_info;
-    uint32_t              rkey;
-    uint64_t              raddr;
+    struct server_state *state = private_data;
+    struct rdma_info_msg rdma_info;
+    uint32_t             rkey;
+    uint64_t             raddr;
 
     evpl_test_info("Server accepted connection");
 
@@ -395,7 +397,7 @@ main(
 
     evpl = evpl_create(NULL);
 
-    server_state.evpl       = evpl;
+    server_state.evpl        = evpl;
     client_state.server_evpl = evpl;
 
     me = evpl_endpoint_create("0.0.0.0", port);

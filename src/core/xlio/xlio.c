@@ -253,8 +253,8 @@ evpl_xlio_socket_rx(
 
     iovec = evpl_iovec_ring_add_new(&bind->iovec_recv);
 
-    iovec->data              = data;
-    iovec->length            = len;
+    iovec->data   = data;
+    iovec->length = len;
     evpl_iovec_set_ref(iovec, &buffer->ref);
     bind->iovec_recv.length += len;
 

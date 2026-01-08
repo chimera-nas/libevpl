@@ -23,15 +23,15 @@ static enum evpl_protocol_id proto = EVPL_STREAM_SOCKET_TCP;
 static int                   port  = 8002;
 
 /* Test data sizes */
-#define READ_SIZE    4096
-#define WRITE_SIZE   4096
-#define REDUCE_SIZE  8192   /* Large enough to trigger reply chunk */
+#define READ_SIZE   4096
+#define WRITE_SIZE  4096
+#define REDUCE_SIZE 8192    /* Large enough to trigger reply chunk */
 
 /* Test data buffer */
-static char test_data[REDUCE_SIZE];
+static char                  test_data[REDUCE_SIZE];
 
 /* Static iovec for client WRITE request - needs to persist during async send */
-static xdr_iovec write_req_iov;
+static xdr_iovec             write_req_iov;
 
 /* Test state */
 struct test_state {
@@ -51,11 +51,14 @@ init_test_data(void)
     for (i = 0; i < REDUCE_SIZE; i++) {
         test_data[i] = (char) (i & 0xFF);
     }
-}
+} /* init_test_data */
 
 /* Verify test data pattern */
 static int
-verify_data(const char *data, int offset, int length)
+verify_data(
+    const char *data,
+    int         offset,
+    int         length)
 {
     int i;
 
@@ -67,16 +70,16 @@ verify_data(const char *data, int offset, int length)
         }
     }
     return 0;
-}
+} /* verify_data */
 
 /* Server-side: Handle READ request */
 void
 server_recv_read(
-    struct evpl             *evpl,
-    struct evpl_rpc2_conn   *conn,
-    struct ReadRequest      *request,
-    struct evpl_rpc2_msg    *msg,
-    void                    *private_data)
+    struct evpl           *evpl,
+    struct evpl_rpc2_conn *conn,
+    struct ReadRequest    *request,
+    struct evpl_rpc2_msg  *msg,
+    void                  *private_data)
 {
     struct RDMA_DDP_V1 *prog = msg->program->program_data;
     struct ReadResponse reply;
@@ -109,16 +112,16 @@ server_recv_read(
     }
 
     evpl_test_info("Server sent READ reply: count=%u", reply.count);
-}
+} /* server_recv_read */
 
 /* Server-side: Handle WRITE request */
 void
 server_recv_write(
-    struct evpl             *evpl,
-    struct evpl_rpc2_conn   *conn,
-    struct WriteRequest     *request,
-    struct evpl_rpc2_msg    *msg,
-    void                    *private_data)
+    struct evpl           *evpl,
+    struct evpl_rpc2_conn *conn,
+    struct WriteRequest   *request,
+    struct evpl_rpc2_msg  *msg,
+    void                  *private_data)
 {
     struct RDMA_DDP_V1  *prog = msg->program->program_data;
     struct WriteResponse reply;
@@ -162,16 +165,16 @@ server_recv_write(
     }
 
     evpl_test_info("Server sent WRITE reply: count=%u", reply.count);
-}
+} /* server_recv_write */
 
 /* Server-side: Handle REDUCE request */
 void
 server_recv_reduce(
-    struct evpl             *evpl,
-    struct evpl_rpc2_conn   *conn,
-    struct ReduceRequest    *request,
-    struct evpl_rpc2_msg    *msg,
-    void                    *private_data)
+    struct evpl           *evpl,
+    struct evpl_rpc2_conn *conn,
+    struct ReduceRequest  *request,
+    struct evpl_rpc2_msg  *msg,
+    void                  *private_data)
 {
     struct RDMA_DDP_V1   *prog = msg->program->program_data;
     struct ReduceResponse reply;
@@ -196,7 +199,7 @@ server_recv_reduce(
     }
 
     evpl_test_info("Server sent REDUCE reply: data_len=%u", REDUCE_SIZE);
-}
+} /* server_recv_reduce */
 
 /* Client-side: Handle READ reply */
 void
@@ -236,7 +239,7 @@ client_recv_reply_read(
         state->test_complete = 1;
         state->test_passed   = 1;
     }
-}
+} /* client_recv_reply_read */
 
 /* Client-side: Handle WRITE reply */
 void
@@ -264,7 +267,7 @@ client_recv_reply_write(
         state->test_complete = 1;
         state->test_passed   = 1;
     }
-}
+} /* client_recv_reply_write */
 
 /* Client-side: Handle REDUCE reply */
 void
@@ -298,7 +301,7 @@ client_recv_reply_reduce(
         state->test_complete = 1;
         state->test_passed   = 1;
     }
-}
+} /* client_recv_reply_reduce */
 
 static void
 usage(const char *prog_name)
@@ -307,7 +310,7 @@ usage(const char *prog_name)
     fprintf(stderr, "  -r protocol  Protocol to use (default: STREAM_SOCKET_TCP)\n");
     fprintf(stderr, "  -p port      Port to use (default: 8002)\n");
     exit(1);
-}
+} /* usage */
 
 int
 main(
@@ -345,7 +348,7 @@ main(
                 break;
             default:
                 usage(argv[0]);
-        }
+        } /* switch */
     }
 
     /* Initialize test data */
@@ -435,4 +438,4 @@ main(
         printf("Test FAILED\n");
         return 1;
     }
-}
+} /* main */

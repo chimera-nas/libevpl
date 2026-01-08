@@ -669,7 +669,8 @@ evpl_rpc2_recv_msg(
 
                     evpl_rpc2_abort_if(msg->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
 
-                    msg->read_chunk.niov = evpl_iovec_alloc(evpl, msg->read_chunk.length, 4096, 1, 0, msg->read_chunk.iov);
+                    msg->read_chunk.niov = evpl_iovec_alloc(evpl, msg->read_chunk.length, 4096, 1, 0, msg->read_chunk.
+                                                            iov);
 
                     read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
 
