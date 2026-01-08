@@ -56,7 +56,7 @@ main(
     bqueue = evpl_block_open_queue(evpl, bdev);
 
 
-    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, &iov);
+    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, 0, &iov);
 
     pending++;
     evpl_block_write(evpl, bqueue, &iov, niov, 0, 0, read_callback, &pending);
@@ -71,7 +71,7 @@ main(
         evpl_continue(evpl);
     }
 
-    evpl_iovec_release(&iov);
+    evpl_iovec_release(evpl, &iov);
 
     evpl_block_close_queue(evpl, bqueue);
 

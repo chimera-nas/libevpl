@@ -77,7 +77,7 @@ void evpl_listener_detach(
     struct evpl                  *evpl,
     struct evpl_listener_binding *binding);
 
-void
+int
 evpl_listen(
     struct evpl_listener *listener,
     enum evpl_protocol_id protocol,
@@ -205,4 +205,7 @@ void evpl_bind_get_remote_address(
     int               len);
 
 enum evpl_protocol_id evpl_bind_get_protocol(
+    struct evpl_bind *bind);
+
+int evpl_bind_is_rdma(
     struct evpl_bind *bind);

@@ -36,7 +36,6 @@ evpl_xlio_prepare_iov(
     struct xlio_socket_send_attr *send_attr,
     struct evpl_iovec_ring       *ring)
 {
-    struct evpl_buffer  *buffer;
     struct ibv_mr      **mrset;
     struct evpl_iovec   *iovec;
     struct evpl_xlio_zc *zc;
@@ -44,10 +43,7 @@ evpl_xlio_prepare_iov(
 
     iovec = &ring->iovec[pos];
 
-    buffer = iovec->private_data;
-
-    mrset = (struct ibv_mr **) evpl_buffer_framework_private(buffer,
-                                                             EVPL_FRAMEWORK_XLIO);
+    mrset = evpl_memory_framework_private(iovec, EVPL_FRAMEWORK_XLIO);
 
     send_attr->mkey = mrset[s->pd_index]->lkey;
 
@@ -63,9 +59,9 @@ evpl_xlio_prepare_iov(
 
         zc = evpl_xlio_alloc_zc(xlio);
 
-        zc->buffer = iovec->private_data;
+        zc->buffer = container_of(evpl_iovec_get_ref(iovec),
+                                  struct evpl_xlio_buffer, ref);
         zc->length = iovec->length;
-        atomic_fetch_add_explicit(&zc->buffer->refcnt, 1, memory_order_relaxed);
 
         s->zc_pending++;
 

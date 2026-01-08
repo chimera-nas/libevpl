@@ -29,7 +29,7 @@ struct evpl_slab {
     struct evpl_buffer    *buffers;
     void                  *framework_private[EVPL_NUM_FRAMEWORK];
     struct evpl_slab      *next;
-};
+} __attribute__((aligned(64)));
 
 struct evpl_allocator *
 evpl_allocator_create()
@@ -55,7 +55,7 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
     while (allocator->free_buffers) {
         buffer = allocator->free_buffers;
         LL_DELETE(allocator->free_buffers, buffer);
-        buffer->slab->refcnt--;
+        buffer->ref.slab->refcnt--;
     }
 
     while (allocator->slabs) {
@@ -64,15 +64,30 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
         if (slab->refcnt && slab->buffers) {
             for (int i = 0; i < slab->size / evpl_shared->config->buffer_size; i++) {
                 buffer = &slab->buffers[i];
-                evpl_core_abort_if(buffer->refcnt != 0,
+#if defined(EVPL_IOVEC_TRACE)
+                if (buffer->ref.refcnt != 0) {
+                    evpl_core_error("evpl_allocator_destroy: buffer %p has %d leaked references",
+                                    buffer, buffer->ref.refcnt);
+                }
+#else  /* if defined(EVPL_IOVEC_TRACE) */
+                evpl_core_abort_if(buffer->ref.refcnt != 0,
                                    "evpl_allocator_destroy: buffer %p has %d leaked references",
-                                   buffer, buffer->refcnt);
+                                   buffer, buffer->ref.refcnt);
+#endif /* if defined(EVPL_IOVEC_TRACE) */
+
             }
         }
 
+#if defined(EVPL_IOVEC_TRACE)
+        if (slab->refcnt != 0) {
+            evpl_core_error("evpl_allocator_destroy: slab %p has %d leaked references",
+                            slab, slab->refcnt);
+        }
+#else  /* if defined(EVPL_IOVEC_TRACE) */
         evpl_core_abort_if(slab->refcnt != 0,
                            "evpl_allocator_destroy: slab %p has %d leaked references",
                            slab, slab->refcnt);
+#endif /* if defined(EVPL_IOVEC_TRACE) */
 
 
         LL_DELETE(allocator->slabs, slab);
@@ -186,12 +201,11 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
         slab->buffers = evpl_zalloc(num_buffers * sizeof(*slab->buffers));
 
         for (int i = 0; i < num_buffers; i++) {
-            buffer            = &slab->buffers[i];
-            buffer->data      = slab->data + i * config->buffer_size;
-            buffer->slab      = slab;
-            buffer->allocator = allocator;
-            buffer->used      = 0;
-            buffer->size      = config->buffer_size;
+            buffer           = &slab->buffers[i];
+            buffer->data     = slab->data + i * config->buffer_size;
+            buffer->ref.slab = slab;
+            buffer->used     = 0;
+            buffer->size     = config->buffer_size;
 
             slab->refcnt++;
 
@@ -251,7 +265,9 @@ evpl_allocator_free(
 } /* evpl_allocator_free */
 
 void *
-evpl_allocator_alloc_slab(struct evpl_allocator *allocator)
+evpl_allocator_alloc_slab(
+    struct evpl_allocator *allocator,
+    void                 **slab_private)
 {
     struct evpl_slab *slab;
 
@@ -259,15 +275,77 @@ evpl_allocator_alloc_slab(struct evpl_allocator *allocator)
     slab = evpl_allocator_create_slab(allocator);
     pthread_mutex_unlock(&allocator->lock);
 
+    *slab_private = slab;
+
     return slab->data;
 
 } /* evpl_allocator_alloc_slab */
 
 
 void *
-evpl_buffer_framework_private(
-    struct evpl_buffer *buffer,
-    int                 framework_id)
+evpl_memory_framework_private(
+    const struct evpl_iovec *iov,
+    int                      framework_id)
 {
-    return buffer->slab->framework_private[framework_id];
+    struct evpl_iovec_ref *ref = evpl_iovec_get_ref(iov);
+
+    return ref->slab->framework_private[framework_id];
 } // evpl_buffer_framework_private
+
+
+static void
+evpl_buffer_free(
+    struct evpl           *evpl,
+    struct evpl_iovec_ref *ref)
+{
+    struct evpl_buffer *buffer = container_of(ref, struct evpl_buffer, ref);
+
+    evpl_allocator_free(buffer->ref.slab->allocator, buffer);
+} /* evpl_buffer_free */
+
+
+static void
+evpl_buffer_free_local(
+    struct evpl           *evpl,
+    struct evpl_iovec_ref *ref)
+{
+    struct evpl_buffer *buffer = container_of(ref, struct evpl_buffer, ref);
+
+    if (evpl) {
+        /* Append to the thread-local free list instead of returning to allocator */
+        LL_PREPEND(evpl->free_local_buffers, buffer);
+    } else {
+        /* No evpl context (e.g., during module shutdown), return to allocator */
+        evpl_allocator_free(buffer->ref.slab->allocator, buffer);
+    }
+} /* evpl_buffer_free_local */
+
+
+struct evpl_buffer *
+evpl_buffer_alloc(
+    struct evpl *evpl,
+    unsigned int flags)
+{
+    struct evpl_buffer *buffer;
+
+    if (!(flags & EVPL_IOVEC_FLAG_SHARED) && evpl->free_local_buffers) {
+        /* For LOCAL allocations, try thread-local free list first (no lock) */
+        buffer = evpl->free_local_buffers;
+        LL_DELETE(evpl->free_local_buffers, buffer);
+    } else {
+        /* Go to the global allocator */
+        buffer = evpl_allocator_alloc(evpl_shared->allocator);
+    }
+
+    buffer->ref.refcnt = 1;
+    buffer->ref.flags  = flags;
+    buffer->used       = 0;
+
+    if (flags & EVPL_IOVEC_FLAG_SHARED) {
+        buffer->ref.release = evpl_buffer_free;
+    } else {
+        buffer->ref.release = evpl_buffer_free_local;
+    }
+
+    return buffer;
+} /* evpl_buffer_alloc */

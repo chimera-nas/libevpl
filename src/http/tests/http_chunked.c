@@ -52,7 +52,7 @@ server_notify(
         case EVPL_HTTP_NOTIFY_WANT_DATA:
             fprintf(stderr, "notify want data\n");
 
-            evpl_iovec_alloc(evpl, 11, 0, 1, &iov);
+            evpl_iovec_alloc(evpl, 11, 0, 1, 0, &iov);
             memcpy(iov.data, "hello world", 11);
             iov.length = 11;
 

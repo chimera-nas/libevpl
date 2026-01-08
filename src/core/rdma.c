@@ -51,7 +51,9 @@ evpl_rdma_read(
     }
 
     for (i = 0; i < niov; ++i) {
-        iovec = evpl_iovec_ring_add(&bind->iovec_rdma_read, &iov[i]);
+        /* Clone instead of move so app keeps their reference.
+         * After operation completes, library releases its reference. */
+        iovec = evpl_iovec_ring_add_clone(&bind->iovec_rdma_read, &iov[i]);
 
         length += iovec->length;
     }
@@ -98,10 +100,10 @@ evpl_rdma_write(
     }
 
     for (i = 0; i < niov; ++i) {
-        iovec = evpl_iovec_ring_add(&bind->iovec_send, &iov[i]);
-
-        if (!(flags & EVPL_RDMA_FLAG_TAKE_REF)) {
-            evpl_iovec_addref(iovec);
+        if (flags & EVPL_RDMA_FLAG_TAKE_REF) {
+            iovec = evpl_iovec_ring_add(&bind->iovec_send, &iov[i]);
+        } else {
+            iovec = evpl_iovec_ring_add_clone(&bind->iovec_send, &iov[i]);
         }
 
         length += iovec->length;

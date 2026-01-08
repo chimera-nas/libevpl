@@ -128,7 +128,9 @@ struct evpl {
     int                           max_active_deferrals;
 
     struct evpl_buffer           *current_buffer;
+    struct evpl_buffer           *shared_buffer;
     struct evpl_buffer           *datagram_buffer;
+    struct evpl_buffer           *free_local_buffers;
     struct evpl_bind             *free_binds;
     struct evpl_bind             *binds;
     struct evpl_bind             *pending_close_binds;

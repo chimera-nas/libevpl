@@ -22,6 +22,10 @@ evpl_connect(
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
 
+    if (!protocol) {
+        return NULL;
+    }
+
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
@@ -256,6 +260,12 @@ evpl_bind_get_protocol(struct evpl_bind *bind)
 {
     return bind->protocol->id;
 } /* evpl_bind_get_protocol */
+
+SYMBOL_EXPORT int
+evpl_bind_is_rdma(struct evpl_bind *bind)
+{
+    return bind->protocol->rdma;
+} /* evpl_bind_is_rdma */
 
 SYMBOL_EXPORT void
 evpl_bind_request_send_notifications(

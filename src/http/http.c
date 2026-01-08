@@ -713,7 +713,7 @@ evpl_http_server_send_headers(
     int                              niov;
     char                            *rsp_base, *rsp;
 
-    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, &iov);
+    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, 0, &iov);
 
     evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 
@@ -809,7 +809,7 @@ evpl_http_server_flush(
 
             if (chunk_length) {
 
-                niov = evpl_iovec_alloc(evpl, 64, 0, 1, &iov);
+                niov = evpl_iovec_alloc(evpl, 64, 0, 1, 0, &iov);
 
                 chunk_hdr_len = snprintf(iov.data, 64, "%lx\r\n", chunk_length);
 
@@ -823,7 +823,7 @@ evpl_http_server_flush(
                     evpl_iovec_ring_remove(&request->send_ring);
                 }
 
-                niov = evpl_iovec_alloc(evpl, 2, 0, 1, &iov);
+                niov = evpl_iovec_alloc(evpl, 2, 0, 1, 0, &iov);
 
                 evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 
@@ -834,7 +834,7 @@ evpl_http_server_flush(
             }
 
             if (request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED) {
-                niov = evpl_iovec_alloc(evpl, 5, 0, 1, &iov);
+                niov = evpl_iovec_alloc(evpl, 5, 0, 1, 0, &iov);
 
                 evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 

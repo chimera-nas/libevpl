@@ -261,13 +261,17 @@ evpl_listener_detach(
 
 } /* evpl_listener_detach */
 
-SYMBOL_EXPORT void
+SYMBOL_EXPORT int
 evpl_listen(
     struct evpl_listener *listener,
     enum evpl_protocol_id protocol_id,
     struct evpl_endpoint *endpoint)
 {
     struct evpl_listen_request *request;
+
+    if (!evpl_shared->protocol[protocol_id]) {
+        return -1;
+    }
 
     request = evpl_zalloc(sizeof(*request));
 
@@ -292,5 +296,7 @@ evpl_listen(
     pthread_mutex_unlock(&request->lock);
 
     evpl_free(request);
+
+    return 0;
 
 } /* evpl_listen */

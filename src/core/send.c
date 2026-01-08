@@ -27,7 +27,7 @@ evpl_sendto(
     struct evpl_iovec iovecs[4];
     int               niov;
 
-    niov = evpl_iovec_alloc(evpl, length, 0, 4, iovecs);
+    niov = evpl_iovec_alloc(evpl, length, 0, 4, 0, iovecs);
 
     evpl_core_abort_if(niov < 1, "failed to allocate bounce space");
 
@@ -79,7 +79,11 @@ evpl_sendtov(
     }
 
     for (i = 0; left && i < niovs; ++i) {
-        iovec = evpl_iovec_ring_add(&bind->iovec_send, &iovecs[i]);
+        if (flags & EVPL_SEND_FLAG_TAKE_REF) {
+            iovec = evpl_iovec_ring_add(&bind->iovec_send, &iovecs[i]);
+        } else {
+            iovec = evpl_iovec_ring_add_clone(&bind->iovec_send, &iovecs[i]);
+        }
 
         if (iovec->length <= left) {
             left -= iovec->length;
@@ -87,10 +91,6 @@ evpl_sendtov(
             bind->iovec_send.length -= iovec->length - left;
             iovec->length            = left;
             left                     = 0;
-        }
-
-        if (!(flags & EVPL_SEND_FLAG_TAKE_REF)) {
-            evpl_iovec_addref(iovec);
         }
     }
 
@@ -111,10 +111,7 @@ evpl_sendtov(
     evpl_defer(evpl, &bind->flush_deferral);
 
     if (flags & EVPL_SEND_FLAG_TAKE_REF) {
-
-        for (; i < niovs; ++i) {
-            evpl_iovec_decref(&iovecs[i]);
-        }
+        evpl_iovecs_release(evpl, &iovecs[i], niovs - i);
     }
 
 } /* evpl_sendtov */

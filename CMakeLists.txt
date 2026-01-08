@@ -26,6 +26,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
                     -fno-optimize-sibling-calls -fstack-protector-all)
     add_link_options(-fsanitize=address)
     add_definitions(-DEVPL_ASSERT=1)
+    message(STATUS "Enabling iovec reference tracing")
+    add_definitions(-DEVPL_IOVEC_TRACE=1)
 endif()    
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")

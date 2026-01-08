@@ -58,6 +58,7 @@
 
 #include "socket/udp.h"
 #include "socket/tcp.h"
+#include "socket/tcp_rdma.h"
 #include "tls/tls.h"
 
 pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
@@ -114,6 +115,12 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TLS,
                        &evpl_socket_tls);
+
+    evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TCP_RDMA,
+                        &evpl_framework_tcp_rdma);
+
+    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
+                       &evpl_tcp_rdma_datagram);
 
 #ifdef HAVE_IO_URING
     if (config->io_uring_enabled) {
@@ -602,6 +609,7 @@ evpl_destroy(struct evpl *evpl)
 {
     struct evpl_framework *framework;
     struct evpl_bind      *bind;
+    struct evpl_buffer    *buffer;
     int                    i;
 
     evpl_destroy_close_bind(evpl);
@@ -629,11 +637,22 @@ evpl_destroy(struct evpl *evpl)
     }
 
     if (evpl->current_buffer) {
-        evpl_buffer_release(evpl->current_buffer);
+        evpl_buffer_release(evpl, evpl->current_buffer);
+    }
+
+    if (evpl->shared_buffer) {
+        evpl_buffer_release(evpl, evpl->shared_buffer);
     }
 
     if (evpl->datagram_buffer) {
-        evpl_buffer_release(evpl->datagram_buffer);
+        evpl_buffer_release(evpl, evpl->datagram_buffer);
+    }
+
+    /* Return all thread-local free buffers to the global allocator */
+    while (evpl->free_local_buffers) {
+        buffer = evpl->free_local_buffers;
+        LL_DELETE(evpl->free_local_buffers, buffer);
+        evpl_allocator_free(evpl_shared->allocator, buffer);
     }
 
     evpl_core_destroy(&evpl->core);
@@ -738,10 +757,18 @@ evpl_protocol_lookup(
     return -1;
 } /* evpl_protocol_lookup */
 
-SYMBOL_EXPORT void *
-evpl_slab_alloc(void)
+SYMBOL_EXPORT uint64_t
+evpl_get_slab_size(void)
 {
-    return evpl_allocator_alloc_slab(evpl_shared->allocator);
+    __evpl_init();
+    return evpl_shared->config->slab_size;
+} /* evpl_get_slab_size */
 
+SYMBOL_EXPORT void *
+evpl_slab_alloc(void **slab_private)
+{
+    __evpl_init();
+
+    return evpl_allocator_alloc_slab(evpl_shared->allocator, slab_private);
 }      /* evpl_slab_alloc */
 

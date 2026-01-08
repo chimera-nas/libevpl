@@ -71,7 +71,7 @@ evpl_socket_tcp_read(
 
     if (s->recv1.length == 0) {
         if (s->recv2.length) {
-            s->recv1        = s->recv2;
+            evpl_iovec_move(&s->recv1, &s->recv2);
             s->recv2.length = 0;
         } else {
             evpl_iovec_alloc_whole(evpl, &s->recv1);

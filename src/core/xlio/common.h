@@ -35,6 +35,13 @@
 
 struct xlio_api_t;
 
+struct evpl_xlio_buffer {
+    struct evpl_iovec_ref    ref;
+    struct evpl_xlio        *xlio;
+    struct xlio_buf         *buf;
+    struct evpl_xlio_buffer *next;
+};
+
 struct evpl_xlio_api {
     void              *hdl;
     struct xlio_api_t *extra;
@@ -69,10 +76,10 @@ typedef void (*evpl_xlio_error_callback_t)(
 
 
 struct evpl_xlio_zc {
-    struct evpl_buffer  *buffer;
-    unsigned int         length;
-    int                  complete;
-    struct evpl_xlio_zc *next;
+    struct evpl_xlio_buffer *buffer;
+    unsigned int             length;
+    int                      complete;
+    struct evpl_xlio_zc     *next;
 };
 
 struct evpl_xlio_socket {
@@ -104,7 +111,7 @@ struct evpl_xlio {
     struct evpl_poll         *poll;
     xlio_poll_group_t         poll_group;
     struct evpl_xlio_socket **active_sockets;
-    struct evpl_buffer       *free_xlio_buffers;
+    struct evpl_xlio_buffer  *free_xlio_buffers;
     struct evpl_xlio_zc      *free_zc;
     int                       num_active_sockets;
     int                       max_active_sockets;
@@ -115,18 +122,13 @@ struct evpl_xlio_accepted_socket {
 };
 
 static inline void
-evpl_xlio_buffer_free(struct evpl_buffer *buffer)
+evpl_xlio_buffer_free(
+    struct evpl           *evpl,
+    struct evpl_iovec_ref *ref)
 {
-    struct evpl_xlio *xlio;
-    struct xlio_buf  *buf;
-
-    /* XXX this is a bit sketch because it assumes a single thread,
-     * but XLIO socket API has threading concerns anyhow that will need
-     * to be tackled later
-     */
-
-    xlio = (struct evpl_xlio *) buffer->external1;
-    buf  = (struct xlio_buf *) buffer->external2;
+    struct evpl_xlio_buffer *buffer = container_of(ref, struct evpl_xlio_buffer, ref);
+    struct evpl_xlio        *xlio = buffer->xlio;
+    struct xlio_buf         *buf  = buffer->buf;
 
     xlio->extra->xlio_poll_group_buf_free(xlio->poll_group, buf);
 
@@ -155,7 +157,7 @@ evpl_xlio_free_zc(
     LL_PREPEND(xlio->free_zc, zc);
 } // evpl_xlio_free_zc
 
-static inline struct evpl_buffer *
+static inline struct evpl_xlio_buffer *
 evpl_xlio_buffer_alloc(
     struct evpl      *evpl,
     struct evpl_xlio *xlio,
@@ -163,7 +165,7 @@ evpl_xlio_buffer_alloc(
     int               len,
     struct xlio_buf  *buff)
 {
-    struct evpl_buffer *buffer;
+    struct evpl_xlio_buffer *buffer;
 
     buffer = xlio->free_xlio_buffers;
 
@@ -172,16 +174,12 @@ evpl_xlio_buffer_alloc(
     } else {
         buffer = evpl_zalloc(sizeof(*buffer));
 
-        buffer->release = evpl_xlio_buffer_free;
+        buffer->ref.release = evpl_xlio_buffer_free;
+        buffer->xlio        = xlio;
     }
-
-    buffer->data = data;
-    buffer->size = len;
-    buffer->used = len;
-    atomic_store(&buffer->refcnt, 1);
-
-    buffer->external1 = xlio;
-    buffer->external2 = buff;
+    buffer->buf        = buff;
+    buffer->ref.refcnt = 1;
+    buffer->ref.slab   = NULL;
 
     return buffer;
 } // evpl_xlio_buffer_alloc

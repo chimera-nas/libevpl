@@ -510,8 +510,7 @@ evpl_rdmacm_fill_srq(
 
         evpl_iovec_alloc_datagram(evpl, &req->iovec, size);
 
-        mrset = evpl_buffer_framework_private(evpl_iovec_buffer(&req->iovec),
-                                              EVPL_FRAMEWORK_RDMACM);
+        mrset = evpl_memory_framework_private(&req->iovec, EVPL_FRAMEWORK_RDMACM);
 
         mr = mrset[dev->index];
 
@@ -594,7 +593,7 @@ evpl_rdmacm_process_send_completions(
 
         for (i = 0; i < dgram->niov; ++i) {
             iovec = evpl_iovec_ring_tail(&bind->iovec_send);
-            evpl_iovec_decref(iovec);
+            evpl_iovec_release(evpl, iovec);
             evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
@@ -665,6 +664,9 @@ evpl_rdmacm_process_rdma_read_completions(
         evpl_dgram_ring_remove(&bind->dgram_read);
 
         for (i = 0; i < dgram->niov; ++i) {
+            struct evpl_iovec *iovec = evpl_iovec_ring_tail(&bind->iovec_rdma_read);
+
+            evpl_iovec_release(evpl, iovec);
             evpl_iovec_ring_remove(&bind->iovec_rdma_read);
         }
 
@@ -769,7 +771,7 @@ evpl_rdmacm_poll_cq(
                     rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
 
                     if (unlikely(!rdmacm_id)) {
-                        evpl_iovec_decref(&req->iovec);
+                        evpl_iovec_release(evpl, &req->iovec);
                     } else if (rdmacm_id->stream) {
 
                         bind = evpl_private2bind(rdmacm_id);
@@ -1145,7 +1147,7 @@ evpl_rdmacm_destroy(
             req = &dev->srq_reqs[j];
 
             if (req->used) {
-                evpl_iovec_decref(&req->iovec);
+                evpl_iovec_release(evpl, &req->iovec);
             }
         }
 
@@ -1338,8 +1340,7 @@ evpl_rdmacm_get_rdma_address(
     uint64_t          *r_address)
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct evpl_buffer    *buffer    = evpl_iovec_buffer(iov);
-    struct ibv_mr        **mrset     = evpl_buffer_framework_private(buffer, EVPL_FRAMEWORK_RDMACM);
+    struct ibv_mr        **mrset     = evpl_memory_framework_private(iov, EVPL_FRAMEWORK_RDMACM);
     struct ibv_mr         *mr        = mrset[rdmacm_id->devindex];
 
     *r_key     = mr->rkey;
@@ -1394,8 +1395,7 @@ evpl_rdmacm_flush_rdma_reads(
 
             cur = evpl_iovec_ring_waist(&bind->iovec_rdma_read);
 
-            mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
-                                                  EVPL_FRAMEWORK_RDMACM);
+            mrset = evpl_memory_framework_private(cur, EVPL_FRAMEWORK_RDMACM);
 
             mr = mrset[rdmacm_id->devindex];
 
@@ -1499,8 +1499,7 @@ evpl_rdmacm_flush_datagram(
 
                 cur = evpl_iovec_ring_waist(&bind->iovec_send);
 
-                mrset = evpl_buffer_framework_private(evpl_iovec_buffer(cur),
-                                                      EVPL_FRAMEWORK_RDMACM);
+                mrset = evpl_memory_framework_private(cur, EVPL_FRAMEWORK_RDMACM);
 
                 mr = mrset[rdmacm_id->devindex];
 

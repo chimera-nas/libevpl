@@ -51,9 +51,7 @@ client_callback(
             state->recv += notify->recv_msg.length;
             state->recv_msg++;
 
-            for (int i = 0; i < notify->recv_msg.niov; i++) {
-                evpl_iovec_release(&notify->recv_msg.iovec[i]);
-            }
+            evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
 
             break;
     } /* switch */

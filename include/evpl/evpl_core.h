@@ -16,7 +16,8 @@ enum evpl_framework_id {
     EVPL_FRAMEWORK_IO_URING = 2,
     EVPL_FRAMEWORK_VFIO     = 3,
     EVPL_FRAMEWORK_TLS      = 4,
-    EVPL_NUM_FRAMEWORK      = 5
+    EVPL_FRAMEWORK_TCP_RDMA = 5,
+    EVPL_NUM_FRAMEWORK      = 6
 };
 
 enum evpl_protocol_id {
@@ -28,7 +29,8 @@ enum evpl_protocol_id {
     EVPL_STREAM_IO_URING_TCP = 5,
     EVPL_STREAM_RDMACM_RC    = 6,
     EVPL_STREAM_SOCKET_TLS   = 7,
-    EVPL_NUM_PROTO           = 8
+    EVPL_DATAGRAM_TCP_RDMA   = 8,
+    EVPL_NUM_PROTO           = 9
 };
 
 enum evpl_block_protocol_id {

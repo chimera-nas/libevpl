@@ -120,7 +120,7 @@ evpl_io_uring_fill_recv_ring(
                 continue;
             }
 
-            evpl_iovec_alloc(evpl, ctx->recv_buffer_size, 4096, 1, &ctx->recv_ring_iov[k]);
+            evpl_iovec_alloc(evpl, ctx->recv_buffer_size, 4096, 1, 0, &ctx->recv_ring_iov[k]);
 
             io_uring_buf_ring_add(
                 ctx->recv_ring,
