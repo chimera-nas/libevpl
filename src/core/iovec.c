@@ -25,7 +25,7 @@ evpl_iovec_reserve(
     do{
 
         if (evpl->current_buffer == NULL) {
-            evpl->current_buffer = evpl_buffer_alloc(evpl);
+            evpl->current_buffer = evpl_buffer_alloc(evpl, 0);
         }
 
         buffer = evpl->current_buffer;
@@ -35,7 +35,7 @@ evpl_iovec_reserve(
         chunk = (buffer->size - buffer->used);
 
         if (chunk < pad + left && niovs + 1 <= max_iovecs) {
-            evpl_buffer_release(buffer);
+            evpl_buffer_release(evpl, buffer);
             evpl->current_buffer = NULL;
             continue;
         }
@@ -58,7 +58,7 @@ evpl_iovec_reserve(
         left -= chunk - pad;
 
         if (left) {
-            evpl_buffer_release(buffer);
+            evpl_buffer_release(evpl, buffer);
             evpl->current_buffer = NULL;
         }
 
@@ -96,28 +96,37 @@ evpl_iovec_alloc(
     unsigned int       length,
     unsigned int       alignment,
     unsigned int       max_iovecs,
+    unsigned int       flags,
     struct evpl_iovec *r_iovec)
 {
-    struct evpl_buffer *buffer;
-    int                 pad, left = length, chunk;
-    int                 niovs = 0;
-    struct evpl_iovec  *iovec;
+    struct evpl_buffer **bufferp;
+    struct evpl_buffer  *buffer;
+    int                  pad, left = length, chunk;
+    int                  niovs = 0;
+    struct evpl_iovec   *iovec;
+
+    /* Select between local and shared buffer based on flags */
+    if (flags & EVPL_IOVEC_FLAG_SHARED) {
+        bufferp = &evpl->shared_buffer;
+    } else {
+        bufferp = &evpl->current_buffer;
+    }
 
     do {
 
-        if (evpl->current_buffer == NULL) {
-            evpl->current_buffer = evpl_buffer_alloc(evpl);
+        if (*bufferp == NULL) {
+            *bufferp = evpl_buffer_alloc(evpl, flags);
         }
 
-        buffer = evpl->current_buffer;
+        buffer = *bufferp;
 
         pad = evpl_buffer_pad(buffer, alignment);
 
         chunk = (buffer->size - buffer->used);
 
         if (chunk < pad + left && niovs + 1 <= max_iovecs) {
-            evpl_buffer_release(buffer);
-            evpl->current_buffer = NULL;
+            evpl_buffer_release(evpl, buffer);
+            *bufferp = NULL;
             continue;
         }
 
@@ -142,8 +151,8 @@ evpl_iovec_alloc(
         left -= chunk - pad;
 
         if (left) {
-            evpl_buffer_release(buffer);
-            evpl->current_buffer = NULL;
+            evpl_buffer_release(evpl, buffer);
+            *bufferp = NULL;
         }
 
     } while (left);
@@ -158,7 +167,7 @@ evpl_iovec_alloc_whole(
 {
     struct evpl_buffer *buffer;
 
-    buffer = evpl_buffer_alloc(evpl);
+    buffer = evpl_buffer_alloc(evpl, 0);
 
     r_iovec->data   = buffer->data;
     r_iovec->length = buffer->size;
@@ -174,7 +183,7 @@ evpl_iovec_alloc_datagram(
     struct evpl_buffer *buffer;
 
     if (!evpl->datagram_buffer) {
-        evpl->datagram_buffer = evpl_buffer_alloc(evpl);
+        evpl->datagram_buffer = evpl_buffer_alloc(evpl, 0);
     }
 
     buffer = evpl->datagram_buffer;
@@ -187,7 +196,7 @@ evpl_iovec_alloc_datagram(
     evpl_iovec_take_ref(r_iovec, &buffer->ref);
 
     if (buffer->size - buffer->used < evpl_shared->config->max_datagram_size) {
-        evpl_buffer_release(evpl->datagram_buffer);
+        evpl_buffer_release(evpl, evpl->datagram_buffer);
         evpl->datagram_buffer = NULL;
     }
 

@@ -120,8 +120,8 @@ rdma_read_callback(
     /* Phase 2: RDMA WRITE to server with different pattern */
     /* Release the READ buffer (we're done with the data) and allocate new for WRITE */
     state->phase = 1;
-    evpl_iovec_release(&state->local_buffer);
-    evpl_iovec_alloc(state->evpl, BUFFER_SIZE, 1, 1, &state->local_buffer);
+    evpl_iovec_release(state->evpl, &state->local_buffer);
+    evpl_iovec_alloc(state->evpl, BUFFER_SIZE, 1, 1, 0, &state->local_buffer);
     memset(state->local_buffer.data, PATTERN_CLIENT, BUFFER_SIZE);
 
     evpl_test_info("Initiating RDMA WRITE");
@@ -190,7 +190,7 @@ client_callback(
                     state->remote_length = rdma_info->length;
 
                     /* Allocate local buffer for RDMA operations */
-                    evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, &state->local_buffer);
+                    evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->local_buffer);
                     state->local_buffer_valid = 1;
 
                     /* Clear local buffer */
@@ -219,7 +219,7 @@ client_callback(
                 }
             }
 
-            evpl_iovecs_release(notify->recv_msg.iovec, notify->recv_msg.niov);
+            evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
             break;
     } /* switch */
 } /* client_callback */
@@ -251,7 +251,7 @@ client_thread(void *arg)
     evpl_stop(state->server_evpl);
 
     if (state->local_buffer_valid) {
-        evpl_iovec_release(&state->local_buffer);
+        evpl_iovec_release(state->evpl, &state->local_buffer);
     }
 
     evpl_destroy(evpl);
@@ -308,7 +308,7 @@ server_callback(
                 state->complete = 1;
             }
 
-            evpl_iovecs_release(notify->recv_msg.iovec, notify->recv_msg.niov);
+            evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
             break;
     } /* switch */
 } /* server_callback */
@@ -332,7 +332,7 @@ accept_callback(
     state->bind = bind;
 
     /* Allocate RDMA buffer and fill with pattern */
-    evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, &state->rdma_buffer);
+    evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->rdma_buffer);
     state->rdma_buffer_valid = 1;
     memset(state->rdma_buffer.data, PATTERN_SERVER, BUFFER_SIZE);
 
@@ -417,7 +417,7 @@ main(
     evpl_listener_destroy(listener);
 
     if (server_state.rdma_buffer_valid) {
-        evpl_iovec_release(&server_state.rdma_buffer);
+        evpl_iovec_release(evpl, &server_state.rdma_buffer);
     }
 
     evpl_destroy(evpl);

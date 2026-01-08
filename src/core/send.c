@@ -27,7 +27,7 @@ evpl_sendto(
     struct evpl_iovec iovecs[4];
     int               niov;
 
-    niov = evpl_iovec_alloc(evpl, length, 0, 4, iovecs);
+    niov = evpl_iovec_alloc(evpl, length, 0, 4, 0, iovecs);
 
     evpl_core_abort_if(niov < 1, "failed to allocate bounce space");
 
@@ -111,7 +111,7 @@ evpl_sendtov(
     evpl_defer(evpl, &bind->flush_deferral);
 
     if (flags & EVPL_SEND_FLAG_TAKE_REF) {
-        evpl_iovecs_release(&iovecs[i], niovs - i);
+        evpl_iovecs_release(evpl, &iovecs[i], niovs - i);
     }
 
 } /* evpl_sendtov */

@@ -609,6 +609,7 @@ evpl_destroy(struct evpl *evpl)
 {
     struct evpl_framework *framework;
     struct evpl_bind      *bind;
+    struct evpl_buffer    *buffer;
     int                    i;
 
     evpl_destroy_close_bind(evpl);
@@ -636,11 +637,22 @@ evpl_destroy(struct evpl *evpl)
     }
 
     if (evpl->current_buffer) {
-        evpl_buffer_release(evpl->current_buffer);
+        evpl_buffer_release(evpl, evpl->current_buffer);
+    }
+
+    if (evpl->shared_buffer) {
+        evpl_buffer_release(evpl, evpl->shared_buffer);
     }
 
     if (evpl->datagram_buffer) {
-        evpl_buffer_release(evpl->datagram_buffer);
+        evpl_buffer_release(evpl, evpl->datagram_buffer);
+    }
+
+    /* Return all thread-local free buffers to the global allocator */
+    while (evpl->free_local_buffers) {
+        buffer = evpl->free_local_buffers;
+        LL_DELETE(evpl->free_local_buffers, buffer);
+        evpl_allocator_free(evpl_shared->allocator, buffer);
     }
 
     evpl_core_destroy(&evpl->core);

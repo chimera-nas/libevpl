@@ -9,6 +9,14 @@
 #endif /* ifndef EVPL_INCLUDED */
 
 #include <stdint.h>
+#include <stdatomic.h>
+
+/*
+ * iovec flags - stored in evpl_iovec_ref.flags
+ * 0 (default): Single-threaded access, uses non-atomic refcnt operations
+ * EVPL_IOVEC_FLAG_SHARED: Multi-threaded access, uses atomic refcnt operations
+ */
+#define EVPL_IOVEC_FLAG_SHARED 1
 
 #ifdef EVPL_IOVEC_TRACE
 #include <stdlib.h>
@@ -29,12 +37,17 @@
 #endif /* ifdef EVPL_IOVEC_TRACE */
 
 struct evpl_iovec_ref;
+struct evpl;
 
 struct evpl_iovec_ref {
-    unsigned int      refcnt;
+    union {
+        unsigned int refcnt;         /* LOCAL type: non-atomic */
+        atomic_uint  refcnt_atomic;  /* SHARED type: atomic */
+    };
     unsigned int      flags;
     struct evpl_slab *slab;
     void              (*release)(
+        struct evpl           *evpl,
         struct evpl_iovec_ref *ref);
 };
 
@@ -140,6 +153,7 @@ int evpl_iovec_alloc(
     unsigned int       length,
     unsigned int       alignment,
     unsigned int       max_iovecs,
+    unsigned int       flags,
     struct evpl_iovec *r_iovec);
 
 int evpl_iovec_reserve(
@@ -157,35 +171,47 @@ void evpl_iovec_commit(
 
 
 static inline void
-evpl_iovec_ref_release(struct evpl_iovec_ref *ref)
+evpl_iovec_ref_release(
+    struct evpl           *evpl,
+    struct evpl_iovec_ref *ref)
 {
-    --ref->refcnt;
+    unsigned int prev;
 
-    if (ref->refcnt == 0) {
-        ref->release(ref);
+    if (ref->flags & EVPL_IOVEC_FLAG_SHARED) {
+        prev = atomic_fetch_sub_explicit(&ref->refcnt_atomic, 1,
+                                         memory_order_release);
+    } else {
+        prev = ref->refcnt--;
     }
-} // evpl_iovec_release
+
+    if (prev == 1) {
+        ref->release(evpl, ref);
+    }
+} /* evpl_iovec_ref_release */
 
 static inline void
-evpl_iovec_release(struct evpl_iovec *iovec)
+evpl_iovec_release(
+    struct evpl       *evpl,
+    struct evpl_iovec *iovec)
 {
 #ifdef EVPL_IOVEC_TRACE
     struct evpl_iovec_ref *real_ref = evpl_iovec_real_ref(iovec);
 
     evpl_iovec_canary_free(iovec);
-    evpl_iovec_ref_release(real_ref);
+    evpl_iovec_ref_release(evpl, real_ref);
 #else // ifdef EVPL_IOVEC_TRACE
-    evpl_iovec_ref_release(iovec->ref);
+    evpl_iovec_ref_release(evpl, iovec->ref);
 #endif // ifdef EVPL_IOVEC_TRACE
 } /* evpl_iovec_release */
 
 static inline void
 evpl_iovecs_release(
+    struct evpl       *evpl,
     struct evpl_iovec *iov,
     int                niov)
 {
     for (int i = 0; i < niov; i++) {
-        evpl_iovec_release(&iov[i]);
+        evpl_iovec_release(evpl, &iov[i]);
     }
 } /* evpl_iovecs_release */
 
@@ -210,11 +236,21 @@ evpl_iovec_set_length(
 } /* evpl_iovec_set_length */
 
 static inline void
+evpl_iovec_ref_incr(struct evpl_iovec_ref *ref)
+{
+    if (ref->flags & EVPL_IOVEC_FLAG_SHARED) {
+        atomic_fetch_add_explicit(&ref->refcnt_atomic, 1, memory_order_relaxed);
+    } else {
+        ref->refcnt++;
+    }
+} /* evpl_iovec_ref_incr */
+
+static inline void
 evpl_iovec_take_ref(
     struct evpl_iovec     *dst,
     struct evpl_iovec_ref *src)
 {
-    src->refcnt++;
+    evpl_iovec_ref_incr(src);
 #ifdef EVPL_IOVEC_TRACE
     evpl_iovec_canary_alloc(dst, src);
 #else // ifdef EVPL_IOVEC_TRACE
@@ -235,7 +271,7 @@ evpl_iovec_clone_segment(
 #ifdef EVPL_IOVEC_TRACE
     struct evpl_iovec_ref *real_ref = evpl_iovec_real_ref(src);
 
-    ++real_ref->refcnt;
+    evpl_iovec_ref_incr(real_ref);
     evpl_iovec_canary_alloc(dst, real_ref);
 #else // ifdef EVPL_IOVEC_TRACE
     evpl_iovec_take_ref(dst, src->ref);
@@ -259,7 +295,7 @@ evpl_iovec_clone(
 #ifdef EVPL_IOVEC_TRACE
     struct evpl_iovec_ref *real_ref = evpl_iovec_real_ref(src);
 
-    ++real_ref->refcnt;
+    evpl_iovec_ref_incr(real_ref);
     evpl_iovec_canary_alloc(dst, real_ref);
 #else // ifdef EVPL_IOVEC_TRACE
     evpl_iovec_take_ref(dst, src->ref);

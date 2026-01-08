@@ -294,25 +294,58 @@ evpl_memory_framework_private(
 
 
 static void
-evpl_buffer_free(struct evpl_iovec_ref *ref)
+evpl_buffer_free(
+    struct evpl           *evpl,
+    struct evpl_iovec_ref *ref)
 {
     struct evpl_buffer *buffer = container_of(ref, struct evpl_buffer, ref);
 
     evpl_allocator_free(buffer->ref.slab->allocator, buffer);
-} /* evpl_buffer_release */
+} /* evpl_buffer_free */
+
+
+static void
+evpl_buffer_free_local(
+    struct evpl           *evpl,
+    struct evpl_iovec_ref *ref)
+{
+    struct evpl_buffer *buffer = container_of(ref, struct evpl_buffer, ref);
+
+    if (evpl) {
+        /* Append to the thread-local free list instead of returning to allocator */
+        LL_PREPEND(evpl->free_local_buffers, buffer);
+    } else {
+        /* No evpl context (e.g., during module shutdown), return to allocator */
+        evpl_allocator_free(buffer->ref.slab->allocator, buffer);
+    }
+} /* evpl_buffer_free_local */
 
 
 struct evpl_buffer *
-evpl_buffer_alloc(struct evpl *evpl)
+evpl_buffer_alloc(
+    struct evpl *evpl,
+    unsigned int flags)
 {
     struct evpl_buffer *buffer;
 
-    buffer = evpl_allocator_alloc(evpl_shared->allocator);
+    if (!(flags & EVPL_IOVEC_FLAG_SHARED) && evpl->free_local_buffers) {
+        /* For LOCAL allocations, try thread-local free list first (no lock) */
+        buffer = evpl->free_local_buffers;
+        LL_DELETE(evpl->free_local_buffers, buffer);
+    } else {
+        /* Go to the global allocator */
+        buffer = evpl_allocator_alloc(evpl_shared->allocator);
+    }
 
-    buffer->ref.refcnt  = 1;
-    buffer->ref.flags   = 0;
-    buffer->ref.release = evpl_buffer_free;
-    buffer->used        = 0;
+    buffer->ref.refcnt = 1;
+    buffer->ref.flags  = flags;
+    buffer->used       = 0;
+
+    if (flags & EVPL_IOVEC_FLAG_SHARED) {
+        buffer->ref.release = evpl_buffer_free;
+    } else {
+        buffer->ref.release = evpl_buffer_free_local;
+    }
 
     return buffer;
 } /* evpl_buffer_alloc */

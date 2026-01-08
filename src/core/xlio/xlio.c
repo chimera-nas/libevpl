@@ -187,7 +187,7 @@ evpl_xlio_socket_completion(
 
     evpl_xlio_send_completion(evpl, s, zc->length);
 
-    evpl_iovec_ref_release(&zc->buffer->ref);
+    evpl_iovec_ref_release(evpl, &zc->buffer->ref);
 
     --s->zc_pending;
 

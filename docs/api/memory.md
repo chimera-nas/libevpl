@@ -28,23 +28,28 @@ int evpl_iovec_alloc(
     unsigned int       length,
     unsigned int       alignment,
     unsigned int       max_iovecs,
+    unsigned int       flags,
     struct evpl_iovec *r_iovec);
 ```
 
 Allocate one or more iovecs to hold the requested length of data.
 
-If alignment is non-zero, libevpl will guarantee that each vector address is aligned to this amount (eg 64 or 4096b).  
+If alignment is non-zero, libevpl will guarantee that each vector address is aligned to this amount (eg 64 or 4096b).
 
 max_iovecs indicates the maximum number of iovecs the application is prepared to accept.  If 1, a guaranteed contiguous allocation is performed, but memory may be wasted in the associated buffer to achieve that.   Allowing for more iovecs allows more efficient use of buffers.
 
 Each iovec will represent a chunk of a buffer, with buffers having a default 2MB length.   It must be possible for libevpl to allocate the requested memory in the requested number of iovecs.   E.g., a 4MB allocation into 1 iovec is not possible with default 2MB buffer size.  Similarly. an allocation of 2MB with default 2MB buffer size will never require more than two iovecs.
 
+The `flags` parameter controls the type of allocation:
+- `0` (default) - Local allocation, uses non-atomic reference counting. Use this when the iovec will only be accessed from a single thread.
+- `EVPL_IOVEC_FLAG_SHARED` - Shared allocation, uses atomic reference counting. Use this when the iovec may be accessed from multiple threads.
 
 **Parameters:**
 - `evpl` - Event loop
 - `length` - Total bytes to allocate
 - `alignment` - Memory alignment requirement in bytes, 0 if none
 - `max_iovecs` - Maximum number of iovecs to return
+- `flags` - Allocation flags (0 for local, EVPL_IOVEC_FLAG_SHARED for multi-threaded)
 - `r_iovec` - [OUT] Array to receive allocated iovecs
 
 **Returns:** Number of iovecs allocated (1 to `max_iovecs`), or -1 on error

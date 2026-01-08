@@ -58,7 +58,7 @@ client_callback(
                            *(uint32_t *) notify->recv_msg.iovec[0].data,
                            state->sent, state->recv);
 
-            evpl_iovecs_release(notify->recv_msg.iovec, notify->recv_msg.niov);
+            evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
 
             break;
     } /* switch */
@@ -129,7 +129,7 @@ server_callback(
 
             evpl_send(evpl, bind, &value, sizeof(value));
 
-            evpl_iovecs_release(notify->recv_msg.iovec, notify->recv_msg.niov);
+            evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
 
             break;
     } /* switch */

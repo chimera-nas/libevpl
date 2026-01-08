@@ -47,7 +47,7 @@ server_notify(
             fprintf(stderr, "notify request complete\n");
             evpl_http_request_add_header(request, "MyHeader", "MyValue");
 
-            evpl_iovec_alloc(evpl, 11, 0, 1, &iov);
+            evpl_iovec_alloc(evpl, 11, 0, 1, 0, &iov);
 
             memcpy(iov.data, "hello world", 11);
             iov.length = 11;

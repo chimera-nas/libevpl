@@ -189,7 +189,7 @@ evpl_io_uring_tcp_send_callback(
                            req->flags);
 #endif /* if 0 */
 
-    evpl_iovec_release(&s->send_ring_iov[buffer_id]);
+    evpl_iovec_release(evpl, &s->send_ring_iov[buffer_id]);
     s->send_ring_empty |=  (1ULL << buffer_id);
 
     if (req->res > 0 && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {

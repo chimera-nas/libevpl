@@ -974,19 +974,19 @@ evpl_tls_close(
     }
 
     if (t->recv1.length) {
-        evpl_iovec_release(&t->recv1);
+        evpl_iovec_release(evpl, &t->recv1);
         t->recv1.length = 0;
     }
 
     if (t->recv2.length) {
-        evpl_iovec_release(&t->recv2);
+        evpl_iovec_release(evpl, &t->recv2);
         t->recv2.length = 0;
     }
 
     while (t->free_datagrams) {
         datagram = t->free_datagrams;
         LL_DELETE(t->free_datagrams, datagram);
-        evpl_iovec_release(&datagram->iovec);
+        evpl_iovec_release(evpl, &datagram->iovec);
         evpl_free(datagram);
     }
 } /* evpl_tls_close */

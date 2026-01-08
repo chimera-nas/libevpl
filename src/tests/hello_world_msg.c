@@ -39,7 +39,7 @@ client_callback(
 
             *run = 0;
 
-            evpl_iovecs_release(notify->recv_msg.iovec, notify->recv_msg.niov);
+            evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
 
             break;
     } /* switch */
@@ -92,7 +92,7 @@ server_callback(
 
             evpl_sendtoep(evpl, bind, client, hello, hellolen);
 
-            evpl_iovecs_release(notify->recv_msg.iovec, notify->recv_msg.niov);
+            evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
 
             evpl_finish(evpl, bind);
 

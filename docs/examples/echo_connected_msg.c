@@ -165,9 +165,9 @@ client_callback(
             printf("[Client] Connected! Sending %d bytes\n", TRANSFER_SIZE + (int) sizeof(uint32_t));
 
             /* Get a four byte io vector for the header, force it to be contiguous */
-            niov = evpl_iovec_alloc(evpl, sizeof(uint32_t), 0, 1, &iov[0]);
+            niov = evpl_iovec_alloc(evpl, sizeof(uint32_t), 0, 1, 0, &iov[0]);
             /* Followed by TRANSFER_SIZE worth of buffer for the payload, not necessarily contiguous */
-            niov += evpl_iovec_alloc(evpl, TRANSFER_SIZE, 0,  7, &iov[1]);
+            niov += evpl_iovec_alloc(evpl, TRANSFER_SIZE, 0, 7, 0, &iov[1]);
 
             /* Set the header to the transfer size */
             hdr  = evpl_iovec_data(&iov[0]);
@@ -190,7 +190,7 @@ client_callback(
             printf("[Client] Received %d bytes\n", notify->recv_msg.length);
 
             /* Release buffers - we're done with them */
-            evpl_iovecs_release(notify->recv_msg.iovec, notify->recv_msg.niov);
+            evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
 
             state->done = 1;
 

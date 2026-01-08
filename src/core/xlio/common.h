@@ -122,7 +122,9 @@ struct evpl_xlio_accepted_socket {
 };
 
 static inline void
-evpl_xlio_buffer_free(struct evpl_iovec_ref *ref)
+evpl_xlio_buffer_free(
+    struct evpl           *evpl,
+    struct evpl_iovec_ref *ref)
 {
     struct evpl_xlio_buffer *buffer = container_of(ref, struct evpl_xlio_buffer, ref);
     struct evpl_xlio        *xlio = buffer->xlio;

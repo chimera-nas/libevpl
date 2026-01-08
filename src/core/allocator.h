@@ -64,20 +64,17 @@ evpl_memory_framework_private(
 
 
 static inline void
-evpl_buffer_release(struct evpl_buffer *buffer)
+evpl_buffer_release(
+    struct evpl        *evpl,
+    struct evpl_buffer *buffer)
 {
-
-    buffer->ref.refcnt--;
-
-    if (buffer->ref.refcnt == 0) {
-        buffer->ref.release(&buffer->ref);
-    }
-
+    evpl_iovec_ref_release(evpl, &buffer->ref);
 } /* evpl_buffer_release */
 
 struct evpl_buffer *
 evpl_buffer_alloc(
-    struct evpl *evpl);
+    struct evpl *evpl,
+    unsigned int flags);
 
 static inline unsigned int
 evpl_buffer_left(struct evpl_buffer *buffer)

@@ -254,7 +254,7 @@ evpl_iovec_ring_clear(
 
     while (ring->tail != ring->head) {
         iovec = &ring->iovec[ring->tail];
-        evpl_iovec_release(iovec);
+        evpl_iovec_release(evpl, iovec);
         ring->tail = (ring->tail + 1) & ring->mask;
     }
 
@@ -356,7 +356,7 @@ evpl_iovec_ring_consume(
         evpl_core_assert(evpl_iovec_get_ref(iovec)->refcnt > 0);
 
         if (iovec->length <= length) {
-            evpl_iovec_release(iovec);
+            evpl_iovec_release(evpl, iovec);
             length    -= iovec->length;
             ring->tail = (ring->tail + 1) & ring->mask;
             n++;
@@ -431,7 +431,7 @@ evpl_iovec_ring_consumev(
 
         ring->length -= iovec->length;
 
-        evpl_iovec_release(iovec);
+        evpl_iovec_release(evpl, iovec);
         ring->tail = (ring->tail + 1) & ring->mask;
 
         niov--;
@@ -458,7 +458,7 @@ evpl_iovec_ring_append(
         head->length += length;
 
         if ((int) length == (int) append->length) {
-            evpl_iovec_release(append);
+            evpl_iovec_release(evpl, append);
         }
     } else {
         head = evpl_iovec_ring_add_new(ring);

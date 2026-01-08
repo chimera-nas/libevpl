@@ -91,7 +91,7 @@ server_recv_read(
     assert(request->count == READ_SIZE);
 
     /* Allocate iovec for response data */
-    evpl_iovec_alloc(evpl, READ_SIZE, 1, 1, &iov);
+    evpl_iovec_alloc(evpl, READ_SIZE, 1, 1, 0, &iov);
     memcpy(iov.data, test_data, READ_SIZE);
     iov.length = READ_SIZE;
 
@@ -145,7 +145,7 @@ server_recv_write(
      */
     if (msg->read_chunk.niov == 0) {
         for (i = 0; i < request->data.niov; i++) {
-            evpl_iovec_release(&request->data.iov[i]);
+            evpl_iovec_release(evpl, &request->data.iov[i]);
         }
     }
 
@@ -225,7 +225,7 @@ client_recv_reply_read(
 
     /* Release the iovecs */
     for (i = 0; i < reply->data.niov; i++) {
-        evpl_iovec_release(&reply->data.iov[i]);
+        evpl_iovec_release(evpl, &reply->data.iov[i]);
     }
 
     state->read_done = 1;
@@ -400,7 +400,7 @@ main(
     write_req.offset = 0;
     write_req.count  = WRITE_SIZE;
     /* Allocate iovec for write data */
-    evpl_iovec_alloc(evpl, WRITE_SIZE, 1, 1, &write_req_iov);
+    evpl_iovec_alloc(evpl, WRITE_SIZE, 1, 1, 0, &write_req_iov);
     memcpy(write_req_iov.data, test_data, WRITE_SIZE);
     write_req_iov.length = WRITE_SIZE;
     xdr_set_ref(&write_req, data, &write_req_iov, 1, WRITE_SIZE);

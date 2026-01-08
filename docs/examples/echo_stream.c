@@ -146,7 +146,7 @@ client_callback(
         case EVPL_NOTIFY_CONNECTED:
             printf("[Client] Connected! Sending %d bytes\n", TRANSFER_SIZE);
 
-            niov = evpl_iovec_alloc(evpl, TRANSFER_SIZE, 0, 8, iov);
+            niov = evpl_iovec_alloc(evpl, TRANSFER_SIZE, 0, 8, 0, iov);
 
             for (int i = 0; i < niov; i++) {
                 memset(evpl_iovec_data(&iov[i]), 0xbeef, evpl_iovec_length(&iov[i]));
@@ -170,7 +170,7 @@ client_callback(
                 state->bytes_received += chunk_size;
 
                 /* Release buffers - we're done with them */
-                evpl_iovecs_release(iov, niov);
+                evpl_iovecs_release(evpl, iov, niov);
 
                 printf("[Client] Received %d bytes now %d bytes total\n", chunk_size, state->bytes_received);
 

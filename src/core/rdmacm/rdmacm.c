@@ -593,7 +593,7 @@ evpl_rdmacm_process_send_completions(
 
         for (i = 0; i < dgram->niov; ++i) {
             iovec = evpl_iovec_ring_tail(&bind->iovec_send);
-            evpl_iovec_release(iovec);
+            evpl_iovec_release(evpl, iovec);
             evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
@@ -666,7 +666,7 @@ evpl_rdmacm_process_rdma_read_completions(
         for (i = 0; i < dgram->niov; ++i) {
             struct evpl_iovec *iovec = evpl_iovec_ring_tail(&bind->iovec_rdma_read);
 
-            evpl_iovec_release(iovec);
+            evpl_iovec_release(evpl, iovec);
             evpl_iovec_ring_remove(&bind->iovec_rdma_read);
         }
 
@@ -771,7 +771,7 @@ evpl_rdmacm_poll_cq(
                     rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
 
                     if (unlikely(!rdmacm_id)) {
-                        evpl_iovec_release(&req->iovec);
+                        evpl_iovec_release(evpl, &req->iovec);
                     } else if (rdmacm_id->stream) {
 
                         bind = evpl_private2bind(rdmacm_id);
@@ -1147,7 +1147,7 @@ evpl_rdmacm_destroy(
             req = &dev->srq_reqs[j];
 
             if (req->used) {
-                evpl_iovec_release(&req->iovec);
+                evpl_iovec_release(evpl, &req->iovec);
             }
         }
 

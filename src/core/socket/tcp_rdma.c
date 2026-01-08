@@ -286,7 +286,9 @@ tcp_rdma_pending_tail(struct evpl_tcp_rdma_socket *ts)
  * Since TCP is in-order, we always complete from the tail.
  */
 static void
-tcp_rdma_pending_complete(struct evpl_tcp_rdma_socket *ts)
+tcp_rdma_pending_complete(
+    struct evpl                 *evpl,
+    struct evpl_tcp_rdma_socket *ts)
 {
     struct tcp_rdma_pending_ring *ring = &ts->pending_ring;
     struct tcp_rdma_pending_op   *op   = &ring->ops[ring->tail];
@@ -295,7 +297,7 @@ tcp_rdma_pending_complete(struct evpl_tcp_rdma_socket *ts)
         /* Release the library's reference to the iovecs.
          * For RDMA READ: we cloned the app's iovec, now release our ref.
          * For RDMA WRITE: we moved the iovec, releasing is correct. */
-        evpl_iovecs_release(op->iov, op->niov);
+        evpl_iovecs_release(evpl, op->iov, op->niov);
         evpl_free(op->iov);
         op->iov = NULL;
     }
@@ -307,7 +309,9 @@ tcp_rdma_pending_complete(struct evpl_tcp_rdma_socket *ts)
  * Clear all pending operations (on connection close).
  */
 static void
-tcp_rdma_pending_clear(struct evpl_tcp_rdma_socket *ts)
+tcp_rdma_pending_clear(
+    struct evpl                 *evpl,
+    struct evpl_tcp_rdma_socket *ts)
 {
     struct tcp_rdma_pending_ring *ring = &ts->pending_ring;
     struct tcp_rdma_pending_op   *op;
@@ -318,7 +322,7 @@ tcp_rdma_pending_clear(struct evpl_tcp_rdma_socket *ts)
             op->callback(ECONNRESET, op->private_data);
         }
         if (op->iov) {
-            evpl_iovecs_release(op->iov, op->niov);
+            evpl_iovecs_release(evpl, op->iov, op->niov);
             evpl_free(op->iov);
             op->iov = NULL;
         }
@@ -460,7 +464,7 @@ tcp_rdma_queue_message(
     int               alloc_len = TCP_RDMA_HEADER_SIZE + payload_len;
 
     /* Allocate buffer for header + payload */
-    evpl_iovec_alloc(evpl, alloc_len, 1, 1, &iov);
+    evpl_iovec_alloc(evpl, alloc_len, 1, 1, 0, &iov);
     buf = iov.data;
 
     /* Copy header in network byte order */
@@ -500,7 +504,7 @@ tcp_rdma_queue_message_iov(
     int               i;
 
     /* Allocate buffer for header only */
-    evpl_iovec_alloc(evpl, TCP_RDMA_HEADER_SIZE, 1, 1, &iov);
+    evpl_iovec_alloc(evpl, TCP_RDMA_HEADER_SIZE, 1, 1, 0, &iov);
     buf = iov.data;
 
     /* Copy header in network byte order */
@@ -662,7 +666,7 @@ tcp_rdma_handle_read_reply(
         op->callback(0, op->private_data);
     }
 
-    tcp_rdma_pending_complete(ts);
+    tcp_rdma_pending_complete(evpl, ts);
 }
 
 static void
@@ -716,7 +720,7 @@ tcp_rdma_handle_write_request(
             remaining -= chunk;
 
             if (chunk == (int) src_iov->length) {
-                evpl_iovec_release(src_iov);
+                evpl_iovec_release(evpl, src_iov);
                 bind->iovec_recv.tail = (bind->iovec_recv.tail + 1) &
                                         bind->iovec_recv.mask;
             } else {
@@ -762,7 +766,7 @@ tcp_rdma_handle_write_reply(
         op->callback(0, op->private_data);
     }
 
-    tcp_rdma_pending_complete(ts);
+    tcp_rdma_pending_complete(evpl, ts);
 }
 
 static void
@@ -788,7 +792,7 @@ tcp_rdma_handle_error(
         op->callback(hdr->length, op->private_data); /* length contains error code */
     }
 
-    tcp_rdma_pending_complete(ts);
+    tcp_rdma_pending_complete(evpl, ts);
 }
 
 /*
@@ -1219,7 +1223,7 @@ evpl_tcp_rdma_flush(
 
             /* Release iovecs */
             for (i = 0; i < dgram->niov; i++) {
-                evpl_iovec_release(&iov[i]);
+                evpl_iovec_release(evpl, &iov[i]);
             }
         } else if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_WRITE) {
             /* Create pending operation - returns ring index as message ID */
@@ -1237,7 +1241,7 @@ evpl_tcp_rdma_flush(
 
             /* Release iovecs */
             for (i = 0; i < dgram->niov; i++) {
-                evpl_iovec_release(&iov[i]);
+                evpl_iovec_release(evpl, &iov[i]);
             }
         }
 
@@ -1259,7 +1263,7 @@ evpl_tcp_rdma_close(
     struct evpl_tcp_rdma_socket *ts = evpl_bind_private(bind);
 
     /* Clear pending operations with error */
-    tcp_rdma_pending_clear(ts);
+    tcp_rdma_pending_clear(evpl, ts);
 
     /* Free the pending ring */
     tcp_rdma_pending_ring_free(&ts->pending_ring);
