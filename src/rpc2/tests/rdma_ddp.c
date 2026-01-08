@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
-#include <assert.h>
 #include <unistd.h>
 #include <getopt.h>
 
@@ -90,8 +89,8 @@ server_recv_read(
                    (unsigned long long) request->offset, request->count);
 
     /* Validate request */
-    assert(request->offset == 0);
-    assert(request->count == READ_SIZE);
+    evpl_test_abort_if(request->offset != 0, "offset mismatch");
+    evpl_test_abort_if(request->count != READ_SIZE, "count mismatch");
 
     /* Allocate iovec for response data */
     evpl_iovec_alloc(evpl, READ_SIZE, 1, 1, 0, &iov);
@@ -132,14 +131,14 @@ server_recv_write(
                    request->data.length);
 
     /* Validate request */
-    assert(request->offset == 0);
-    assert(request->count == WRITE_SIZE);
-    assert(request->data.length == WRITE_SIZE);
-    assert(request->data.niov == 1);
+    evpl_test_abort_if(request->offset != 0, "offset mismatch");
+    evpl_test_abort_if(request->count != WRITE_SIZE, "count mismatch");
+    evpl_test_abort_if(request->data.length != WRITE_SIZE, "data length mismatch");
+    evpl_test_abort_if(request->data.niov != 1, "niov mismatch");
 
     /* Verify the data */
     rc = verify_data(xdr_iovec_data(&request->data.iov[0]), 0, WRITE_SIZE);
-    assert(rc == 0);
+    evpl_test_abort_if(rc != 0, "data verification failed");
 
     /*
      * Release the request data iovecs in TCP mode only. In TCP mode, these
@@ -184,7 +183,7 @@ server_recv_reduce(
                    request->response_size);
 
     /* Validate request */
-    assert(request->response_size == REDUCE_SIZE);
+    evpl_test_abort_if(request->response_size != REDUCE_SIZE, "response_size mismatch");
 
     /* Prepare large reply to trigger reply chunk - use regular opaque */
     reply.data.data = test_data;
@@ -216,15 +215,15 @@ client_recv_reply_read(
                    status, reply->count, reply->eof, reply->data.length);
 
     /* Validate reply */
-    assert(status == 0);
-    assert(reply->count == READ_SIZE);
-    assert(reply->eof == 1);
-    assert(reply->data.length == READ_SIZE);
-    assert(reply->data.niov == 1);
+    evpl_test_abort_if(status != 0, "status mismatch");
+    evpl_test_abort_if(reply->count != READ_SIZE, "count mismatch");
+    evpl_test_abort_if(reply->eof != 1, "eof mismatch");
+    evpl_test_abort_if(reply->data.length != READ_SIZE, "data length mismatch");
+    evpl_test_abort_if(reply->data.niov != 1, "niov mismatch");
 
     /* Verify the data */
     rc = verify_data(xdr_iovec_data(&reply->data.iov[0]), 0, READ_SIZE);
-    assert(rc == 0);
+    evpl_test_abort_if(rc != 0, "data verification failed");
 
     /* Release the iovecs */
     for (i = 0; i < reply->data.niov; i++) {
@@ -255,9 +254,9 @@ client_recv_reply_write(
                    status, reply->count, reply->committed);
 
     /* Validate reply */
-    assert(status == 0);
-    assert(reply->count == WRITE_SIZE);
-    assert(reply->committed == 1);
+    evpl_test_abort_if(status != 0, "status mismatch");
+    evpl_test_abort_if(reply->count != WRITE_SIZE, "count mismatch");
+    evpl_test_abort_if(reply->committed != 1, "committed mismatch");
 
     state->write_done = 1;
     evpl_test_info("WRITE test PASSED!");
@@ -284,12 +283,12 @@ client_recv_reply_reduce(
                    status, reply->data.len);
 
     /* Validate reply */
-    assert(status == 0);
-    assert(reply->data.len == REDUCE_SIZE);
+    evpl_test_abort_if(status != 0, "status mismatch");
+    evpl_test_abort_if(reply->data.len != REDUCE_SIZE, "data length mismatch");
 
     /* Verify the data - regular opaque uses .data and .len */
     rc = verify_data(reply->data.data, 0, REDUCE_SIZE);
-    assert(rc == 0);
+    evpl_test_abort_if(rc != 0, "data verification failed");
 
     /* No iovec release needed - regular opaque is managed by RPC2 */
 

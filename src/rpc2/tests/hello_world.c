@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
-#include <assert.h>
 #include <unistd.h>
 #include <getopt.h>
 
@@ -48,8 +47,8 @@ server_recv_greet(
                    request->id, request->greeting.str);
 
     /* Validate request */
-    assert(request->id == 42);
-    assert(strcmp(request->greeting.str, "Hello from client!") == 0);
+    evpl_test_abort_if(request->id != 42, "id mismatch");
+    evpl_test_abort_if(strcmp(request->greeting.str, "Hello from client!") != 0, "greeting mismatch");
 
     state->server_received = 1;
 
@@ -82,9 +81,9 @@ client_recv_reply_greet(
                    status, reply->id, reply->greeting.str);
 
     /* Validate reply */
-    assert(status == 0);  /* SUCCESS */
-    assert(reply->id == 100);
-    assert(strcmp(reply->greeting.str, "Hello from server!") == 0);
+    evpl_test_abort_if(status != 0, "status mismatch");
+    evpl_test_abort_if(reply->id != 100, "id mismatch");
+    evpl_test_abort_if(strcmp(reply->greeting.str, "Hello from server!") != 0, "greeting mismatch");
 
     state->client_received = 1;
 

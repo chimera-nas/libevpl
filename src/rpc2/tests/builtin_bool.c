@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
-#include <assert.h>
 #include <unistd.h>
 #include <getopt.h>
 
@@ -47,7 +46,7 @@ server_recv_ping(
     evpl_test_info("Server received PING request: value=%s", request ? "true" : "false");
 
     /* Validate request */
-    assert(request == 1);
+    evpl_test_abort_if(request != 1, "request value mismatch");
 
     state->server_received = 1;
 
@@ -79,8 +78,8 @@ client_recv_reply_ping(
                    status, reply ? "true" : "false");
 
     /* Validate reply */
-    assert(status == 0);  /* SUCCESS */
-    assert(reply == 1);
+    evpl_test_abort_if(status != 0, "status mismatch");
+    evpl_test_abort_if(reply != 1, "reply value mismatch");
 
     state->client_received = 1;
 
