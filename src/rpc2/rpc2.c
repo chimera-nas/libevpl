@@ -94,6 +94,7 @@ evpl_rpc2_msg_free(
     evpl_iovecs_release(evpl, msg->recv_iov, msg->recv_niov);
     evpl_iovecs_release(evpl, msg->reply_iov, msg->reply_niov);
     evpl_iovecs_release(evpl, msg->read_chunk.iov, msg->read_chunk.niov);
+    evpl_iovecs_release(evpl, msg->write_chunk.iov, msg->write_chunk.niov);
 
     LL_PREPEND(thread->free_msg, msg);
 } /* evpl_rpc2_msg_free */

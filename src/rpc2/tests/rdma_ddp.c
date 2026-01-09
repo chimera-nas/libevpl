@@ -29,9 +29,6 @@ static int                   port  = 8002;
 /* Test data buffer */
 static char                  test_data[REDUCE_SIZE];
 
-/* Static iovec for client WRITE request - needs to persist during async send */
-static xdr_iovec             write_req_iov;
-
 /* Test state */
 struct test_state {
     int read_done;
@@ -327,6 +324,7 @@ main(
     struct ReduceRequest      reduce_req;
     struct evpl_rpc2_program *programs[1];
     struct test_state         state = { 0 };
+    xdr_iovec                 write_req_iov;
     int                       opt, rc;
 
     /* Initialize evpl first, before any evpl functions are called */
@@ -422,12 +420,26 @@ main(
         evpl_continue(evpl);
     }
 
+    /*
+     * Save conn->rdma before cleanup since conn will be freed during
+     * evpl_rpc2_thread_destroy.
+     */
+    int rdma = conn->rdma;
+
     /* Cleanup */
     evpl_rpc2_server_stop(server);
     evpl_rpc2_client_disconnect(thread, conn);
     evpl_rpc2_server_detach(thread, server);
     evpl_rpc2_thread_destroy(thread);
     evpl_rpc2_server_destroy(server);
+    /*
+     * In RDMA mode, the marshaller doesn't move the iovec, so we need to release it.
+     * In non-RDMA mode, the marshaller moves the iovec (transferring ownership),
+     * so we should NOT release it (the canary is already freed).
+     */
+    if (rdma) {
+        evpl_iovec_release(evpl, &write_req_iov);
+    }
     evpl_destroy(evpl);
 
     if (state.test_passed) {
