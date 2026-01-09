@@ -25,7 +25,7 @@ void evpl_set_log_fn(
     evpl_log_fn   log_fn,
     evpl_flush_fn flush_fn);
 
-void
+__attribute__((noreturn)) void
 evpl_abort(
     const char *mod,
     const char *srcfile,

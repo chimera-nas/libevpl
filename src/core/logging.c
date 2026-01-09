@@ -139,7 +139,7 @@ evpl_fatal(
     exit(1);
 } /* evpl_fatal */
 
-SYMBOL_EXPORT void
+SYMBOL_EXPORT __attribute__((noreturn)) void
 evpl_abort(
     const char *mod,
     const char *srcfile,
