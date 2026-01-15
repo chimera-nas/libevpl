@@ -4,6 +4,8 @@
 
 cmake_minimum_required(VERSION 3.22)
 
+option(IO_URING_ENABLED "Enable io_uring support" ON)
+
 project(libevpl LANGUAGES C)
 
 enable_testing()
@@ -34,6 +36,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_definitions(-O3)
 endif()
 
+if(IO_URING_ENABLED)
 find_library(URING_LIB NAMES uring)
 find_path(URING_INCLUDE_DIR NAMES liburing/io_uring.h)
 
@@ -45,6 +48,9 @@ if (URING_LIB AND URING_INCLUDE_DIR)
     set(HAVE_IO_URING 1)
 else()
     message(STATUS "io_uring library not found.")
+endif()
+else()
+    message(STATUS "IO_URING disabled")
 endif()
 
 find_path(VFIO_INCLUDE_DIR NAMES linux/vfio.h)
