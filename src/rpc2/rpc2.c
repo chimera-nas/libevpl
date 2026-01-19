@@ -287,10 +287,6 @@ evpl_rpc2_send_reply(
                                     NULL, NULL);
                 }
             }
-
-            for (i = 0; i < msg->write_chunk.niov; i++) {
-                evpl_iovec_release(evpl, &msg->write_chunk.iov[i]);
-            }
         }
 
         if (msg->reply_segments.num_segments > 0) {
@@ -502,11 +498,14 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
 
     if (msg->read_chunk.niov) {
         /* Since server has replied, it will have finished reading our read chunk.
-         * This is functionally necessary to free & null now otherwise the xdr
+         * Release the iovecs we moved into msg in evpl_rpc2_call. Since we used
+         * evpl_iovec_move (not clone), the caller's original iovecs are now invalid
+         * (data=NULL) and the caller does NOT need to release them. This matches
+         * TCP behavior where marshalling moves iovecs inline.
+         * This is functionally necessary to null now otherwise the xdr
          * unmarshalling code that comes next will incorrectly use it again
          * when unmarshalling the reply.
          */
-
         evpl_iovecs_release(evpl, msg->read_chunk.iov, msg->read_chunk.niov);
         msg->read_chunk.niov   = 0;
         msg->read_chunk.length = 0;
@@ -526,6 +525,8 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
     error = msg->program->recv_reply_dispatch(evpl, conn, msg, msg->reply_iov, msg->reply_niov, msg->reply_length,
                                               msg->callback,
                                               msg->callback_arg);
+
+    msg->read_chunk.niov = 0;
 
     if (unlikely(error)) {
         evpl_rpc2_abort("Failed to dispatch rpc2 reply: %d", error);
@@ -1178,29 +1179,30 @@ evpl_rpc2_call(
         if (rdma_chunk && rdma_chunk->niov > 0) {
             evpl_rpc2_abort_if(rdma_chunk->niov > 1, "rdma_chunk niov is greater than 1");
 
-            msg->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->read_chunk.iov) * rdma_chunk->niov, msg->dbuf);
-
-            evpl_rpc2_abort_if(msg->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
-
-            for (i = 0; i < rdma_chunk->niov; i++) {
-                evpl_iovec_clone(&msg->read_chunk.iov[i], &rdma_chunk->iov[i]);
-            }
-            msg->read_chunk.niov         = rdma_chunk->niov;
-            msg->read_chunk.length       = rdma_chunk->length;
-            msg->read_chunk.max_length   = rdma_chunk->max_length;
-            msg->read_chunk.xdr_position = rdma_chunk->xdr_position;
-
+            /* Get RDMA address BEFORE moving iovecs (move invalidates source) */
             rdma_msg.rdma_body.rdma_msg.rdma_reads = &read_list;
             read_list.next                         = NULL;
-
-            read_list.entry.position = rdma_chunk->xdr_position + rpc_len;
+            read_list.entry.position               = rdma_chunk->xdr_position + rpc_len;
+            read_list.entry.target.length          = rdma_chunk->length;
 
             evpl_rdma_get_address(evpl, conn->bind,
                                   rdma_chunk->iov,
                                   &read_list.entry.target.handle,
                                   &read_list.entry.target.offset);
 
-            read_list.entry.target.length = rdma_chunk->length;
+            /* Move iovecs from caller to msg (transfers ownership, invalidates caller's iovecs).
+             * This matches TCP behavior where marshalling moves iovecs inline. */
+            msg->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->read_chunk.iov) * rdma_chunk->niov, msg->dbuf);
+
+            evpl_rpc2_abort_if(msg->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
+
+            for (i = 0; i < rdma_chunk->niov; i++) {
+                evpl_iovec_move(&msg->read_chunk.iov[i], &rdma_chunk->iov[i]);
+            }
+            msg->read_chunk.niov         = rdma_chunk->niov;
+            msg->read_chunk.length       = rdma_chunk->length;
+            msg->read_chunk.max_length   = rdma_chunk->max_length;
+            msg->read_chunk.xdr_position = rdma_chunk->xdr_position;
         }
 
         if (max_rdma_write_chunk) {

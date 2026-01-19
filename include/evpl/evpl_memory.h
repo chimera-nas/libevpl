@@ -350,6 +350,8 @@ evpl_iovec_move(
 #else // ifdef EVPL_IOVEC_TRACE
     *dst = *src;
 #endif // ifdef EVPL_IOVEC_TRACE
+    /* Invalidate source to indicate ownership was transferred */
+    src->data = NULL;
 } /* evpl_iovec_move */
 
 /*

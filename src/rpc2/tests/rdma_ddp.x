@@ -5,7 +5,7 @@
  * RPC2 RDMA test with Direct Data Placement (DDP) operations
  */
 
-/* READ operation - like NFS read, uses read chunks for DDP */
+/* READ operation - like NFS read, uses write chunks for DDP (server writes to client) */
 struct ReadRequest {
     uint64_t       offset;
     uint32_t       count;
@@ -17,7 +17,7 @@ struct ReadResponse {
     zcopaque       data<>;
 };
 
-/* WRITE operation - like NFS write, uses write chunks for DDP */
+/* WRITE operation - like NFS write, uses read chunks for DDP (server reads from client) */
 struct WriteRequest {
     uint64_t       offset;
     uint32_t       count;
@@ -40,10 +40,10 @@ struct ReduceResponse {
 
 program RDMA_DDP_PROGRAM {
     version RDMA_DDP_V1 {
-        /* Read data - response uses read chunks for DDP */
+        /* Read data - response uses write chunks for DDP (server writes to client) */
         ReadResponse READ(ReadRequest) = 1;
 
-        /* Write data - request uses write chunks for DDP */
+        /* Write data - request uses read chunks for DDP (server reads from client) */
         WriteResponse WRITE(WriteRequest) = 2;
 
         /* Reduce - triggers large reply chunk */

@@ -119,3 +119,61 @@ evpl_rpc2_call(
     int                          max_rdma_reply_chunk,
     void                        *callback,
     void                        *private_data);
+
+/*
+ * Transfer ownership of read_chunk iovecs from the RPC2 message to the caller.
+ *
+ * After this call, the caller owns the iovecs and is responsible for releasing
+ * them. The message's read_chunk.niov is set to 0 to prevent evpl_rpc2_msg_free
+ * from double-releasing.
+ *
+ * This is typically used when a server receives write data via RDMA read_chunk
+ * and needs to pass ownership to a lower layer (e.g., VFS) for processing.
+ *
+ * @param msg      The RPC2 message containing the read_chunk
+ * @param iov_out  Output: pointer to the iovec array (may be NULL if not needed)
+ * @param niov_out Output: number of iovecs (may be NULL if not needed)
+ */
+static inline void
+evpl_rpc2_msg_take_read_chunk(
+    struct evpl_rpc2_msg  *msg,
+    struct evpl_iovec    **iov_out,
+    int                   *niov_out)
+{
+    if (iov_out) {
+        *iov_out = msg->read_chunk.iov;
+    }
+    if (niov_out) {
+        *niov_out = msg->read_chunk.niov;
+    }
+    msg->read_chunk.niov = 0;
+} /* evpl_rpc2_msg_take_read_chunk */
+
+/*
+ * Transfer ownership of write_chunk iovecs from the RPC2 message to the caller.
+ *
+ * After this call, the caller owns the iovecs and is responsible for releasing
+ * them. The message's write_chunk.niov is set to 0 to prevent evpl_rpc2_msg_free
+ * from double-releasing.
+ *
+ * This is typically used when a client receives read data via RDMA write_chunk
+ * and needs to pass ownership to the application callback.
+ *
+ * @param msg      The RPC2 message containing the write_chunk
+ * @param iov_out  Output: pointer to the iovec array (may be NULL if not needed)
+ * @param niov_out Output: number of iovecs (may be NULL if not needed)
+ */
+static inline void
+evpl_rpc2_msg_take_write_chunk(
+    struct evpl_rpc2_msg  *msg,
+    struct evpl_iovec    **iov_out,
+    int                   *niov_out)
+{
+    if (iov_out) {
+        *iov_out = msg->write_chunk.iov;
+    }
+    if (niov_out) {
+        *niov_out = msg->write_chunk.niov;
+    }
+    msg->write_chunk.niov = 0;
+} /* evpl_rpc2_msg_take_write_chunk */

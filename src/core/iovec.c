@@ -105,6 +105,10 @@ evpl_iovec_alloc(
     int                  niovs = 0;
     struct evpl_iovec   *iovec;
 
+    if (unlikely(length == 0)) {
+        return 0;
+    }
+
     /* Select between local and shared buffer based on flags */
     if (flags & EVPL_IOVEC_FLAG_SHARED) {
         bufferp = &evpl->shared_buffer;

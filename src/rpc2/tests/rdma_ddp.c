@@ -404,8 +404,8 @@ main(
     memcpy(write_req_iov.data, test_data, WRITE_SIZE);
     write_req_iov.length = WRITE_SIZE;
     xdr_set_ref(&write_req, data, &write_req_iov, 1, WRITE_SIZE);
-    /* Enable DDP: ddp=1, write chunk of WRITE_SIZE, no reply chunk */
-    prog.send_call_WRITE(&prog.rpc2, evpl, conn, &write_req, 1, WRITE_SIZE, 0,
+    /* Enable DDP: ddp=1, no write chunk (write_chunk is for READ), no reply chunk */
+    prog.send_call_WRITE(&prog.rpc2, evpl, conn, &write_req, 1, 0, 0,
                          client_recv_reply_write, &state);
 
     /* Test 3: REDUCE operation - large reply to trigger reply chunk */
@@ -420,26 +420,15 @@ main(
         evpl_continue(evpl);
     }
 
-    /*
-     * Save conn->rdma before cleanup since conn will be freed during
-     * evpl_rpc2_thread_destroy.
-     */
-    int rdma = conn->rdma;
-
     /* Cleanup */
     evpl_rpc2_server_stop(server);
     evpl_rpc2_client_disconnect(thread, conn);
     evpl_rpc2_server_detach(thread, server);
     evpl_rpc2_thread_destroy(thread);
     evpl_rpc2_server_destroy(server);
-    /*
-     * In RDMA mode, the marshaller doesn't move the iovec, so we need to release it.
-     * In non-RDMA mode, the marshaller moves the iovec (transferring ownership),
-     * so we should NOT release it (the canary is already freed).
+    /* Both TCP and RDMA modes now move iovecs (transferring ownership),
+     * so caller does NOT need to release write_req_iov.
      */
-    if (rdma) {
-        evpl_iovec_release(evpl, &write_req_iov);
-    }
     evpl_destroy(evpl);
 
     if (state.test_passed) {
