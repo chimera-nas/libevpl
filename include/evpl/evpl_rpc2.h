@@ -17,6 +17,17 @@ struct evpl_iovec;
 struct evpl_rpc2_program;
 struct evpl_rpc2_call;
 
+/*
+ * Verifier structure for RPC authentication.
+ *
+ * For AUTH_SHORT, the server returns the credential handle in the reply
+ * verifier. The client can then use this handle for subsequent requests.
+ */
+struct evpl_rpc2_verf {
+    const void *data;
+    uint32_t    len;
+};
+
 #define EVPL_RPC2_NOTIFY_ACCEPTED     1
 #define EVPL_RPC2_NOTIFY_CONNECTED    2
 #define EVPL_RPC2_NOTIFY_DISCONNECTED 3

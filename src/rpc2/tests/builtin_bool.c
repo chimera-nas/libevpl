@@ -34,6 +34,7 @@ void
 server_recv_ping(
     struct evpl           *evpl,
     struct evpl_rpc2_conn *conn,
+    struct evpl_rpc2_cred *cred,
     xdr_bool               request,
     struct evpl_rpc2_msg  *msg,
     void                  *private_data)
@@ -54,7 +55,7 @@ server_recv_ping(
     reply = 1;
 
     /* Send reply */
-    rc = prog->send_reply_PING(evpl, reply, msg);
+    rc = prog->send_reply_PING(evpl, NULL, reply, msg);
 
     if (unlikely(rc)) {
         fprintf(stderr, "Failed to send reply for PING: %d\n", rc);
@@ -67,10 +68,11 @@ server_recv_ping(
 /* Client-side: Handle PING reply */
 void
 client_recv_reply_ping(
-    struct evpl *evpl,
-    xdr_bool     reply,
-    int          status,
-    void        *callback_private_data)
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    xdr_bool                     reply,
+    int                          status,
+    void                        *callback_private_data)
 {
     struct test_state *state = callback_private_data;
 
@@ -176,7 +178,7 @@ main(
 
     /* Make RPC call */
     evpl_test_info("Client sending PING request");
-    prog.send_call_PING(&prog.rpc2, evpl, conn, request, 0, 0, 0, client_recv_reply_ping, &state);
+    prog.send_call_PING(&prog.rpc2, evpl, conn, NULL, request, 0, 0, 0, client_recv_reply_ping, &state);
 
     /* Wait for reply */
     while (!state.test_complete) {

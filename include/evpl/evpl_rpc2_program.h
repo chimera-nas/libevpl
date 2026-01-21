@@ -15,6 +15,7 @@ struct prometheus_histogram_instance;
 struct evpl;
 struct evpl_rpc2_conn;
 struct evpl_rpc2_program;
+struct evpl_rpc2_cred;
 struct rpc_msg;
 struct rdma_msg;
 
@@ -37,6 +38,8 @@ struct evpl_rpc2_rdma_segment_list {
     int                           num_segments;
 };
 
+struct authsys_parms;
+
 struct evpl_rpc2_msg {
     uint32_t                              xid;
     uint32_t                              proc;
@@ -44,6 +47,8 @@ struct evpl_rpc2_msg {
     uint32_t                              request_length;
     uint32_t                              reply_length;
     uint16_t                              pending_reads;
+    uint16_t                              auth_flavor;
+    struct authsys_parms                 *authsys;
     struct evpl_iovec                    *recv_iov;
     struct evpl_iovec                    *req_iov;
     struct evpl_iovec                    *reply_iov;
@@ -81,28 +86,31 @@ struct evpl_rpc2_program {
         struct evpl           *evpl,
         struct evpl_rpc2_conn *conn,
         struct evpl_rpc2_msg  *msg,
+        struct evpl_rpc2_cred *cred,
         xdr_iovec             *iov,
         int                    niov,
         int                    length,
         void                  *private_data);
 
     int                                  (*recv_reply_dispatch)(
-        struct evpl           *evpl,
-        struct evpl_rpc2_conn *conn,
-        struct evpl_rpc2_msg  *msg,
-        xdr_iovec             *iov,
-        int                    niov,
-        int                    length,
-        void                  *callback_fn,
-        void                  *callback_private_data);
+        struct evpl                 *evpl,
+        struct evpl_rpc2_conn       *conn,
+        struct evpl_rpc2_msg        *msg,
+        const struct evpl_rpc2_verf *verf,
+        xdr_iovec                   *iov,
+        int                          niov,
+        int                          length,
+        void                        *callback_fn,
+        void                        *callback_private_data);
 
 
     int                                  (*send_reply_dispatch)(
-        struct evpl          *evpl,
-        struct evpl_rpc2_msg *msg,
-        xdr_iovec            *iov,
-        int                   niov,
-        int                   length);
+        struct evpl                 *evpl,
+        struct evpl_rpc2_msg        *msg,
+        const struct evpl_rpc2_verf *verf,
+        xdr_iovec                   *iov,
+        int                          niov,
+        int                          length);
 };
 
 int
@@ -110,6 +118,7 @@ evpl_rpc2_call(
     struct evpl                 *evpl,
     struct evpl_rpc2_program    *program,
     struct evpl_rpc2_conn       *conn,
+    const struct evpl_rpc2_cred *cred,
     uint32_t                     procedure,
     struct evpl_iovec           *req_iov,
     int                          req_niov,

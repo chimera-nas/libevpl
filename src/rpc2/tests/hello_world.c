@@ -34,6 +34,7 @@ void
 server_recv_greet(
     struct evpl           *evpl,
     struct evpl_rpc2_conn *conn,
+    struct evpl_rpc2_cred *cred,
     struct Hello          *request,
     struct evpl_rpc2_msg  *msg,
     void                  *private_data)
@@ -57,7 +58,7 @@ server_recv_greet(
     xdr_set_str_static(&reply, greeting, "Hello from server!", strlen("Hello from server!"));
 
     /* Send reply */
-    rc = prog->send_reply_GREET(evpl, &reply, msg);
+    rc = prog->send_reply_GREET(evpl, NULL, &reply, msg);
 
     if (unlikely(rc)) {
         fprintf(stderr, "Failed to send reply for GREET: %d\n", rc);
@@ -70,10 +71,11 @@ server_recv_greet(
 /* Client-side: Handle GREET reply */
 void
 client_recv_reply_greet(
-    struct evpl  *evpl,
-    struct Hello *reply,
-    int           status,
-    void         *callback_private_data)
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    struct Hello                *reply,
+    int                          status,
+    void                        *callback_private_data)
 {
     struct test_state *state = callback_private_data;
 
@@ -181,7 +183,7 @@ main(
 
     /* Make RPC call */
     evpl_test_info("Client sending GREET request");
-    prog.send_call_GREET(&prog.rpc2, evpl, conn, &request, 0, 0, 0, client_recv_reply_greet, &state);
+    prog.send_call_GREET(&prog.rpc2, evpl, conn, NULL, &request, 0, 0, 0, client_recv_reply_greet, &state);
 
     /* Wait for reply */
     while (!state.test_complete) {

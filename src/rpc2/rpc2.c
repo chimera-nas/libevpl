@@ -23,11 +23,12 @@
 #include "prometheus-c.h"
 
 #include "rpc2/rpc2_cursor.h"
+#include "rpc2/rpc2_cred.h"
 
 struct evpl_rpc2_server {
-    struct evpl_listener      *listener;
-    struct evpl_rpc2_program **programs;
-    int                        nprograms;
+    struct evpl_listener         *listener;
+    struct evpl_rpc2_program    **programs;
+    int                           nprograms;
 };
 
 struct evpl_rpc2_server_binding {
@@ -72,6 +73,8 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_thread *thread)
     msg->recv_niov                   = 0;
     msg->reply_niov                  = 0;
     msg->pending_reads               = 0;
+    msg->auth_flavor                 = 0;
+    msg->authsys                     = NULL;
     msg->read_chunk.niov             = 0;
     msg->read_chunk.length           = 0;
     msg->write_chunk.niov            = 0;
@@ -200,13 +203,15 @@ evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
 
 static int
 evpl_rpc2_send_reply(
-    struct evpl          *evpl,
-    struct evpl_rpc2_msg *msg,
-    struct evpl_iovec    *msg_iov,
-    int                   msg_niov,
-    int                   length,
-    int                   reserve,
-    int                   rpc2_stat)
+    struct evpl                 *evpl,
+    struct evpl_rpc2_msg        *msg,
+    const struct evpl_rpc2_verf *verf,
+    struct evpl_iovec           *msg_iov,
+    int                          msg_niov,
+    int                          length,
+    int                          reserve,
+    reply_stat                   rstat,
+    int                          error_stat)
 {
     struct evpl_iovec             iov, reply_iov;
     int                           reply_len, reply_niov, offset, rpc_len;
@@ -223,12 +228,20 @@ evpl_rpc2_send_reply(
     uint64_t                      elapsed;
     int                           i, reduce = 0, rdma = msg->conn->rdma;
 
-    rpc_reply.xid                               = msg->xid;
-    rpc_reply.body.mtype                        = REPLY;
-    rpc_reply.body.rbody.stat                   = 0;
-    rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
-    rpc_reply.body.rbody.areply.verf.body.len   = 0;
-    rpc_reply.body.rbody.areply.reply_data.stat = rpc2_stat;
+    rpc_reply.xid            = msg->xid;
+    rpc_reply.body.mtype     = REPLY;
+    rpc_reply.body.rbody.stat = rstat;
+
+    if (rstat == MSG_ACCEPTED) {
+        /* AUTH_SHORT is not implemented - always use AUTH_NONE verifier */
+        (void) verf;
+        rpc_reply.body.rbody.areply.verf.flavor = AUTH_NONE;
+        rpc_reply.body.rbody.areply.reply_data.stat = error_stat;
+    } else {
+        /* MSG_DENIED - currently only AUTH_ERROR is supported */
+        rpc_reply.body.rbody.rreply.stat = AUTH_ERROR;
+        rpc_reply.body.rbody.rreply.auth = error_stat;
+    }
 
     rpc_len = marshall_length_rpc_msg(&rpc_reply);
 
@@ -422,26 +435,49 @@ static inline int
 evpl_rpc2_send_reply_error(
     struct evpl          *evpl,
     struct evpl_rpc2_msg *msg,
-    int                   rpc2_stat)
+    int                   accept_error)
 {
     struct evpl_iovec msg_iov;
     int               msg_niov = 1;
 
     msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, 0, &msg_iov);
 
-    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov,  4096, 4096, rpc2_stat);
+    return evpl_rpc2_send_reply(evpl, msg, NULL, &msg_iov, msg_niov, 4096, 4096,
+                                MSG_ACCEPTED, accept_error);
 } /* evpl_rpc2_send_reply_error */
+
+/*
+ * Send an authentication error reply (MSG_DENIED, AUTH_ERROR).
+ *
+ * This is used to reject calls with invalid authentication flavors.
+ */
+static inline int
+evpl_rpc2_send_reply_denied(
+    struct evpl          *evpl,
+    struct evpl_rpc2_msg *msg,
+    int                   auth_error)
+{
+    struct evpl_iovec msg_iov;
+    int               msg_niov = 1;
+
+    msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, 0, &msg_iov);
+
+    return evpl_rpc2_send_reply(evpl, msg, NULL, &msg_iov, msg_niov, 4096, 4096,
+                                MSG_DENIED, auth_error);
+} /* evpl_rpc2_send_reply_denied */
 
 
 static inline int
 evpl_rpc2_send_reply_success(
-    struct evpl          *evpl,
-    struct evpl_rpc2_msg *msg,
-    struct evpl_iovec    *msg_iov,
-    int                   msg_niov,
-    int                   length)
+    struct evpl                 *evpl,
+    struct evpl_rpc2_msg        *msg,
+    const struct evpl_rpc2_verf *verf,
+    struct evpl_iovec           *msg_iov,
+    int                          msg_niov,
+    int                          length)
 {
-    return evpl_rpc2_send_reply(evpl, msg, msg_iov, msg_niov, length, msg->program->reserve, SUCCESS);
+    return evpl_rpc2_send_reply(evpl, msg, verf, msg_iov, msg_niov, length,
+                                msg->program->reserve, MSG_ACCEPTED, SUCCESS);
 } /* evpl_rpc2_send_reply_success */
 
 static void
@@ -450,9 +486,21 @@ evpl_rpc2_server_handle_msg(struct evpl_rpc2_msg *msg)
     struct evpl_rpc2_conn   *conn   = msg->conn;
     struct evpl_rpc2_thread *thread = msg->thread;
     struct evpl             *evpl   = thread->evpl;
+    struct evpl_rpc2_cred    cred;
+    struct evpl_rpc2_cred   *cred_ptr = NULL;
     int                      error;
 
-    error = msg->program->recv_call_dispatch(evpl, conn, msg, msg->req_iov, msg->req_niov, msg->request_length,
+    /* Construct credential on stack from msg's stored data */
+    if (msg->auth_flavor == AUTH_SYS && msg->authsys) {
+        evpl_rpc2_cred_init_authsys(&cred, msg->authsys);
+        cred_ptr = &cred;
+    } else if (msg->auth_flavor == AUTH_NONE) {
+        cred.flavor = AUTH_NONE;
+        cred_ptr    = &cred;
+    }
+    /* cred_ptr remains NULL for unknown auth flavors */
+
+    error = msg->program->recv_call_dispatch(evpl, conn, msg, cred_ptr, msg->req_iov, msg->req_niov, msg->request_length,
                                              conn->server_private_data);
 
     if (unlikely(error)) {
@@ -489,7 +537,9 @@ evpl_rpc2_read_segment_callback(
 } /* evpl_rpc2_read_segment_callback */
 
 static void
-evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
+evpl_rpc2_client_handle_msg(
+    struct evpl_rpc2_msg        *msg,
+    const struct evpl_rpc2_verf *verf)
 {
     struct evpl_rpc2_thread *thread = msg->thread;
     struct evpl_rpc2_conn   *conn   = msg->conn;
@@ -522,7 +572,7 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
         msg->write_chunk.length = 0;
     }
 
-    error = msg->program->recv_reply_dispatch(evpl, conn, msg, msg->reply_iov, msg->reply_niov, msg->reply_length,
+    error = msg->program->recv_reply_dispatch(evpl, conn, msg, verf, msg->reply_iov, msg->reply_niov, msg->reply_length,
                                               msg->callback,
                                               msg->callback_arg);
 
@@ -652,6 +702,44 @@ evpl_rpc2_recv_msg(
             msg->req_iov        = req_iov;
             msg->req_niov       = req_niov;
 
+            /* Parse credentials - the rpc_msg header data is persistent for the life of the RPC */
+            {
+                auth_flavor flavor = rpc_msg.body.cbody.cred.flavor;
+
+                msg->auth_flavor = flavor;
+
+                switch (flavor) {
+                    case AUTH_NONE:
+                        /* No credential data needed for AUTH_NONE */
+                        msg->authsys = NULL;
+                        break;
+
+                    case AUTH_SYS:
+                        {
+                            /* Copy authsys_parms struct to msg->dbuf. The pointers within
+                             * (machinename.str, gids) already point to persistent header data. */
+                            struct authsys_parms *dst;
+
+                            dst = xdr_dbuf_alloc_space(sizeof(*dst), msg->dbuf);
+                            if (unlikely(!dst)) {
+                                evpl_rpc2_error("Failed to allocate authsys_parms");
+                                evpl_rpc2_send_reply_denied(evpl, msg, AUTH_FAILED);
+                                return;
+                            }
+
+                            *dst         = rpc_msg.body.cbody.cred.authsys;
+                            msg->authsys = dst;
+                        }
+                        break;
+
+                    default:
+                        /* Reject unsupported auth flavors */
+                        evpl_rpc2_debug("Rejecting unsupported auth flavor %d", flavor);
+                        evpl_rpc2_send_reply_denied(evpl, msg, AUTH_TOOWEAK);
+                        return;
+                }
+            }
+
             if (rdma) {
                 if (rdma_msg.rdma_body.proc == RDMA_MSG) {
 
@@ -751,12 +839,16 @@ evpl_rpc2_recv_msg(
             }
             break;
         case REPLY:
+            {
+                /* AUTH_SHORT is not implemented - pass empty verifier */
+                struct evpl_rpc2_verf verf = { .data = NULL, .len = 0 };
 
-            msg->reply_iov    = req_iov;
-            msg->reply_niov   = req_niov;
-            msg->reply_length = request_length;
+                msg->reply_iov    = req_iov;
+                msg->reply_niov   = req_niov;
+                msg->reply_length = request_length;
 
-            evpl_rpc2_client_handle_msg(msg);
+                evpl_rpc2_client_handle_msg(msg, &verf);
+            }
             break;
         default:
             evpl_rpc2_error("rpc2 received unexpected message type %d", rpc_msg.body.mtype);
@@ -1115,6 +1207,7 @@ evpl_rpc2_call(
     struct evpl                 *evpl,
     struct evpl_rpc2_program    *program,
     struct evpl_rpc2_conn       *conn,
+    const struct evpl_rpc2_cred *cred,
     uint32_t                     procedure,
     struct evpl_iovec           *req_iov,
     int                          req_niov,
@@ -1160,10 +1253,27 @@ evpl_rpc2_call(
     rpc_msg.body.cbody.prog          = program->program;
     rpc_msg.body.cbody.vers          = program->version;
     rpc_msg.body.cbody.proc          = procedure;
-    rpc_msg.body.cbody.cred.flavor   = AUTH_NONE;
-    rpc_msg.body.cbody.cred.body.len = 0;
     rpc_msg.body.cbody.verf.flavor   = AUTH_NONE;
-    rpc_msg.body.cbody.verf.body.len = 0;
+
+    /* Set credentials based on cred parameter */
+    if (cred && cred->flavor == AUTH_SYS) {
+        /* Populate authsys directly in the opaque_union - marshalling handles length prefix */
+        rpc_msg.body.cbody.cred.flavor              = AUTH_SYS;
+        rpc_msg.body.cbody.cred.authsys.stamp       = 0;
+        rpc_msg.body.cbody.cred.authsys.machinename.str = (char *) cred->authsys.machinename;
+        rpc_msg.body.cbody.cred.authsys.machinename.len = cred->authsys.machinename_len;
+        rpc_msg.body.cbody.cred.authsys.uid         = cred->authsys.uid;
+        rpc_msg.body.cbody.cred.authsys.gid         = cred->authsys.gid;
+        rpc_msg.body.cbody.cred.authsys.num_gids    = cred->authsys.num_gids;
+        rpc_msg.body.cbody.cred.authsys.gids        = cred->authsys.gids;
+
+        evpl_rpc2_debug("AUTH_SYS: machinename=%.*s (len=%d) uid=%u gid=%u num_gids=%u",
+                        cred->authsys.machinename_len, cred->authsys.machinename,
+                        cred->authsys.machinename_len, cred->authsys.uid,
+                        cred->authsys.gid, cred->authsys.num_gids);
+    } else {
+        rpc_msg.body.cbody.cred.flavor   = AUTH_NONE;
+    }
 
     rpc_len = marshall_length_rpc_msg(&rpc_msg);
 
@@ -1244,7 +1354,9 @@ evpl_rpc2_call(
 
     marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, transport_hdr_len);
 
-    evpl_iovec_release(evpl, &hdr_out_iov);
+    if (out_niov > 0) {
+        evpl_iovec_release(evpl, &hdr_out_iov);
+    }
 
     if (rdma) {
         marshall_rdma_msg(&rdma_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, 0);
