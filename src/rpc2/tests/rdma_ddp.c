@@ -31,11 +31,12 @@ static char                  test_data[REDUCE_SIZE];
 
 /* Test state */
 struct test_state {
-    int read_done;
-    int write_done;
-    int reduce_done;
-    int test_complete;
-    int test_passed;
+    struct RDMA_DDP_V1 *prog;
+    int                 read_done;
+    int                 write_done;
+    int                 reduce_done;
+    int                 test_complete;
+    int                 test_passed;
 };
 
 /* Initialize test data with pattern */
@@ -71,23 +72,25 @@ verify_data(
 /* Server-side: Handle READ request */
 void
 server_recv_read(
-    struct evpl           *evpl,
-    struct evpl_rpc2_conn *conn,
-    struct ReadRequest    *request,
-    struct evpl_rpc2_msg  *msg,
-    void                  *private_data)
+    struct evpl               *evpl,
+    struct evpl_rpc2_conn     *conn,
+    struct evpl_rpc2_cred     *cred,
+    struct ReadRequest        *call,
+    struct evpl_rpc2_encoding *encoding,
+    void                      *private_data)
 {
-    struct RDMA_DDP_V1 *prog = msg->program->program_data;
+    struct test_state  *state = private_data;
+    struct RDMA_DDP_V1 *prog  = state->prog;
     struct ReadResponse reply;
     xdr_iovec           iov;
     int                 rc;
 
     evpl_test_info("Server received READ request: offset=%llu, count=%u",
-                   (unsigned long long) request->offset, request->count);
+                   (unsigned long long) call->offset, call->count);
 
     /* Validate request */
-    evpl_test_abort_if(request->offset != 0, "offset mismatch");
-    evpl_test_abort_if(request->count != READ_SIZE, "count mismatch");
+    evpl_test_abort_if(call->offset != 0, "offset mismatch");
+    evpl_test_abort_if(call->count != READ_SIZE, "count mismatch");
 
     /* Allocate iovec for response data */
     evpl_iovec_alloc(evpl, READ_SIZE, 1, 1, 0, &iov);
@@ -100,7 +103,7 @@ server_recv_read(
     xdr_set_ref(&reply, data, &iov, 1, READ_SIZE);
 
     /* Send reply */
-    rc = prog->send_reply_READ(evpl, &reply, msg);
+    rc = prog->send_reply_READ(evpl, NULL, &reply, encoding);
 
     if (unlikely(rc)) {
         evpl_test_error("Failed to send READ reply: %d", rc);
@@ -113,39 +116,40 @@ server_recv_read(
 /* Server-side: Handle WRITE request */
 void
 server_recv_write(
-    struct evpl           *evpl,
-    struct evpl_rpc2_conn *conn,
-    struct WriteRequest   *request,
-    struct evpl_rpc2_msg  *msg,
-    void                  *private_data)
+    struct evpl               *evpl,
+    struct evpl_rpc2_conn     *conn,
+    struct evpl_rpc2_cred     *cred,
+    struct WriteRequest       *call,
+    struct evpl_rpc2_encoding *encoding,
+    void                      *private_data)
 {
-    struct RDMA_DDP_V1  *prog = msg->program->program_data;
+    struct test_state   *state = private_data;
+    struct RDMA_DDP_V1  *prog  = state->prog;
     struct WriteResponse reply;
     int                  rc, i;
 
     evpl_test_info("Server received WRITE request: offset=%llu, count=%u, data_len=%u",
-                   (unsigned long long) request->offset, request->count,
-                   request->data.length);
+                   (unsigned long long) call->offset, call->count,
+                   call->data.length);
 
     /* Validate request */
-    evpl_test_abort_if(request->offset != 0, "offset mismatch");
-    evpl_test_abort_if(request->count != WRITE_SIZE, "count mismatch");
-    evpl_test_abort_if(request->data.length != WRITE_SIZE, "data length mismatch");
-    evpl_test_abort_if(request->data.niov != 1, "niov mismatch");
+    evpl_test_abort_if(call->offset != 0, "offset mismatch");
+    evpl_test_abort_if(call->count != WRITE_SIZE, "count mismatch");
+    evpl_test_abort_if(call->data.length != WRITE_SIZE, "data length mismatch");
+    evpl_test_abort_if(call->data.niov != 1, "niov mismatch");
 
     /* Verify the data */
-    rc = verify_data(xdr_iovec_data(&request->data.iov[0]), 0, WRITE_SIZE);
+    rc = verify_data(xdr_iovec_data(&call->data.iov[0]), 0, WRITE_SIZE);
     evpl_test_abort_if(rc != 0, "data verification failed");
 
     /*
-     * Release the request data iovecs in TCP mode only. In TCP mode, these
-     * were cloned during unmarshalling. In RDMA mode (read_chunk.niov > 0),
-     * the iovecs are from the read_chunk which RPC2's msg_free will release.
+     * Take ownership of data iovecs and release them.
+     * In RDMA mode, this transfers ownership from read_chunk.
+     * In TCP mode, the iovecs were already cloned for us.
      */
-    if (msg->read_chunk.niov == 0) {
-        for (i = 0; i < request->data.niov; i++) {
-            evpl_iovec_release(evpl, &request->data.iov[i]);
-        }
+    evpl_rpc2_encoding_take_read_chunk(encoding, NULL, NULL);
+    for (i = 0; i < call->data.niov; i++) {
+        evpl_iovec_release(evpl, &call->data.iov[i]);
     }
 
     /* Prepare reply */
@@ -153,7 +157,7 @@ server_recv_write(
     reply.committed = 1;
 
     /* Send reply */
-    rc = prog->send_reply_WRITE(evpl, &reply, msg);
+    rc = prog->send_reply_WRITE(evpl, NULL, &reply, encoding);
 
     if (unlikely(rc)) {
         evpl_test_error("Failed to send WRITE reply: %d", rc);
@@ -166,28 +170,30 @@ server_recv_write(
 /* Server-side: Handle REDUCE request */
 void
 server_recv_reduce(
-    struct evpl           *evpl,
-    struct evpl_rpc2_conn *conn,
-    struct ReduceRequest  *request,
-    struct evpl_rpc2_msg  *msg,
-    void                  *private_data)
+    struct evpl               *evpl,
+    struct evpl_rpc2_conn     *conn,
+    struct evpl_rpc2_cred     *cred,
+    struct ReduceRequest      *call,
+    struct evpl_rpc2_encoding *encoding,
+    void                      *private_data)
 {
-    struct RDMA_DDP_V1   *prog = msg->program->program_data;
+    struct test_state    *state = private_data;
+    struct RDMA_DDP_V1   *prog  = state->prog;
     struct ReduceResponse reply;
     int                   rc;
 
     evpl_test_info("Server received REDUCE request: response_size=%u",
-                   request->response_size);
+                   call->response_size);
 
     /* Validate request */
-    evpl_test_abort_if(request->response_size != REDUCE_SIZE, "response_size mismatch");
+    evpl_test_abort_if(call->response_size != REDUCE_SIZE, "response_size mismatch");
 
     /* Prepare large reply to trigger reply chunk - use regular opaque */
     reply.data.data = test_data;
     reply.data.len  = REDUCE_SIZE;
 
     /* Send reply */
-    rc = prog->send_reply_REDUCE(evpl, &reply, msg);
+    rc = prog->send_reply_REDUCE(evpl, NULL, &reply, encoding);
 
     if (unlikely(rc)) {
         evpl_test_error("Failed to send REDUCE reply: %d", rc);
@@ -200,10 +206,11 @@ server_recv_reduce(
 /* Client-side: Handle READ reply */
 void
 client_recv_reply_read(
-    struct evpl         *evpl,
-    struct ReadResponse *reply,
-    int                  status,
-    void                *callback_private_data)
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    struct ReadResponse         *reply,
+    int                          status,
+    void                        *callback_private_data)
 {
     struct test_state *state = callback_private_data;
     int                rc, i;
@@ -240,10 +247,11 @@ client_recv_reply_read(
 /* Client-side: Handle WRITE reply */
 void
 client_recv_reply_write(
-    struct evpl          *evpl,
-    struct WriteResponse *reply,
-    int                   status,
-    void                 *callback_private_data)
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    struct WriteResponse        *reply,
+    int                          status,
+    void                        *callback_private_data)
 {
     struct test_state *state = callback_private_data;
 
@@ -268,10 +276,11 @@ client_recv_reply_write(
 /* Client-side: Handle REDUCE reply */
 void
 client_recv_reply_reduce(
-    struct evpl           *evpl,
-    struct ReduceResponse *reply,
-    int                    status,
-    void                  *callback_private_data)
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    struct ReduceResponse       *reply,
+    int                          status,
+    void                        *callback_private_data)
 {
     struct test_state *state = callback_private_data;
     int                rc;
@@ -359,6 +368,7 @@ main(
     prog.recv_call_WRITE  = server_recv_write;
     prog.recv_call_REDUCE = server_recv_reduce;
     programs[0]           = &prog.rpc2;
+    state.prog            = &prog;
 
     /* Create RPC2 server */
     server = evpl_rpc2_server_init(programs, 1);
@@ -392,7 +402,7 @@ main(
     read_req.offset = 0;
     read_req.count  = READ_SIZE;
     /* Enable DDP: ddp=1, no write chunk, reply chunk of READ_SIZE */
-    prog.send_call_READ(&prog.rpc2, evpl, conn, &read_req, 1, 0, READ_SIZE,
+    prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, READ_SIZE,
                         client_recv_reply_read, &state);
 
     /* Test 2: WRITE operation - uses write chunk for DDP */
@@ -405,14 +415,14 @@ main(
     write_req_iov.length = WRITE_SIZE;
     xdr_set_ref(&write_req, data, &write_req_iov, 1, WRITE_SIZE);
     /* Enable DDP: ddp=1, no write chunk (write_chunk is for READ), no reply chunk */
-    prog.send_call_WRITE(&prog.rpc2, evpl, conn, &write_req, 1, 0, 0,
+    prog.send_call_WRITE(&prog.rpc2, evpl, conn, NULL, &write_req, 1, 0, 0,
                          client_recv_reply_write, &state);
 
     /* Test 3: REDUCE operation - large reply to trigger reply chunk */
     evpl_test_info("Client sending REDUCE request");
     reduce_req.response_size = REDUCE_SIZE;
     /* Enable DDP: ddp=1, no write chunk, reply chunk of REDUCE_SIZE */
-    prog.send_call_REDUCE(&prog.rpc2, evpl, conn, &reduce_req, 1, 0, REDUCE_SIZE,
+    prog.send_call_REDUCE(&prog.rpc2, evpl, conn, NULL, &reduce_req, 1, 0, REDUCE_SIZE,
                           client_recv_reply_reduce, &state);
 
     /* Wait for all replies */

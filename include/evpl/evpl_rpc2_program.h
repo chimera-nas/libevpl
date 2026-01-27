@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <uthash.h>
 
 #include "evpl/evpl_rpc2.h"
@@ -12,18 +13,24 @@
 #include <pthread.h>
 struct prometheus_histogram_instance;
 
+#ifndef container_of
+#define container_of(ptr, type, member) \
+        ((type *) ((char *) (ptr) - offsetof(type, member)))
+#endif // ifndef container_of
+
 struct evpl;
 struct evpl_rpc2_conn;
 struct evpl_rpc2_program;
+struct evpl_rpc2_cred;
 struct rpc_msg;
 struct rdma_msg;
 
 struct evpl_rpc2_rdma_chunk {
-    uint32_t   xdr_position;
-    uint32_t   length;
-    uint32_t   max_length;
-    xdr_iovec *iov;
-    int        niov;
+    uint32_t           xdr_position;
+    uint32_t           length;
+    uint32_t           max_length;
+    struct evpl_iovec *iov;
+    int                niov;
 };
 
 struct evpl_rpc2_rdma_segment {
@@ -37,35 +44,18 @@ struct evpl_rpc2_rdma_segment_list {
     int                           num_segments;
 };
 
-struct evpl_rpc2_msg {
-    uint32_t                              xid;
-    uint32_t                              proc;
-    uint32_t                              rdma_credits;
-    uint32_t                              request_length;
-    uint32_t                              reply_length;
-    uint16_t                              pending_reads;
-    struct evpl_iovec                    *recv_iov;
-    struct evpl_iovec                    *req_iov;
-    struct evpl_iovec                    *reply_iov;
-    int                                   recv_niov;
-    int                                   req_niov;
-    int                                   reply_niov;
-    struct timespec                       timestamp;
-    xdr_dbuf                             *dbuf;
-    struct evpl_bind                     *bind;
-    struct evpl_rpc2_thread              *thread;
-    struct evpl_rpc2_conn                *conn;
-    struct prometheus_histogram_instance *metric;
-    struct evpl_rpc2_program             *program;
-    struct evpl_rpc2_msg                 *next;
-    void                                 *callback;
-    void                                 *callback_arg;
-    struct UT_hash_handle                 hh;
-    struct evpl_rpc2_rdma_chunk           read_chunk;
-    struct evpl_rpc2_rdma_chunk           write_chunk;
-    struct evpl_rpc2_rdma_segment_list    reply_segments;
-    struct evpl_rpc2_rdma_segment_list    write_segments;
-    struct evpl_iovec                     reply_segment_iov;
+/*
+ * evpl_rpc2_encoding is the public interface between libevpl and applications.
+ *
+ * This structure contains pointers to everything needed for XDR encoding/decoding
+ * and is passed to application handlers instead of exposing internal structures.
+ * xdrzcc-generated code can access these fields directly.
+ */
+struct evpl_rpc2_encoding {
+    struct evpl_rpc2_program    *program;     /* RPC program (contains reserve size) */
+    struct xdr_dbuf             *dbuf;        /* Dynamic buffer for allocations */
+    struct evpl_rpc2_rdma_chunk *read_chunk;  /* RDMA read chunk (for writes) */
+    struct evpl_rpc2_rdma_chunk *write_chunk; /* RDMA write chunk (for replies) */
 };
 
 struct evpl_rpc2_program {
@@ -78,31 +68,38 @@ struct evpl_rpc2_program {
     void                                *program_data;
 
     int                                  (*recv_call_dispatch)(
-        struct evpl           *evpl,
-        struct evpl_rpc2_conn *conn,
-        struct evpl_rpc2_msg  *msg,
-        xdr_iovec             *iov,
-        int                    niov,
-        int                    length,
-        void                  *private_data);
+        struct evpl               *evpl,
+        struct evpl_rpc2_conn     *conn,
+        struct evpl_rpc2_encoding *encoding,
+        uint32_t                   proc,
+        void                      *program_data,
+        struct evpl_rpc2_cred     *cred,
+        xdr_iovec                 *iov,
+        int                        niov,
+        int                        length,
+        void                      *private_data);
 
     int                                  (*recv_reply_dispatch)(
-        struct evpl           *evpl,
-        struct evpl_rpc2_conn *conn,
-        struct evpl_rpc2_msg  *msg,
-        xdr_iovec             *iov,
-        int                    niov,
-        int                    length,
-        void                  *callback_fn,
-        void                  *callback_private_data);
+        struct evpl                 *evpl,
+        struct evpl_rpc2_conn       *conn,
+        struct xdr_dbuf             *dbuf,
+        uint32_t                     proc,
+        struct evpl_rpc2_rdma_chunk *read_chunk,
+        const struct evpl_rpc2_verf *verf,
+        xdr_iovec                   *iov,
+        int                          niov,
+        int                          length,
+        void                        *callback_fn,
+        void                        *callback_private_data);
 
 
     int                                  (*send_reply_dispatch)(
-        struct evpl          *evpl,
-        struct evpl_rpc2_msg *msg,
-        xdr_iovec            *iov,
-        int                   niov,
-        int                   length);
+        struct evpl                 *evpl,
+        struct evpl_rpc2_encoding   *encoding,
+        const struct evpl_rpc2_verf *verf,
+        xdr_iovec                   *iov,
+        int                          niov,
+        int                          length);
 };
 
 int
@@ -110,6 +107,7 @@ evpl_rpc2_call(
     struct evpl                 *evpl,
     struct evpl_rpc2_program    *program,
     struct evpl_rpc2_conn       *conn,
+    const struct evpl_rpc2_cred *cred,
     uint32_t                     procedure,
     struct evpl_iovec           *req_iov,
     int                          req_niov,
@@ -121,59 +119,61 @@ evpl_rpc2_call(
     void                        *private_data);
 
 /*
- * Transfer ownership of read_chunk iovecs from the RPC2 message to the caller.
+ * Transfer ownership of read_chunk iovecs to the caller.
  *
  * After this call, the caller owns the iovecs and is responsible for releasing
- * them. The message's read_chunk.niov is set to 0 to prevent evpl_rpc2_msg_free
- * from double-releasing.
+ * them. The read_chunk's niov is set to 0 to prevent double-releasing.
  *
  * This is typically used when a server receives write data via RDMA read_chunk
  * and needs to pass ownership to a lower layer (e.g., VFS) for processing.
- *
- * @param msg      The RPC2 message containing the read_chunk
- * @param iov_out  Output: pointer to the iovec array (may be NULL if not needed)
- * @param niov_out Output: number of iovecs (may be NULL if not needed)
  */
 static inline void
-evpl_rpc2_msg_take_read_chunk(
-    struct evpl_rpc2_msg  *msg,
-    struct evpl_iovec    **iov_out,
-    int                   *niov_out)
+evpl_rpc2_encoding_take_read_chunk(
+    struct evpl_rpc2_encoding *encoding,
+    struct evpl_iovec        **iov_out,
+    int                       *niov_out)
 {
     if (iov_out) {
-        *iov_out = msg->read_chunk.iov;
+        *iov_out = encoding->read_chunk->iov;
     }
     if (niov_out) {
-        *niov_out = msg->read_chunk.niov;
+        *niov_out = encoding->read_chunk->niov;
     }
-    msg->read_chunk.niov = 0;
-} /* evpl_rpc2_msg_take_read_chunk */
+    encoding->read_chunk->niov = 0;
+} /* evpl_rpc2_encoding_take_read_chunk */
 
 /*
- * Transfer ownership of write_chunk iovecs from the RPC2 message to the caller.
+ * Transfer ownership of write_chunk iovecs to the caller.
  *
  * After this call, the caller owns the iovecs and is responsible for releasing
- * them. The message's write_chunk.niov is set to 0 to prevent evpl_rpc2_msg_free
- * from double-releasing.
+ * them. The write_chunk's niov is set to 0 to prevent double-releasing.
  *
  * This is typically used when a client receives read data via RDMA write_chunk
  * and needs to pass ownership to the application callback.
- *
- * @param msg      The RPC2 message containing the write_chunk
- * @param iov_out  Output: pointer to the iovec array (may be NULL if not needed)
- * @param niov_out Output: number of iovecs (may be NULL if not needed)
  */
 static inline void
-evpl_rpc2_msg_take_write_chunk(
-    struct evpl_rpc2_msg  *msg,
-    struct evpl_iovec    **iov_out,
-    int                   *niov_out)
+evpl_rpc2_encoding_take_write_chunk(
+    struct evpl_rpc2_encoding *encoding,
+    struct evpl_iovec        **iov_out,
+    int                       *niov_out)
 {
     if (iov_out) {
-        *iov_out = msg->write_chunk.iov;
+        *iov_out = encoding->write_chunk->iov;
     }
     if (niov_out) {
-        *niov_out = msg->write_chunk.niov;
+        *niov_out = encoding->write_chunk->niov;
     }
-    msg->write_chunk.niov = 0;
-} /* evpl_rpc2_msg_take_write_chunk */
+    encoding->write_chunk->niov = 0;
+} /* evpl_rpc2_encoding_take_write_chunk */
+
+static inline int
+evpl_rpc2_send_reply_dispatch(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_encoding   *encoding,
+    const struct evpl_rpc2_verf *verf,
+    xdr_iovec                   *iov,
+    int                          niov,
+    int                          length)
+{
+    return encoding->program->send_reply_dispatch(evpl, encoding, verf, iov, niov, length);
+} // evpl_rpc2_send_reply_dispatch

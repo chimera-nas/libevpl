@@ -24,6 +24,91 @@
 
 #include "rpc2/rpc2_cursor.h"
 
+/*
+ * evpl_rpc2_msg represents a single received RPC message (either a CALL or REPLY).
+ *
+ * Each msg has its own dbuf for dynamic allocations during unmarshalling.
+ * The recv_iov holds references to the received data buffers.
+ */
+struct evpl_rpc2_msg {
+    struct xdr_dbuf       dbuf;
+    struct evpl_iovec    *recv_iov;
+    int                   recv_niov;
+    struct evpl_iovec    *req_iov;
+    int                   req_niov;
+    struct evpl_rpc2_msg *next;
+};
+
+/*
+ * evpl_rpc2_request represents an RPC exchange (call + reply).
+ *
+ * For server: created when a CALL is received, freed after reply is sent.
+ * For client: created when making a call, freed after reply is received.
+ *
+ * The request holds metadata about the exchange (xid, proc, RDMA info)
+ * and points to the associated msg containing the received data.
+ */
+struct evpl_rpc2_request {
+    uint32_t                              xid;
+    uint32_t                              proc;
+    uint32_t                              rdma_credits;
+    uint16_t                              pending_reads;
+    struct evpl_bind                     *bind;
+    struct evpl_rpc2_conn                *conn;
+    struct evpl_rpc2_thread              *thread;
+    struct evpl_rpc2_program             *program;
+    struct timespec                       timestamp;
+    struct prometheus_histogram_instance *metric;
+    void                                 *callback;
+    void                                 *callback_arg;
+    struct UT_hash_handle                 hh;
+    struct evpl_rpc2_rdma_chunk           read_chunk;
+    struct evpl_rpc2_rdma_chunk           write_chunk;
+    struct evpl_rpc2_rdma_segment_list    reply_segments;
+    struct evpl_rpc2_rdma_segment_list    write_segments;
+    struct evpl_iovec                     reply_segment_iov;
+    struct evpl_rpc2_msg                 *msg;
+    struct evpl_rpc2_request             *next;
+    struct evpl_rpc2_encoding             encoding; /* Public interface for apps */
+};
+
+/*
+ * Get the request from an encoding pointer.
+ * Used internally by libevpl to access the full request from the public encoding.
+ */
+static inline struct evpl_rpc2_request *
+evpl_rpc2_request_from_encoding(struct evpl_rpc2_encoding *encoding)
+{
+    return container_of(encoding, struct evpl_rpc2_request, encoding);
+} /* evpl_rpc2_request_from_encoding */
+
+/*
+ * Initialize a credential from AUTH_SYS parameters.
+ *
+ * Converts from the XDR authsys_parms structure to the simple C types
+ * used in evpl_rpc2_cred. The gids and machinename pointers are copied
+ * directly (they point to dbuf-allocated storage from unmarshalling).
+ */
+static inline void
+evpl_rpc2_cred_init_authsys(
+    struct evpl_rpc2_cred      *cred,
+    const struct authsys_parms *parms)
+{
+    cred->flavor = AUTH_SYS;
+
+    cred->authsys.uid             = parms->uid;
+    cred->authsys.gid             = parms->gid;
+    cred->authsys.num_gids        = parms->num_gids;
+    cred->authsys.gids            = parms->gids;
+    cred->authsys.machinename     = parms->machinename.str;
+    cred->authsys.machinename_len = parms->machinename.len;
+
+    /* Clamp gids count to max allowed */
+    if (cred->authsys.num_gids > EVPL_RPC2_AUTH_SYS_MAX_GIDS) {
+        cred->authsys.num_gids = EVPL_RPC2_AUTH_SYS_MAX_GIDS;
+    }
+} /* evpl_rpc2_cred_init_authsys */
+
 struct evpl_rpc2_server {
     struct evpl_listener      *listener;
     struct evpl_rpc2_program **programs;
@@ -47,9 +132,10 @@ struct evpl_rpc2_thread {
     struct evpl_rpc2_conn           *conns;
     evpl_rpc2_notify_callback_t      notify_callback;
     void                            *private_data;
-    xdr_dbuf                        *dbuf;
     struct evpl_rpc2_msg            *free_msg;
+    struct evpl_rpc2_request        *free_requests;
     struct evpl_rpc2_server_binding *servers;
+    xdr_dbuf                        *client_dbuf;
 };
 
 static struct evpl_rpc2_msg *
@@ -61,24 +147,13 @@ evpl_rpc2_msg_alloc(struct evpl_rpc2_thread *thread)
         msg = thread->free_msg;
         LL_DELETE(thread->free_msg, msg);
     } else {
-        msg         = evpl_zalloc(sizeof(*msg));
-        msg->dbuf   = xdr_dbuf_alloc(128 * 1024);
-        msg->thread = thread;
+        msg = evpl_zalloc(sizeof(*msg));
+        xdr_dbuf_init(&msg->dbuf, 128 * 1024);
     }
 
-    xdr_dbuf_reset(msg->dbuf);
-
-    msg->req_niov                    = 0;
-    msg->recv_niov                   = 0;
-    msg->reply_niov                  = 0;
-    msg->pending_reads               = 0;
-    msg->read_chunk.niov             = 0;
-    msg->read_chunk.length           = 0;
-    msg->write_chunk.niov            = 0;
-    msg->write_chunk.length          = 0;
-    msg->write_chunk.max_length      = 0;
-    msg->write_segments.num_segments = 0;
-    msg->reply_segments.num_segments = 0;
+    xdr_dbuf_reset(&msg->dbuf);
+    msg->recv_niov = 0;
+    msg->req_niov  = 0;
 
     return msg;
 } /* evpl_rpc2_msg_alloc */
@@ -90,14 +165,55 @@ evpl_rpc2_msg_free(
 {
     struct evpl *evpl = thread->evpl;
 
-    evpl_iovecs_release(evpl, msg->req_iov, msg->req_niov);
     evpl_iovecs_release(evpl, msg->recv_iov, msg->recv_niov);
-    evpl_iovecs_release(evpl, msg->reply_iov, msg->reply_niov);
-    evpl_iovecs_release(evpl, msg->read_chunk.iov, msg->read_chunk.niov);
-    evpl_iovecs_release(evpl, msg->write_chunk.iov, msg->write_chunk.niov);
+    evpl_iovecs_release(evpl, msg->req_iov, msg->req_niov);
 
     LL_PREPEND(thread->free_msg, msg);
 } /* evpl_rpc2_msg_free */
+
+static struct evpl_rpc2_request *
+evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
+{
+    struct evpl_rpc2_request *request;
+
+    if (thread->free_requests) {
+        request = thread->free_requests;
+        LL_DELETE(thread->free_requests, request);
+    } else {
+        request = evpl_zalloc(sizeof(*request));
+    }
+
+    request->thread                      = thread;
+    request->pending_reads               = 0;
+    request->read_chunk.niov             = 0;
+    request->read_chunk.length           = 0;
+    request->write_chunk.niov            = 0;
+    request->write_chunk.length          = 0;
+    request->write_chunk.max_length      = 0;
+    request->write_segments.num_segments = 0;
+    request->reply_segments.num_segments = 0;
+    request->msg                         = NULL;
+
+    return request;
+} /* evpl_rpc2_request_alloc */
+
+static inline void
+evpl_rpc2_request_free(
+    struct evpl_rpc2_thread  *thread,
+    struct evpl_rpc2_request *request)
+{
+    struct evpl *evpl = thread->evpl;
+
+    evpl_iovecs_release(evpl, request->read_chunk.iov, request->read_chunk.niov);
+    evpl_iovecs_release(evpl, request->write_chunk.iov, request->write_chunk.niov);
+
+    if (request->msg) {
+        evpl_rpc2_msg_free(thread, request->msg);
+        request->msg = NULL;
+    }
+
+    LL_PREPEND(thread->free_requests, request);
+} /* evpl_rpc2_request_free */
 
 static FORCE_INLINE uint32_t
 rpc2_hton32(uint32_t value)
@@ -179,34 +295,37 @@ evpl_rpc2_iovec_skip(
 } /* evpl_rpc2_iovec_skip */
 
 static void
-evpl_rpc2_dispatch_reply(struct evpl_rpc2_msg *msg)
+evpl_rpc2_dispatch_reply(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    struct evpl_iovec        *reply_iov,
+    int                       reply_niov,
+    int                       reply_length)
 {
-    struct evpl_rpc2_thread *thread = msg->thread;
-    struct evpl             *evpl   = thread->evpl;
+    struct evpl_rpc2_thread *thread = request->thread;
 
     evpl_sendv(
         evpl,
-        msg->bind,
-        msg->reply_iov,
-        msg->reply_niov,
-        msg->reply_length,
+        request->bind,
+        reply_iov,
+        reply_niov,
+        reply_length,
         EVPL_SEND_FLAG_TAKE_REF);
 
-    /* TAKE_REF transfers ownership, prevent double-release in msg_free */
-    msg->reply_niov = 0;
-
-    evpl_rpc2_msg_free(thread, msg);
+    evpl_rpc2_request_free(thread, request);
 } /* evpl_rpc2_dispatch_reply */
 
 static int
 evpl_rpc2_send_reply(
-    struct evpl          *evpl,
-    struct evpl_rpc2_msg *msg,
-    struct evpl_iovec    *msg_iov,
-    int                   msg_niov,
-    int                   length,
-    int                   reserve,
-    int                   rpc2_stat)
+    struct evpl                 *evpl,
+    struct evpl_rpc2_request    *request,
+    const struct evpl_rpc2_verf *verf,
+    struct evpl_iovec           *msg_iov,
+    int                          msg_niov,
+    int                          length,
+    int                          reserve,
+    reply_stat                   rstat,
+    int                          error_stat)
 {
     struct evpl_iovec             iov, reply_iov;
     int                           reply_len, reply_niov, offset, rpc_len;
@@ -221,46 +340,56 @@ evpl_rpc2_send_reply(
     int                           segment_niov;
     struct timespec               now;
     uint64_t                      elapsed;
-    int                           i, reduce = 0, rdma = msg->conn->rdma;
+    int                           i, reduce = 0, rdma = request->conn->rdma;
+    struct evpl_iovec            *final_reply_iov;
+    int                           final_reply_niov, final_reply_length;
 
-    rpc_reply.xid                               = msg->xid;
-    rpc_reply.body.mtype                        = REPLY;
-    rpc_reply.body.rbody.stat                   = 0;
-    rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
-    rpc_reply.body.rbody.areply.verf.body.len   = 0;
-    rpc_reply.body.rbody.areply.reply_data.stat = rpc2_stat;
+    rpc_reply.xid             = request->xid;
+    rpc_reply.body.mtype      = REPLY;
+    rpc_reply.body.rbody.stat = rstat;
+
+    if (rstat == MSG_ACCEPTED) {
+        /* AUTH_SHORT is not implemented - always use AUTH_NONE verifier */
+        (void) verf;
+        rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
+        rpc_reply.body.rbody.areply.reply_data.stat = error_stat;
+    } else {
+        /* MSG_DENIED - currently only AUTH_ERROR is supported */
+        rpc_reply.body.rbody.rreply.stat = AUTH_ERROR;
+        rpc_reply.body.rbody.rreply.auth = error_stat;
+    }
 
     rpc_len = marshall_length_rpc_msg(&rpc_reply);
 
     if (rdma) {
 
-        rdma_msg.rdma_xid                       = msg->xid;
+        rdma_msg.rdma_xid                       = request->xid;
         rdma_msg.rdma_vers                      = 1;
-        rdma_msg.rdma_credit                    = msg->rdma_credits;
+        rdma_msg.rdma_credit                    = request->rdma_credits;
         rdma_msg.rdma_body.proc                 = RDMA_MSG;
         rdma_msg.rdma_body.rdma_msg.rdma_reads  = NULL;
         rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
 
-        if (msg->write_segments.num_segments > 0) {
-            write_list.entry.num_target = msg->write_segments.num_segments;
-            write_list.entry.target     = (struct xdr_rdma_segment *) msg->write_segments.segments;
+        if (request->write_segments.num_segments > 0) {
+            write_list.entry.num_target = request->write_segments.num_segments;
+            write_list.entry.target     = (struct xdr_rdma_segment *) request->write_segments.segments;
             write_list.next             = NULL;
 
             rdma_msg.rdma_body.rdma_msg.rdma_writes = &write_list;
         }
 
-        if (msg->reply_segments.num_segments > 0) {
-            reply_chunk.num_target                 = msg->reply_segments.num_segments;
-            reply_chunk.target                     = (struct xdr_rdma_segment *) msg->reply_segments.segments;
+        if (request->reply_segments.num_segments > 0) {
+            reply_chunk.num_target                 = request->reply_segments.num_segments;
+            reply_chunk.target                     = (struct xdr_rdma_segment *) request->reply_segments.segments;
             rdma_msg.rdma_body.rdma_msg.rdma_reply = &reply_chunk;
         }
 
-        write_left = msg->write_chunk.length;
+        write_left = request->write_chunk.length;
 
-        if (msg->write_segments.num_segments > 0) {
+        if (request->write_segments.num_segments > 0) {
 
-            evpl_rpc2_iovec_cursor_init(&write_cursor, msg->write_chunk.iov, msg->write_chunk.niov);
+            evpl_rpc2_iovec_cursor_init(&write_cursor, request->write_chunk.iov, request->write_chunk.niov);
 
             for (i = 0; i < write_list.entry.num_target; i++) {
                 target = &write_list.entry.target[i];
@@ -274,13 +403,14 @@ evpl_rpc2_send_reply(
 
                 if (target->length) {
 
-                    segment_niov = evpl_rpc2_iovec_cursor_move(&write_cursor, msg->dbuf, &segment_iov, target->length);
+                    segment_niov = evpl_rpc2_iovec_cursor_move(&write_cursor, &request->msg->dbuf, &segment_iov,
+                                                               target->length);
 
                     if (unlikely(segment_niov < 0)) {
                         evpl_rpc2_abort("Failed to move segment iovec");
                     }
 
-                    evpl_rdma_write(evpl, msg->bind,
+                    evpl_rdma_write(evpl, request->bind,
                                     target->handle, target->offset,
                                     segment_iov, segment_niov,
                                     EVPL_RDMA_FLAG_TAKE_REF,
@@ -289,7 +419,7 @@ evpl_rpc2_send_reply(
             }
         }
 
-        if (msg->reply_segments.num_segments > 0) {
+        if (request->reply_segments.num_segments > 0) {
 
             if (rpc_len + length > 512) {
                 reduce = 1;
@@ -359,21 +489,21 @@ evpl_rpc2_send_reply(
 
     evpl_get_hf_monotonic_time(evpl, &now);
 
-    elapsed = evpl_ts_interval(&now, &msg->timestamp);
+    elapsed = evpl_ts_interval(&now, &request->timestamp);
 
-    if (msg->metric) {
-        prometheus_histogram_sample(msg->metric, elapsed);
+    if (request->metric) {
+        prometheus_histogram_sample(request->metric, elapsed);
     }
 
     if (reduce) {
 
-        msg->reply_iov = xdr_dbuf_alloc_space(sizeof(*msg->reply_iov), msg->dbuf);
+        final_reply_iov = xdr_dbuf_alloc_space(sizeof(*final_reply_iov), &request->msg->dbuf);
 
-        evpl_rpc2_abort_if(msg->reply_iov == NULL, "Failed to allocate reply iovec");
+        evpl_rpc2_abort_if(final_reply_iov == NULL, "Failed to allocate reply iovec");
 
-        evpl_iovec_clone_segment(msg->reply_iov, &msg_iov[0], 0, offset);
-        msg->reply_niov   = 1;
-        msg->reply_length = offset;
+        evpl_iovec_clone_segment(final_reply_iov, &msg_iov[0], 0, offset);
+        final_reply_niov   = 1;
+        final_reply_length = offset;
 
         msg_iov[0].data   += offset;
         msg_iov[0].length -= offset;
@@ -386,11 +516,11 @@ evpl_rpc2_send_reply(
                 continue;
             }
 
-            reply_segment_iov = &msg->reply_segment_iov;
+            reply_segment_iov = &request->reply_segment_iov;
 
             evpl_iovec_clone_segment(reply_segment_iov, &msg_iov[0], reply_offset, reply_chunk.target[i].length);
 
-            evpl_rdma_write(evpl, msg->bind,
+            evpl_rdma_write(evpl, request->bind,
                             reply_chunk.target[i].handle,
                             reply_chunk.target[i].offset,
                             reply_segment_iov, 1,
@@ -401,18 +531,18 @@ evpl_rpc2_send_reply(
         }
 
         /*
-         * Release msg_iov - we've taken new references for reply_iov
+         * Release msg_iov - we've taken new references for final_reply_iov
          * and reply_segment_iov. The original msg_iov is no longer needed.
          */
         evpl_iovecs_release(evpl, msg_iov, msg_niov);
 
     } else {
-        msg->reply_iov    = msg_iov;
-        msg->reply_niov   = msg_niov;
-        msg->reply_length = length;
+        final_reply_iov    = msg_iov;
+        final_reply_niov   = msg_niov;
+        final_reply_length = length;
     }
 
-    evpl_rpc2_dispatch_reply(msg);
+    evpl_rpc2_dispatch_reply(evpl, request, final_reply_iov, final_reply_niov, final_reply_length);
 
     return 0;
 } /* evpl_rpc2_send_reply */
@@ -420,85 +550,158 @@ evpl_rpc2_send_reply(
 
 static inline int
 evpl_rpc2_send_reply_error(
-    struct evpl          *evpl,
-    struct evpl_rpc2_msg *msg,
-    int                   rpc2_stat)
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    int                       accept_error)
 {
     struct evpl_iovec msg_iov;
     int               msg_niov = 1;
 
     msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, 0, &msg_iov);
 
-    return evpl_rpc2_send_reply(evpl, msg, &msg_iov, msg_niov,  4096, 4096, rpc2_stat);
+    return evpl_rpc2_send_reply(evpl, request, NULL, &msg_iov, msg_niov, 4096, 4096,
+                                MSG_ACCEPTED, accept_error);
 } /* evpl_rpc2_send_reply_error */
+
+/*
+ * Send an authentication error reply (MSG_DENIED, AUTH_ERROR).
+ *
+ * This is used to reject calls with invalid authentication flavors.
+ */
+static inline int
+evpl_rpc2_send_reply_denied(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    int                       auth_error)
+{
+    struct evpl_iovec msg_iov;
+    int               msg_niov = 1;
+
+    msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, 0, &msg_iov);
+
+    return evpl_rpc2_send_reply(evpl, request, NULL, &msg_iov, msg_niov, 4096, 4096,
+                                MSG_DENIED, auth_error);
+} /* evpl_rpc2_send_reply_denied */
 
 
 static inline int
 evpl_rpc2_send_reply_success(
-    struct evpl          *evpl,
-    struct evpl_rpc2_msg *msg,
-    struct evpl_iovec    *msg_iov,
-    int                   msg_niov,
-    int                   length)
+    struct evpl                 *evpl,
+    struct evpl_rpc2_encoding   *encoding,
+    const struct evpl_rpc2_verf *verf,
+    struct evpl_iovec           *msg_iov,
+    int                          msg_niov,
+    int                          length)
 {
-    return evpl_rpc2_send_reply(evpl, msg, msg_iov, msg_niov, length, msg->program->reserve, SUCCESS);
+    struct evpl_rpc2_request *request = evpl_rpc2_request_from_encoding(encoding);
+
+    return evpl_rpc2_send_reply(evpl, request, verf, msg_iov, msg_niov, length,
+                                request->program->reserve, MSG_ACCEPTED, SUCCESS);
 } /* evpl_rpc2_send_reply_success */
 
 static void
-evpl_rpc2_server_handle_msg(struct evpl_rpc2_msg *msg)
+evpl_rpc2_server_handle_request(
+    struct evpl_rpc2_request   *request,
+    struct evpl_iovec          *req_iov,
+    int                         req_niov,
+    int                         request_length,
+    const struct authsys_parms *authsys,
+    auth_flavor                 flavor)
 {
-    struct evpl_rpc2_conn   *conn   = msg->conn;
-    struct evpl_rpc2_thread *thread = msg->thread;
+    struct evpl_rpc2_conn   *conn   = request->conn;
+    struct evpl_rpc2_thread *thread = request->thread;
     struct evpl             *evpl   = thread->evpl;
+    struct evpl_rpc2_cred    cred;
+    struct evpl_rpc2_cred   *cred_ptr = NULL;
     int                      error;
 
-    error = msg->program->recv_call_dispatch(evpl, conn, msg, msg->req_iov, msg->req_niov, msg->request_length,
-                                             conn->server_private_data);
+    /* Construct credential on stack from authsys data */
+    if (flavor == AUTH_SYS && authsys) {
+        evpl_rpc2_cred_init_authsys(&cred, authsys);
+        cred_ptr = &cred;
+    } else if (flavor == AUTH_NONE) {
+        cred.flavor = AUTH_NONE;
+        cred_ptr    = &cred;
+    }
+    /* cred_ptr remains NULL for unknown auth flavors */
+
+    /* Initialize the encoding struct - the public interface for apps */
+    request->encoding.program     = request->program;
+    request->encoding.dbuf        = &request->msg->dbuf;
+    request->encoding.read_chunk  = &request->read_chunk;
+    request->encoding.write_chunk = &request->write_chunk;
+
+    error = request->program->recv_call_dispatch(evpl, conn, &request->encoding,
+                                                 request->proc,
+                                                 request->program->program_data,
+                                                 cred_ptr, req_iov, req_niov, request_length,
+                                                 conn->server_private_data);
 
     if (unlikely(error)) {
         if (error == 1) {
-            evpl_rpc2_error("rpc2 procedure %u not implemented", msg->proc);
-            evpl_rpc2_send_reply_error(evpl, msg, PROC_UNAVAIL);
+            evpl_rpc2_error("rpc2 procedure %u not implemented", request->proc);
+            evpl_rpc2_send_reply_error(evpl, request, PROC_UNAVAIL);
         } else if (error == 2) {
-            evpl_rpc2_error("rpc2 failed to decode procedure %u arguments", msg->proc);
-            evpl_rpc2_send_reply_error(evpl, msg, GARBAGE_ARGS);
+            evpl_rpc2_error("rpc2 failed to decode procedure %u arguments", request->proc);
+            evpl_rpc2_send_reply_error(evpl, request, GARBAGE_ARGS);
         } else {
             evpl_rpc2_error("Failed to dispatch rpc2 call: %d", error);
-            evpl_rpc2_send_reply_error(evpl, msg, SYSTEM_ERR);
+            evpl_rpc2_send_reply_error(evpl, request, SYSTEM_ERR);
         }
     }
 
-} /* evpl_rpc2_server_handle_msg */
+} /* evpl_rpc2_server_handle_request */
 
-
+/*
+ * Context for RDMA read completion callback.
+ * Stores all data needed to dispatch the request after reads complete.
+ */
+struct evpl_rpc2_rdma_read_ctx {
+    struct evpl_rpc2_request *request;
+    struct evpl_iovec        *req_iov;
+    int                       req_niov;
+    int                       request_length;
+    auth_flavor               flavor;
+    /* authsys points into &request->msg->dbuf which persists */
+};
 
 static void
 evpl_rpc2_read_segment_callback(
     int   status,
     void *private_data)
 {
-    struct evpl_rpc2_msg *msg = private_data;
+    struct evpl_rpc2_rdma_read_ctx *ctx     = private_data;
+    struct evpl_rpc2_request       *request = ctx->request;
+    const struct authsys_parms     *authsys;
 
     evpl_rpc2_abort_if(status, "Failed to read rdma segment");
 
-    msg->pending_reads--;
+    request->pending_reads--;
 
-    if (msg->pending_reads == 0) {
-        evpl_rpc2_server_handle_msg(msg);
+    if (request->pending_reads == 0) {
+        /* authsys is stored right after the ctx in msg->dbuf */
+        authsys = (ctx->flavor == AUTH_SYS) ? (const struct authsys_parms *) (ctx + 1) : NULL;
+        evpl_rpc2_server_handle_request(request, ctx->req_iov, ctx->req_niov,
+                                        ctx->request_length, authsys, ctx->flavor);
     }
 } /* evpl_rpc2_read_segment_callback */
 
 static void
-evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
+evpl_rpc2_client_handle_reply(
+    struct evpl_rpc2_request    *request,
+    const struct evpl_rpc2_verf *verf,
+    struct evpl_iovec           *reply_iov,
+    int                          reply_niov,
+    int                          reply_length)
 {
-    struct evpl_rpc2_thread *thread = msg->thread;
-    struct evpl_rpc2_conn   *conn   = msg->conn;
+    struct evpl_rpc2_thread *thread = request->thread;
+    struct evpl_rpc2_conn   *conn   = request->conn;
     int                      error;
     struct evpl             *evpl = thread->evpl;
 
-    if (msg->read_chunk.niov) {
+    if (request->read_chunk.niov) {
         /* Since server has replied, it will have finished reading our read chunk.
-         * Release the iovecs we moved into msg in evpl_rpc2_call. Since we used
+         * Release the iovecs we moved into request in evpl_rpc2_call. Since we used
          * evpl_iovec_move (not clone), the caller's original iovecs are now invalid
          * (data=NULL) and the caller does NOT need to release them. This matches
          * TCP behavior where marshalling moves iovecs inline.
@@ -506,34 +709,37 @@ evpl_rpc2_client_handle_msg(struct evpl_rpc2_msg *msg)
          * unmarshalling code that comes next will incorrectly use it again
          * when unmarshalling the reply.
          */
-        evpl_iovecs_release(evpl, msg->read_chunk.iov, msg->read_chunk.niov);
-        msg->read_chunk.niov   = 0;
-        msg->read_chunk.length = 0;
+        evpl_iovecs_release(evpl, request->read_chunk.iov, request->read_chunk.niov);
+        request->read_chunk.niov   = 0;
+        request->read_chunk.length = 0;
     }
 
-    if (msg->write_chunk.niov) {
+    if (request->write_chunk.niov) {
         /* Unmarshall code expects an RDMA chunk in this position */
-        msg->read_chunk.iov          = msg->write_chunk.iov;
-        msg->read_chunk.niov         = msg->write_chunk.niov;
-        msg->read_chunk.length       = msg->write_chunk.length;
-        msg->read_chunk.xdr_position = UINT32_MAX;
+        request->read_chunk.iov          = request->write_chunk.iov;
+        request->read_chunk.niov         = request->write_chunk.niov;
+        request->read_chunk.length       = request->write_chunk.length;
+        request->read_chunk.xdr_position = UINT32_MAX;
 
-        msg->write_chunk.niov   = 0;
-        msg->write_chunk.length = 0;
+        request->write_chunk.niov   = 0;
+        request->write_chunk.length = 0;
     }
 
-    error = msg->program->recv_reply_dispatch(evpl, conn, msg, msg->reply_iov, msg->reply_niov, msg->reply_length,
-                                              msg->callback,
-                                              msg->callback_arg);
+    error = request->program->recv_reply_dispatch(evpl, conn, &request->msg->dbuf,
+                                                  request->proc,
+                                                  &request->read_chunk,
+                                                  verf, reply_iov, reply_niov, reply_length,
+                                                  request->callback,
+                                                  request->callback_arg);
 
-    msg->read_chunk.niov = 0;
+    request->read_chunk.niov = 0;
 
     if (unlikely(error)) {
         evpl_rpc2_abort("Failed to dispatch rpc2 reply: %d", error);
     }
 
-    evpl_rpc2_msg_free(thread, msg);
-} /* evpl_rpc2_client_handle_msg */
+    evpl_rpc2_request_free(thread, request);
+} /* evpl_rpc2_client_handle_reply */
 
 static void
 evpl_rpc2_recv_msg(
@@ -547,6 +753,7 @@ evpl_rpc2_recv_msg(
     struct evpl_rpc2_conn           *rpc2_conn = private_data;
     struct evpl_rpc2_thread         *thread    = rpc2_conn->thread;
     struct evpl_rpc2_msg            *msg;
+    struct evpl_rpc2_request        *request;
     struct evpl_rpc2_server_binding *server_binding = rpc2_conn->server_binding;
     struct evpl_rpc2_program        *program;
     struct rpc_msg                   rpc_msg;
@@ -560,8 +767,11 @@ evpl_rpc2_recv_msg(
     struct evpl_iovec               *segment_iov;
     int                              segment_offset;
     struct timespec                  now;
+    auth_flavor                      flavor;
+    struct authsys_parms            *authsys = NULL;
 
-    xdr_dbuf_reset(thread->dbuf);
+    /* Allocate msg first - this gives us a dbuf for unmarshalling */
+    msg = evpl_rpc2_msg_alloc(thread);
 
     rdma = rpc2_conn->rdma;
 
@@ -576,7 +786,7 @@ evpl_rpc2_recv_msg(
                                      iovec,
                                      niov,
                                      NULL,
-                                     thread->dbuf);
+                                     &msg->dbuf);
 
     } else {
         /* We expect RPC2 on TCP to start with a 4 byte header */
@@ -591,34 +801,16 @@ evpl_rpc2_recv_msg(
                            (hdr & 0x7FFFFFFF) + 4, length);
     }
 
-    hdr_iov = xdr_dbuf_alloc_space(sizeof(*hdr_iov) * niov, thread->dbuf);
+    hdr_iov = xdr_dbuf_alloc_space(sizeof(*hdr_iov) * niov, &msg->dbuf);
 
     evpl_rpc2_abort_if(hdr_iov == NULL, "Failed to allocate hdr iovec");
 
     hdr_niov = evpl_rpc2_iovec_skip(hdr_iov, iovec, niov, offset);
 
-    rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, thread->dbuf);
+    rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, &msg->dbuf);
 
-    switch (rpc_msg.body.mtype) {
-        case CALL:
-            msg = evpl_rpc2_msg_alloc(thread);
-            break;
-        case REPLY:
-            HASH_FIND(hh, rpc2_conn->pending_calls, &rpc_msg.xid, sizeof(rpc_msg.xid), msg);
-
-            if (unlikely(!msg)) {
-                evpl_rpc2_error("rpc2 received reply for unknown call %u", rpc_msg.xid);
-                evpl_close(evpl, bind);
-                return;
-            }
-
-            HASH_DELETE(hh, rpc2_conn->pending_calls, msg);
-            break;
-        default:
-            evpl_rpc2_abort("rpc2 received unexpected message type %d", rpc_msg.body.mtype);
-    } /* switch */
-
-    msg->recv_iov = xdr_dbuf_alloc_space(sizeof(*msg->recv_iov) * niov, msg->dbuf);
+    /* Clone recv iovecs to msg - this keeps the buffer data alive */
+    msg->recv_iov = xdr_dbuf_alloc_space(sizeof(*msg->recv_iov) * niov, &msg->dbuf);
 
     evpl_rpc2_abort_if(msg->recv_iov == NULL, "Failed to allocate recv iovec");
 
@@ -630,11 +822,15 @@ evpl_rpc2_recv_msg(
     /* Release the original iovec array references from evpl_iovec_ring_copyv */
     evpl_iovecs_release(evpl, iovec, niov);
 
-    req_iov = xdr_dbuf_alloc_space(sizeof(*req_iov) * hdr_niov, msg->dbuf);
+    req_iov = xdr_dbuf_alloc_space(sizeof(*req_iov) * hdr_niov, &msg->dbuf);
 
     evpl_rpc2_abort_if(req_iov == NULL, "Failed to allocate req iovec");
 
     req_niov = evpl_rpc2_iovec_skip(req_iov, hdr_iov, hdr_niov, rc);
+
+    /* Store req_iov in msg so it can be released when msg is freed */
+    msg->req_iov  = req_iov;
+    msg->req_niov = req_niov;
 
     /* Release hdr_iov references - they were addref'd by evpl_rpc2_iovec_skip */
     evpl_iovecs_release(evpl, hdr_iov, hdr_niov);
@@ -643,14 +839,35 @@ evpl_rpc2_recv_msg(
 
     switch (rpc_msg.body.mtype) {
         case CALL:
-            msg->conn           = rpc2_conn;
-            msg->bind           = bind;
-            msg->xid            = rpc_msg.xid;
-            msg->proc           = rpc_msg.body.cbody.proc;
-            msg->timestamp      = now;
-            msg->request_length = request_length;
-            msg->req_iov        = req_iov;
-            msg->req_niov       = req_niov;
+            /* Allocate request and attach msg */
+            request      = evpl_rpc2_request_alloc(thread);
+            request->msg = msg;
+
+            request->conn      = rpc2_conn;
+            request->bind      = bind;
+            request->xid       = rpc_msg.xid;
+            request->proc      = rpc_msg.body.cbody.proc;
+            request->timestamp = now;
+
+            /* Parse credentials - authsys data is in msg->dbuf which persists */
+            flavor = rpc_msg.body.cbody.cred.flavor;
+
+            switch (flavor) {
+                case AUTH_NONE:
+                    /* No credential data needed for AUTH_NONE */
+                    break;
+
+                case AUTH_SYS:
+                    /* authsys points into msg->dbuf - persists for request lifetime */
+                    authsys = &rpc_msg.body.cbody.cred.authsys;
+                    break;
+
+                default:
+                    /* Reject unsupported auth flavors */
+                    evpl_rpc2_debug("Rejecting unsupported auth flavor %d", flavor);
+                    evpl_rpc2_send_reply_denied(evpl, request, AUTH_TOOWEAK);
+                    return;
+            } /* switch */
 
             if (rdma) {
                 if (rdma_msg.rdma_body.proc == RDMA_MSG) {
@@ -658,44 +875,67 @@ evpl_rpc2_recv_msg(
                     read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
 
                     if (read_list) {
-                        msg->read_chunk.xdr_position = read_list->entry.position - rc;
+                        request->read_chunk.xdr_position = read_list->entry.position - rc;
                     }
 
                     while (read_list) {
-                        msg->read_chunk.length += read_list->entry.target.length;
+                        request->read_chunk.length += read_list->entry.target.length;
 
                         read_list = read_list->next;
                     }
 
-                    msg->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->read_chunk.iov), msg->dbuf);
+                    request->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*request->read_chunk.iov), &msg->dbuf);
 
-                    evpl_rpc2_abort_if(msg->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
+                    evpl_rpc2_abort_if(request->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
 
-                    msg->read_chunk.niov = evpl_iovec_alloc(evpl, msg->read_chunk.length, 4096, 1, 0, msg->read_chunk.
-                                                            iov);
+                    request->read_chunk.niov = evpl_iovec_alloc(evpl, request->read_chunk.length, 4096, 1, 0,
+                                                                request->read_chunk.iov);
 
                     read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
 
                     segment_offset = 0;
 
                     while (read_list) {
+                        /* Allocate context for RDMA read callback */
+                        struct evpl_rpc2_rdma_read_ctx *ctx;
+                        size_t                          ctx_size = sizeof(*ctx);
 
-                        segment_iov = xdr_dbuf_alloc_space(sizeof(*segment_iov), msg->dbuf);
+                        /* If AUTH_SYS, allocate space for authsys after ctx */
+                        if (flavor == AUTH_SYS) {
+                            ctx_size += sizeof(struct authsys_parms);
+                        }
+
+                        ctx = xdr_dbuf_alloc_space(ctx_size, &msg->dbuf);
+                        evpl_rpc2_abort_if(ctx == NULL, "Failed to allocate rdma read ctx");
+
+                        ctx->request        = request;
+                        ctx->req_iov        = req_iov;
+                        ctx->req_niov       = req_niov;
+                        ctx->request_length = request_length;
+                        ctx->flavor         = flavor;
+
+                        /* Copy authsys right after ctx if needed */
+                        if (flavor == AUTH_SYS && authsys) {
+                            struct authsys_parms *ctx_authsys = (struct authsys_parms *) (ctx + 1);
+                            *ctx_authsys = *authsys;
+                        }
+
+                        segment_iov = xdr_dbuf_alloc_space(sizeof(*segment_iov), &msg->dbuf);
 
                         evpl_rpc2_abort_if(segment_iov == NULL, "Failed to allocate segment iovec");
 
-                        evpl_iovec_clone_segment(segment_iov, msg->read_chunk.iov, segment_offset,
+                        evpl_iovec_clone_segment(segment_iov, request->read_chunk.iov, segment_offset,
                                                  read_list->entry.target.length);
 
-                        evpl_rdma_read(evpl, msg->bind,
+                        evpl_rdma_read(evpl, request->bind,
                                        read_list->entry.target.handle, read_list->entry.target.offset,
                                        segment_iov, 1,
-                                       evpl_rpc2_read_segment_callback, msg);
+                                       evpl_rpc2_read_segment_callback, ctx);
 
                         /* evpl_rdma_read takes its own clone, so release our reference */
                         evpl_iovec_release(evpl, segment_iov);
 
-                        msg->pending_reads++;
+                        request->pending_reads++;
 
                         segment_offset += read_list->entry.target.length;
 
@@ -707,11 +947,11 @@ evpl_rpc2_recv_msg(
                     while (write_list) {
 
                         for (i = 0; i < write_list->entry.num_target; i++) {
-                            msg->write_chunk.max_length += write_list->entry.target[i].length;
+                            request->write_chunk.max_length += write_list->entry.target[i].length;
                         }
 
-                        msg->write_segments.num_segments = write_list->entry.num_target;
-                        memcpy(msg->write_segments.segments,
+                        request->write_segments.num_segments = write_list->entry.num_target;
+                        memcpy(request->write_segments.segments,
                                write_list->entry.target,
                                write_list->entry.num_target * sizeof(struct xdr_rdma_segment));
 
@@ -722,7 +962,7 @@ evpl_rpc2_recv_msg(
                 }
             }
 
-            msg->program = NULL;
+            request->program = NULL;
 
             for (i = 0; i < rpc2_conn->num_server_programs; i++) {
                 program = rpc2_conn->server_programs[i];
@@ -730,36 +970,55 @@ evpl_rpc2_recv_msg(
                 if (program->program == rpc_msg.body.cbody.prog &&
                     program->version == rpc_msg.body.cbody.vers) {
 
-                    msg->program = program;
-                    msg->metric  = server_binding ? server_binding->metrics[i][msg->proc] : NULL;
+                    request->program = program;
+                    request->metric  = server_binding ? server_binding->metrics[i][request->proc] : NULL;
                     break;
                 }
             }
 
-            if (unlikely(!msg->program)) {
+            if (unlikely(!request->program)) {
                 evpl_rpc2_debug(
                     "rpc2 received call for unknown program %u vers %u",
                     rpc_msg.body.cbody.prog,
                     rpc_msg.body.cbody.vers);
 
-                evpl_rpc2_send_reply_error(evpl, msg, PROG_MISMATCH);
+                evpl_rpc2_send_reply_error(evpl, request, PROG_MISMATCH);
                 return;
             }
 
-            if (msg->pending_reads == 0) {
-                evpl_rpc2_server_handle_msg(msg);
+            if (request->pending_reads == 0) {
+                evpl_rpc2_server_handle_request(request, req_iov, req_niov, request_length, authsys, flavor);
             }
             break;
         case REPLY:
+        {
+            /* AUTH_SHORT is not implemented - pass empty verifier */
+            struct evpl_rpc2_verf verf = { .data = NULL, .len = 0 };
 
-            msg->reply_iov    = req_iov;
-            msg->reply_niov   = req_niov;
-            msg->reply_length = request_length;
+            /* Find request by xid */
+            HASH_FIND(hh, rpc2_conn->pending_calls, &rpc_msg.xid, sizeof(rpc_msg.xid), request);
 
-            evpl_rpc2_client_handle_msg(msg);
-            break;
+            if (unlikely(!request)) {
+                evpl_rpc2_error("rpc2 received reply for unknown call %u", rpc_msg.xid);
+                evpl_rpc2_msg_free(thread, msg);
+                evpl_close(evpl, bind);
+                return;
+            }
+
+            HASH_DELETE(hh, rpc2_conn->pending_calls, request);
+
+            /* Free the old msg allocated for the call, replace with reply msg */
+            if (request->msg) {
+                evpl_rpc2_msg_free(thread, request->msg);
+            }
+            request->msg = msg;
+
+            evpl_rpc2_client_handle_reply(request, &verf, req_iov, req_niov, request_length);
+        }
+        break;
         default:
             evpl_rpc2_error("rpc2 received unexpected message type %d", rpc_msg.body.mtype);
+            evpl_rpc2_msg_free(thread, msg);
             evpl_close(evpl, bind);
     } /* switch */
 
@@ -773,10 +1032,10 @@ evpl_rpc2_event(
     struct evpl_notify *notify,
     void               *private_data)
 {
-    struct evpl_rpc2_conn   *rpc2_conn   = private_data;
-    struct evpl_rpc2_thread *rpc2_thread = rpc2_conn->thread;
-    struct evpl_rpc2_notify  rpc2_notify;
-    struct evpl_rpc2_msg    *rpc2_msg, *tmp;
+    struct evpl_rpc2_conn    *rpc2_conn   = private_data;
+    struct evpl_rpc2_thread  *rpc2_thread = rpc2_conn->thread;
+    struct evpl_rpc2_notify   rpc2_notify;
+    struct evpl_rpc2_request *rpc2_request, *tmp;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -788,10 +1047,10 @@ evpl_rpc2_event(
             break;
         case EVPL_NOTIFY_DISCONNECTED:
             DL_DELETE(rpc2_thread->conns, rpc2_conn);
-            HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_msg, tmp)
+            HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_request, tmp)
             {
-                HASH_DELETE(hh, rpc2_conn->pending_calls, rpc2_msg);
-                evpl_rpc2_msg_free(rpc2_conn->thread, rpc2_msg);
+                HASH_DELETE(hh, rpc2_conn->pending_calls, rpc2_request);
+                evpl_rpc2_request_free(rpc2_conn->thread, rpc2_request);
             }
             if (rpc2_conn->thread->notify_callback) {
                 rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_DISCONNECTED;
@@ -825,7 +1084,6 @@ evpl_rpc2_accept(
     struct evpl_rpc2_notify          rpc2_notify;
 
     rpc2_conn                 = evpl_zalloc(sizeof(*rpc2_conn));
-    rpc2_conn->thread_dbuf    = (struct xdr_dbuf *) server_binding->thread->dbuf;
     rpc2_conn->server_binding = server_binding;
     rpc2_conn->thread         = server_binding->thread;
     rpc2_conn->bind           = bind;
@@ -872,8 +1130,7 @@ evpl_rpc2_thread_init(
     thread->nprograms       = nprograms;
     thread->notify_callback = notify_callback;
     thread->private_data    = private_data;
-
-    thread->dbuf = xdr_dbuf_alloc(128 * 1024);
+    thread->client_dbuf     = xdr_dbuf_alloc(128 * 1024);
 
     if (nprograms) {
         thread->programs = evpl_zalloc(nprograms * sizeof(*programs));
@@ -888,8 +1145,9 @@ evpl_rpc2_thread_init(
 SYMBOL_EXPORT void
 evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
 {
-    struct evpl_rpc2_msg  *msg;
-    struct evpl_rpc2_conn *rpc2_conn;
+    struct evpl_rpc2_msg     *msg;
+    struct evpl_rpc2_request *request;
+    struct evpl_rpc2_conn    *rpc2_conn;
 
     DL_FOREACH(thread->conns, rpc2_conn)
     {
@@ -900,23 +1158,36 @@ evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
         evpl_continue(thread->evpl);
     }
 
-    xdr_dbuf_free(thread->dbuf);
-
     while (thread->free_msg) {
         msg = thread->free_msg;
         LL_DELETE(thread->free_msg, msg);
-        xdr_dbuf_free(msg->dbuf);
+        xdr_dbuf_destroy(&msg->dbuf);
         evpl_free(msg);
+    }
+
+    while (thread->free_requests) {
+        request = thread->free_requests;
+        LL_DELETE(thread->free_requests, request);
+        evpl_free(request);
     }
 
     if (thread->programs) {
         evpl_free(thread->programs);
     }
 
+    if (thread->client_dbuf) {
+        xdr_dbuf_free(thread->client_dbuf);
+    }
+
     evpl_free(thread);
 } /* evpl_rpc2_thread_destroy */
 
-
+SYMBOL_EXPORT void *
+evpl_rpc2_thread_get_client_dbuf(struct evpl_rpc2_thread *thread)
+{
+    xdr_dbuf_reset(thread->client_dbuf);
+    return thread->client_dbuf;
+} /* evpl_rpc2_thread_get_client_dbuf */
 
 SYMBOL_EXPORT struct evpl_rpc2_server *
 evpl_rpc2_server_init(
@@ -1067,7 +1338,6 @@ evpl_rpc2_client_connect(
     conn = evpl_zalloc(sizeof(*conn));
 
     conn->thread         = thread;
-    conn->thread_dbuf    = (struct xdr_dbuf *) thread->dbuf;
     conn->protocol       = protocol;
     conn->server_binding = NULL;
     conn->next_xid       = 1;
@@ -1115,6 +1385,7 @@ evpl_rpc2_call(
     struct evpl                 *evpl,
     struct evpl_rpc2_program    *program,
     struct evpl_rpc2_conn       *conn,
+    const struct evpl_rpc2_cred *cred,
     uint32_t                     procedure,
     struct evpl_iovec           *req_iov,
     int                          req_niov,
@@ -1125,50 +1396,69 @@ evpl_rpc2_call(
     void                        *callback,
     void                        *private_data)
 {
-    struct evpl_rpc2_thread *thread = conn->thread;
-    struct evpl_rpc2_msg    *msg;
-    struct rpc_msg           rpc_msg;
-    struct rdma_msg          rdma_msg;
-    struct evpl_iovec        hdr_iov, hdr_out_iov;
-    struct xdr_read_list     read_list;
-    struct xdr_write_list    write_list;
-    struct xdr_rdma_segment  write_chunk_segment;
-    int                      transport_hdr_len, rpc_len, i;
-    int                      out_niov   = 1;
-    int                      pay_length = req_length - program->reserve;
-    int                      total_length;
-    int                      rdma = conn->rdma;
+    struct evpl_rpc2_thread  *thread = conn->thread;
+    struct evpl_rpc2_request *request;
+    struct evpl_rpc2_msg     *msg;
+    struct rpc_msg            rpc_msg;
+    struct rdma_msg           rdma_msg;
+    struct evpl_iovec         hdr_iov, hdr_out_iov;
+    struct xdr_read_list      read_list;
+    struct xdr_write_list     write_list;
+    struct xdr_rdma_segment   write_chunk_segment;
+    int                       transport_hdr_len, rpc_len, i;
+    int                       out_niov   = 1;
+    int                       pay_length = req_length - program->reserve;
+    int                       total_length;
+    int                       rdma = conn->rdma;
 
-    msg = evpl_rpc2_msg_alloc(thread);
+    /* Allocate request for the exchange */
+    request = evpl_rpc2_request_alloc(thread);
 
-    /* Client doesn't need msg->req_iov - the request is sent directly via evpl_sendv
-     * and only the reply will be stored in msg->reply_iov. msg->req_iov is only used
-     * by the server to store received request data. */
+    /* Allocate msg for client - needed for dbuf in RDMA case */
+    msg          = evpl_rpc2_msg_alloc(thread);
+    request->msg = msg;
 
-    msg->conn         = conn;
-    msg->program      = program;
-    msg->xid          = conn->next_xid++;
-    msg->proc         = procedure;
-    msg->callback     = callback;
-    msg->callback_arg = private_data;
+    request->conn         = conn;
+    request->program      = program;
+    request->xid          = conn->next_xid++;
+    request->proc         = procedure;
+    request->callback     = callback;
+    request->callback_arg = private_data;
 
-    HASH_ADD(hh, conn->pending_calls, xid, sizeof(msg->xid), msg);
+    HASH_ADD(hh, conn->pending_calls, xid, sizeof(request->xid), request);
 
-    rpc_msg.xid                      = msg->xid;
-    rpc_msg.body.mtype               = CALL;
-    rpc_msg.body.cbody.rpcvers       = 2;
-    rpc_msg.body.cbody.prog          = program->program;
-    rpc_msg.body.cbody.vers          = program->version;
-    rpc_msg.body.cbody.proc          = procedure;
-    rpc_msg.body.cbody.cred.flavor   = AUTH_NONE;
-    rpc_msg.body.cbody.cred.body.len = 0;
-    rpc_msg.body.cbody.verf.flavor   = AUTH_NONE;
-    rpc_msg.body.cbody.verf.body.len = 0;
+    rpc_msg.xid                    = request->xid;
+    rpc_msg.body.mtype             = CALL;
+    rpc_msg.body.cbody.rpcvers     = 2;
+    rpc_msg.body.cbody.prog        = program->program;
+    rpc_msg.body.cbody.vers        = program->version;
+    rpc_msg.body.cbody.proc        = procedure;
+    rpc_msg.body.cbody.verf.flavor = AUTH_NONE;
+
+    /* Set credentials based on cred parameter */
+    if (cred && cred->flavor == AUTH_SYS) {
+        /* Populate authsys directly in the opaque_union - marshalling handles length prefix */
+        rpc_msg.body.cbody.cred.flavor                  = AUTH_SYS;
+        rpc_msg.body.cbody.cred.authsys.stamp           = 0;
+        rpc_msg.body.cbody.cred.authsys.machinename.str = (char *) cred->authsys.machinename;
+        rpc_msg.body.cbody.cred.authsys.machinename.len = cred->authsys.machinename_len;
+        rpc_msg.body.cbody.cred.authsys.uid             = cred->authsys.uid;
+        rpc_msg.body.cbody.cred.authsys.gid             = cred->authsys.gid;
+        rpc_msg.body.cbody.cred.authsys.num_gids        = cred->authsys.num_gids;
+        rpc_msg.body.cbody.cred.authsys.gids            = cred->authsys.gids;
+
+        evpl_rpc2_debug("AUTH_SYS: machinename=%.*s (len=%d) uid=%u gid=%u num_gids=%u",
+                        cred->authsys.machinename_len, cred->authsys.machinename,
+                        cred->authsys.machinename_len, cred->authsys.uid,
+                        cred->authsys.gid, cred->authsys.num_gids);
+    } else {
+        rpc_msg.body.cbody.cred.flavor = AUTH_NONE;
+    }
 
     rpc_len = marshall_length_rpc_msg(&rpc_msg);
 
     if (rdma) {
-        rdma_msg.rdma_xid                       = msg->xid;
+        rdma_msg.rdma_xid                       = request->xid;
         rdma_msg.rdma_vers                      = 1;
         rdma_msg.rdma_credit                    = 1;
         rdma_msg.rdma_body.proc                 = RDMA_MSG;
@@ -1190,29 +1480,31 @@ evpl_rpc2_call(
                                   &read_list.entry.target.handle,
                                   &read_list.entry.target.offset);
 
-            /* Move iovecs from caller to msg (transfers ownership, invalidates caller's iovecs).
+            /* Move iovecs from caller to request (transfers ownership, invalidates caller's iovecs).
              * This matches TCP behavior where marshalling moves iovecs inline. */
-            msg->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->read_chunk.iov) * rdma_chunk->niov, msg->dbuf);
+            request->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*request->read_chunk.iov) * rdma_chunk->niov,
+                                                           &msg->dbuf);
 
-            evpl_rpc2_abort_if(msg->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
+            evpl_rpc2_abort_if(request->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
 
             for (i = 0; i < rdma_chunk->niov; i++) {
-                evpl_iovec_move(&msg->read_chunk.iov[i], &rdma_chunk->iov[i]);
+                evpl_iovec_move(&request->read_chunk.iov[i], &rdma_chunk->iov[i]);
             }
-            msg->read_chunk.niov         = rdma_chunk->niov;
-            msg->read_chunk.length       = rdma_chunk->length;
-            msg->read_chunk.max_length   = rdma_chunk->max_length;
-            msg->read_chunk.xdr_position = rdma_chunk->xdr_position;
+            request->read_chunk.niov         = rdma_chunk->niov;
+            request->read_chunk.length       = rdma_chunk->length;
+            request->read_chunk.max_length   = rdma_chunk->max_length;
+            request->read_chunk.xdr_position = rdma_chunk->xdr_position;
         }
 
         if (max_rdma_write_chunk) {
 
-            msg->write_chunk.iov = xdr_dbuf_alloc_space(sizeof(*msg->write_chunk.iov), msg->dbuf);
+            request->write_chunk.iov = xdr_dbuf_alloc_space(sizeof(*request->write_chunk.iov), &msg->dbuf);
 
-            evpl_rpc2_abort_if(msg->write_chunk.iov == NULL, "Failed to allocate write chunk iovec");
+            evpl_rpc2_abort_if(request->write_chunk.iov == NULL, "Failed to allocate write chunk iovec");
 
-            msg->write_chunk.niov   = evpl_iovec_alloc(evpl, max_rdma_write_chunk, 4096, 1, 0, msg->write_chunk.iov);
-            msg->write_chunk.length = max_rdma_write_chunk;
+            request->write_chunk.niov = evpl_iovec_alloc(evpl, max_rdma_write_chunk, 4096, 1, 0,
+                                                         request->write_chunk.iov);
+            request->write_chunk.length = max_rdma_write_chunk;
 
             rdma_msg.rdma_body.rdma_msg.rdma_writes = &write_list;
             write_list.next                         = NULL;
@@ -1220,7 +1512,7 @@ evpl_rpc2_call(
             write_list.entry.target                 = &write_chunk_segment;
 
             evpl_rdma_get_address(evpl, conn->bind,
-                                  msg->write_chunk.iov,
+                                  request->write_chunk.iov,
                                   &write_chunk_segment.handle,
                                   &write_chunk_segment.offset);
 
@@ -1244,7 +1536,9 @@ evpl_rpc2_call(
 
     marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, transport_hdr_len);
 
-    evpl_iovec_release(evpl, &hdr_out_iov);
+    if (out_niov > 0) {
+        evpl_iovec_release(evpl, &hdr_out_iov);
+    }
 
     if (rdma) {
         marshall_rdma_msg(&rdma_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, 0);
@@ -1261,3 +1555,35 @@ evpl_rpc2_call(
 
     return 0;
 } /* evpl_rpc2_call */
+
+SYMBOL_EXPORT void
+evpl_rpc2_conn_get_local_address(
+    struct evpl_rpc2_conn *conn,
+    char                  *str,
+    int                    len)
+{
+    evpl_bind_get_local_address(conn->bind, str, len);
+} /* evpl_rpc2_conn_get_local_address */
+
+SYMBOL_EXPORT void
+evpl_rpc2_conn_get_remote_address(
+    struct evpl_rpc2_conn *conn,
+    char                  *str,
+    int                    len)
+{
+    evpl_bind_get_remote_address(conn->bind, str, len);
+} /* evpl_rpc2_conn_get_remote_address */
+
+SYMBOL_EXPORT void
+evpl_rpc2_conn_set_private_data(
+    struct evpl_rpc2_conn *conn,
+    void                  *private_data)
+{
+    conn->private_data = private_data;
+} /* evpl_rpc2_conn_set_private_data */
+
+SYMBOL_EXPORT void *
+evpl_rpc2_conn_get_private_data(struct evpl_rpc2_conn *conn)
+{
+    return conn->private_data;
+} /* evpl_rpc2_conn_get_private_data */

@@ -41,7 +41,7 @@ add_library(evpl_rpc2 SHARED rpc2.c ${RPC2_XDR_C} ${RPC2_XDR_H} ${RPCRDMA1_XDR_C
 
 add_dependencies(evpl_rpc2 xdrzcc)
 
-target_link_libraries(evpl_rpc2 evpl prometheus-c)
+target_link_libraries(evpl_rpc2 evpl prometheus-c urcu)
 
 install(TARGETS evpl_rpc2 DESTINATION lib)
 

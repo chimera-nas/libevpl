@@ -23,30 +23,32 @@ static int                   port  = 8001;
 
 /* Test state shared between client and server */
 struct test_state {
-    int server_received;
-    int client_received;
-    int test_complete;
-    int test_passed;
+    struct BUILTIN_BOOL_V1 *prog;
+    int                     server_received;
+    int                     client_received;
+    int                     test_complete;
+    int                     test_passed;
 };
 
 /* Server-side: Handle PING request */
 void
 server_recv_ping(
-    struct evpl           *evpl,
-    struct evpl_rpc2_conn *conn,
-    xdr_bool               request,
-    struct evpl_rpc2_msg  *msg,
-    void                  *private_data)
+    struct evpl               *evpl,
+    struct evpl_rpc2_conn     *conn,
+    struct evpl_rpc2_cred     *cred,
+    xdr_bool                   call,
+    struct evpl_rpc2_encoding *encoding,
+    void                      *private_data)
 {
     struct test_state      *state = private_data;
-    struct BUILTIN_BOOL_V1 *prog  = msg->program->program_data;
+    struct BUILTIN_BOOL_V1 *prog  = state->prog;
     xdr_bool                reply;
     int                     rc;
 
-    evpl_test_info("Server received PING request: value=%s", request ? "true" : "false");
+    evpl_test_info("Server received PING request: value=%s", call ? "true" : "false");
 
     /* Validate request */
-    evpl_test_abort_if(request != 1, "request value mismatch");
+    evpl_test_abort_if(call != 1, "request value mismatch");
 
     state->server_received = 1;
 
@@ -54,7 +56,7 @@ server_recv_ping(
     reply = 1;
 
     /* Send reply */
-    rc = prog->send_reply_PING(evpl, reply, msg);
+    rc = prog->send_reply_PING(evpl, NULL, reply, encoding);
 
     if (unlikely(rc)) {
         fprintf(stderr, "Failed to send reply for PING: %d\n", rc);
@@ -67,10 +69,11 @@ server_recv_ping(
 /* Client-side: Handle PING reply */
 void
 client_recv_reply_ping(
-    struct evpl *evpl,
-    xdr_bool     reply,
-    int          status,
-    void        *callback_private_data)
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    xdr_bool                     reply,
+    int                          status,
+    void                        *callback_private_data)
 {
     struct test_state *state = callback_private_data;
 
@@ -143,6 +146,7 @@ main(
     BUILTIN_BOOL_V1_init(&prog);
     prog.recv_call_PING = server_recv_ping;
     programs[0]         = &prog.rpc2;
+    state.prog          = &prog;
 
     /* Create RPC2 server */
     server = evpl_rpc2_server_init(programs, 1);
@@ -176,7 +180,7 @@ main(
 
     /* Make RPC call */
     evpl_test_info("Client sending PING request");
-    prog.send_call_PING(&prog.rpc2, evpl, conn, request, 0, 0, 0, client_recv_reply_ping, &state);
+    prog.send_call_PING(&prog.rpc2, evpl, conn, NULL, request, 0, 0, 0, client_recv_reply_ping, &state);
 
     /* Wait for reply */
     while (!state.test_complete) {

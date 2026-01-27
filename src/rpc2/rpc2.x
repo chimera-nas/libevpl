@@ -17,9 +17,15 @@ struct authsys_parms {
     unsigned int gids<16>;
 };
 
-struct opaque_auth {
-    auth_flavor flavor;
-    opaque body<400>;
+opaque_union opaque_auth switch (auth_flavor flavor) {
+    case AUTH_SYS:
+        authsys_parms authsys;
+    case AUTH_NONE:
+        void;
+    case AUTH_SHORT:
+        opaque body<400>;
+    default:
+        void;
 };
 
 enum msg_type {
