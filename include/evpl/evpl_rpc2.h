@@ -43,9 +43,7 @@ struct evpl_rpc2_conn {
     struct evpl_rpc2_thread         *thread;
     struct evpl_rpc2_server_binding *server_binding;
     struct evpl_bind                *bind;
-    struct xdr_dbuf                 *thread_dbuf;
-    struct evpl_rpc2_msg            *recv_msg;
-    struct evpl_rpc2_msg            *pending_calls;
+    struct evpl_rpc2_request        *pending_calls;
     uint32_t                         next_xid;
     void                            *private_data;
     struct evpl_rpc2_conn           *prev;
@@ -54,17 +52,6 @@ struct evpl_rpc2_conn {
     int                              num_server_programs;
     struct evpl_rpc2_program        *server_programs[4];
 };
-
-typedef void (*evpl_rpc2_reply_callback_t)(
-    struct evpl           *evpl,
-    struct evpl_rpc2_call *call,
-    int                    status,
-    void                  *private_data);
-
-typedef void (*evpl_rpc2_dispatch_callback_t)(
-    struct evpl_rpc2_thread  *thread,
-    struct evpl_rpc2_request *request,
-    void                     *private_data);
 
 typedef void (*evpl_rpc2_notify_callback_t)(
     struct evpl_rpc2_thread *thread,
@@ -84,6 +71,12 @@ void
 evpl_rpc2_thread_destroy(
     struct evpl_rpc2_thread *thread);
 
+/*
+ * Get the client dbuf from a thread for use by client call marshalling.
+ */
+void *
+evpl_rpc2_thread_get_client_dbuf(
+    struct evpl_rpc2_thread *thread);
 
 struct evpl_rpc2_server *
 evpl_rpc2_server_init(
@@ -129,3 +122,29 @@ void
 evpl_rpc2_client_disconnect(
     struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_conn   *conn);
+
+/*
+ * Connection accessor functions - allow access to connection properties
+ * without requiring the full struct definition.
+ */
+
+void
+evpl_rpc2_conn_get_local_address(
+    struct evpl_rpc2_conn *conn,
+    char                  *str,
+    int                    len);
+
+void
+evpl_rpc2_conn_get_remote_address(
+    struct evpl_rpc2_conn *conn,
+    char                  *str,
+    int                    len);
+
+void
+evpl_rpc2_conn_set_private_data(
+    struct evpl_rpc2_conn *conn,
+    void                  *private_data);
+
+void *
+evpl_rpc2_conn_get_private_data(
+    struct evpl_rpc2_conn *conn);

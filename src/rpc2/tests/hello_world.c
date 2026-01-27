@@ -23,33 +23,34 @@ static int                   port  = 8000;
 
 /* Test state shared between client and server */
 struct test_state {
-    int server_received;
-    int client_received;
-    int test_complete;
-    int test_passed;
+    struct HELLO_V1 *prog;
+    int              server_received;
+    int              client_received;
+    int              test_complete;
+    int              test_passed;
 };
 
 /* Server-side: Handle GREET request */
 void
 server_recv_greet(
-    struct evpl           *evpl,
-    struct evpl_rpc2_conn *conn,
-    struct evpl_rpc2_cred *cred,
-    struct Hello          *request,
-    struct evpl_rpc2_msg  *msg,
-    void                  *private_data)
+    struct evpl               *evpl,
+    struct evpl_rpc2_conn     *conn,
+    struct evpl_rpc2_cred     *cred,
+    struct Hello              *call,
+    struct evpl_rpc2_encoding *encoding,
+    void                      *private_data)
 {
     struct test_state *state = private_data;
-    struct HELLO_V1   *prog  = msg->program->program_data;
+    struct HELLO_V1   *prog  = state->prog;
     struct Hello       reply;
     int                rc;
 
     evpl_test_info("Server received GREET request: id=%u, greeting='%s'",
-                   request->id, request->greeting.str);
+                   call->id, call->greeting.str);
 
     /* Validate request */
-    evpl_test_abort_if(request->id != 42, "id mismatch");
-    evpl_test_abort_if(strcmp(request->greeting.str, "Hello from client!") != 0, "greeting mismatch");
+    evpl_test_abort_if(call->id != 42, "id mismatch");
+    evpl_test_abort_if(strcmp(call->greeting.str, "Hello from client!") != 0, "greeting mismatch");
 
     state->server_received = 1;
 
@@ -58,7 +59,7 @@ server_recv_greet(
     xdr_set_str_static(&reply, greeting, "Hello from server!", strlen("Hello from server!"));
 
     /* Send reply */
-    rc = prog->send_reply_GREET(evpl, NULL, &reply, msg);
+    rc = prog->send_reply_GREET(evpl, NULL, &reply, encoding);
 
     if (unlikely(rc)) {
         fprintf(stderr, "Failed to send reply for GREET: %d\n", rc);
@@ -149,6 +150,7 @@ main(
     HELLO_V1_init(&prog);
     prog.recv_call_GREET = server_recv_greet;
     programs[0]          = &prog.rpc2;
+    state.prog           = &prog;
 
     /* Create RPC2 server */
     server = evpl_rpc2_server_init(programs, 1);
