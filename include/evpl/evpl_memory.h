@@ -36,6 +36,13 @@
 
 #endif /* ifdef EVPL_IOVEC_TRACE */
 
+#define evpl_memory_abort_if(cond, ...) \
+        do { \
+            if (cond) { \
+                evpl_abort("core", __FILE__, __LINE__, __VA_ARGS__); \
+            } \
+        } while (0)
+
 struct evpl_iovec_ref;
 struct evpl;
 
@@ -339,6 +346,7 @@ evpl_iovec_move(
     struct evpl_iovec *dst,
     struct evpl_iovec *src)
 {
+    evpl_memory_abort_if(!dst || !src, "evpl_iovec_move: NULL pointer");
 #ifdef EVPL_IOVEC_TRACE
     struct evpl_iovec_ref *real_ref = evpl_iovec_real_ref(src);
 

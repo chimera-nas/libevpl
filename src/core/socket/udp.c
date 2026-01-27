@@ -59,6 +59,8 @@ evpl_socket_udp_read(
 
         datagram = evpl_socket_datagram_alloc(evpl, s);
 
+        evpl_socket_abort_if(!datagram, "Failed to allocate datagram");
+
         datagrams[i] = datagram;
 
         msghdr->msg_name       = &sockaddrs[i];
@@ -87,7 +89,7 @@ evpl_socket_udp_read(
         goto out;
     }
 
-    evpl_core_assert(res <= nmsg);
+    evpl_socket_abort_if(res > nmsg, "recvmmsg returned more than requested");
 
     for (i = 0; i < res; ++i) {
 
