@@ -23,7 +23,6 @@
 #include "prometheus-c.h"
 
 #include "rpc2/rpc2_cursor.h"
-#include "rpc2/rpc2_cred.h"
 
 /*
  * evpl_rpc2_msg represents a single received RPC message (either a CALL or REPLY).
@@ -82,6 +81,33 @@ evpl_rpc2_request_from_encoding(struct evpl_rpc2_encoding *encoding)
 {
     return container_of(encoding, struct evpl_rpc2_request, encoding);
 } /* evpl_rpc2_request_from_encoding */
+
+/*
+ * Initialize a credential from AUTH_SYS parameters.
+ *
+ * Converts from the XDR authsys_parms structure to the simple C types
+ * used in evpl_rpc2_cred. The gids and machinename pointers are copied
+ * directly (they point to dbuf-allocated storage from unmarshalling).
+ */
+static inline void
+evpl_rpc2_cred_init_authsys(
+    struct evpl_rpc2_cred      *cred,
+    const struct authsys_parms *parms)
+{
+    cred->flavor = AUTH_SYS;
+
+    cred->authsys.uid             = parms->uid;
+    cred->authsys.gid             = parms->gid;
+    cred->authsys.num_gids        = parms->num_gids;
+    cred->authsys.gids            = parms->gids;
+    cred->authsys.machinename     = parms->machinename.str;
+    cred->authsys.machinename_len = parms->machinename.len;
+
+    /* Clamp gids count to max allowed */
+    if (cred->authsys.num_gids > EVPL_RPC2_AUTH_SYS_MAX_GIDS) {
+        cred->authsys.num_gids = EVPL_RPC2_AUTH_SYS_MAX_GIDS;
+    }
+} /* evpl_rpc2_cred_init_authsys */
 
 struct evpl_rpc2_server {
     struct evpl_listener      *listener;
