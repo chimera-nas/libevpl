@@ -18,18 +18,6 @@ struct prometheus_histogram_instance;
         ((type *) ((char *) (ptr) - offsetof(type, member)))
 #endif // ifndef container_of
 
-/* Define xdr_dbuf here so it's available for embedded use in evpl_rpc2_msg.
- * This guard allows xdr_builtin.h to skip its own definition if already defined. */
-#ifndef XDR_DBUF_DEFINED
-#define XDR_DBUF_DEFINED
-struct xdr_dbuf {
-    void *buffer;
-    int   size;
-    int   used;
-};
-typedef struct xdr_dbuf xdr_dbuf;
-#endif // ifndef XDR_DBUF_DEFINED
-
 struct evpl;
 struct evpl_rpc2_conn;
 struct evpl_rpc2_program;
@@ -69,64 +57,6 @@ struct evpl_rpc2_encoding {
     struct evpl_rpc2_rdma_chunk *read_chunk;  /* RDMA read chunk (for writes) */
     struct evpl_rpc2_rdma_chunk *write_chunk; /* RDMA write chunk (for replies) */
 };
-
-/*
- * evpl_rpc2_msg represents a single received RPC message (either a CALL or REPLY).
- *
- * Each msg has its own dbuf for dynamic allocations during unmarshalling.
- * The recv_iov holds references to the received data buffers.
- */
-struct evpl_rpc2_msg {
-    struct xdr_dbuf        dbuf;
-    struct evpl_iovec     *recv_iov;
-    int                    recv_niov;
-    struct evpl_iovec     *req_iov;
-    int                    req_niov;
-    struct evpl_rpc2_msg  *next;
-};
-
-/*
- * evpl_rpc2_request represents an RPC exchange (call + reply).
- *
- * For server: created when a CALL is received, freed after reply is sent.
- * For client: created when making a call, freed after reply is received.
- *
- * The request holds metadata about the exchange (xid, proc, RDMA info)
- * and points to the associated msg containing the received data.
- */
-struct evpl_rpc2_request {
-    uint32_t                              xid;
-    uint32_t                              proc;
-    uint32_t                              rdma_credits;
-    uint16_t                              pending_reads;
-    struct evpl_bind                     *bind;
-    struct evpl_rpc2_conn                *conn;
-    struct evpl_rpc2_thread              *thread;
-    struct evpl_rpc2_program             *program;
-    struct timespec                       timestamp;
-    struct prometheus_histogram_instance *metric;
-    void                                 *callback;
-    void                                 *callback_arg;
-    struct UT_hash_handle                 hh;
-    struct evpl_rpc2_rdma_chunk           read_chunk;
-    struct evpl_rpc2_rdma_chunk           write_chunk;
-    struct evpl_rpc2_rdma_segment_list    reply_segments;
-    struct evpl_rpc2_rdma_segment_list    write_segments;
-    struct evpl_iovec                     reply_segment_iov;
-    struct evpl_rpc2_msg                 *msg;
-    struct evpl_rpc2_request             *next;
-    struct evpl_rpc2_encoding             encoding; /* Public interface for apps */
-};
-
-/*
- * Get the request from an encoding pointer.
- * Used internally by libevpl to access the full request from the public encoding.
- */
-static inline struct evpl_rpc2_request *
-evpl_rpc2_request_from_encoding(struct evpl_rpc2_encoding *encoding)
-{
-    return container_of(encoding, struct evpl_rpc2_request, encoding);
-} // evpl_rpc2_request_from_encoding
 
 struct evpl_rpc2_program {
     uint32_t                             program;

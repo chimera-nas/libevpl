@@ -20,7 +20,7 @@
 #define container_of(ptr, type, member) ({            \
         typeof(((type *) 0)->member) * __mptr = (ptr); \
         (type *) ((char *) __mptr - offsetof(type, member)); })
-#endif
+#endif // ifndef container_of
 
 #ifndef FORCE_INLINE
 #define FORCE_INLINE __attribute__((always_inline)) inline

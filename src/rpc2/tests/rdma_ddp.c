@@ -79,11 +79,11 @@ server_recv_read(
     struct evpl_rpc2_encoding *encoding,
     void                      *private_data)
 {
-    struct test_state   *state = private_data;
-    struct RDMA_DDP_V1  *prog  = state->prog;
-    struct ReadResponse  reply;
-    xdr_iovec            iov;
-    int                  rc;
+    struct test_state  *state = private_data;
+    struct RDMA_DDP_V1 *prog  = state->prog;
+    struct ReadResponse reply;
+    xdr_iovec           iov;
+    int                 rc;
 
     evpl_test_info("Server received READ request: offset=%llu, count=%u",
                    (unsigned long long) call->offset, call->count);
@@ -123,10 +123,10 @@ server_recv_write(
     struct evpl_rpc2_encoding *encoding,
     void                      *private_data)
 {
-    struct test_state    *state = private_data;
-    struct RDMA_DDP_V1   *prog  = state->prog;
-    struct WriteResponse  reply;
-    int                   rc, i;
+    struct test_state   *state = private_data;
+    struct RDMA_DDP_V1  *prog  = state->prog;
+    struct WriteResponse reply;
+    int                  rc, i;
 
     evpl_test_info("Server received WRITE request: offset=%llu, count=%u, data_len=%u",
                    (unsigned long long) call->offset, call->count,
@@ -177,10 +177,10 @@ server_recv_reduce(
     struct evpl_rpc2_encoding *encoding,
     void                      *private_data)
 {
-    struct test_state     *state = private_data;
-    struct RDMA_DDP_V1    *prog  = state->prog;
-    struct ReduceResponse  reply;
-    int                    rc;
+    struct test_state    *state = private_data;
+    struct RDMA_DDP_V1   *prog  = state->prog;
+    struct ReduceResponse reply;
+    int                   rc;
 
     evpl_test_info("Server received REDUCE request: response_size=%u",
                    call->response_size);

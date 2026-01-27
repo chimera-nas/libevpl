@@ -45,7 +45,7 @@ struct evpl_rpc2_cred {
         int         machinename_len;
     } authsys;
 
-    struct rcu_head rcu;
+    struct rcu_head        rcu;
 };
 
 /*
@@ -110,7 +110,7 @@ evpl_rpc2_cred_cache_create(uint8_t num_shards_bits)
     }
 
     return cache;
-}
+} // evpl_rpc2_cred_cache_create
 
 /*
  * Free a credential via RCU callback.
@@ -121,7 +121,7 @@ evpl_rpc2_cred_free_rcu(struct rcu_head *head)
     struct evpl_rpc2_cred *cred = container_of(head, struct evpl_rpc2_cred, rcu);
 
     free(cred);
-}
+} // evpl_rpc2_cred_free_rcu
 
 /*
  * Destroy a credential cache.
@@ -156,7 +156,7 @@ evpl_rpc2_cred_cache_destroy(struct evpl_rpc2_cred_cache *cache)
 
     free(cache->shards);
     free(cache);
-}
+} // evpl_rpc2_cred_cache_destroy
 
 /*
  * Insert a credential into the cache.
@@ -201,7 +201,7 @@ evpl_rpc2_cred_cache_insert(
     (*rotor)++;
 
     return 0;
-}
+} // evpl_rpc2_cred_cache_insert
 
 /*
  * Lookup a credential by key.
@@ -234,7 +234,7 @@ evpl_rpc2_cred_cache_lookup(
     }
 
     return NULL;
-}
+} // evpl_rpc2_cred_cache_lookup
 
 /*
  * Allocate and initialize a credential structure.
@@ -245,7 +245,7 @@ static inline struct evpl_rpc2_cred *
 evpl_rpc2_cred_alloc(void)
 {
     return calloc(1, sizeof(struct evpl_rpc2_cred));
-}
+} // evpl_rpc2_cred_alloc
 
 /*
  * Initialize a credential from AUTH_SYS parameters.
@@ -275,4 +275,4 @@ evpl_rpc2_cred_init_authsys(
     if (cred->authsys.num_gids > EVPL_RPC2_AUTH_SYS_MAX_GIDS) {
         cred->authsys.num_gids = EVPL_RPC2_AUTH_SYS_MAX_GIDS;
     }
-}
+} // evpl_rpc2_cred_init_authsys
