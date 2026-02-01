@@ -130,8 +130,10 @@ evpl_shared_init(struct evpl_global_config *config)
         evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_IO_URING,
                                  &evpl_block_protocol_io_uring);
 
+#ifndef EVPL_IO_URING_LEGACY
         evpl_protocol_init(evpl_shared, EVPL_STREAM_IO_URING_TCP,
                            &evpl_io_uring_tcp);
+#endif
     }
 #endif /* ifdef HAVE_IO_URING */
 
