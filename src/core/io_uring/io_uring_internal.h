@@ -28,6 +28,38 @@
 #define evpl_io_uring_abort_if(cond, ...) \
         evpl_abort_if(cond, "io_uring", __FILE__, __LINE__, __VA_ARGS__)
 
+/*
+ * Compatibility macros for liburing < 2.3
+ *
+ * On older liburing, the data64 and writev2 APIs do not exist.
+ * Since we store pointers as 64-bit values, the regular data APIs
+ * work equivalently on 64-bit platforms.
+ */
+
+#ifdef EVPL_IO_URING_LEGACY
+
+#define evpl_io_uring_sqe_set_data64(sqe, val) \
+        io_uring_sqe_set_data((sqe), (void *) (uintptr_t) (val))
+
+#define evpl_io_uring_cqe_get_data64(cqe) \
+        ((uint64_t) (uintptr_t) io_uring_cqe_get_data((cqe)))
+
+#define evpl_io_uring_prep_writev2(sqe, fd, iov, nr_vecs, offset, flags) \
+        io_uring_prep_writev((sqe), (fd), (iov), (nr_vecs), (offset))
+
+#else /* !EVPL_IO_URING_LEGACY */
+
+#define evpl_io_uring_sqe_set_data64(sqe, val) \
+        io_uring_sqe_set_data64((sqe), (val))
+
+#define evpl_io_uring_cqe_get_data64(cqe) \
+        io_uring_cqe_get_data64((cqe))
+
+#define evpl_io_uring_prep_writev2(sqe, fd, iov, nr_vecs, offset, flags) \
+        io_uring_prep_writev2((sqe), (fd), (iov), (nr_vecs), (offset), (flags))
+
+#endif /* EVPL_IO_URING_LEGACY */
+
 struct evpl_io_uring_shared {
     struct io_uring ring;
 };
@@ -80,16 +112,20 @@ struct evpl_io_uring_device {
 struct evpl_io_uring_context {
     struct io_uring               ring;
     int                           eventfd;
+#ifndef EVPL_IO_URING_LEGACY
     int                           recv_ring_size;
     int                           recv_ring_mask;
     int                           recv_buffer_size;
     int                           next_send_group_id;
     uint64_t                     *recv_ring_iov_empty;
     struct evpl_iovec            *recv_ring_iov;
+#endif
     struct evpl_event             event;
     struct evpl_deferral          flush;
     struct evpl_io_uring_request *free_requests;
+#ifndef EVPL_IO_URING_LEGACY
     struct io_uring_buf_ring     *recv_ring;
+#endif
     struct evpl_poll             *poll;
 };
 
@@ -99,6 +135,7 @@ struct evpl_io_uring_queue {
     struct io_uring_sqe          *pending_sqe;
 };
 
+#ifndef EVPL_IO_URING_LEGACY
 static inline int
 evpl_io_uring_fill_recv_ring(
     struct evpl                  *evpl,
@@ -139,6 +176,7 @@ evpl_io_uring_fill_recv_ring(
     return offset;
 
 } /* evpl_io_uring_fill_recv_ring */
+#endif /* !EVPL_IO_URING_LEGACY */
 
 
 static inline struct evpl_io_uring_request *

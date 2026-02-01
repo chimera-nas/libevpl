@@ -61,7 +61,7 @@ evpl_io_uring_read(
 
     evpl_io_uring_abort_if(!sqe, "io_uring_get_sqe");
 
-    io_uring_sqe_set_data64(sqe, (uint64_t) req);
+    evpl_io_uring_sqe_set_data64(sqe, (uint64_t) req);
 
     for (i = 0; i < niov; i++) {
         req->block.iov[i].iov_base = iov[i].data;
@@ -130,7 +130,7 @@ evpl_io_uring_write(
 
     evpl_io_uring_abort_if(!sqe, "io_uring_get_sqe");
 
-    io_uring_sqe_set_data64(sqe, (uint64_t) req);
+    evpl_io_uring_sqe_set_data64(sqe, (uint64_t) req);
 
     if (need_bounce) {
         req->block.bounce = evpl_valloc(req->block.length, 4096);
@@ -145,9 +145,9 @@ evpl_io_uring_write(
         req->block.bounce_iov.iov_base = req->block.bounce;
         req->block.bounce_iov.iov_len  = req->block.length;
 
-        io_uring_prep_writev2(sqe, dev->fd, &req->block.bounce_iov, 1, offset, flags);
+        evpl_io_uring_prep_writev2(sqe, dev->fd, &req->block.bounce_iov, 1, offset, flags);
     } else {
-        io_uring_prep_writev2(sqe, dev->fd, req->block.iov, req->block.niov, offset, flags);
+        evpl_io_uring_prep_writev2(sqe, dev->fd, req->block.iov, req->block.niov, offset, flags);
     }
 
     evpl_defer(evpl, &ctx->flush);
@@ -175,7 +175,7 @@ evpl_io_uring_flush(
 
     evpl_io_uring_abort_if(!sqe, "io_uring_get_sqe");
 
-    io_uring_sqe_set_data64(sqe, (uint64_t) req);
+    evpl_io_uring_sqe_set_data64(sqe, (uint64_t) req);
     io_uring_prep_fsync(sqe, dev->fd, 0);
 
     evpl_defer(evpl, &ctx->flush);

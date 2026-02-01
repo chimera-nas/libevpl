@@ -25,7 +25,11 @@ evpl_io_uring_flush_sqe(
                                                                memory_order_relaxed);
 
     if (flags & IORING_SQ_NEED_WAKEUP) {
+#ifdef EVPL_IO_URING_LEGACY
+        io_uring_submit(&ctx->ring);
+#else
         io_uring_enter(ctx->ring.ring_fd, 0, 0, IORING_ENTER_SQ_WAKEUP, NULL);
+#endif
         evpl_io_uring_info("had to wake up the kernel sqpoll thread");
     }
 
@@ -75,7 +79,10 @@ evpl_io_uring_complete(
 {
     uint64_t                      debounce_offset;
     struct evpl_io_uring_request *req;
-    int                           buf_count = 0, cq_count = 0;
+    int                           cq_count = 0;
+#ifndef EVPL_IO_URING_LEGACY
+    int                           buf_count = 0;
+#endif
     struct io_uring_cqe          *cqes[64], *cqe;
 
     cq_count = io_uring_peek_batch_cqe(&ctx->ring, cqes, 64);
@@ -83,7 +90,7 @@ evpl_io_uring_complete(
     for (int i = 0; i < cq_count; i++) {
         cqe =   cqes[i];
 
-        req = (struct evpl_io_uring_request *) io_uring_cqe_get_data64(cqe);
+        req = (struct evpl_io_uring_request *) evpl_io_uring_cqe_get_data64(cqe);
 
         req->res   = cqe->res;
         req->flags = cqe->flags;
@@ -123,11 +130,13 @@ evpl_io_uring_complete(
 
     if (cq_count) {
 
+#ifndef EVPL_IO_URING_LEGACY
         buf_count = evpl_io_uring_fill_recv_ring(evpl, ctx);
 
         //__io_uring_buf_ring_cq_advance(&ctx->ring, ctx->recv_ring, cq_count, buf_count);
 
         io_uring_buf_ring_advance(ctx->recv_ring, buf_count);
+#endif
         io_uring_cq_advance(&ctx->ring, cq_count);
 
         evpl_activity(evpl);
@@ -202,6 +211,13 @@ evpl_io_uring_create(
 
     memset(&params, 0, sizeof(params));
 
+#ifdef EVPL_IO_URING_LEGACY
+    /* Legacy liburing: use only basic flags */
+    if (sqpoll) {
+        params.flags = IORING_SETUP_SQPOLL;
+        params.sq_thread_idle = 1000;
+    }
+#else
     params.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_SQE128 | IORING_SETUP_CQE32;
 
     if (sqpoll) {
@@ -217,10 +233,13 @@ evpl_io_uring_create(
     params.flags |= IORING_SETUP_ATTACH_WQ;
     params.wq_fd  = shared->ring.ring_fd;
     #endif /* if 0 */
+#endif /* EVPL_IO_URING_LEGACY */
 
     ctx = evpl_zalloc(sizeof(*ctx));
 
+#ifndef EVPL_IO_URING_LEGACY
     ctx->next_send_group_id = EVPL_IO_URING_BUFGROUP_ID + 1;
+#endif
 
     ret = io_uring_queue_init_params(8192, &ctx->ring, &params);
 
@@ -239,6 +258,7 @@ evpl_io_uring_create(
 
     evpl_deferral_init(&ctx->flush, evpl_io_uring_flush_sqe, ctx);
 
+#ifndef EVPL_IO_URING_LEGACY
     ctx->recv_ring_size   = 8192;
     ctx->recv_buffer_size = 2 * 1024 * 1024;
 
@@ -254,6 +274,7 @@ evpl_io_uring_create(
     ctx->recv_ring_iov = evpl_zalloc(ctx->recv_ring_size * sizeof(struct evpl_iovec));
 
     evpl_io_uring_abort_if(ret < 0, "io_uring_setup_buf_ring");
+#endif
 
     ctx->poll = evpl_add_poll(evpl, evpl_io_uring_poll_enter, evpl_io_uring_poll_exit, evpl_io_uring_poll, ctx);
 
@@ -267,7 +288,9 @@ evpl_io_uring_destroy(
 {
     struct evpl_io_uring_context *ctx = private_data;
     struct evpl_io_uring_request *req;
+#ifndef EVPL_IO_URING_LEGACY
     int                           n;
+#endif
 
     while (ctx->free_requests) {
         req = ctx->free_requests;
@@ -275,6 +298,7 @@ evpl_io_uring_destroy(
         evpl_free(req);
     }
 
+#ifndef EVPL_IO_URING_LEGACY
     n = evpl_io_uring_fill_recv_ring(evpl, ctx);
 
     if (n) {
@@ -282,15 +306,18 @@ evpl_io_uring_destroy(
     }
 
     io_uring_free_buf_ring(&ctx->ring, ctx->recv_ring, ctx->recv_ring_size, 0);
+#endif
 
     io_uring_queue_exit(&ctx->ring);
 
     close(ctx->eventfd);
 
+#ifndef EVPL_IO_URING_LEGACY
     evpl_iovecs_release(evpl, ctx->recv_ring_iov, ctx->recv_ring_size);
 
     evpl_free(ctx->recv_ring_iov_empty);
     evpl_free(ctx->recv_ring_iov);
+#endif
 
     evpl_free(ctx);
 } /* evpl_io_uring_destroy */
