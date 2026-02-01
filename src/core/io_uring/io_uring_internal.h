@@ -44,7 +44,7 @@
 #define evpl_io_uring_cqe_get_data64(cqe) \
         ((uint64_t) (uintptr_t) io_uring_cqe_get_data((cqe)))
 
-#define evpl_io_uring_prep_writev2(sqe, fd, iov, nr_vecs, offset, flags) \
+#define evpl_io_uring_prep_writev2(sqe, fd, iov, nr_vecs, offset) \
         io_uring_prep_writev((sqe), (fd), (iov), (nr_vecs), (offset))
 
 #else /* !EVPL_IO_URING_LEGACY */
@@ -55,8 +55,8 @@
 #define evpl_io_uring_cqe_get_data64(cqe) \
         io_uring_cqe_get_data64((cqe))
 
-#define evpl_io_uring_prep_writev2(sqe, fd, iov, nr_vecs, offset, flags) \
-        io_uring_prep_writev2((sqe), (fd), (iov), (nr_vecs), (offset), (flags))
+#define evpl_io_uring_prep_writev2(sqe, fd, iov, nr_vecs, offset) \
+        io_uring_prep_writev2((sqe), (fd), (iov), (nr_vecs), (offset), 0)
 
 #endif /* EVPL_IO_URING_LEGACY */
 

@@ -104,7 +104,7 @@ evpl_io_uring_write(
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
     struct io_uring_sqe          *sqe;
     struct evpl_io_uring_request *req;
-    int                           i, need_bounce = 0, flags = 0;
+    int                           i, need_bounce = 0;
     uint64_t                      bounce_offset;
 
     req = evpl_io_uring_request_alloc(ctx, EVPL_IO_URING_REQ_BLOCK);
@@ -145,9 +145,9 @@ evpl_io_uring_write(
         req->block.bounce_iov.iov_base = req->block.bounce;
         req->block.bounce_iov.iov_len  = req->block.length;
 
-        evpl_io_uring_prep_writev2(sqe, dev->fd, &req->block.bounce_iov, 1, offset, flags);
+        evpl_io_uring_prep_writev2(sqe, dev->fd, &req->block.bounce_iov, 1, offset);
     } else {
-        evpl_io_uring_prep_writev2(sqe, dev->fd, req->block.iov, req->block.niov, offset, flags);
+        evpl_io_uring_prep_writev2(sqe, dev->fd, req->block.iov, req->block.niov, offset);
     }
 
     evpl_defer(evpl, &ctx->flush);
