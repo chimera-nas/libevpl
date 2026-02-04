@@ -21,6 +21,7 @@
 #ifdef EVPL_IOVEC_TRACE
 #include <stdlib.h>
 #include <stdio.h>
+#include <pthread.h>
 
 #define evpl_iovec_trace_abort(fmt, ...) \
         do { \
@@ -56,6 +57,9 @@ struct evpl_iovec_ref {
     void              (*release)(
         struct evpl           *evpl,
         struct evpl_iovec_ref *ref);
+#ifdef EVPL_IOVEC_TRACE
+    pthread_t         owner_thread;  /* Thread that allocated this ref (LOCAL only) */
+#endif
 };
 
 struct evpl_iovec {
@@ -188,6 +192,13 @@ evpl_iovec_ref_release(
         prev = atomic_fetch_sub_explicit(&ref->refcnt_atomic, 1,
                                          memory_order_release);
     } else {
+#ifdef EVPL_IOVEC_TRACE
+        evpl_iovec_trace_abort_if(!pthread_equal(pthread_self(), ref->owner_thread),
+                                  "evpl_iovec_ref_release called on LOCAL iovec from wrong thread "
+                                  "(owner=%lu, caller=%lu)",
+                                  (unsigned long) ref->owner_thread,
+                                  (unsigned long) pthread_self());
+#endif
         prev = ref->refcnt--;
     }
 
@@ -248,6 +259,13 @@ evpl_iovec_ref_incr(struct evpl_iovec_ref *ref)
     if (ref->flags & EVPL_IOVEC_FLAG_SHARED) {
         atomic_fetch_add_explicit(&ref->refcnt_atomic, 1, memory_order_relaxed);
     } else {
+#ifdef EVPL_IOVEC_TRACE
+        evpl_iovec_trace_abort_if(!pthread_equal(pthread_self(), ref->owner_thread),
+                                  "evpl_iovec_ref_incr called on LOCAL iovec from wrong thread "
+                                  "(owner=%lu, caller=%lu)",
+                                  (unsigned long) ref->owner_thread,
+                                  (unsigned long) pthread_self());
+#endif
         ref->refcnt++;
     }
 } /* evpl_iovec_ref_incr */
