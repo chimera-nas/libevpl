@@ -5,6 +5,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 option(IO_URING_ENABLED "Enable io_uring support" ON)
+set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES=required, NO=disabled)")
 
 project(libevpl LANGUAGES C)
 
@@ -51,6 +52,26 @@ else()
 endif()
 else()
     message(STATUS "IO_URING disabled")
+endif()
+
+if(NOT LIBAIO_ENABLED STREQUAL "NO" AND NOT LIBAIO_ENABLED STREQUAL "OFF")
+find_library(AIO_LIB NAMES aio)
+find_path(AIO_INCLUDE_DIR NAMES libaio.h)
+
+if (AIO_LIB AND AIO_INCLUDE_DIR)
+    message(STATUS "libaio library ${AIO_LIB}")
+    message(STATUS "libaio include ${AIO_INCLUDE_DIR}")
+    include_directories(${AIO_INCLUDE_DIR})
+    add_definitions(-DHAVE_LIBAIO)
+    set(HAVE_LIBAIO 1)
+else()
+    if(LIBAIO_ENABLED STREQUAL "YES" OR LIBAIO_ENABLED STREQUAL "ON")
+        message(FATAL_ERROR "libaio required but not found.")
+    endif()
+    message(STATUS "libaio library not found.")
+endif()
+else()
+    message(STATUS "LIBAIO disabled")
 endif()
 
 find_path(VFIO_INCLUDE_DIR NAMES linux/vfio.h)
