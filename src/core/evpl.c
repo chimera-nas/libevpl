@@ -56,6 +56,10 @@
 #include "xlio/xlio.h"
 #endif /* ifdef HAVE_XLIO */
 
+#ifdef HAVE_LIBAIO
+#include "libaio/libaio.h"
+#endif /* ifdef HAVE_LIBAIO */
+
 #include "socket/udp.h"
 #include "socket/tcp.h"
 #include "socket/tcp_rdma.h"
@@ -156,6 +160,16 @@ evpl_shared_init(struct evpl_global_config *config)
                                  evpl_block_protocol_vfio);
     }
 #endif /* ifdef HAVE_VFIO */
+
+#ifdef HAVE_LIBAIO
+    if (config->libaio_enabled) {
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_LIBAIO, &
+                            evpl_framework_libaio);
+
+        evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_LIBAIO,
+                                 &evpl_block_protocol_libaio);
+    }
+#endif /* ifdef HAVE_LIBAIO */
 
 #ifdef HAVE_XLIO
 

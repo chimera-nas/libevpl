@@ -11,6 +11,7 @@
 
 #include "io_uring_internal.h"
 
+#include "core/evpl_shared.h"
 #include "core/io_uring/io_uring.h"
 #include "core/poll.h"
 
@@ -222,7 +223,7 @@ evpl_io_uring_create(
 
     ctx->next_send_group_id = EVPL_IO_URING_BUFGROUP_ID + 1;
 
-    ret = io_uring_queue_init_params(8192, &ctx->ring, &params);
+    ret = io_uring_queue_init_params(evpl_shared->config->io_uring_entries, &ctx->ring, &params);
 
     evpl_io_uring_abort_if(ret < 0, "io_uring_queue_init_params() failed: %s (%d)", strerror(-ret), ret);
 

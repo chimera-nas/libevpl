@@ -45,6 +45,7 @@ evpl_global_config_init(void)
     }
 
     config->io_uring_enabled = 1;
+    config->io_uring_entries = 8192;
 
     config->rdmacm_enabled                = 1;
     config->rdmacm_tos                    = 0;
@@ -63,6 +64,9 @@ evpl_global_config_init(void)
     config->xlio_enabled = 1;
 
     config->vfio_enabled = 1;
+
+    config->libaio_enabled     = 1;
+    config->libaio_max_pending = 256;
 
     config->tls_cert_file    = NULL;
     config->tls_key_file     = NULL;
@@ -340,6 +344,14 @@ evpl_global_config_set_io_uring_enabled(
 } /* evpl_global_config_set_io_uring_enabled */
 
 SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_entries(
+    struct evpl_global_config *config,
+    unsigned int               entries)
+{
+    config->io_uring_entries = entries;
+} /* evpl_global_config_set_io_uring_entries */
+
+SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_enabled(
     struct evpl_global_config *config,
     int                        enabled)
@@ -434,6 +446,22 @@ evpl_global_config_set_vfio_enabled(
 {
     config->vfio_enabled = enabled;
 } /* evpl_global_config_set_vfio_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libaio_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->libaio_enabled = enabled;
+} /* evpl_global_config_set_libaio_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libaio_max_pending(
+    struct evpl_global_config *config,
+    unsigned int               max_pending)
+{
+    config->libaio_max_pending = max_pending;
+} /* evpl_global_config_set_libaio_max_pending */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_hf_time_mode(

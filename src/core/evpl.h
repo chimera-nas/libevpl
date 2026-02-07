@@ -48,6 +48,7 @@ struct evpl_global_config {
     unsigned int              resolve_timeout_ms;
 
     unsigned int              io_uring_enabled;
+    unsigned int              io_uring_entries;
 
     unsigned int              rdmacm_enabled;
     unsigned int              rdmacm_tos;
@@ -66,6 +67,9 @@ struct evpl_global_config {
     unsigned int              xlio_enabled;
 
     unsigned int              vfio_enabled;
+
+    unsigned int              libaio_enabled;
+    unsigned int              libaio_max_pending;
 
     char                     *tls_cert_file;
     char                     *tls_key_file;

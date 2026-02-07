@@ -17,7 +17,8 @@ enum evpl_framework_id {
     EVPL_FRAMEWORK_VFIO     = 3,
     EVPL_FRAMEWORK_TLS      = 4,
     EVPL_FRAMEWORK_TCP_RDMA = 5,
-    EVPL_NUM_FRAMEWORK      = 6
+    EVPL_FRAMEWORK_LIBAIO   = 6,
+    EVPL_NUM_FRAMEWORK      = 7
 };
 
 enum evpl_protocol_id {
@@ -36,7 +37,8 @@ enum evpl_protocol_id {
 enum evpl_block_protocol_id {
     EVPL_BLOCK_PROTOCOL_IO_URING = 0,
     EVPL_BLOCK_PROTOCOL_VFIO     = 1,
-    EVPL_NUM_BLOCK_PROTOCOL      = 2
+    EVPL_BLOCK_PROTOCOL_LIBAIO   = 2,
+    EVPL_NUM_BLOCK_PROTOCOL      = 3
 };
 
 struct evpl;

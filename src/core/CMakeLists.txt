@@ -52,6 +52,12 @@ if (HAVE_IO_URING)
     set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} uring)
 endif()
 
+if (HAVE_LIBAIO)
+    set(CORE_SRC ${CORE_SRC} libaio/libaio.c libaio/libaio_block.c libaio/libaio.h)
+    add_subdirectory(libaio)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} aio)
+endif()
+
 if (HAVE_RDMACM)
     set(CORE_SRC ${CORE_SRC} rdmacm/rdmacm.c rdmacm/rdmacm.h)
     add_subdirectory(rdmacm)

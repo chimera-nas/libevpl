@@ -124,6 +124,10 @@ void evpl_global_config_set_io_uring_enabled(
     struct evpl_global_config *config,
     int                        enabled);
 
+void evpl_global_config_set_io_uring_entries(
+    struct evpl_global_config *config,
+    unsigned int               entries);
+
 void evpl_global_config_set_rdmacm_enabled(
     struct evpl_global_config *config,
     int                        enabled);
@@ -171,6 +175,14 @@ void evpl_global_config_set_xlio_enabled(
 void evpl_global_config_set_vfio_enabled(
     struct evpl_global_config *config,
     int                        enabled);
+
+void evpl_global_config_set_libaio_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+void evpl_global_config_set_libaio_max_pending(
+    struct evpl_global_config *config,
+    unsigned int               max_pending);
 
 void evpl_global_config_set_hf_time_mode(
     struct evpl_global_config *config,

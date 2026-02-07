@@ -342,7 +342,7 @@ evpl_buffer_alloc(
     buffer->used       = 0;
 #ifdef EVPL_IOVEC_TRACE
     buffer->ref.owner_thread = pthread_self();
-#endif
+#endif /* ifdef EVPL_IOVEC_TRACE */
 
     if (flags & EVPL_IOVEC_FLAG_SHARED) {
         buffer->ref.release = evpl_buffer_free;
