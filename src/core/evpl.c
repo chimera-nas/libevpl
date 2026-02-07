@@ -354,7 +354,7 @@ evpl_continue(struct evpl *evpl)
     struct evpl_deferral *deferral;
     struct evpl_poll     *poll;
     struct evpl_timer    *timer;
-    int                   i, n;
+    int                   i;
     int                   msecs = evpl->config.wait_ms;
     uint64_t              elapsed;
     int64_t               remain;
@@ -442,14 +442,12 @@ evpl_continue(struct evpl *evpl)
             msecs = 0;
         }
 
-        n = evpl_core_wait(&evpl->core, msecs);
+        (void) evpl_core_wait(&evpl->core, msecs);
 
-        if (evpl->pending_close_binds && n == 0) {
-            while (evpl->pending_close_binds) {
-                bind = evpl->pending_close_binds;
-                bind->protocol->close(evpl, bind);
-                evpl_bind_destroy(evpl, bind);
-            }
+        while (evpl->pending_close_binds) {
+            bind = evpl->pending_close_binds;
+            bind->protocol->close(evpl, bind);
+            evpl_bind_destroy(evpl, bind);
         }
 
         evpl->poll_iterations = 0;
