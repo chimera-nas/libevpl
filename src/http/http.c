@@ -846,6 +846,13 @@ evpl_http_server_flush(
 
                 evpl_sendv(evpl, bind, &iov, 1, 5, EVPL_SEND_FLAG_TAKE_REF);
 
+#ifdef __clang_analyzer__
+                /* DL_DELETE asserts head != NULL but NDEBUG strips it
+                 * in Release builds; guide the analyzer explicitly */
+                if (!conn->pending_requests) {
+                    return;
+                }
+#endif /* ifdef __clang_analyzer__ */
                 DL_DELETE(conn->pending_requests, request);
                 evpl_http_request_free(conn->agent, request);
             } else {
