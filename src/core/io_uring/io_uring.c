@@ -552,15 +552,30 @@ evpl_io_uring_zcrx_setup(struct evpl_io_uring_context *ctx)
     rc = io_uring_register_ifq(&ctx->ring, &ifq_reg);
 
     if (rc < 0) {
-        if (evpl_io_uring_mode_required(cfg->io_uring_zerocopy_rx)) {
+        /* -EEXIST means another io_uring ring in this process has already
+         * registered an ifq on this rxq (kernel allows only one memory
+         * provider per queue). This is expected in libevpl's multi-ring
+         * model: the listener thread's ring gets the ZCRX page-pool first,
+         * and subsequent per-thread rings (workers) hit EEXIST. Treat that
+         * as "ZCRX already established for this queue" and downgrade THIS
+         * ring's recv path to non-ZC, even when zerocopy_rx=ON. Packets
+         * still land in the ZCRX area; the kernel falls back to
+         * io_zcrx_copy_chunk for non-ZC consumers — data flows, just not
+         * zero-copy on this ring.
+         */
+        if (rc != -EEXIST &&
+            evpl_io_uring_mode_required(cfg->io_uring_zerocopy_rx)) {
             evpl_io_uring_abort(
                 "io_uring_register_ifq(if=%s rxq=%u) failed: %s",
                 cfg->io_uring_zcrx_interface, cfg->io_uring_zcrx_rxq,
                 strerror(-rc));
         }
         evpl_io_uring_info(
-            "io_uring_register_ifq failed: %s — falling back",
-            strerror(-rc));
+            "io_uring_register_ifq failed: %s%s",
+            strerror(-rc),
+            rc == -EEXIST
+              ? " (queue already has a ZCRX ifq — using non-ZC recv on this ring)"
+              : " — falling back");
         munmap(z->rq_ring, z->rq_ring_size);
         munmap(z->area, z->area_size);
         evpl_free(z);
