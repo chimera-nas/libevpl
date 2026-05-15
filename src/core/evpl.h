@@ -49,6 +49,15 @@ struct evpl_global_config {
 
     unsigned int              io_uring_enabled;
     unsigned int              io_uring_entries;
+    unsigned int              io_uring_zerocopy_rx;
+    char                     *io_uring_zcrx_interface;
+    unsigned int              io_uring_zcrx_rxq;
+    unsigned int              io_uring_zcrx_area_size;
+    unsigned int              io_uring_zcrx_rq_entries;
+    unsigned int              io_uring_registered_buffers;
+    unsigned int              io_uring_registered_files;
+    unsigned int              io_uring_send_zc;
+    unsigned int              io_uring_recv_bundle;
 
     unsigned int              rdmacm_enabled;
     unsigned int              rdmacm_tos;
