@@ -611,10 +611,18 @@ evpl_io_uring_setup_socket(
 {
     int flags, rc, yes = 1, n;
 
-    n = evpl_io_uring_fill_recv_ring(evpl, ctx);
-
-    if (n) {
-        io_uring_buf_ring_advance(ctx->recv_ring, n);
+    /* Filling the recv buf ring allocates one 2 MiB iovec per slot from
+     * the slab allocator (8 K slots = 16 GiB on the default config). The
+     * listen socket itself never consumes recv buffers — only accepted
+     * sockets do — so skip the fill on listen-socket setup to avoid
+     * thrashing the slab allocator and blocking the listener thread for
+     * seconds before it can submit the multishot-accept SQE.
+     */
+    if (!listen) {
+        n = evpl_io_uring_fill_recv_ring(evpl, ctx);
+        if (n) {
+            io_uring_buf_ring_advance(ctx->recv_ring, n);
+        }
     }
 
     s->send_group_id = ctx->next_send_group_id++;
@@ -680,14 +688,20 @@ evpl_io_uring_setup_socket(
         evpl_io_uring_post_multishot_recv(evpl, ctx, s);
     }
 
-    /* Always set up the per-socket send_ring; it is the fallback path when
-     * an iov is not eligible for FIXED_BUF (e.g. when its slab has not yet
-     * been pushed into our ring's registered-buffer table).
-     */
-    s->send_ring = io_uring_setup_buf_ring(&ctx->ring, 64,
-                                           s->send_group_id, 0, &rc);
-    s->send_ring_mask = io_uring_buf_ring_mask(64);
-    evpl_io_uring_abort_if(rc, "Failed to setup send ring");
+    if (listen) {
+        /* A listen socket never sends, so skip the per-socket send-buf-ring. */
+        s->send_ring      = NULL;
+        s->send_ring_mask = 0;
+    } else {
+        /* Per-socket send_ring is the fallback path when an iov is not
+         * eligible for FIXED_BUF (e.g. its slab has not yet been pushed
+         * into this ring's registered-buffer table).
+         */
+        s->send_ring = io_uring_setup_buf_ring(&ctx->ring, 64,
+                                               s->send_group_id, 0, &rc);
+        s->send_ring_mask = io_uring_buf_ring_mask(64);
+        evpl_io_uring_abort_if(rc, "Failed to setup send ring");
+    }
 
 } /* evpl_io_uring_setup_socket */
 
