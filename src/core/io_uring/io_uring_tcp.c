@@ -648,22 +648,32 @@ evpl_io_uring_setup_socket(
 
 #ifdef HAVE_IO_URING_ZCRX
         if (ctx->effective.zcrx && ctx->zcrx) {
+            /* When the ifq is registered on this ring, the queue's
+             * page-pool memory provider is owned by ZCRX and the only way
+             * to consume RX data is IORING_OP_RECV_ZC. The caller is
+             * responsible for steering only ZCRX-bound traffic to this
+             * ring (typically via ethtool ntuple on a dedicated RX queue).
+             *
+             * SO_INCOMING_NAPI_ID is unreliable right after accept() on
+             * some kernels (the per-socket NAPI binding has not been
+             * latched yet, so getsockopt returns 0), so we don't gate on
+             * it. We do still record the queue's NAPI id from the first
+             * non-zero observation for diagnostics.
+             */
             int       napi_id;
             socklen_t napi_len = sizeof(napi_id);
             if (getsockopt(s->fd, SOL_SOCKET, SO_INCOMING_NAPI_ID, &napi_id,
                            &napi_len) == 0 && napi_id != 0) {
                 if (ctx->zcrx->napi_id == 0) {
                     ctx->zcrx->napi_id = (uint32_t) napi_id;
-                }
-                if ((uint32_t) napi_id == ctx->zcrx->napi_id) {
-                    s->zcrx_enabled = 1;
-                } else {
+                } else if ((uint32_t) napi_id != ctx->zcrx->napi_id) {
                     evpl_io_uring_info(
                         "socket NAPI id %d does not match zcrx ifq (%u); "
-                        "this socket will use non-ZC recv",
+                        "expect traffic to land on the wrong queue",
                         napi_id, ctx->zcrx->napi_id);
                 }
             }
+            s->zcrx_enabled = 1;
         }
 #endif /* ifdef HAVE_IO_URING_ZCRX */
 
