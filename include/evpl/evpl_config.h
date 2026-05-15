@@ -157,6 +157,10 @@ void evpl_global_config_set_io_uring_zcrx_rx_buf_len(
     struct evpl_global_config *config,
     unsigned int               len);
 
+void evpl_global_config_set_io_uring_zcrx_area_import(
+    struct evpl_global_config *config,
+    int                        enable);
+
 void evpl_global_config_set_io_uring_registered_buffers(
     struct evpl_global_config *config,
     unsigned int               mode);

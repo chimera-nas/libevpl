@@ -496,6 +496,15 @@ evpl_io_uring_zcrx_setup(struct evpl_io_uring_context *ctx)
     memset(&area_reg, 0, sizeof(area_reg));
     area_reg.addr = (uintptr_t) z->area;
     area_reg.len  = z->area_size;
+    /* Kernel UAPI adds enum zcrx_reg_flags { ZCRX_REG_IMPORT = 1 }. Some
+     * driver paths only accept a user-supplied area when this flag is set;
+     * older kernels treat the flags field as reserved and ignore unknown
+     * bits, so setting it is safe to do unconditionally on a kernel that
+     * supports IORING_OP_RECV_ZC.
+     */
+    if (cfg->io_uring_zcrx_area_import) {
+        area_reg.flags = 1; /* ZCRX_REG_IMPORT */
+    }
 
     memset(&region, 0, sizeof(region));
     region.user_addr = (uintptr_t) z->rq_ring;
