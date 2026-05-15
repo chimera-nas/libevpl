@@ -406,6 +406,7 @@ evpl_io_uring_tcp_send_callback(
     if (req->tcp.is_send_zc) {
         bytes = req->tcp.sent_bytes;
         evpl_iovec_release(evpl, &req->tcp.send_iov);
+        req->tcp.send_iov.data = NULL;
     } else {
         if (req->res < 0) {
             evpl_io_uring_error("send_req status res %d", req->res);
@@ -414,6 +415,7 @@ evpl_io_uring_tcp_send_callback(
         if (req->tcp.use_fixed_buf) {
             /* FIXED_BUF non-ZC: iov stored on req */
             evpl_iovec_release(evpl, &req->tcp.send_iov);
+            req->tcp.send_iov.data = NULL;
         } else {
             /* Legacy provided-buffer send ring */
             unsigned int buffer_id = req->tcp.send_buffer_id;
@@ -464,14 +466,6 @@ evpl_io_uring_pump(
     int                           use_fixed_buf;
     int                           use_send_zc;
 
-    /* Make sure any slabs that became globally registered since our last
-     * sync are pushed into this ring's buffer table before we issue any
-     * FIXED_BUF send.
-     */
-    if (ctx->effective.fixed_buf) {
-        evpl_io_uring_sync_registered_buffers(ctx);
-    }
-
     while (!evpl_iovec_ring_is_empty(&bind->iovec_send)) {
 
         tail_iov = evpl_iovec_ring_tail(&bind->iovec_send);
@@ -482,16 +476,22 @@ evpl_io_uring_pump(
         buf_offset    = 0;
 
 #ifdef HAVE_IO_URING_RECVSEND_FIXED_BUF
-        if (ctx->effective.fixed_buf) {
+        /* FIXED_BUF is only honored by the kernel for SEND_ZC (and RECV_ZC).
+         * For plain IORING_OP_SEND the FIXED_BUF flag yields -EINVAL on
+         * current kernels, so only take the fixed path when SEND_ZC is
+         * also effective.
+         */
+        if (ctx->effective.fixed_buf && ctx->effective.send_zc) {
             use_fixed_buf = evpl_io_uring_iov_to_fixed(tail_iov, &buf_index,
                                                        &buf_offset);
-            /* Only eligible if the buf_index is below our high water — i.e.
-             * we've already pushed this slab into the per-ring table.
+            /* Lazily register this slab on first use; fall back to the
+             * legacy provided-buffer send path if registration fails.
              */
-            if (use_fixed_buf && buf_index >= ctx->buf_high_water) {
+            if (use_fixed_buf &&
+                !evpl_io_uring_ensure_buf_registered(ctx, buf_index)) {
                 use_fixed_buf = 0;
             }
-            if (use_fixed_buf && ctx->effective.send_zc) {
+            if (use_fixed_buf) {
                 use_send_zc = 1;
             }
         }
@@ -595,7 +595,7 @@ evpl_io_uring_pump(
         s->reqs_inflight++;
     }
 
-    if (!ctx->effective.fixed_buf && offset > 0) {
+    if (offset > 0) {
         io_uring_buf_ring_advance(s->send_ring, offset);
     }
 
@@ -795,6 +795,7 @@ evpl_io_uring_close(
 {
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
     struct evpl_io_uring_socket  *s   = evpl_bind_private(bind);
+    int                           i;
 
     /* Detach in-flight multishot recv/accept requests from this socket so
      * that any final CQE that arrives after the bind is destroyed sees a
@@ -809,6 +810,18 @@ evpl_io_uring_close(
     if (s->accept_req) {
         s->accept_req->tcp.socket = NULL;
         s->accept_req             = NULL;
+    }
+
+    /* Release any iovecs still parked in the per-socket legacy
+     * provided-buffer send ring. Their owning requests may still be in
+     * flight in the kernel but the completion path (with s detached above)
+     * will not touch the iovec slot.
+     */
+    for (i = 0; i < 64; i++) {
+        if (!(s->send_ring_empty & (1ULL << i))) {
+            evpl_iovec_release(evpl, &s->send_ring_iov[i]);
+            s->send_ring_empty |= (1ULL << i);
+        }
     }
 
     if (s->direct_fd_idx >= 0) {

@@ -166,8 +166,13 @@ struct evpl_io_uring_context {
     struct evpl_io_uring_caps        caps;
     struct evpl_io_uring_effective   effective;
 
-    /* Registered buffers (FIXED_BUF) */
-    unsigned int                     buf_high_water;
+    /* Registered buffers (FIXED_BUF) — slabs are registered into this
+     * ring's table lazily on first use (see evpl_io_uring_ensure_buf
+     * in pump). One bit per slab index; 1024 bits =
+     * EVPL_IO_URING_MAX_REGISTERED_BUFFERS.
+     */
+    uint64_t                         buf_registered[
+        (EVPL_IO_URING_MAX_REGISTERED_BUFFERS + 63) / 64];
 
     /* Registered files (FIXED_FILE) — direct-fd table */
     int                             *direct_fd_slot;
@@ -247,7 +252,15 @@ evpl_io_uring_request_alloc(
 
     switch (req_type) {
         case EVPL_IO_URING_REQ_TCP:
-            req->tcp.socket = NULL;
+            req->tcp.socket         = NULL;
+            req->tcp.msgs_sent      = 0;
+            req->tcp.is_send_zc     = 0;
+            req->tcp.use_fixed_buf  = 0;
+            req->tcp.send_buffer_id = 0;
+            req->tcp.sent_bytes     = 0;
+            req->tcp.send_iov.data  = NULL;
+            req->tcp.send_iov.length = 0;
+            req->tcp.send_iov.ref    = NULL;
             break;
         case EVPL_IO_URING_REQ_BLOCK:
             req->block.bounce        = NULL;
@@ -270,54 +283,64 @@ evpl_io_uring_request_free(
     LL_PREPEND(ctx->free_requests, req);
 } /* evpl_io_uring_request_free */
 
+/* Test whether slab index N has been registered into this ring's
+ * FIXED_BUF table.
+ */
 static inline int
-evpl_io_uring_sync_registered_buffers(struct evpl_io_uring_context *ctx)
+evpl_io_uring_buf_is_registered(
+    const struct evpl_io_uring_context *ctx,
+    unsigned int                        idx)
+{
+    return (ctx->buf_registered[idx >> 6] & (1ULL << (idx & 63))) != 0;
+}
+
+/* Register a specific slab into this ring's FIXED_BUF table on first use.
+ * Returns 1 on success (or already registered), 0 if registration failed
+ * (caller falls back to the legacy non-FIXED send path). The first call
+ * for a given slab pins its pages (an O(slab_size) blocking syscall);
+ * subsequent calls are O(1) via the buf_registered bitmap.
+ */
+static inline int
+evpl_io_uring_ensure_buf_registered(
+    struct evpl_io_uring_context *ctx,
+    unsigned int                  idx)
 {
 #ifdef HAVE_IO_URING_REGISTER_BUFFERS_SPARSE
-    struct evpl_io_uring_shared *shared = evpl_shared->framework_private[
-        EVPL_FRAMEWORK_IO_URING];
-    unsigned int                 target;
-    int                          rc = 0;
+    struct evpl_io_uring_shared *shared;
+    struct iovec                 iov;
+    int                          rc;
 
-    if (!shared || !ctx->effective.fixed_buf) {
+    if (evpl_io_uring_buf_is_registered(ctx, idx)) {
+        return 1;
+    }
+
+    shared = evpl_shared->framework_private[EVPL_FRAMEWORK_IO_URING];
+    if (!shared || idx >= shared->buf_count) {
         return 0;
     }
 
-    target = atomic_load_explicit((_Atomic unsigned int *) &shared->buf_count,
-                                  memory_order_acquire);
+    iov.iov_base = shared->buf_slabs[idx].addr;
+    iov.iov_len  = shared->buf_slabs[idx].len;
 
-    while (ctx->buf_high_water < target) {
-        struct iovec iov;
+    rc = io_uring_register_buffers_update_tag(&ctx->ring, idx, &iov, NULL, 1);
 
-        iov.iov_base = shared->buf_slabs[ctx->buf_high_water].addr;
-        iov.iov_len  = shared->buf_slabs[ctx->buf_high_water].len;
-
-        rc = io_uring_register_buffers_update_tag(
-            &ctx->ring, ctx->buf_high_water, &iov, NULL, 1);
-
-        if (rc < 0) {
-            /* Most common cause: RLIMIT_MEMLOCK exhausted. Disable FIXED_BUF
-             * for this ctx so we fall back to the legacy provided-buffer
-             * send path. We only log once per ctx to avoid spam.
-             */
-            evpl_io_uring_info(
-                "io_uring_register_buffers_update_tag(idx=%u) failed: %s — "
-                "disabling fixed_buf for this ring (check RLIMIT_MEMLOCK)",
-                ctx->buf_high_water, strerror(-rc));
-            ctx->effective.fixed_buf = 0;
-            ctx->effective.send_zc   = 0;
-            break;
-        }
-
-        ctx->buf_high_water++;
+    if (rc < 0) {
+        evpl_io_uring_info(
+            "io_uring_register_buffers_update_tag(idx=%u) failed: %s — "
+            "disabling fixed_buf for this ring (check RLIMIT_MEMLOCK)",
+            idx, strerror(-rc));
+        ctx->effective.fixed_buf = 0;
+        ctx->effective.send_zc   = 0;
+        return 0;
     }
 
-    return rc;
-#else // ifdef HAVE_IO_URING_REGISTER_BUFFERS_SPARSE
-    (void) ctx;
+    ctx->buf_registered[idx >> 6] |= (1ULL << (idx & 63));
+    return 1;
+#else /* HAVE_IO_URING_REGISTER_BUFFERS_SPARSE */
+    (void) ctx; (void) idx;
     return 0;
-#endif // ifdef HAVE_IO_URING_REGISTER_BUFFERS_SPARSE
-} // evpl_io_uring_sync_registered_buffers
+#endif
+}
 
 /* Resolve an evpl_iovec to a (buf_index, offset) for IORING_RECVSEND_FIXED_BUF.
  * Returns 1 on success, 0 if the iovec is not backed by a registered slab.

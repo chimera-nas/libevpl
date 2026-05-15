@@ -224,10 +224,6 @@ evpl_io_uring_complete(
         evpl_activity(evpl);
     }
 
-    if (ctx->effective.fixed_buf) {
-        evpl_io_uring_sync_registered_buffers(ctx);
-    }
-
     return cq_count;
 } /* evpl_io_uring_complete */
 
@@ -684,9 +680,16 @@ evpl_io_uring_create(
                 EVPL_IO_URING_MAX_REGISTERED_BUFFERS, strerror(-ret));
             ctx->effective.fixed_buf = 0;
             ctx->effective.send_zc   = 0;
-        } else {
-            evpl_io_uring_sync_registered_buffers(ctx);
         }
+        /* Do NOT bulk-sync existing slabs here: each slab is up to slab_size
+         * bytes (default 1 GiB) and io_uring_register_buffers_update_tag pins
+         * those pages synchronously. Pinning many slabs at ctx-create time
+         * can block the worker thread long enough to miss its first accept.
+         * Instead, sync registers ONE slab per call from the pump/complete
+         * paths; iov_to_fixed checks ctx->buf_high_water and the pump falls
+         * back to the legacy provided-buffer-ring path for any iov whose
+         * slab has not yet been registered on this ring.
+         */
     }
 #endif /* ifdef HAVE_IO_URING_REGISTER_BUFFERS_SPARSE */
 
@@ -742,7 +745,20 @@ evpl_io_uring_destroy(
         for (int i = 0; i < cq; i++) {
             struct evpl_io_uring_request *r =
                 (struct evpl_io_uring_request *) io_uring_cqe_get_data64(cqes[i]);
-            if (!(cqes[i]->flags & IORING_CQE_F_MORE) && r) {
+            if (!r) {
+                continue;
+            }
+            /* Release iov on terminal CQEs for FIXED_BUF / SEND_ZC sends —
+             * normally done in the send_callback, but during shutdown we
+             * bypass the callback (the bind/socket may already be freed).
+             */
+            if (r->req_type == EVPL_IO_URING_REQ_TCP &&
+                !(cqes[i]->flags & IORING_CQE_F_MORE) &&
+                (r->tcp.use_fixed_buf || r->tcp.is_send_zc) &&
+                r->tcp.send_iov.data != NULL) {
+                evpl_iovec_release(evpl, &r->tcp.send_iov);
+            }
+            if (!(cqes[i]->flags & IORING_CQE_F_MORE)) {
                 evpl_io_uring_request_free(ctx, r);
             }
         }
