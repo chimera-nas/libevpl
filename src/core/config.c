@@ -51,6 +51,7 @@ evpl_global_config_init(void)
     config->io_uring_zcrx_rxq           = 0;
     config->io_uring_zcrx_area_size     = 256 * 1024 * 1024;
     config->io_uring_zcrx_rq_entries    = 4096;
+    config->io_uring_zcrx_rx_buf_len    = 0;
     config->io_uring_registered_buffers = EVPL_IO_URING_AUTO;
     config->io_uring_registered_files   = EVPL_IO_URING_AUTO;
     config->io_uring_send_zc            = EVPL_IO_URING_AUTO;
@@ -409,6 +410,14 @@ evpl_global_config_set_io_uring_zcrx_rq_entries(
 {
     config->io_uring_zcrx_rq_entries = entries;
 } /* evpl_global_config_set_io_uring_zcrx_rq_entries */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_rx_buf_len(
+    struct evpl_global_config *config,
+    unsigned int               len)
+{
+    config->io_uring_zcrx_rx_buf_len = len;
+} /* evpl_global_config_set_io_uring_zcrx_rx_buf_len */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_io_uring_registered_buffers(

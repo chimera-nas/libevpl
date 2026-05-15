@@ -54,6 +54,7 @@ struct evpl_global_config {
     unsigned int              io_uring_zcrx_rxq;
     unsigned int              io_uring_zcrx_area_size;
     unsigned int              io_uring_zcrx_rq_entries;
+    unsigned int              io_uring_zcrx_rx_buf_len;
     unsigned int              io_uring_registered_buffers;
     unsigned int              io_uring_registered_files;
     unsigned int              io_uring_send_zc;
