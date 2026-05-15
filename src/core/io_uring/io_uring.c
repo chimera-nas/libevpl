@@ -38,7 +38,14 @@ evpl_io_uring_flush_sqe(
         evpl_io_uring_info("had to wake up the kernel sqpoll thread");
     }
 
-    io_uring_submit(&ctx->ring);
+    /* Use submit_and_get_events so that DEFER_TASKRUN rings actually
+     * deliver completions to the user-side CQ ring on this syscall.
+     * With plain io_uring_submit() on a DEFER_TASKRUN ring, task work
+     * (including accept / recv multishot completions) stays deferred
+     * and our peek_batch_cqe never sees the CQEs. With SQPOLL rings
+     * this call has no extra cost over plain submit.
+     */
+    io_uring_submit_and_get_events(&ctx->ring);
 } /* evpl_io_uring_flush */
 
 
@@ -165,6 +172,14 @@ evpl_io_uring_complete(
     uint64_t                      debounce_offset;
     struct evpl_io_uring_request *req;
     int                           buf_count = 0, cq_count = 0;
+
+    /* On DEFER_TASKRUN rings, task work (and therefore CQE delivery) is
+     * deferred until the ring is entered with IORING_ENTER_GETEVENTS.
+     * Drive that explicitly so the user-side CQ ring sees fresh events
+     * even when no SQE has just been submitted. Cheap when there is no
+     * work to do, no-op on SQPOLL rings.
+     */
+    io_uring_get_events(&ctx->ring);
     struct io_uring_cqe          *cqes[64], *cqe;
 
     cq_count = io_uring_peek_batch_cqe(&ctx->ring, cqes, 64);
