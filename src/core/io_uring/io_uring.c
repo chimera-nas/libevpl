@@ -518,20 +518,21 @@ evpl_io_uring_zcrx_setup(struct evpl_io_uring_context *ctx)
     ifq_reg.area_ptr   = (uintptr_t) &area_reg;
     ifq_reg.region_ptr = (uintptr_t) &region;
 
-    /* Kernels >= the one that landed ZCRX_FEATURE_RX_PAGE_SIZE rename the
-     * trailing __resv2 slot in io_uring_zcrx_ifq_reg to rx_buf_len, and
-     * reject rx_buf_len == 0 with -EINVAL. The installed liburing header
-     * may still call this field __resv2; the byte layout is identical
-     * either way, so we set the same 4-byte slot regardless of name.
+    /* The trailing __resv2 slot in io_uring_zcrx_ifq_reg was renamed to
+     * rx_buf_len on kernels that landed ZCRX_FEATURE_RX_PAGE_SIZE. Field
+     * semantics:
+     *   rx_buf_len == 0  -> let the driver pick (PAGE_SIZE by default).
+     *                       Required on drivers that don't yet advertise
+     *                       QCFG_RX_PAGE_SIZE (e.g. mlx5 v7.0); a non-zero
+     *                       value there is rejected with -EOPNOTSUPP
+     *                       "device does not support: rx_page_size".
+     *   rx_buf_len != 0  -> request a specific page size. Driver must
+     *                       advertise QCFG_RX_PAGE_SIZE.
+     * Default behaviour: pass through whatever the user configured
+     * (default 0). The installed liburing header may still call this
+     * field __resv2; byte layout is identical either way.
      */
-    {
-        unsigned rx_buf_len = cfg->io_uring_zcrx_rx_buf_len;
-        if (rx_buf_len == 0) {
-            long ps = sysconf(_SC_PAGESIZE);
-            rx_buf_len = (ps > 0) ? (unsigned) ps : 4096u;
-        }
-        ifq_reg.__resv2 = rx_buf_len;
-    }
+    ifq_reg.__resv2 = cfg->io_uring_zcrx_rx_buf_len;
 
     rc = io_uring_register_ifq(&ctx->ring, &ifq_reg);
 
