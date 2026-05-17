@@ -27,48 +27,91 @@ extern struct evpl_shared *evpl_shared;
 
 #include "common.h"
 
-static inline void
-evpl_xlio_prepare_iov(
+/* Gather a contiguous run of iovecs from the send ring that share the
+ * same mkey (xlio_socket_sendv takes one mkey for the whole batch).
+ */
+static inline int
+evpl_xlio_prepare_batch(
     struct evpl                  *evpl,
     struct evpl_xlio             *xlio,
     struct evpl_xlio_socket      *s,
-    struct iovec                 *iov,
+    struct iovec                 *iovs,
+    int                           max_niov,
     struct xlio_socket_send_attr *send_attr,
-    struct evpl_iovec_ring       *ring)
+    struct evpl_iovec_ring       *ring,
+    uint64_t                     *r_total,
+    struct evpl_xlio_zc         **r_zc)
 {
     struct ibv_mr      **mrset;
     struct evpl_iovec   *iovec;
-    struct evpl_xlio_zc *zc;
-    int                  pos = ring->tail;
+    struct evpl_xlio_zc *zc           = NULL;
+    int                  pos          = ring->tail;
+    int                  niov         = 0;
+    int                  batch_inline = -1;
+    unsigned int         batch_key    = 0;
+    uint64_t             total        = 0;
 
-    iovec = &ring->iovec[pos];
+    *r_zc    = NULL;
+    *r_total = 0;
 
-    mrset = evpl_memory_framework_private(iovec, EVPL_FRAMEWORK_XLIO);
+    if (max_niov > EVPL_XLIO_BATCH_MAX) {
+        max_niov = EVPL_XLIO_BATCH_MAX;
+    }
 
-    send_attr->mkey = mrset[s->pd_index]->lkey;
+    while (pos != ring->head && niov < max_niov) {
+        iovec = &ring->iovec[pos];
 
-    iov->iov_base = iovec->data;
-    iov->iov_len  = iovec->length;
+        int          this_inline = (iovec->length <= 64) ? 1 : 0;
+        unsigned int this_key;
 
-    if (iovec->length <= 64) {
-        send_attr->flags = XLIO_SOCKET_SEND_FLAG_INLINE;
+        mrset    = evpl_memory_framework_private(iovec, EVPL_FRAMEWORK_XLIO);
+        this_key = mrset[s->pd_index]->lkey;
 
-        evpl_xlio_send_completion(evpl, s, iovec->length);
+        if (niov == 0) {
+            batch_key    = this_key;
+            batch_inline = this_inline;
+        } else if (this_key != batch_key || this_inline != batch_inline) {
+            break;
+        }
+
+        iovs[niov].iov_base = iovec->data;
+        iovs[niov].iov_len  = iovec->length;
+        total              += iovec->length;
+        niov++;
+        pos = (pos + 1) & ring->mask;
+    }
+
+    if (niov == 0) {
+        return 0;
+    }
+
+    send_attr->mkey = batch_key;
+
+    if (batch_inline) {
+        send_attr->flags       = XLIO_SOCKET_SEND_FLAG_INLINE;
+        send_attr->userdata_op = 0;
     } else {
-        send_attr->flags = 0;
+        zc         = evpl_xlio_alloc_zc(xlio);
+        zc->niov   = niov;
+        zc->length = total;
 
-        zc = evpl_xlio_alloc_zc(xlio);
-
-        zc->buffer = container_of(evpl_iovec_get_ref(iovec),
-                                  struct evpl_xlio_buffer, ref);
-        zc->length = iovec->length;
+        int p = ring->tail;
+        for (int i = 0; i < niov; i++) {
+            zc->refs[i] = evpl_iovec_get_ref(&ring->iovec[p]);
+            p           = (p + 1) & ring->mask;
+        }
 
         s->zc_pending++;
 
+        send_attr->flags       = 0;
         send_attr->userdata_op = (uintptr_t) zc;
     }
 
-} /* evpl_xlio_prepare_iov */
+    *r_total = total;
+    *r_zc    = zc;
+
+    return niov;
+} /* evpl_xlio_prepare_batch */
 
 void
 evpl_xlio_tcp_read(
@@ -126,24 +169,47 @@ evpl_xlio_tcp_write(
 {
     struct evpl_xlio            *xlio;
     struct evpl_bind            *bind = evpl_private2bind(s);
-    struct iovec                 iov;
+    struct iovec                 iovs[EVPL_XLIO_BATCH_MAX];
     struct xlio_socket_send_attr send_attr;
+    struct evpl_xlio_zc         *zc;
+    uint64_t                     total;
+    int                          niov;
     ssize_t                      res;
+    int                          batches = 0;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    evpl_xlio_prepare_iov(evpl, xlio, s, &iov, &send_attr, &bind->iovec_send);
+    while (batches < 16) {
 
-    res = xlio->extra->xlio_socket_sendv(s->socket, &iov, 1, &send_attr);
+        niov = evpl_xlio_prepare_batch(evpl, xlio, s,
+                                       iovs, EVPL_XLIO_BATCH_MAX,
+                                       &send_attr, &bind->iovec_send,
+                                       &total, &zc);
 
-    if (res) {
-        return res;
+        if (niov == 0) {
+            break;
+        }
+
+        res = xlio->extra->xlio_socket_sendv(s->socket, iovs, niov, &send_attr);
+
+        if (res) {
+            if (zc) {
+                s->zc_pending--;
+                evpl_xlio_free_zc(xlio, zc);
+            }
+            return res;
+        }
+
+        if (!zc) {
+            evpl_xlio_send_completion(evpl, s, total);
+        }
+
+        evpl_iovec_ring_consume(evpl, &bind->iovec_send, total);
+        batches++;
     }
 
-    evpl_iovec_ring_consume(evpl, &bind->iovec_send, iov.iov_len);
-
     return 0;
-} /* evpl_write_tcp */
+} /* evpl_xlio_tcp_write */
 
 void
 evpl_xlio_tcp_connect(

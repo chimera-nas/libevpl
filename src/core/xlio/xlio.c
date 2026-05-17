@@ -182,12 +182,15 @@ evpl_xlio_socket_completion(
     struct evpl             *evpl = s->evpl;
     struct evpl_xlio        *xlio;
     struct evpl_xlio_zc     *zc = (struct evpl_xlio_zc *) userdata_op;
+    unsigned int             i;
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
     evpl_xlio_send_completion(evpl, s, zc->length);
 
-    evpl_iovec_ref_release(evpl, &zc->buffer->ref);
+    for (i = 0; i < zc->niov; i++) {
+        evpl_iovec_ref_release(evpl, zc->refs[i]);
+    }
 
     --s->zc_pending;
 

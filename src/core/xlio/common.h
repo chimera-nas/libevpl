@@ -75,11 +75,14 @@ typedef void (*evpl_xlio_error_callback_t)(
     struct evpl_xlio_socket *s);
 
 
+#define EVPL_XLIO_BATCH_MAX 64
+
 struct evpl_xlio_zc {
-    struct evpl_xlio_buffer *buffer;
-    unsigned int             length;
-    int                      complete;
-    struct evpl_xlio_zc     *next;
+    unsigned int           niov;
+    unsigned int           length;
+    int                    complete;
+    struct evpl_xlio_zc   *next;
+    struct evpl_iovec_ref *refs[EVPL_XLIO_BATCH_MAX];
 };
 
 struct evpl_xlio_socket {
