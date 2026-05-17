@@ -289,6 +289,10 @@ evpl_memory_framework_private(
 {
     struct evpl_iovec_ref *ref = evpl_iovec_get_ref(iov);
 
+    if (!ref->slab) {
+        return NULL;
+    }
+
     return ref->slab->framework_private[framework_id];
 } // evpl_buffer_framework_private
 

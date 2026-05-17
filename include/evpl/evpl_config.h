@@ -128,6 +128,59 @@ void evpl_global_config_set_io_uring_entries(
     struct evpl_global_config *config,
     unsigned int               entries);
 
+/* Tri-state values for io_uring optional features */
+#define EVPL_IO_URING_OFF   0
+#define EVPL_IO_URING_ON    1
+#define EVPL_IO_URING_AUTO  2
+
+void evpl_global_config_set_io_uring_zerocopy_rx(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+void evpl_global_config_set_io_uring_zcrx_interface(
+    struct evpl_global_config *config,
+    const char                *ifname);
+
+void evpl_global_config_set_io_uring_zcrx_rxq(
+    struct evpl_global_config *config,
+    unsigned int               rxq);
+
+void evpl_global_config_set_io_uring_zcrx_rxq_count(
+    struct evpl_global_config *config,
+    unsigned int               count);
+
+void evpl_global_config_set_io_uring_zcrx_area_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_io_uring_zcrx_rq_entries(
+    struct evpl_global_config *config,
+    unsigned int               entries);
+
+void evpl_global_config_set_io_uring_zcrx_rx_buf_len(
+    struct evpl_global_config *config,
+    unsigned int               len);
+
+void evpl_global_config_set_io_uring_zcrx_area_import(
+    struct evpl_global_config *config,
+    int                        enable);
+
+void evpl_global_config_set_io_uring_registered_buffers(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+void evpl_global_config_set_io_uring_registered_files(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+void evpl_global_config_set_io_uring_send_zc(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+void evpl_global_config_set_io_uring_recv_bundle(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
 void evpl_global_config_set_rdmacm_enabled(
     struct evpl_global_config *config,
     int                        enabled);

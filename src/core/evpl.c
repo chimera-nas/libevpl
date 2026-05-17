@@ -294,6 +294,59 @@ evpl_ipc_callback(
         evpl_free(request);
     }
 
+    /* Drain distributed-listen requests posted to this worker. The
+     * protocol's listen() runs HERE on the worker thread (its own
+     * io_uring ring) so that things like ZCRX ifq registration happen
+     * on the ring that will also do the recvs. The originating listener
+     * thread is waiting on req->cond and will only return from its
+     * listen_distributed call once we signal each one.
+     */
+    while (evpl->listen_distributed_requests) {
+        struct evpl_listen_distributed_request *lreq;
+        struct evpl_protocol                   *proto;
+        struct evpl_bind                       *bind;
+        int                                     status = 0;
+
+        lreq = evpl->listen_distributed_requests;
+        DL_DELETE(evpl->listen_distributed_requests, lreq);
+        pthread_mutex_unlock(&evpl->lock);
+
+        proto = evpl_shared->protocol[lreq->protocol_id];
+
+        /* Make the assigned rxq visible to framework->create(), which
+         * runs from evpl_bind_prepare() below if io_uring isn't yet
+         * attached to this evpl.
+         */
+        evpl->zcrx_rxq_override = lreq->rxq;
+
+        bind = evpl_bind_prepare(evpl, proto, lreq->address, NULL);
+
+        evpl_core_abort_if(!bind->protocol->listen,
+                           "listen_distributed_request: protocol has no listen");
+
+        /* Accept callback runs on THIS worker thread (no cross-thread
+         * handoff). It invokes the user-provided attach_callback
+         * directly from the listener_binding the worker registered.
+         */
+        bind->accept_callback = evpl_listener_accept_local;
+        bind->private_data    = lreq->listener_binding;
+
+        bind->protocol->listen(evpl, bind);
+
+        /* Once listen has returned and the multishot-accept SQE is
+         * deferred for submission, the override is no longer needed.
+         */
+        evpl->zcrx_rxq_override = 0;
+
+        pthread_mutex_lock(&lreq->lock);
+        lreq->status   = status;
+        lreq->complete = 1;
+        pthread_cond_signal(&lreq->cond);
+        pthread_mutex_unlock(&lreq->lock);
+
+        pthread_mutex_lock(&evpl->lock);
+    }
+
     pthread_mutex_unlock(&evpl->lock);
 
 } /* evpl_stop_callback */
