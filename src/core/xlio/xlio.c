@@ -266,6 +266,17 @@ evpl_xlio_socket_rx(
 } /* evpl_xlio_socket_rx */
 
 static void
+evpl_xlio_idle_timer(
+    struct evpl       *evpl,
+    struct evpl_timer *timer)
+{
+    struct evpl_xlio *xlio = container_of(timer, struct evpl_xlio, idle_timer);
+
+    xlio->extra->xlio_poll_group_poll(xlio->poll_group);
+    xlio->extra->xlio_poll_group_flush(xlio->poll_group);
+} /* evpl_xlio_idle_timer */
+
+static void
 evpl_xlio_poll(
     struct evpl *evpl,
     void        *private_data)
@@ -274,6 +285,14 @@ evpl_xlio_poll(
     struct evpl_xlio_socket *s;
     struct evpl_bind        *bind;
     int                      i, res;
+
+    /* When this thread has no established XLIO connections, skip the entire
+     * poll. The idle_timer wakes us every 10ms to service listen sockets and
+     * detect new incoming work; once any connection exists, the regular poll
+     * path takes over again. */
+    if (xlio->num_connections == 0) {
+        return;
+    }
 
     xlio->extra->xlio_poll_group_poll(xlio->poll_group);
 
@@ -376,6 +395,7 @@ evpl_xlio_destroy(
 
     if (xlio->poll) {
         evpl_remove_poll(evpl, xlio->poll);
+        evpl_remove_timer(evpl, &xlio->idle_timer);
         evpl->force_poll_mode = 0;
     }
 
@@ -461,8 +481,21 @@ evpl_xlio_socket_init(
     }
 
     if (!xlio->poll) {
-        xlio->poll            = evpl_add_poll(evpl, NULL, NULL, evpl_xlio_poll, xlio);
-        evpl->force_poll_mode = 1;
+        xlio->poll = evpl_add_poll(evpl, NULL, NULL, evpl_xlio_poll, xlio);
+
+        /* 10ms fallback: services listen sockets and any other XLIO work
+         * while the main poll callback is short-circuited because
+         * num_connections == 0. */
+        evpl_add_timer(evpl, &xlio->idle_timer, evpl_xlio_idle_timer, 10000UL);
+    }
+
+    if (!listen) {
+        if (xlio->num_connections == 0) {
+            /* First active connection on this thread — pin the event loop
+             * into poll mode so we get per-iteration polling latency. */
+            evpl->force_poll_mode = 1;
+        }
+        ++xlio->num_connections;
     }
 
     s->readable       = 0;

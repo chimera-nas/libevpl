@@ -112,12 +112,14 @@ struct evpl_xlio {
     struct xlio_api_t        *extra;
     struct evpl_xlio_api     *api;
     struct evpl_poll         *poll;
+    struct evpl_timer         idle_timer;
     xlio_poll_group_t         poll_group;
     struct evpl_xlio_socket **active_sockets;
     struct evpl_xlio_buffer  *free_xlio_buffers;
     struct evpl_xlio_zc      *free_zc;
     int                       num_active_sockets;
     int                       max_active_sockets;
+    int                       num_connections;
 };
 
 struct evpl_xlio_accepted_socket {
@@ -216,6 +218,17 @@ evpl_xlio_pending_close(
 #endif // if 0
 
         s->socket = 0;
+
+        if (!s->listen) {
+            --xlio->num_connections;
+            if (xlio->num_connections == 0) {
+                /* Last active connection gone — release the event loop so
+                 * it can drain spin_ns of idleness and park in
+                 * evpl_core_wait until the idle_timer (or some other
+                 * source) wakes it. */
+                evpl->force_poll_mode = 0;
+            }
+        }
     }
 } /* evpl_xlio_pending_close */
 
