@@ -189,7 +189,9 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
  * for linking the returned slab into allocator->slabs under the lock.
  */
 static struct evpl_slab *
-evpl_allocator_build_slab(struct evpl_allocator *allocator)
+evpl_allocator_build_slab(
+    struct evpl_allocator *allocator,
+    int                    prefault)
 {
     struct evpl_slab      *slab;
     struct evpl_framework *framework;
@@ -231,12 +233,15 @@ evpl_allocator_build_slab(struct evpl_allocator *allocator)
 
     }
 
-    /* Pre-fault every page so consumers don't pay first-touch fault
-     * latency in the IO hot path.  This runs in a preallocator thread
-     * (or the inline-fallback caller), never on the steady-state hot
-     * path.
+    /* Pre-fault every page so future consumers don't pay first-touch
+     * fault latency.  Only worthwhile when a preallocator thread is
+     * building this slab ahead of demand — for inline fallback or
+     * whole-slab loanout the calling thread or recipient would
+     * otherwise pay only for the pages they actually touch.
      */
-    memset(slab->data, 0, slab->size);
+    if (prefault) {
+        memset(slab->data, 0, slab->size);
+    }
 
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
 
@@ -299,7 +304,7 @@ evpl_allocator_install_slab(
 static struct evpl_slab *
 evpl_allocator_create_slab(struct evpl_allocator *allocator)
 {
-    struct evpl_slab *slab = evpl_allocator_build_slab(allocator);
+    struct evpl_slab *slab = evpl_allocator_build_slab(allocator, 0);
 
     LL_PREPEND(allocator->slabs, slab);
     return slab;
@@ -379,10 +384,13 @@ evpl_allocator_prealloc_thread(void *arg)
 
         pthread_mutex_unlock(&allocator->lock);
 
-        /* Heavy lifting (mmap + ibv_reg_mr) outside the lock so
-         * consumers can keep draining free_buffers in parallel.
+        /* Heavy lifting (mmap + ibv_reg_mr + prefault) outside the
+         * lock so consumers can keep draining free_buffers in
+         * parallel.  Pages are prefaulted here so the workers that
+         * later draw buffers from this slab don't pay the kernel
+         * fault cost on first touch.
          */
-        slab = evpl_allocator_build_slab(allocator);
+        slab = evpl_allocator_build_slab(allocator, 1);
 
         pthread_mutex_lock(&allocator->lock);
 
@@ -442,9 +450,12 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
             continue;
         }
 
-        /* No pool configured — fall back to inline slab create. */
+        /* No pool configured — fall back to inline slab create.
+         * No prefault: the calling thread is waiting, and only the
+         * pages it (and later consumers) actually touch should fault.
+         */
         pthread_mutex_unlock(&allocator->lock);
-        slab = evpl_allocator_build_slab(allocator);
+        slab = evpl_allocator_build_slab(allocator, 0);
         pthread_mutex_lock(&allocator->lock);
         evpl_allocator_install_slab(allocator, slab);
         if (allocator->m_slabs_inline) {
