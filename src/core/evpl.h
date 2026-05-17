@@ -71,6 +71,9 @@ struct evpl_global_config {
     unsigned int              libaio_enabled;
     unsigned int              libaio_max_pending;
 
+    unsigned int              preallocate_slabs;
+    unsigned int              preallocate_threads;
+
     char                     *tls_cert_file;
     char                     *tls_key_file;
     char                     *tls_ca_file;
@@ -135,6 +138,7 @@ struct evpl {
     struct evpl_buffer           *shared_buffer;
     struct evpl_buffer           *datagram_buffer;
     struct evpl_buffer           *free_local_buffers;
+    struct evpl_buffer           *free_shared_buffers;
     struct evpl_bind             *free_binds;
     struct evpl_bind             *binds;
     struct evpl_bind             *pending_close_binds;

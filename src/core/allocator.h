@@ -10,15 +10,44 @@
 
 #include "core/allocator.h"
 #include "core/logging.h"
+#include "prometheus-c.h"
 
 #include "evpl/evpl.h"
 
 
 struct evpl_allocator {
-    struct evpl_slab   *slabs;
-    struct evpl_buffer *free_buffers;
-    int                 hugepages;
-    pthread_mutex_t     lock;
+    struct evpl_slab                   *slabs;
+    struct evpl_buffer                 *free_buffers;
+    int                                 hugepages;
+    pthread_mutex_t                     lock;
+
+    /* Preallocation pool — keeps free_buffer_count >= target_buffers
+     * by waking worker threads to mmap+register slabs out of the IO
+     * hot path.  All inactive when num_prealloc_threads == 0.
+     */
+    int                                 free_buffer_count;
+    int                                 target_buffers;
+    int                                 buffers_per_slab;
+    int                                 outstanding_slabs; /* signaled or in-flight */
+    int                                 wakeup_credits; /* signaled, not yet claimed */
+    int                                 num_prealloc_threads;
+    int                                 shutdown;
+    pthread_t                          *prealloc_threads;
+    pthread_cond_t                      producer_cv;
+    pthread_cond_t                      consumer_cv;
+
+    /* Diagnostic metrics.  Owned by the caller (chimera), registered
+     * via evpl_set_allocator_metrics().  Mutated inline under
+     * allocator->lock — no atomics needed.  All NULL until registered.
+     */
+    struct prometheus_counter_instance *m_slabs_inline;
+    struct prometheus_counter_instance *m_slabs_prealloc;
+    struct prometheus_counter_instance *m_consumer_waits;
+    struct prometheus_counter_instance *m_consumer_wait_ns;
+    struct prometheus_gauge_instance   *m_free_buffers;
+    struct prometheus_gauge_instance   *m_outstanding_slabs;
+    struct prometheus_gauge_instance   *m_target_buffers;
+    struct prometheus_gauge_instance   *m_total_slabs;
 };
 
 struct evpl_buffer {

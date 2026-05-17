@@ -68,6 +68,9 @@ evpl_global_config_init(void)
     config->libaio_enabled     = 1;
     config->libaio_max_pending = 256;
 
+    config->preallocate_slabs   = 0;
+    config->preallocate_threads = 0;
+
     config->tls_cert_file    = NULL;
     config->tls_key_file     = NULL;
     config->tls_cipher_list  = NULL;
@@ -486,4 +489,20 @@ evpl_global_config_set_max_poll_fd(
 {
     config->max_poll_fd = max;
 } /* evpl_global_config_set_max_poll_fd */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_preallocate_slabs(
+    struct evpl_global_config *config,
+    unsigned int               slabs)
+{
+    config->preallocate_slabs = slabs;
+} /* evpl_global_config_set_preallocate_slabs */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_preallocate_threads(
+    struct evpl_global_config *config,
+    unsigned int               threads)
+{
+    config->preallocate_threads = threads;
+} /* evpl_global_config_set_preallocate_threads */
 
