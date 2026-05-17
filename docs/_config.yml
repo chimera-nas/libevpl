@@ -22,6 +22,7 @@ analytics:
 
 aux_links:
   GitHub: https://github.com/chimera-nas/libevpl
+  Discord: https://discord.gg/hnRkvQFecq
 
 plugins:
   - jekyll-sitemap
