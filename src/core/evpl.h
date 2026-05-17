@@ -52,6 +52,7 @@ struct evpl_global_config {
     unsigned int              io_uring_zerocopy_rx;
     char                     *io_uring_zcrx_interface;
     unsigned int              io_uring_zcrx_rxq;
+    unsigned int              io_uring_zcrx_rxq_count;
     unsigned int              io_uring_zcrx_area_size;
     unsigned int              io_uring_zcrx_rq_entries;
     unsigned int              io_uring_zcrx_rx_buf_len;
@@ -98,64 +99,74 @@ typedef void (*evpl_accept_callback_t)(
     void                *private_data);
 
 struct evpl {
-    struct evpl_core              core; /* must be first */
+    struct evpl_core                        core; /* must be first */
 
 
-    uint64_t                      hf_tsc_value;
-    uint64_t                      hf_tsc_mult;
-    struct timespec               hf_tsc_start;
+    uint64_t                                hf_tsc_value;
+    uint64_t                                hf_tsc_mult;
+    struct timespec                         hf_tsc_start;
 
-    uint64_t                      poll_iters;
+    uint64_t                                poll_iters;
 
-    struct timespec               last_activity_ts;
-    uint64_t                      activity;
-    uint64_t                      last_activity;
-    uint64_t                      poll_iterations;
+    struct timespec                         last_activity_ts;
+    uint64_t                                activity;
+    uint64_t                                last_activity;
+    uint64_t                                poll_iterations;
 
-    struct evpl_poll             *poll;
-    int                           num_poll;
-    int                           max_poll;
+    struct evpl_poll                       *poll;
+    int                                     num_poll;
+    int                                     max_poll;
 
-    int                           eventfd;
-    int                           running;
-    struct evpl_event             run_event;
+    int                                     eventfd;
+    int                                     running;
+    struct evpl_event                       run_event;
 
-    pthread_mutex_t               lock;
-    struct evpl_connect_request  *connect_requests;
+    pthread_mutex_t                         lock;
+    struct evpl_connect_request            *connect_requests;
+    struct evpl_listen_distributed_request *listen_distributed_requests;
 
-    struct evpl_event           **active_events;
-    int                           num_active_events;
-    int                           max_active_events;
-    int                           num_events;
-    int                           num_enabled_events;
-    int                           poll_mode;
-    int                           force_poll_mode;
+    /* Per-evpl override consumed by framework->create() for protocols
+     * that distribute listen across workers. io_uring's create reads
+     * this to know which rxq to register its ZCRX ifq on for THIS
+     * worker. 0 (default) means "no override / not assigned". The
+     * listener-thread side of listen_distributed sets this on the
+     * target worker's evpl just before posting the listen request.
+     */
+    unsigned int                            zcrx_rxq_override;
 
-    struct evpl_doorbell         *doorbells;
+    struct evpl_event                     **active_events;
+    int                                     num_active_events;
+    int                                     max_active_events;
+    int                                     num_events;
+    int                                     num_enabled_events;
+    int                                     poll_mode;
+    int                                     force_poll_mode;
+
+    struct evpl_doorbell                   *doorbells;
 
 
-    struct evpl_timer           **timers;
-    int                           num_timers;
-    int                           max_timers;
+    struct evpl_timer                     **timers;
+    int                                     num_timers;
+    int                                     max_timers;
 
-    struct evpl_deferral        **active_deferrals;
-    int                           num_active_deferrals;
-    int                           max_active_deferrals;
+    struct evpl_deferral                  **active_deferrals;
+    int                                     num_active_deferrals;
+    int                                     max_active_deferrals;
 
-    struct evpl_buffer           *current_buffer;
-    struct evpl_buffer           *shared_buffer;
-    struct evpl_buffer           *datagram_buffer;
-    struct evpl_buffer           *free_local_buffers;
-    struct evpl_bind             *free_binds;
-    struct evpl_bind             *binds;
-    struct evpl_bind             *pending_close_binds;
+    struct evpl_buffer                     *current_buffer;
+    struct evpl_buffer                     *shared_buffer;
+    struct evpl_buffer                     *datagram_buffer;
+    struct evpl_buffer                     *free_local_buffers;
+    struct evpl_bind                       *free_binds;
+    struct evpl_bind                       *binds;
+    struct evpl_bind                       *pending_close_binds;
 
-    struct evpl_listener_binding *listener_bindings;
+    struct evpl_listener_binding           *listener_bindings;
 
-    struct evpl_thread_config     config;
+    struct evpl_thread_config               config;
 
-    void                         *protocol_private[EVPL_NUM_PROTO];
-    void                         *framework_private[EVPL_NUM_FRAMEWORK];
+    void                                   *protocol_private[EVPL_NUM_PROTO];
+    void                                   *framework_private[EVPL_NUM_FRAMEWORK];
 };
 
 struct evpl_listen_request {
@@ -187,6 +198,46 @@ struct evpl_connect_request {
     void                        *private_data;
     struct evpl_connect_request *prev;
     struct evpl_connect_request *next;
+};
+
+/* Accept callback used by distributedly-listened binds (see
+ * listen_distributed). Replaces evpl_listener_accept on per-worker
+ * listen sockets: handles the accept inline on the worker thread
+ * rather than going through the listener-dispatcher doorbell.
+ */
+void evpl_listener_accept_local(
+    struct evpl         *evpl,
+    struct evpl_bind    *listen_bind,
+    struct evpl_address *remote_address,
+    void                *accepted,
+    void                *private_data);
+
+/* Cross-thread request from the listener thread asking a specific
+ * worker to set up its own listen socket / ring / ifq for a
+ * distributed-listen protocol (e.g. io_uring_tcp + ZCRX).
+ *
+ * Posted by a protocol's listen_distributed implementation; processed
+ * on the worker side in evpl_ipc_callback. The originating listener
+ * thread blocks on the cond until the worker signals completion.
+ */
+struct evpl_listen_distributed_request {
+    unsigned int                            protocol_id;
+    struct evpl_address                    *address;
+    unsigned int                            rxq;
+
+    /* The worker's listener_binding (set by evpl_listener_attach); the
+     * worker passes attach_callback / private_data from this to each
+     * accepted bind without going through the listener dispatcher.
+     */
+    struct evpl_listener_binding           *listener_binding;
+
+    pthread_mutex_t                         lock;
+    pthread_cond_t                          cond;
+    int                                     complete;
+    int                                     status;
+
+    struct evpl_listen_distributed_request *prev;
+    struct evpl_listen_distributed_request *next;
 };
 
 struct evpl_listener {

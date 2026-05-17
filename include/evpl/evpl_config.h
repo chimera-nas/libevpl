@@ -145,6 +145,10 @@ void evpl_global_config_set_io_uring_zcrx_rxq(
     struct evpl_global_config *config,
     unsigned int               rxq);
 
+void evpl_global_config_set_io_uring_zcrx_rxq_count(
+    struct evpl_global_config *config,
+    unsigned int               count);
+
 void evpl_global_config_set_io_uring_zcrx_area_size(
     struct evpl_global_config *config,
     unsigned int               size);

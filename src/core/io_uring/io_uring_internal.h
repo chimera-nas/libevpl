@@ -252,13 +252,13 @@ evpl_io_uring_request_alloc(
 
     switch (req_type) {
         case EVPL_IO_URING_REQ_TCP:
-            req->tcp.socket         = NULL;
-            req->tcp.msgs_sent      = 0;
-            req->tcp.is_send_zc     = 0;
-            req->tcp.use_fixed_buf  = 0;
-            req->tcp.send_buffer_id = 0;
-            req->tcp.sent_bytes     = 0;
-            req->tcp.send_iov.data  = NULL;
+            req->tcp.socket          = NULL;
+            req->tcp.msgs_sent       = 0;
+            req->tcp.is_send_zc      = 0;
+            req->tcp.use_fixed_buf   = 0;
+            req->tcp.send_buffer_id  = 0;
+            req->tcp.sent_bytes      = 0;
+            req->tcp.send_iov.data   = NULL;
             req->tcp.send_iov.length = 0;
             req->tcp.send_iov.ref    = NULL;
             break;
@@ -292,7 +292,7 @@ evpl_io_uring_buf_is_registered(
     unsigned int                        idx)
 {
     return (ctx->buf_registered[idx >> 6] & (1ULL << (idx & 63))) != 0;
-}
+} // evpl_io_uring_buf_is_registered
 
 /* Register a specific slab into this ring's FIXED_BUF table on first use.
  * Returns 1 on success (or already registered), 0 if registration failed
@@ -339,8 +339,8 @@ evpl_io_uring_ensure_buf_registered(
 #else /* HAVE_IO_URING_REGISTER_BUFFERS_SPARSE */
     (void) ctx; (void) idx;
     return 0;
-#endif
-}
+#endif // ifdef HAVE_IO_URING_REGISTER_BUFFERS_SPARSE
+} // evpl_io_uring_ensure_buf_registered
 
 /* Resolve an evpl_iovec to a (buf_index, offset) for IORING_RECVSEND_FIXED_BUF.
  * Returns 1 on success, 0 if the iovec is not backed by a registered slab.

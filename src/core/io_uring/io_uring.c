@@ -180,7 +180,7 @@ evpl_io_uring_complete(
      * work to do, no-op on SQPOLL rings.
      */
     io_uring_get_events(&ctx->ring);
-    struct io_uring_cqe          *cqes[64], *cqe;
+    struct io_uring_cqe *cqes[64], *cqe;
 
     cq_count = io_uring_peek_batch_cqe(&ctx->ring, cqes, 64);
 
@@ -429,7 +429,10 @@ evpl_io_uring_resolve_effective(
 
 #ifdef HAVE_IO_URING_ZCRX
 static int
-evpl_io_uring_zcrx_setup(struct evpl_io_uring_context *ctx)
+evpl_io_uring_zcrx_setup(
+    struct evpl                  *evpl,
+    struct evpl_io_uring_context *ctx,
+    unsigned int                  rxq)
 {
     struct evpl_global_config       *cfg = evpl_shared->config;
     struct evpl_io_uring_zcrx_state *z;
@@ -440,6 +443,8 @@ evpl_io_uring_zcrx_setup(struct evpl_io_uring_context *ctx)
     size_t                           area_bytes;
     unsigned int                     if_idx;
     int                              rc;
+
+    (void) evpl;
 
     if_idx = if_nametoindex(cfg->io_uring_zcrx_interface);
     if (if_idx == 0) {
@@ -528,7 +533,7 @@ evpl_io_uring_zcrx_setup(struct evpl_io_uring_context *ctx)
 
     memset(&ifq_reg, 0, sizeof(ifq_reg));
     ifq_reg.if_idx     = if_idx;
-    ifq_reg.if_rxq     = cfg->io_uring_zcrx_rxq;
+    ifq_reg.if_rxq     = rxq;
     ifq_reg.rq_entries = z->rq_entries;
     ifq_reg.area_ptr   = (uintptr_t) &area_reg;
     ifq_reg.region_ptr = (uintptr_t) &region;
@@ -567,7 +572,7 @@ evpl_io_uring_zcrx_setup(struct evpl_io_uring_context *ctx)
             evpl_io_uring_mode_required(cfg->io_uring_zerocopy_rx)) {
             evpl_io_uring_abort(
                 "io_uring_register_ifq(if=%s rxq=%u) failed: %s",
-                cfg->io_uring_zcrx_interface, cfg->io_uring_zcrx_rxq,
+                cfg->io_uring_zcrx_interface, rxq,
                 strerror(-rc));
         }
         evpl_io_uring_info(
@@ -592,7 +597,7 @@ evpl_io_uring_zcrx_setup(struct evpl_io_uring_context *ctx)
 
     evpl_io_uring_info(
         "zcrx registered: if=%s if_idx=%u rxq=%u rq_entries=%u zcrx_id=%u area=%zu MiB",
-        cfg->io_uring_zcrx_interface, if_idx, cfg->io_uring_zcrx_rxq,
+        cfg->io_uring_zcrx_interface, if_idx, rxq,
         z->rq_entries, z->zcrx_id, z->area_size >> 20);
 
     return 0;
@@ -750,7 +755,29 @@ evpl_io_uring_create(
 
 #ifdef HAVE_IO_URING_ZCRX
     if (ctx->effective.zcrx) {
-        if (evpl_io_uring_zcrx_setup(ctx) < 0) {
+        /* Pick the rxq this ctx should own:
+         *   - zcrx_rxq_override (set by listen_distributed handoff to a
+         *     specific worker) takes precedence — that's the per-worker
+         *     queue assignment from the protocol's listen_distributed.
+         *   - Otherwise fall back to the single global rxq config; this
+         *     is the centralized / single-thread path that pre-dates
+         *     distributed listen.
+         *   - If neither applies (override == 0 AND distributed listen
+         *     is in use), skip setup so the listener thread's ctx does
+         *     not claim the queue's ifq first.
+         */
+        unsigned int my_rxq = evpl->zcrx_rxq_override;
+        if (my_rxq == 0 && cfg->io_uring_zcrx_rxq_count <= 1) {
+            my_rxq = cfg->io_uring_zcrx_rxq;
+        }
+        if (my_rxq == 0 && evpl->zcrx_rxq_override == 0 &&
+            cfg->io_uring_zcrx_rxq_count > 1) {
+            /* Distributed mode; this ctx wasn't handed an rxq.
+             * Don't claim one — workers' own ctxs will register their
+             * assigned queues.
+             */
+            ctx->effective.zcrx = 0;
+        } else if (evpl_io_uring_zcrx_setup(evpl, ctx, my_rxq) < 0) {
             ctx->effective.zcrx = 0;
         }
     }

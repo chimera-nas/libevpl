@@ -988,16 +988,111 @@ evpl_io_uring_flush(
     evpl_io_uring_pump(evpl, ctx, s);
 } /* evpl_io_uring_tcp_flush */
 
+/* Distributed listen for io_uring_tcp + ZCRX.
+ *
+ * When ZCRX is in effect, the kernel binds one memory-provider ifq per
+ * rxq and only the ring that owns the ifq can RECV_ZC from packets that
+ * land there. To get real zero-copy on every accepted connection we
+ * have to do the listen on the same ring that will do the recv — which
+ * means having each worker open its own listen socket + ring + ifq for
+ * its assigned rxq, rather than running a single centralized listener.
+ *
+ * Initial constraint (intentional, can be relaxed later): num_queues
+ * must be <= num_attached workers. If it isn't, we fatal — we want the
+ * caller to fix their thread/queue plan before scaling.
+ */
+static int
+evpl_io_uring_tcp_listen_distributed(
+    struct evpl_listener *listener,
+    unsigned int          protocol_id,
+    struct evpl_address  *address)
+{
+    struct evpl_global_config              *cfg = evpl_shared->config;
+    unsigned int                            num_queues;
+    unsigned int                            num_attached;
+    unsigned int                            i;
+    struct evpl_listen_distributed_request *reqs;
+    uint64_t                                one = 1;
+
+    /* Only handle distributedly when ZCRX is actually wanted. */
+    if (cfg->io_uring_zerocopy_rx != EVPL_IO_URING_ON ||
+        !cfg->io_uring_zcrx_interface) {
+        return -1; /* fall through to centralized listen */
+    }
+
+    num_queues = cfg->io_uring_zcrx_rxq_count;
+    if (num_queues == 0) {
+        num_queues = 1;
+    }
+
+    num_attached = listener->num_attached;
+
+    evpl_io_uring_abort_if(
+        num_queues > num_attached,
+        "io_uring_tcp listen_distributed: ZCRX rxq_count=%u but only %u "
+        "worker(s) attached to the listener. Attach at least %u workers "
+        "via evpl_listener_attach before evpl_listen, or reduce rxq_count.",
+        num_queues, num_attached, num_queues);
+
+    reqs = evpl_zalloc(num_queues * sizeof(*reqs));
+
+    for (i = 0; i < num_queues; i++) {
+        struct evpl_listener_binding *binding = listener->attached[i];
+
+        evpl_address_incref(address);
+        reqs[i].protocol_id      = protocol_id;
+        reqs[i].address          = address;
+        reqs[i].rxq              = cfg->io_uring_zcrx_rxq + i;
+        reqs[i].listener_binding = binding;
+
+        pthread_mutex_init(&reqs[i].lock, NULL);
+        pthread_cond_init(&reqs[i].cond, NULL);
+        reqs[i].complete = 0;
+        reqs[i].status   = 0;
+
+        pthread_mutex_lock(&binding->evpl->lock);
+        DL_APPEND(binding->evpl->listen_distributed_requests, &reqs[i]);
+        pthread_mutex_unlock(&binding->evpl->lock);
+
+        if (write(binding->evpl->eventfd, &one, sizeof(one)) != sizeof(one)) {
+            evpl_io_uring_abort(
+                "listen_distributed: eventfd write to worker %u failed", i);
+        }
+    }
+
+    for (i = 0; i < num_queues; i++) {
+        pthread_mutex_lock(&reqs[i].lock);
+        while (!reqs[i].complete) {
+            pthread_cond_wait(&reqs[i].cond, &reqs[i].lock);
+        }
+        pthread_mutex_unlock(&reqs[i].lock);
+
+        if (reqs[i].status != 0) {
+            evpl_io_uring_abort(
+                "listen_distributed: worker %u reported status %d",
+                i, reqs[i].status);
+        }
+
+        pthread_mutex_destroy(&reqs[i].lock);
+        pthread_cond_destroy(&reqs[i].cond);
+    }
+
+    evpl_free(reqs);
+
+    return 0;
+} /* evpl_io_uring_tcp_listen_distributed */
+
 struct evpl_protocol evpl_io_uring_tcp = {
-    .id            = EVPL_STREAM_IO_URING_TCP,
-    .connected     = 1,
-    .stream        = 1,
-    .name          = "STREAM_IO_URING_TCP",
-    .framework     = &evpl_framework_io_uring,
-    .connect       = evpl_io_uring_tcp_connect,
-    .pending_close = evpl_io_uring_pending_close,
-    .close         = evpl_io_uring_close,
-    .listen        = evpl_io_uring_tcp_listen,
-    .attach        = evpl_io_uring_attach,
-    .flush         = evpl_io_uring_flush,
+    .id                 = EVPL_STREAM_IO_URING_TCP,
+    .connected          = 1,
+    .stream             = 1,
+    .name               = "STREAM_IO_URING_TCP",
+    .framework          = &evpl_framework_io_uring,
+    .connect            = evpl_io_uring_tcp_connect,
+    .pending_close      = evpl_io_uring_pending_close,
+    .close              = evpl_io_uring_close,
+    .listen             = evpl_io_uring_tcp_listen,
+    .listen_distributed = evpl_io_uring_tcp_listen_distributed,
+    .attach             = evpl_io_uring_attach,
+    .flush              = evpl_io_uring_flush,
 };
