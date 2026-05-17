@@ -20,6 +20,7 @@ Complete API documentation for libevpl organized by functional area.
 - **[Timer API](/api/timers)** - Scheduled callbacks and timeouts
 - **[Deferral API](/api/deferrals)** - Deferred task execution
 - **[Doorbell API](/api/doorbells)** - Inter-thread notifications
+- **[Poll API](/api/polls)** - Busy-poll callbacks for spin-mode work
 - **[Threading API](/api/threading)** - Thread creation and thread pools
 - **[Block I/O API](/api/block)** - High-performance storage operations (io_uring, VFIO-NVMe)
 - **[RDMA API](/api/rdma)** - RDMA-specific functionality

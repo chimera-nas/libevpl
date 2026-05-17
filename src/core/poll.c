@@ -4,8 +4,9 @@
 
 #include "core/evpl.h"
 #include "core/poll.h"
+#include "macros.h"
 
-struct evpl_poll *
+SYMBOL_EXPORT struct evpl_poll *
 evpl_add_poll(
     struct evpl               *evpl,
     evpl_poll_enter_callback_t enter_callback,
@@ -25,7 +26,7 @@ evpl_add_poll(
     return poll;
 } /* evpl_add_poll */
 
-void
+SYMBOL_EXPORT void
 evpl_remove_poll(
     struct evpl      *evpl,
     struct evpl_poll *poll)
