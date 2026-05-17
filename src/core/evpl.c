@@ -669,6 +669,12 @@ evpl_destroy(struct evpl *evpl)
         evpl_allocator_free(evpl_shared->allocator, buffer);
     }
 
+    while (evpl->free_shared_buffers) {
+        buffer = evpl->free_shared_buffers;
+        LL_DELETE(evpl->free_shared_buffers, buffer);
+        evpl_allocator_free(evpl_shared->allocator, buffer);
+    }
+
     evpl_core_destroy(&evpl->core);
 
     close(evpl->eventfd);

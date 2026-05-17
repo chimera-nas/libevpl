@@ -195,3 +195,11 @@ void evpl_global_config_set_max_pending(
 void evpl_global_config_set_max_poll_fd(
     struct evpl_global_config *config,
     unsigned int               max);
+
+void evpl_global_config_set_preallocate_slabs(
+    struct evpl_global_config *config,
+    unsigned int               slabs);
+
+void evpl_global_config_set_preallocate_threads(
+    struct evpl_global_config *config,
+    unsigned int               threads);
