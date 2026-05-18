@@ -183,16 +183,16 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
         request = evpl_zalloc(sizeof(*request));
     }
 
-    request->thread                       = thread;
-    request->pending_reads                = 0;
-    request->read_chunk.niov              = 0;
-    request->read_chunk.length            = 0;
-    request->write_chunk.niov             = 0;
-    request->write_chunk.length           = 0;
-    request->write_chunk.max_length       = 0;
-    request->write_segments.num_segments  = 0;
-    request->reply_segments.num_segments  = 0;
-    request->msg                          = NULL;
+    request->thread                      = thread;
+    request->pending_reads               = 0;
+    request->read_chunk.niov             = 0;
+    request->read_chunk.length           = 0;
+    request->write_chunk.niov            = 0;
+    request->write_chunk.length          = 0;
+    request->write_chunk.max_length      = 0;
+    request->write_segments.num_segments = 0;
+    request->reply_segments.num_segments = 0;
+    request->msg                         = NULL;
     /* Reset any reply-capture hook left over from the previous use of
      * this recycled request -- the application must re-arm per-call. */
     request->encoding.reply_capture_cb      = NULL;
