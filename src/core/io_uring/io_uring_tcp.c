@@ -173,15 +173,18 @@ evpl_io_uring_zcrx_frag_release(
 {
     struct evpl_io_uring_zcrx_frag  *frag = (struct evpl_io_uring_zcrx_frag *) ref;
     struct evpl_io_uring_zcrx_state *z    = frag->zcrx;
-    uint32_t                         tail;
+    uint32_t                         pos  = z->tail_cached;
 
-    /* Post the rqe back so the kernel can reuse the buffer. */
-    tail = atomic_load_explicit((_Atomic uint32_t *) z->rq_ktail,
-                                memory_order_relaxed);
-    z->rq_rqes[tail & z->rq_mask].off = frag->area_off;
-    z->rq_rqes[tail & z->rq_mask].len = frag->length;
-    atomic_store_explicit((_Atomic uint32_t *) z->rq_ktail, tail + 1,
-                          memory_order_release);
+    /* Post the rqe back to the local cursor. We do NOT atomic-store
+     * rq_ktail here — the poll-loop tail (evpl_io_uring_complete)
+     * publishes the cached tail in one release-store at end of
+     * iteration. The rq_rqes writes are plain stores; the eventual
+     * release-store on rq_ktail provides the memory barrier the
+     * kernel needs to observe them.
+     */
+    z->rq_rqes[pos & z->rq_mask].off = frag->area_off;
+    z->rq_rqes[pos & z->rq_mask].len = frag->length;
+    z->tail_cached                   = pos + 1;
 
     /* Return the frag to the freelist. */
     frag->next    = z->free_frags;

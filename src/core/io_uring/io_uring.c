@@ -245,6 +245,20 @@ evpl_io_uring_complete(
         evpl_activity(evpl);
     }
 
+#ifdef HAVE_IO_URING_ZCRX
+    /* Publish any pending ZCRX rqe posts in one release-store. Cheap
+     * if tail_cached hasn't moved (we'd be writing the value the
+     * kernel already sees), but kept unconditional so the kernel can
+     * always observe just-released frags within one poll-loop
+     * iteration of the release.
+     */
+    if (ctx->zcrx) {
+        atomic_store_explicit((_Atomic uint32_t *) ctx->zcrx->rq_ktail,
+                              ctx->zcrx->tail_cached,
+                              memory_order_release);
+    }
+#endif /* ifdef HAVE_IO_URING_ZCRX */
+
     return cq_count;
 } /* evpl_io_uring_complete */
 
@@ -598,6 +612,13 @@ evpl_io_uring_zcrx_setup(
     z->rq_ktail = (uint32_t *) ((char *) z->rq_ring + ifq_reg.offsets.tail);
     z->rq_rqes  = (struct io_uring_zcrx_rqe *)
         ((char *) z->rq_ring + ifq_reg.offsets.rqes);
+
+    /* tail_cached starts where the kernel's tail starts (0 after fresh
+     * register); frag releases bump it locally and a single
+     * release-store at poll-loop end publishes it.
+     */
+    z->tail_cached = atomic_load_explicit(
+        (_Atomic uint32_t *) z->rq_ktail, memory_order_relaxed);
 
     ctx->zcrx = z;
 

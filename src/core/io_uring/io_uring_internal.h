@@ -146,6 +146,14 @@ struct evpl_io_uring_zcrx_state {
     uint32_t                        zcrx_id;
     uint32_t                        napi_id;
     struct evpl_io_uring_zcrx_frag *free_frags;
+
+    /* Cached rq_ktail. Frag releases write rqes and bump this value
+     * with normal stores; we publish to the kernel-visible *rq_ktail
+     * via a single atomic_store_release at poll-loop end (see
+     * evpl_io_uring_zcrx_flush_tail). Collapses 256 release-fences
+     * per 1 MiB recv segment down to 1.
+     */
+    uint32_t                        tail_cached;
 };
 
 struct evpl_io_uring_context {
