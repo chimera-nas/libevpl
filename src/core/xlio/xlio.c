@@ -207,7 +207,6 @@ evpl_xlio_socket_accept(
     struct evpl_xlio                 *xlio;
     struct evpl_bind                 *listen_bind;
     struct evpl_xlio_socket          *ls;
-    struct evpl_address              *srcaddr;
     struct evpl_xlio_accepted_socket *accepted_socket;
     int                               rc;
 
@@ -223,20 +222,16 @@ evpl_xlio_socket_accept(
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    srcaddr = evpl_address_alloc();
-
-    /* getpeername needs addrlen initialized to the buffer size; evpl_address_alloc
-     * zero-fills the struct, so without this the call writes nothing and we'd
-     * pass an empty sockaddr (sa_family = 0) up to the application. */
-    srcaddr->addrlen = sizeof(srcaddr->sa);
-
-    xlio->extra->xlio_socket_getpeername(sock, srcaddr->addr, &srcaddr->addrlen);
-
     rc = xlio->extra->xlio_socket_detach_group(sock);
 
     evpl_xlio_abort_if(rc, "Failed to detach socket from group");
 
-    listen_bind->accept_callback(evpl, listen_bind, srcaddr, accepted_socket, listen_bind->private_data);
+    /* The peer address is resolved on the worker thread inside
+     * evpl_xlio_tcp_attach, after the socket has been re-attached to that
+     * thread's poll group. Calling getpeername() from this listener-thread
+     * context races XLIO's internal connection state machine and can return
+     * stale or empty data when sockets churn quickly. */
+    listen_bind->accept_callback(evpl, listen_bind, NULL, accepted_socket, listen_bind->private_data);
 
 } /* evpl_xlio_socket_accept */
 

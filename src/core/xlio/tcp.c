@@ -330,6 +330,19 @@ evpl_xlio_tcp_attach(
     bind->local->addrlen = sslen;
     memcpy(bind->local->addr, &ss, sslen);
 
+    /* Now that the socket is attached to this thread's poll group, resolve
+     * the peer address here. evpl_xlio_socket_accept (the listener-thread
+     * callback) deliberately leaves remote NULL because calling
+     * getpeername() in that context races XLIO's connection state machine
+     * for short-lived connections. */
+    sslen = sizeof(ss);
+    rc    = xlio->extra->xlio_socket_getpeername(sock, (struct sockaddr *) &ss, &sslen);
+    evpl_xlio_abort_if(rc < 0, "xlio_socket_getpeername failed");
+
+    bind->remote          = evpl_address_alloc();
+    bind->remote->addrlen = sslen;
+    memcpy(bind->remote->addr, &ss, sslen);
+
     rc = xlio->extra->xlio_socket_update(s->socket, 0, (uintptr_t) s);
 
     evpl_xlio_abort_if(rc, "Failed to update socket");
