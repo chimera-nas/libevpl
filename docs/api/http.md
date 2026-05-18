@@ -249,6 +249,36 @@ Get a request header value.
 
 ---
 
+#### `evpl_http_request_header_iterate`
+
+```c
+typedef void (*evpl_http_request_header_cb_t)(
+    const char *name,
+    const char *value,
+    void       *private_data);
+
+void evpl_http_request_header_iterate(
+    struct evpl_http_request     *request,
+    evpl_http_request_header_cb_t callback,
+    void                         *private_data);
+```
+
+Invoke `callback` once for every header on the request, in the order the
+headers were received. Use this when the set of header names isn't known
+up front — for example, when canonicalizing headers for signature
+verification.
+
+The `name` and `value` pointers passed to the callback are owned by the
+request and remain valid for the duration of the call only; copy them if
+they need to outlive the callback.
+
+**Parameters:**
+- `request` - HTTP request
+- `callback` - Function to invoke for each header
+- `private_data` - Opaque pointer forwarded to `callback`
+
+---
+
 ### Request Body
 
 #### `evpl_http_request_get_data_avail`

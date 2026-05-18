@@ -1064,6 +1064,20 @@ evpl_http_request_header(
     return NULL;
 } /* evpl_http_request_header */
 
+SYMBOL_EXPORT void
+evpl_http_request_header_iterate(
+    struct evpl_http_request     *request,
+    evpl_http_request_header_cb_t callback,
+    void                         *private_data)
+{
+    struct evpl_http_request_header *header;
+
+    DL_FOREACH(request->request_headers, header)
+    {
+        callback(header->name, header->value, private_data);
+    }
+} /* evpl_http_request_header_iterate */
+
 SYMBOL_EXPORT uint64_t
 evpl_http_request_get_data_avail(struct evpl_http_request *request)
 {

@@ -27,6 +27,18 @@ server_wake(
 } /* server_wake */
 
 static void
+count_header(
+    const char *name,
+    const char *value,
+    void       *private_data)
+{
+    int *count = private_data;
+
+    fprintf(stderr, "iterate header: %s: %s\n", name, value);
+    (*count)++;
+} /* count_header */
+
+static void
 server_notify(
     struct evpl                *evpl,
     struct evpl_http_agent     *agent,
@@ -38,6 +50,7 @@ server_notify(
     void                       *private_data)
 {
     struct evpl_iovec iov;
+    int               header_count;
 
     switch (notify_type) {
         case EVPL_HTTP_NOTIFY_RECEIVE_DATA:
@@ -45,6 +58,15 @@ server_notify(
             break;
         case EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE:
             fprintf(stderr, "notify request complete\n");
+
+            header_count = 0;
+            evpl_http_request_header_iterate(request, count_header,
+                                             &header_count);
+            if (header_count == 0) {
+                fprintf(stderr, "header iteration found no headers\n");
+                exit(1);
+            }
+
             evpl_http_request_add_header(request, "MyHeader", "MyValue");
 
             evpl_iovec_alloc(evpl, 11, 0, 1, 0, &iov);
