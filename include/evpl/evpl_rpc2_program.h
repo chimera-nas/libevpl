@@ -19,6 +19,7 @@ struct prometheus_histogram_instance;
 #endif // ifndef container_of
 
 struct evpl;
+struct evpl_iovec;
 struct evpl_rpc2_conn;
 struct evpl_rpc2_program;
 struct evpl_rpc2_cred;
@@ -45,6 +46,25 @@ struct evpl_rpc2_rdma_segment_list {
 };
 
 /*
+ * Optional pre-dispatch reply-capture callback.
+ *
+ * If set on an evpl_rpc2_encoding before a send_reply call, libevpl invokes
+ * this callback inside send_reply -- after the reply has been marshalled
+ * into iovecs but before they are queued onto the wire and the request is
+ * freed.  This gives applications a chance to copy out the encoded reply
+ * bytes for later replay (NFS4.1 session replay cache).
+ *
+ * The iov array is the complete RPC reply (header + body).  Pointers are
+ * valid only for the duration of the callback; the callback must copy any
+ * bytes it wishes to retain.
+ */
+typedef void (*evpl_rpc2_reply_capture_cb_t)(
+    const struct evpl_iovec *iov,
+    int                      niov,
+    int                      total_length,
+    void                    *private_data);
+
+/*
  * evpl_rpc2_encoding is the public interface between libevpl and applications.
  *
  * This structure contains pointers to everything needed for XDR encoding/decoding
@@ -56,6 +76,10 @@ struct evpl_rpc2_encoding {
     struct xdr_dbuf             *dbuf;        /* Dynamic buffer for allocations */
     struct evpl_rpc2_rdma_chunk *read_chunk;  /* RDMA read chunk (for writes) */
     struct evpl_rpc2_rdma_chunk *write_chunk; /* RDMA write chunk (for replies) */
+    /* Optional reply-capture hook -- see evpl_rpc2_reply_capture_cb_t.
+     * NULL means "do not capture". */
+    evpl_rpc2_reply_capture_cb_t reply_capture_cb;
+    void                        *reply_capture_private;
 };
 
 struct evpl_rpc2_program {

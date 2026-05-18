@@ -183,16 +183,20 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
         request = evpl_zalloc(sizeof(*request));
     }
 
-    request->thread                      = thread;
-    request->pending_reads               = 0;
-    request->read_chunk.niov             = 0;
-    request->read_chunk.length           = 0;
-    request->write_chunk.niov            = 0;
-    request->write_chunk.length          = 0;
-    request->write_chunk.max_length      = 0;
-    request->write_segments.num_segments = 0;
-    request->reply_segments.num_segments = 0;
-    request->msg                         = NULL;
+    request->thread                       = thread;
+    request->pending_reads                = 0;
+    request->read_chunk.niov              = 0;
+    request->read_chunk.length            = 0;
+    request->write_chunk.niov             = 0;
+    request->write_chunk.length           = 0;
+    request->write_chunk.max_length       = 0;
+    request->write_segments.num_segments  = 0;
+    request->reply_segments.num_segments  = 0;
+    request->msg                          = NULL;
+    /* Reset any reply-capture hook left over from the previous use of
+     * this recycled request -- the application must re-arm per-call. */
+    request->encoding.reply_capture_cb      = NULL;
+    request->encoding.reply_capture_private = NULL;
 
     return request;
 } /* evpl_rpc2_request_alloc */
@@ -540,6 +544,18 @@ evpl_rpc2_send_reply(
         final_reply_iov    = msg_iov;
         final_reply_niov   = msg_niov;
         final_reply_length = length;
+    }
+
+    /* If the application requested reply capture (e.g. for an NFS4.1
+     * SEQUENCE replay cache), invoke the callback now -- the iovec
+     * array is fully populated and still valid; dispatch_reply will
+     * free the request (and therefore the iovec metadata) below. */
+    if (request->encoding.reply_capture_cb) {
+        request->encoding.reply_capture_cb(
+            final_reply_iov,
+            final_reply_niov,
+            final_reply_length,
+            request->encoding.reply_capture_private);
     }
 
     evpl_rpc2_dispatch_reply(evpl, request, final_reply_iov, final_reply_niov, final_reply_length);
