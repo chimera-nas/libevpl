@@ -225,6 +225,11 @@ evpl_xlio_socket_accept(
 
     srcaddr = evpl_address_alloc();
 
+    /* getpeername needs addrlen initialized to the buffer size; evpl_address_alloc
+     * zero-fills the struct, so without this the call writes nothing and we'd
+     * pass an empty sockaddr (sa_family = 0) up to the application. */
+    srcaddr->addrlen = sizeof(srcaddr->sa);
+
     xlio->extra->xlio_socket_getpeername(sock, srcaddr->addr, &srcaddr->addrlen);
 
     rc = xlio->extra->xlio_socket_detach_group(sock);
