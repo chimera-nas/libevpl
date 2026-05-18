@@ -175,14 +175,20 @@ evpl_io_uring_complete(
 
     /* On DEFER_TASKRUN rings, task work (and therefore CQE delivery) is
      * deferred until the ring is entered with IORING_ENTER_GETEVENTS.
-     * Drive that explicitly so the user-side CQ ring sees fresh events
-     * even when no SQE has just been submitted. Cheap when there is no
-     * work to do, no-op on SQPOLL rings.
+     * BUT: CQEs already deposited by previous task work are sitting in
+     * the shared CQ ring — we can drain those with zero syscalls. Only
+     * enter the kernel when the ring is empty and we want fresh events.
+     * Under load this collapses the get_events syscall rate from "one
+     * per poll-loop turn" to "one per CQE-batch drained", which on AMD
+     * with Spectre mitigations is a multi-percent CPU win.
      */
-    io_uring_get_events(&ctx->ring);
     struct io_uring_cqe *cqes[64], *cqe;
 
     cq_count = io_uring_peek_batch_cqe(&ctx->ring, cqes, 64);
+    if (cq_count == 0) {
+        io_uring_get_events(&ctx->ring);
+        cq_count = io_uring_peek_batch_cqe(&ctx->ring, cqes, 64);
+    }
 
     for (int i = 0; i < cq_count; i++) {
         cqe =   cqes[i];
@@ -668,6 +674,14 @@ evpl_io_uring_create(
     evpl_io_uring_abort_if(ret < 0,
                            "io_uring_queue_init_params() failed: %s (%d)",
                            strerror(-ret), ret);
+
+    /* Register the ring fd so subsequent io_uring_enter calls skip the
+     * per-syscall fget on the ring fd. With DEFER_TASKRUN we enter the
+     * kernel every poll-loop turn to drive task work, so fget shows up
+     * as multiple percent of the per-CPU profile under load. Cheap to
+     * set up; ignored on kernels too old to support it.
+     */
+    (void) io_uring_register_ring_fd(&ctx->ring);
 
     evpl_io_uring_probe_caps(ctx);
     evpl_io_uring_resolve_effective(ctx, sqpoll_in_use);
