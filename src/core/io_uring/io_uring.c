@@ -881,6 +881,7 @@ evpl_io_uring_destroy(
 
     evpl_free(ctx->recv_ring_iov_empty);
     evpl_free(ctx->recv_ring_iov);
+    evpl_free(ctx->deliver_iov);
 
     evpl_free(ctx);
 } /* evpl_io_uring_destroy */

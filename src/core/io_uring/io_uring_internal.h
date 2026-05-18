@@ -178,6 +178,16 @@ struct evpl_io_uring_context {
     int                             *direct_fd_slot;
     unsigned int                     direct_fd_count;
     int                             *direct_fd_free;
+
+    /* Scratch iovec array for evpl_io_uring_recv_deliver — sized to the
+     * worst-case fragment count of any segment we've delivered. Grows
+     * monotonically; freed at ctx teardown. Replaces the previous fixed-
+     * cap alloca which overflowed when a single segment had more
+     * fragments than max_num_iovec (e.g. 1 MiB segment over 4 KiB ZCRX
+     * pages = 256 frags > 128 default).
+     */
+    struct evpl_iovec               *deliver_iov;
+    unsigned int                     deliver_iov_capacity;
     unsigned int                     direct_fd_free_top;
 
     /* ZCRX state, valid only when effective.zcrx == 1 */

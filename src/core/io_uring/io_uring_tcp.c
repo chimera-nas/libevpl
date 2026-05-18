@@ -210,15 +210,15 @@ evpl_io_uring_recv_deliver(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
+    struct evpl_io_uring_context *ctx = evpl_framework_private(evpl,
+                                                               EVPL_FRAMEWORK_IO_URING);
     struct evpl_iovec *iov;
     struct evpl_notify notify;
     uint64_t           length;
     int                niov;
+    unsigned int       need;
 
     if (bind->segment_callback) {
-        iov = alloca(sizeof(struct evpl_iovec) *
-                     evpl_shared->config->max_num_iovec);
-
         while (1) {
             length = bind->segment_callback(evpl, bind, bind->private_data);
 
@@ -231,6 +231,19 @@ evpl_io_uring_recv_deliver(
                 evpl_close(evpl, bind);
                 return;
             }
+
+            /* Worst-case iovec count for this segment: every fragment
+             * currently buffered in the recv ring could contribute one
+             * iovec. Grow the per-ctx scratch monotonically.
+             */
+            need = (unsigned int) evpl_iovec_ring_elements(&bind->iovec_recv) + 1;
+            if (need > ctx->deliver_iov_capacity) {
+                evpl_free(ctx->deliver_iov);
+                ctx->deliver_iov = evpl_valloc(
+                    sizeof(struct evpl_iovec) * need, 64);
+                ctx->deliver_iov_capacity = need;
+            }
+            iov = ctx->deliver_iov;
 
             niov = evpl_iovec_ring_copyv(evpl, iov, &bind->iovec_recv, length);
 
