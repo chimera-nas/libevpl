@@ -53,7 +53,7 @@ struct evpl_global_config {
     char                     *io_uring_zcrx_interface;
     unsigned int              io_uring_zcrx_rxq;
     unsigned int              io_uring_zcrx_rxq_count;
-    unsigned int              io_uring_zcrx_area_size;
+    size_t                    io_uring_zcrx_area_size;
     unsigned int              io_uring_zcrx_rq_entries;
     unsigned int              io_uring_zcrx_rx_buf_len;
     unsigned int              io_uring_zcrx_area_import;

@@ -408,7 +408,7 @@ evpl_global_config_set_io_uring_zcrx_rxq_count(
 SYMBOL_EXPORT void
 evpl_global_config_set_io_uring_zcrx_area_size(
     struct evpl_global_config *config,
-    unsigned int               size)
+    size_t                     size)
 {
     config->io_uring_zcrx_area_size = size;
 } /* evpl_global_config_set_io_uring_zcrx_area_size */

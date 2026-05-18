@@ -5,6 +5,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_config.h directly, include evpl/evpl.h instead"
@@ -151,7 +152,7 @@ void evpl_global_config_set_io_uring_zcrx_rxq_count(
 
 void evpl_global_config_set_io_uring_zcrx_area_size(
     struct evpl_global_config *config,
-    unsigned int               size);
+    size_t                     size);
 
 void evpl_global_config_set_io_uring_zcrx_rq_entries(
     struct evpl_global_config *config,
