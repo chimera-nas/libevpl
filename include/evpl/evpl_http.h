@@ -94,6 +94,17 @@ evpl_http_request_header(
     struct evpl_http_request *request,
     const char               *name);
 
+typedef void (*evpl_http_request_header_cb_t)(
+    const char *name,
+    const char *value,
+    void       *private_data);
+
+void
+evpl_http_request_header_iterate(
+    struct evpl_http_request     *request,
+    evpl_http_request_header_cb_t callback,
+    void                         *private_data);
+
 uint64_t
 evpl_http_request_get_data_avail(
     struct evpl_http_request *request);
