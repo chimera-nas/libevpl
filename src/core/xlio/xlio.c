@@ -395,7 +395,9 @@ evpl_xlio_destroy(
 
     if (xlio->poll) {
         evpl_remove_poll(evpl, xlio->poll);
-        evpl_remove_timer(evpl, &xlio->idle_timer);
+        if (xlio->idle_timer_active) {
+            evpl_remove_timer(evpl, &xlio->idle_timer);
+        }
         evpl->force_poll_mode = 0;
     }
 
@@ -482,14 +484,19 @@ evpl_xlio_socket_init(
 
     if (!xlio->poll) {
         xlio->poll = evpl_add_poll(evpl, NULL, NULL, evpl_xlio_poll, xlio);
-
-        /* 10ms fallback: services listen sockets and any other XLIO work
-         * while the main poll callback is short-circuited because
-         * num_connections == 0. */
-        evpl_add_timer(evpl, &xlio->idle_timer, evpl_xlio_idle_timer, 10000UL);
     }
 
-    if (!listen) {
+    if (listen) {
+        /* Listen sockets need a periodic poll to catch incoming accepts
+         * even when num_connections == 0 (poll callback short-circuits).
+         * Worker threads never hit this branch and therefore never pay
+         * for the timer: when a worker has connections the regular poll
+         * runs, and when it doesn't there's nothing for XLIO to service. */
+        if (!xlio->idle_timer_active) {
+            evpl_add_timer(evpl, &xlio->idle_timer, evpl_xlio_idle_timer, 10000UL);
+            xlio->idle_timer_active = 1;
+        }
+    } else {
         if (xlio->num_connections == 0) {
             /* First active connection on this thread — pin the event loop
              * into poll mode so we get per-iteration polling latency. */

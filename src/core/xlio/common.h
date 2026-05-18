@@ -120,6 +120,7 @@ struct evpl_xlio {
     int                       num_active_sockets;
     int                       max_active_sockets;
     int                       num_connections;
+    int                       idle_timer_active;
 };
 
 struct evpl_xlio_accepted_socket {
