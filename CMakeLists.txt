@@ -5,11 +5,42 @@
 cmake_minimum_required(VERSION 3.22)
 
 option(IO_URING_ENABLED "Enable io_uring support" ON)
+option(REQUIRE_NETNS_TESTS "Fail configure if network namespace tests cannot be enabled" OFF)
 set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES=required, NO=disabled)")
 
 project(libevpl LANGUAGES C)
 
 enable_testing()
+
+# Network namespace testing detection.
+# Tests run inside `ip netns` for isolation, which needs CAP_NET_ADMIN.
+# A previous probe (e.g. by a parent project) may have already populated
+# LIBEVPL_NETNS_TESTING in the cache; otherwise do a fresh probe.
+if(NOT DEFINED LIBEVPL_NETNS_TESTING)
+    execute_process(
+        COMMAND bash -c "set -e; n=libevpl_netns_probe_$$; ip netns add \"$n\"; ip netns delete \"$n\""
+        RESULT_VARIABLE LIBEVPL_NETNS_PROBE_RESULT
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(LIBEVPL_NETNS_PROBE_RESULT EQUAL 0)
+        set(LIBEVPL_NETNS_TESTING TRUE)
+    else()
+        set(LIBEVPL_NETNS_TESTING FALSE)
+    endif()
+endif()
+
+if(LIBEVPL_NETNS_TESTING)
+    message(STATUS "Network namespace testing enabled")
+else()
+    if(REQUIRE_NETNS_TESTS)
+        message(FATAL_ERROR
+            "REQUIRE_NETNS_TESTS=ON but `ip netns add` failed "
+            "(need CAP_NET_ADMIN / root).")
+    endif()
+    message(STATUS "Network namespace testing disabled "
+        "(netns-requiring tests will be skipped)")
+endif()
 
 message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
 
