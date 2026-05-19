@@ -256,14 +256,16 @@ rpc2_segment_callback(
 
     hdr = rpc2_ntoh32(hdr);
 
-    if (unlikely(!(hdr & 0x80000000))) {
-        evpl_rpc2_error(
-            "Fragmented RPC messages are not yet supported, disconnecting...");
-        return -1;
-    }
-
+    /* Deliver one TCP record-mark fragment (4-byte mark + payload).
+     * Multi-fragment reassembly is performed in evpl_rpc2_recv_msg. */
     return (hdr & 0x7FFFFFFF) + 4;
 } /* rpc2_segment_callback */
+
+/* Cap on a single reassembled RPC message (DoS guard). Well above
+ * realistic NFS COMPOUND sizes (typical rsize/wsize <= 1 MiB). */
+#define EVPL_RPC2_MAX_REASM_LENGTH (16u * 1024u * 1024u)
+
+#define EVPL_RPC2_REASM_INIT_CAP   8
 
 static inline int
 evpl_rpc2_iovec_skip(
@@ -297,6 +299,133 @@ evpl_rpc2_iovec_skip(
 
     return outc - out_iov;
 } /* evpl_rpc2_iovec_skip */
+
+static void
+evpl_rpc2_reasm_reset(
+    struct evpl           *evpl,
+    struct evpl_rpc2_conn *rpc2_conn)
+{
+    if (rpc2_conn->reasm_iov) {
+        evpl_iovecs_release(evpl, rpc2_conn->reasm_iov, rpc2_conn->reasm_niov);
+        evpl_free(rpc2_conn->reasm_iov);
+    }
+    rpc2_conn->reasm_iov    = NULL;
+    rpc2_conn->reasm_niov   = 0;
+    rpc2_conn->reasm_cap    = 0;
+    rpc2_conn->reasm_length = 0;
+} /* evpl_rpc2_reasm_reset */
+
+/*
+ * Drives ONC RPC TCP record-mark reassembly.
+ *
+ * Caller delivers one fragment (the segment callback returns one
+ * record-mark's worth of bytes at a time). This helper inspects the
+ * 4-byte mark, accumulates payload iovecs across L=0 fragments on the
+ * connection, and on the L=1 terminal fragment hands back a single
+ * iovec list spanning all payload bytes from all fragments (with no
+ * leading mark).
+ *
+ * Return:
+ *   1  -> dispatch (*io_iovec, *io_niov, *io_length, *io_offset).
+ *         Fast path (L=1, no pending fragments): inputs unchanged,
+ *         *io_offset = 4. Reassembled path: inputs rewritten to the
+ *         accumulator, *io_offset = 0, *io_length = total payload.
+ *         When *io_offset == 0 the caller must evpl_free(*io_iovec)
+ *         after releasing the iovec refs.
+ *   0  -> intermediate fragment consumed; caller must return.
+ *  -1  -> cap exceeded; caller must close the bind.
+ */
+static int
+evpl_rpc2_reassemble(
+    struct evpl           *evpl,
+    struct evpl_rpc2_conn *rpc2_conn,
+    struct evpl_iovec    **io_iovec,
+    int                   *io_niov,
+    int                   *io_length,
+    int                   *io_offset)
+{
+    struct evpl_iovec *iovec = *io_iovec;
+    int                niov  = *io_niov;
+    uint32_t           mark;
+    uint32_t           frag_len;
+    int                last;
+    int                added;
+
+    mark     = rpc2_ntoh32(*(uint32_t *) iovec->data);
+    last     = (mark & 0x80000000) != 0;
+    frag_len = mark & 0x7FFFFFFF;
+
+    /* Fast path: lone L=1 fragment, no fragments stashed. */
+    if (last && rpc2_conn->reasm_niov == 0) {
+        *io_offset = 4;
+        return 1;
+    }
+
+    /* Cap check, overflow-safe. */
+    if (frag_len > EVPL_RPC2_MAX_REASM_LENGTH - rpc2_conn->reasm_length) {
+        evpl_rpc2_error(
+            "RPC reassembled message exceeds %u-byte cap, dropping connection",
+            EVPL_RPC2_MAX_REASM_LENGTH);
+        evpl_rpc2_reasm_reset(evpl, rpc2_conn);
+        evpl_iovecs_release(evpl, iovec, niov);
+        return -1;
+    }
+
+    /* Grow accumulator to fit reasm_niov + niov entries. */
+    if (rpc2_conn->reasm_niov + niov > rpc2_conn->reasm_cap) {
+        int                new_cap = rpc2_conn->reasm_cap
+                ? rpc2_conn->reasm_cap : EVPL_RPC2_REASM_INIT_CAP;
+        struct evpl_iovec *new_iov;
+        int                k;
+
+        while (new_cap < rpc2_conn->reasm_niov + niov) {
+            new_cap *= 2;
+        }
+
+        new_iov = evpl_zalloc(sizeof(*new_iov) * new_cap);
+        if (rpc2_conn->reasm_iov) {
+            /* evpl_iovec_move transfers the ref (and, with iovec
+             * tracing, rebinds the canary's owner to the new slot)
+             * without a refcount round-trip. */
+            for (k = 0; k < rpc2_conn->reasm_niov; k++) {
+                evpl_iovec_move(&new_iov[k], &rpc2_conn->reasm_iov[k]);
+            }
+            evpl_free(rpc2_conn->reasm_iov);
+        }
+        rpc2_conn->reasm_iov = new_iov;
+        rpc2_conn->reasm_cap = new_cap;
+    }
+
+    /* Clone payload iovecs (skipping the 4-byte mark) into the
+     * accumulator. Each clone bumps the buffer refcount. */
+    added = evpl_rpc2_iovec_skip(
+        &rpc2_conn->reasm_iov[rpc2_conn->reasm_niov],
+        iovec, niov, 4);
+    rpc2_conn->reasm_niov   += added;
+    rpc2_conn->reasm_length += frag_len;
+
+    /* Drop the delivery refs; accumulator clones now own the buffer
+     * references on behalf of the conn. */
+    evpl_iovecs_release(evpl, iovec, niov);
+
+    if (!last) {
+        return 0;
+    }
+
+    /* Terminal fragment: hand the accumulator off to the caller as a
+     * single iovec list with no leading record mark. */
+    *io_iovec  = rpc2_conn->reasm_iov;
+    *io_niov   = rpc2_conn->reasm_niov;
+    *io_length = (int) rpc2_conn->reasm_length;
+    *io_offset = 0;
+
+    rpc2_conn->reasm_iov    = NULL;
+    rpc2_conn->reasm_niov   = 0;
+    rpc2_conn->reasm_cap    = 0;
+    rpc2_conn->reasm_length = 0;
+
+    return 1;
+} /* evpl_rpc2_reassemble */
 
 static void
 evpl_rpc2_dispatch_reply(
@@ -805,16 +934,39 @@ evpl_rpc2_recv_msg(
                                      &msg->dbuf);
 
     } else {
-        /* We expect RPC2 on TCP to start with a 4 byte header */
+        /* We expect RPC2 on TCP to start with a 4 byte header.
+         * Multi-fragment reassembly (RFC 5531 §11) is handled by
+         * evpl_rpc2_reassemble; on the fast path (lone L=1 fragment)
+         * it leaves iovec/niov/length untouched and sets offset=4. */
 
-        offset = 4;
-        hdr    = *(uint32_t *) iovec->data;
-        hdr    = rpc2_ntoh32(hdr);
+        rc = evpl_rpc2_reassemble(evpl, rpc2_conn,
+                                  &iovec, &niov, &length, &offset);
 
-        evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != length
-                           ,
-                           "RPC message length mismatch %d != %d",
-                           (hdr & 0x7FFFFFFF) + 4, length);
+        if (rc == 0) {
+            /* Intermediate fragment stashed; await terminal fragment. */
+            evpl_rpc2_msg_free(thread, msg);
+            return;
+        }
+
+        if (rc < 0) {
+            /* Cap exceeded; helper already released the delivered
+             * iovecs and reset accumulator state. */
+            evpl_rpc2_msg_free(thread, msg);
+            evpl_close(evpl, bind);
+            return;
+        }
+
+        if (offset == 4) {
+            /* Fast path: validate the 4-byte record mark. */
+            hdr = *(uint32_t *) iovec->data;
+            hdr = rpc2_ntoh32(hdr);
+
+            evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != length
+                               ,
+                               "RPC message length mismatch %d != %d",
+                               (hdr & 0x7FFFFFFF) + 4, length);
+        }
+        /* offset == 0: reassembled iovec list with no leading mark. */
     }
 
     hdr_iov = xdr_dbuf_alloc_space(sizeof(*hdr_iov) * niov, &msg->dbuf);
@@ -837,6 +989,15 @@ evpl_rpc2_recv_msg(
 
     /* Release the original iovec array references from evpl_iovec_ring_copyv */
     evpl_iovecs_release(evpl, iovec, niov);
+
+    /* On the reassembled path, iovec points at the heap accumulator
+     * array handed off by evpl_rpc2_reassemble; free it now that all
+     * refs have been moved to msg->recv_iov. offset is set to 0 only
+     * on the reassembled path (RDMA uses an unmarshalled RDMA header
+     * length, TCP fast path uses 4). */
+    if (!rdma && offset == 0) {
+        evpl_free(iovec);
+    }
 
     req_iov = xdr_dbuf_alloc_space(sizeof(*req_iov) * hdr_niov, &msg->dbuf);
 
@@ -1073,6 +1234,8 @@ evpl_rpc2_event(
                 rpc2_conn->thread->notify_callback(rpc2_conn->thread, rpc2_conn, &rpc2_notify, rpc2_thread->private_data
                                                    );
             }
+            /* Release any iovecs stashed mid-reassembly. */
+            evpl_rpc2_reasm_reset(evpl, rpc2_conn);
             free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:

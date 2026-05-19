@@ -52,11 +52,14 @@ endmacro()
 unit_test_rpc2(hello_world hello_world.x hello_world.c)
 unit_test_rpc2(builtin_bool builtin_bool.x builtin_bool.c)
 unit_test_rpc2(rdma_ddp rdma_ddp.x rdma_ddp.c)
+unit_test_rpc2(multifrag hello_world.x multifrag.c)
 
 # Add test instances for STREAM_SOCKET_TCP
 unit_test_rpc2_instance(hello_world STREAM_SOCKET_TCP 8100)
 unit_test_rpc2_instance(builtin_bool STREAM_SOCKET_TCP 8101)
 unit_test_rpc2_instance(rdma_ddp STREAM_SOCKET_TCP 8102)
+# multifrag is TCP-only: RDMA bypasses rpc2_segment_callback entirely.
+unit_test_rpc2_instance(multifrag STREAM_SOCKET_TCP 8103)
 
 # Add test instances for DATAGRAM_TCP_RDMA
 unit_test_rpc2_instance(hello_world DATAGRAM_TCP_RDMA 8200)
