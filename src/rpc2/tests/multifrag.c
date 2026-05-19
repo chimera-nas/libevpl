@@ -36,8 +36,8 @@ static int                   port  = 8000;
 
 struct server_ctx {
     struct HELLO_V1 prog;
+    struct evpl    *evpl;
     volatile int    ready;
-    volatile int    stop;
     volatile int    received_count;
 };
 
@@ -100,11 +100,17 @@ server_pump(void *arg)
     thread = evpl_rpc2_thread_init(evpl, programs, 1, NULL, NULL);
     evpl_rpc2_server_attach(thread, server, ctx);
 
+    /* Publish evpl so the main thread can signal evpl_stop. The
+     * store must be visible before ctx->ready, so use a barrier. */
+    ctx->evpl = evpl;
+    __sync_synchronize();
     ctx->ready = 1;
 
-    while (!ctx->stop) {
-        evpl_continue(evpl);
-    }
+    /* evpl_run blocks on epoll until evpl_stop writes the eventfd
+     * doorbell. A plain `while (!stop) evpl_continue(...)` deadlocks
+     * because epoll_wait has no wakeup when stop is set from another
+     * thread. */
+    evpl_run(evpl);
 
     evpl_rpc2_server_stop(server);
     evpl_rpc2_server_detach(thread, server);
@@ -357,7 +363,7 @@ main(
                        "server processed %d calls, expected 3",
                        ctx.received_count);
 
-    ctx.stop = 1;
+    evpl_stop(ctx.evpl);
     pthread_join(pump, NULL);
 
     printf("Test PASSED\n");
