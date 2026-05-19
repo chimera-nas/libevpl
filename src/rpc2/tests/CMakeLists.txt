@@ -39,13 +39,15 @@ endmacro()
 
 # Macro to add a test instance for a specific protocol
 macro(unit_test_rpc2_instance test_name protocol port)
-    add_test(NAME libevpl/rpc2/${test_name}_${protocol}
-             COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
-                     ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
+    if(LIBEVPL_NETNS_TESTING)
+        add_test(NAME libevpl/rpc2/${test_name}_${protocol}
+                 COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
+                         ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
 
-    set_tests_properties(libevpl/rpc2/${test_name}_${protocol} PROPERTIES
-        ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}}"
-        TIMEOUT 10)
+        set_tests_properties(libevpl/rpc2/${test_name}_${protocol} PROPERTIES
+            ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}}"
+            TIMEOUT 10)
+    endif()
 endmacro()
 
 # Build RPC2 test executables
