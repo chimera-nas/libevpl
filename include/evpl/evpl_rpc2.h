@@ -88,6 +88,13 @@ struct evpl_rpc2_conn {
     void                            *server_private_data;
     int                              num_server_programs;
     struct evpl_rpc2_program        *server_programs[4];
+
+    /* TCP record-mark reassembly accumulator (unused for RDMA).
+     * Holds clones of payload iovecs from prior L=0 fragments. */
+    struct evpl_iovec               *reasm_iov;
+    int                              reasm_niov;
+    int                              reasm_cap;
+    uint32_t                         reasm_length;
 };
 
 typedef void (*evpl_rpc2_notify_callback_t)(
