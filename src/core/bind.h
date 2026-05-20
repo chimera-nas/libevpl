@@ -16,6 +16,14 @@
 #define EVPL_BIND_FINISH         0x04
 #define EVPL_BIND_SENT_NOTIFY    0x08
 
+/* Set by a protocol's pending_close callback when teardown cannot complete
+ * synchronously (e.g. RDMA must wait for the RDMA_CM_EVENT_DISCONNECTED event
+ * before the cm_id can be destroyed).  While set, the core leaves the bind on
+ * pending_close_binds without calling close()/destroy.  The protocol clears it
+ * once the asynchronous teardown has reached the point where the bind can be
+ * finalized. */
+#define EVPL_BIND_CLOSE_DEFERRED 0x10
+
 struct evpl_bind {
     struct evpl_protocol   *protocol;
     uint64_t                flags;
