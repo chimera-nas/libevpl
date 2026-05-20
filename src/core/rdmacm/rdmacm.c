@@ -444,7 +444,15 @@ evpl_rdmacm_event_callback(
 
             rdmacm_id->connected = 0;
 
-            evpl_close(evpl, bind);
+            if (bind->flags & EVPL_BIND_CLOSE_DEFERRED) {
+                /* We initiated this disconnect; the bind has been parked on
+                 * pending_close_binds awaiting exactly this event.  Clear the
+                 * deferral so the core finalizes (close + destroy) it on the
+                 * next iteration, now that this event has been acked. */
+                bind->flags &= ~EVPL_BIND_CLOSE_DEFERRED;
+            } else {
+                evpl_close(evpl, bind);
+            }
             break;
         case RDMA_CM_EVENT_REJECTED:
 
@@ -1641,10 +1649,17 @@ evpl_rdmacm_pending_close(
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
 
     if (rdmacm_id->connected) {
+        /* rdma_disconnect() is asynchronous: the cm_id stays valid and a
+         * RDMA_CM_EVENT_DISCONNECTED event is still owed to us.  Park the bind
+         * until that event arrives (see evpl_rdmacm_event_callback) so the
+         * cm_id is not torn down, and so the core does not free the bind's
+         * private state out from under the still-live cm_id. */
+        bind->flags |= EVPL_BIND_CLOSE_DEFERRED;
         rdma_disconnect(rdmacm_id->id);
-    } else {
-        evpl_rdmacm_destroy_qp(evpl, rdmacm_id);
     }
+
+    /* The cm_id is destroyed in evpl_rdmacm_close(), which the core invokes
+     * once the bind is no longer deferred. */
 
 } /* evpl_rdmacm_pending_close */
 
@@ -1676,6 +1691,8 @@ evpl_rdmacm_close(
 
         evpl_rdmacm_qp_lookup_del(rdmacm_id->dev, rdmacm_id->qp_num);
     }
+
+    evpl_rdmacm_destroy_qp(evpl, rdmacm_id);
 } /* evpl_rdmacm_close */
 
 void
