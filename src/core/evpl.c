@@ -445,10 +445,20 @@ evpl_continue(struct evpl *evpl)
         n = evpl_core_wait(&evpl->core, msecs);
 
         if (evpl->pending_close_binds && n == 0) {
-            while (evpl->pending_close_binds) {
-                bind = evpl->pending_close_binds;
-                bind->protocol->close(evpl, bind);
-                evpl_bind_destroy(evpl, bind);
+            struct evpl_bind *next;
+
+            bind = evpl->pending_close_binds;
+            while (bind) {
+                next = bind->next;
+                /* A protocol with an asynchronous teardown (RDMA) keeps the
+                 * bind parked here until its disconnect event arrives; do not
+                 * finalize it yet or its private state would be freed while
+                 * the protocol still references it. */
+                if (!(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
+                    bind->protocol->close(evpl, bind);
+                    evpl_bind_destroy(evpl, bind);
+                }
+                bind = next;
             }
         }
 
