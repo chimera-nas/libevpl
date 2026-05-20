@@ -1176,9 +1176,15 @@ evpl_rpc2_recv_msg(
             HASH_FIND(hh, rpc2_conn->pending_calls, &rpc_msg.xid, sizeof(rpc_msg.xid), request);
 
             if (unlikely(!request)) {
-                evpl_rpc2_error("rpc2 received reply for unknown call %u", rpc_msg.xid);
+                /* A REPLY that matches no outstanding call is benign: it is a
+                 * late, duplicate, or already-timed-out reply (e.g. an NFSv4.1
+                 * backchannel call we have already reaped).  ONC RPC has no way
+                 * to acknowledge a reply, so the only correct action is to drop
+                 * it.  Do not tear down the connection: each RDMA receive is a
+                 * discrete message and each TCP record is independently framed,
+                 * so a stray reply cannot desync the stream. */
+                evpl_rpc2_debug("rpc2 dropping reply for unknown call %u", rpc_msg.xid);
                 evpl_rpc2_msg_free(thread, msg);
-                evpl_close(evpl, bind);
                 return;
             }
 
