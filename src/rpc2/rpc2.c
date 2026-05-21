@@ -879,8 +879,12 @@ evpl_rpc2_client_handle_reply(
 
     request->read_chunk.niov = 0;
 
+    /* A reply we cannot dispatch (e.g. an RPC-level MSG_DENIED, or a body that
+     * does not match the procedure's result type) must not take down the whole
+     * process -- drop it and free the request.  The pending caller callback is
+     * not invoked in this case. */
     if (unlikely(error)) {
-        evpl_rpc2_abort("Failed to dispatch rpc2 reply: %d", error);
+        evpl_rpc2_error("Dropping rpc2 reply that failed to dispatch: %d", error);
     }
 
     evpl_rpc2_request_free(thread, request);
