@@ -140,6 +140,21 @@ evpl_add_timer(
 {
     timer->callback = callback;
     timer->interval = interval_us;
+    timer->oneshot  = 0;
 
     evpl_timer_insert(evpl, timer);
 } /* evpl_add_timer */
+
+SYMBOL_EXPORT void
+evpl_add_oneshot_timer(
+    struct evpl          *evpl,
+    struct evpl_timer    *timer,
+    evpl_timer_callback_t callback,
+    uint64_t              delay_us)
+{
+    timer->callback = callback;
+    timer->interval = delay_us;
+    timer->oneshot  = 1;
+
+    evpl_timer_insert(evpl, timer);
+} /* evpl_add_oneshot_timer */

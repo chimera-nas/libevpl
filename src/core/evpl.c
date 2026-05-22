@@ -389,11 +389,16 @@ evpl_continue(struct evpl *evpl)
                     }
                 }
 
-                timer->callback(evpl, timer);
-
-                evpl_pop_timer(evpl);
-
-                evpl_timer_insert(evpl, timer);
+                if (timer->oneshot) {
+                    /* Remove before the callback: a one-shot fires once and
+                     * the callback is permitted to free or re-arm the timer. */
+                    evpl_pop_timer(evpl);
+                    timer->callback(evpl, timer);
+                } else {
+                    timer->callback(evpl, timer);
+                    evpl_pop_timer(evpl);
+                    evpl_timer_insert(evpl, timer);
+                }
 
             } while (evpl->num_timers);
         }
