@@ -24,6 +24,7 @@ uint64_t              total_bytes = 128 * 1024 * 1024;
 
 struct thread_state {
     int               run;
+    int               ready;
     int               index;
     int64_t           sent;
     int64_t           recv;
@@ -149,7 +150,10 @@ client_thread(void *arg)
         evpl_connect(evpl, proto, NULL, ep, client_callback, NULL, state);
     }
 
+    pthread_mutex_lock(&state->lock);
+    state->ready = 1;
     pthread_cond_signal(&state->cond);
+    pthread_mutex_unlock(&state->lock);
 
     while (state->run) {
         dispatch(evpl, state);
@@ -210,9 +214,15 @@ main(
         pthread_mutex_init(&state[i].lock, NULL);
         pthread_cond_init(&state[i].cond, NULL);
 
+        pthread_mutex_lock(&state[i].lock);
+
         pthread_create(&state[i].thread, NULL, client_thread, &state[i]);
 
-        pthread_cond_wait(&state[i].cond, &state[i].lock);
+        while (!state[i].ready) {
+            pthread_cond_wait(&state[i].cond, &state[i].lock);
+        }
+
+        pthread_mutex_unlock(&state[i].lock);
 
     }
 
