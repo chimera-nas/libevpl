@@ -4,6 +4,8 @@
 
 #include <sys/eventfd.h>
 #include <unistd.h>
+#include <errno.h>
+#include <string.h>
 #include <utlist.h>
 
 #include "doorbell.h"
@@ -22,7 +24,9 @@ evpl_event_user_callback(
     uint64_t              word;
     ssize_t               len;
 
-    len = read(event->fd, &word, sizeof(word));
+    do {
+        len = read(event->fd, &word, sizeof(word));
+    } while (len < 0 && errno == EINTR);
 
     if (len != sizeof(word)) {
         evpl_event_mark_unreadable(evpl, event);
@@ -71,8 +75,15 @@ evpl_ring_doorbell(struct evpl_doorbell *doorbell)
 {
     uint64_t word = 1;
     ssize_t  len;
+    int      err;
 
-    len = write(doorbell->event.fd, &word, sizeof(word));
+    do {
+        len = write(doorbell->event.fd, &word, sizeof(word));
+    } while (len < 0 && errno == EINTR);
 
-    evpl_core_abort_if(len != sizeof(word), "failed to write to doorbell fd");
+    err = errno;
+
+    evpl_core_abort_if(len != sizeof(word),
+                       "failed to write to doorbell fd %d: len=%zd errno=%d (%s)",
+                       doorbell->event.fd, len, err, strerror(err));
 } /* evpl_ring_doorbell */
