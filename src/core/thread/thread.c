@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "core/evpl.h"
 #include "evpl/evpl.h"
@@ -56,7 +57,9 @@ evpl_thread_event(
     uint64_t word;
     ssize_t  rc;
 
-    rc = read(event->fd, &word, sizeof(word));
+    do {
+        rc = read(event->fd, &word, sizeof(word));
+    } while (rc < 0 && errno == EINTR);
 
     if (rc != sizeof(word)) {
         evpl_event_mark_unreadable(evpl, event);

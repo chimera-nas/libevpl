@@ -4,6 +4,8 @@
 
 #include <pthread.h>
 #include <unistd.h>
+#include <errno.h>
+#include <string.h>
 #include <utlist.h>
 
 #include "core/bind.h"
@@ -26,6 +28,7 @@ evpl_listener_accept(
     struct evpl_connect_request  *request;
     uint64_t                      one = 1;
     int                           rc;
+    int                           err;
 
     pthread_mutex_lock(&EvplListenerLock);
 
@@ -58,10 +61,15 @@ evpl_listener_accept(
     DL_APPEND(binding->evpl->connect_requests, request);
     pthread_mutex_unlock(&binding->evpl->lock);
 
-    rc = write(binding->evpl->eventfd, &one, sizeof(one));
+    do {
+        rc = write(binding->evpl->eventfd, &one, sizeof(one));
+    } while (rc < 0 && errno == EINTR);
+
+    err = errno;
 
     evpl_core_abort_if(rc != sizeof(one),
-                       "evpl_listener_accept: write failed");
+                       "evpl_listener_accept: write to eventfd %d failed: rc=%d errno=%d (%s)",
+                       binding->evpl->eventfd, rc, err, strerror(err));
 
     pthread_mutex_unlock(&EvplListenerLock);
 } /* evpl_listener_accept */

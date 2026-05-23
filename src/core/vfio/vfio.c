@@ -1071,7 +1071,9 @@ evpl_vfio_event_callback(
     uint64_t                value;
     ssize_t                 len;
 
-    len = read(event->fd, &value, sizeof(value));
+    do {
+        len = read(event->fd, &value, sizeof(value));
+    } while (len < 0 && errno == EINTR);
 
     if (len != sizeof(value)) {
         evpl_event_mark_unreadable(evpl, event);

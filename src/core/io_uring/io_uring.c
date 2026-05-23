@@ -8,6 +8,7 @@
 #include <sys/uio.h>
 #include <stdatomic.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "io_uring_internal.h"
 
@@ -178,7 +179,9 @@ evpl_io_uring_complete_event(
     uint64_t                      value;
     int                           rc, n;
 
-    rc = read(ctx->eventfd, &value, sizeof(value));
+    do {
+        rc = read(ctx->eventfd, &value, sizeof(value));
+    } while (rc < 0 && errno == EINTR);
 
     if (rc != sizeof(value)) {
         evpl_event_mark_unreadable(evpl, &ctx->event);

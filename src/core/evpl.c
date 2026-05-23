@@ -263,7 +263,9 @@ evpl_ipc_callback(
     uint64_t                     value;
     ssize_t                      rc;
 
-    rc = read(event->fd, &value, sizeof(value));
+    do {
+        rc = read(event->fd, &value, sizeof(value));
+    } while (rc < 0 && errno == EINTR);
 
     if (rc != sizeof(value)) {
         evpl_event_mark_unreadable(evpl, event);
@@ -601,6 +603,7 @@ evpl_stop(struct evpl *evpl)
 {
     uint64_t value = 1;
     ssize_t  len;
+    int      err;
 
     evpl_core_assert(evpl->running);
 
@@ -608,10 +611,15 @@ evpl_stop(struct evpl *evpl)
 
     __sync_synchronize();
 
-    len = write(evpl->eventfd, &value, sizeof(value));
+    do {
+        len = write(evpl->eventfd, &value, sizeof(value));
+    } while (len < 0 && errno == EINTR);
+
+    err = errno;
 
     evpl_core_abort_if(len != sizeof(value),
-                       "evpl_stop: write to eventfd failed");
+                       "evpl_stop: write to eventfd %d failed: len=%zd errno=%d (%s)",
+                       evpl->eventfd, len, err, strerror(err));
 } /* evpl_stop */
 
 
@@ -806,4 +814,3 @@ evpl_slab_alloc(void **slab_private)
 
     return evpl_allocator_alloc_slab(evpl_shared->allocator, slab_private);
 }      /* evpl_slab_alloc */
-
