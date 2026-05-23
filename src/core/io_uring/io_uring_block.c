@@ -170,6 +170,11 @@ evpl_io_uring_flush(
     req->callback           = evpl_io_uring_callback;
     req->block.callback     = callback;
     req->block.private_data = private_data;
+    /* fsync completes with res == 0; the shared completion callback flags a
+     * short transfer (res != block.length) as EIO, so a recycled request's
+     * stale block.length would spuriously fail.  Match the read/write paths
+     * (and libaio) by zeroing it for the zero-length fsync. */
+    req->block.length = 0;
 
     sqe = io_uring_get_sqe(&ctx->ring);
 
