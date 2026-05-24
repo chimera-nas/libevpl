@@ -98,6 +98,35 @@ Stop a running event loop. Causes `evpl_run()` to return.
 
 ---
 
+### Metrics
+
+libevpl maintains its own [Prometheus](https://prometheus.io/) metrics (for
+example, allocator slab and buffer counters and gauges named `evpl_allocator_*`)
+on an internal registry. These are registered automatically during
+initialization — no caller setup is required.
+
+#### `evpl_metrics_scrape`
+
+```c
+int evpl_metrics_scrape(char *buffer, int buffer_size);
+```
+
+Serialize libevpl's metrics into `buffer` in the Prometheus text exposition
+format (version 0.0.4). Triggers libevpl initialization if it has not happened
+yet, so it is safe to call before `evpl_init()`.
+
+Embedders typically expose these alongside their own metrics by calling this
+function and appending the result to their own exposition output (the
+`evpl_*` metric names are disjoint from typical application names, so the
+concatenation remains a valid single page).
+
+**Parameters:**
+- `buffer` - Destination buffer for the serialized metrics
+- `buffer_size` - Capacity of `buffer` in bytes
+
+**Returns:** Number of bytes written, or `-1` if the buffer was too small
+
+**Thread Safety:** Can be called from any thread
 
 ---
 

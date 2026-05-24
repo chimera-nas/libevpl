@@ -19,6 +19,7 @@ struct evpl_shared {
     struct evpl_global_config  *config;
     struct evpl_numa_config    *numa_config;
     struct evpl_endpoint       *endpoints;
+    struct prometheus_metrics  *metrics;
     struct evpl_allocator      *allocator;
     struct evpl_framework      *framework[EVPL_NUM_FRAMEWORK];
     void                       *framework_private[EVPL_NUM_FRAMEWORK];

@@ -36,9 +36,10 @@ struct evpl_allocator {
     pthread_cond_t                      producer_cv;
     pthread_cond_t                      consumer_cv;
 
-    /* Diagnostic metrics.  Owned by the caller (chimera), registered
-     * via evpl_set_allocator_metrics().  Mutated inline under
-     * allocator->lock — no atomics needed.  All NULL until registered.
+    /* Diagnostic metrics, registered on libevpl's internal metrics
+     * registry by evpl_allocator_register_metrics() at create time and
+     * exposed via evpl_metrics_scrape().  Mutated inline under
+     * allocator->lock — no atomics needed.
      */
     struct prometheus_counter_instance *m_slabs_inline;
     struct prometheus_counter_instance *m_slabs_prealloc;

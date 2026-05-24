@@ -74,7 +74,7 @@ add_subdirectory(thread)
 
 add_library(evpl SHARED ${CORE_SRC})
 
-target_link_libraries(evpl ${BACKEND_LIBDEPS} ssl crypto numa)
+target_link_libraries(evpl ${BACKEND_LIBDEPS} ssl crypto numa prometheus-c)
 
 install(TARGETS evpl DESTINATION lib)
 
