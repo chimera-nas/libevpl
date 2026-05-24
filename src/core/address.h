@@ -83,5 +83,7 @@ evpl_address_get_address(
         sin6 = (struct sockaddr_in6 *) sa;
         inet_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
         snprintf(str, len, "[%s]:%d", addr_str, ntohs(sin6->sin6_port));
+    } else {
+        snprintf(str, len, "(unspecified)");
     }
 } /* evpl_bind_get_local_address */
