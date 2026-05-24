@@ -35,10 +35,11 @@ enum evpl_protocol_id {
 };
 
 enum evpl_block_protocol_id {
-    EVPL_BLOCK_PROTOCOL_IO_URING = 0,
-    EVPL_BLOCK_PROTOCOL_VFIO     = 1,
-    EVPL_BLOCK_PROTOCOL_LIBAIO   = 2,
-    EVPL_NUM_BLOCK_PROTOCOL      = 3
+    EVPL_BLOCK_PROTOCOL_IO_URING      = 0,
+    EVPL_BLOCK_PROTOCOL_VFIO          = 1,
+    EVPL_BLOCK_PROTOCOL_LIBAIO        = 2,
+    EVPL_BLOCK_PROTOCOL_IO_URING_NVME = 3,
+    EVPL_NUM_BLOCK_PROTOCOL           = 4
 };
 
 struct evpl;

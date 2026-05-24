@@ -117,6 +117,10 @@ evpl_block_open_device(
 
     blockdev = protocol->open_device(uri, protocol_private_data);
 
+    if (!blockdev) {
+        return NULL;
+    }
+
     blockdev->protocol = protocol;
 
     /* Per-device metric series, labelled with the device URI and the

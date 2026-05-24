@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: LGPL-2.1-only
 
 unit_test(io_uring basic basic.c)
+unit_test(io_uring nvme_open_fail nvme_open_fail.c)
 
 
 #$unit_test_bin(io_uring hello_world_stream_tcp hello_world_stream -r STREAM_IO_URING_TCP)
