@@ -418,7 +418,8 @@ evpl_continue(struct evpl *evpl)
             elapsed = 0;
         }
 
-        if (!evpl->force_poll_mode && elapsed > evpl->config.spin_ns) {
+        if (!evpl->force_poll_mode && !evpl->poll_pin_count &&
+            elapsed > evpl->config.spin_ns) {
             if (evpl->poll_mode) {
                 for (i = 0; i < evpl->num_poll; ++i) {
                     poll = &evpl->poll[i];

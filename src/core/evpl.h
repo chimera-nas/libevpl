@@ -122,6 +122,7 @@ struct evpl {
     int                           num_enabled_events;
     int                           poll_mode;
     int                           force_poll_mode;
+    int                           poll_pin_count;
 
     struct evpl_doorbell         *doorbells;
 
@@ -224,4 +225,24 @@ evpl_activity(struct evpl *evpl)
 {
     evpl->activity++;
 } /* evpl_activity */
+
+/*
+ * Pin the calling thread into poll mode for as long as the pin count is
+ * non-zero.  Used by frameworks (e.g. VFIO/NVMe in poll mode) that have an
+ * outstanding request which can only be reaped by polling, since the loop
+ * would otherwise fall back to interrupt/event mode after spin_ns of
+ * inactivity and never reap the completion.  Refcounted so that multiple
+ * queues on one thread compose correctly.
+ */
+static inline void
+evpl_poll_pin(struct evpl *evpl)
+{
+    evpl->poll_pin_count++;
+} /* evpl_poll_pin */
+
+static inline void
+evpl_poll_unpin(struct evpl *evpl)
+{
+    evpl->poll_pin_count--;
+} /* evpl_poll_unpin */
 
