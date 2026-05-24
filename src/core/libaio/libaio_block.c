@@ -87,6 +87,9 @@ evpl_libaio_write(
     struct evpl_libaio_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_LIBAIO);
     struct evpl_libaio_request *req;
     int                         i, need_bounce = 0;
+    /* Honor the caller's durability request: O_DIRECT alone does not flush the
+     * device's volatile write cache, so a sync write must carry RWF_DSYNC. */
+    int                         rwf = sync ? RWF_DSYNC : 0;
     uint64_t                    bounce_offset;
 
     req = evpl_libaio_request_alloc(ctx);
@@ -119,9 +122,9 @@ evpl_libaio_write(
         req->bounce_iov.iov_base = req->bounce;
         req->bounce_iov.iov_len  = req->length;
 
-        io_prep_pwritev(&req->iocb, dev->fd, &req->bounce_iov, 1, offset);
+        io_prep_pwritev2(&req->iocb, dev->fd, &req->bounce_iov, 1, offset, rwf);
     } else {
-        io_prep_pwritev(&req->iocb, dev->fd, req->iov, req->niov, offset);
+        io_prep_pwritev2(&req->iocb, dev->fd, req->iov, req->niov, offset, rwf);
     }
 
     io_set_eventfd(&req->iocb, ctx->eventfd);
