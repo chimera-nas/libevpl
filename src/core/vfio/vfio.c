@@ -68,6 +68,7 @@ struct evpl_vfio_queue {
     int                            sq_tail;
     int                            cq_head;
     uint16_t                       cq_phase;
+    int                            poll_mode;
     int                            eventfd;
     struct evpl_event              event;
     struct evpl_deferral           ring_sq;
@@ -512,6 +513,10 @@ evpl_vfio_poll_queue(
             cb->fn(evpl, cqe->sc ? EIO : 0, cb->arg);
         }
 
+        if (queue->poll_mode) {
+            evpl_poll_unpin(evpl);
+        }
+
         --queue->cidcount;
 
         if (++queue->cq_head == queue->size) {
@@ -587,6 +592,14 @@ evpl_vfio_create_ioq(
 
     ioq = evpl_vfio_queue_alloc(device, id, size);
 
+    /*
+     * When libevpl poll mode is enabled we keep the submitting thread pinned
+     * into poll mode while requests are outstanding (see evpl_vfio_read/write/
+     * flush), so the device never needs to raise an MSI-X interrupt.  Only
+     * arm the completion-queue interrupt when poll mode is disabled.
+     */
+    ioq->poll_mode = evpl->config.poll_mode;
+
     cid = evpl_vfio_alloc_cid(device->adminq, NULL, 0);
 
     ccq_cmd = &device->adminq->sq[cid].create_cq;
@@ -599,7 +612,7 @@ evpl_vfio_create_ioq(
     ccq_cmd->pc          = 1;
     ccq_cmd->qid         = ioq->id;
     ccq_cmd->qsize       = ioq->size - 1;
-    ccq_cmd->ien         = ioq->id > 0 ? 1 : 0;
+    ccq_cmd->ien         = (ioq->id > 0 && !ioq->poll_mode) ? 1 : 0;
     ccq_cmd->iv          = ioq->id - 1;
 
     /* create the sq */
@@ -923,6 +936,10 @@ evpl_vfio_read(
 
     evpl_activity(evpl);
 
+    if (queue->poll_mode) {
+        evpl_poll_pin(evpl);
+    }
+
     cid = evpl_vfio_alloc_cid(queue, callback, private_data);
 
     cmd = &queue->sq[cid].rw;
@@ -971,6 +988,9 @@ evpl_vfio_write(
 
     evpl_activity(evpl);
 
+    if (queue->poll_mode) {
+        evpl_poll_pin(evpl);
+    }
 
     cid = evpl_vfio_alloc_cid(queue, callback, private_data);
 
@@ -1016,6 +1036,9 @@ evpl_vfio_flush(
 
     evpl_activity(evpl);
 
+    if (queue->poll_mode) {
+        evpl_poll_pin(evpl);
+    }
 
     cid = evpl_vfio_alloc_cid(queue, callback, private_data);
 
@@ -1122,10 +1145,19 @@ evpl_vfio_open_queue(
     bqueue->write        = evpl_vfio_write;
     bqueue->flush        = evpl_vfio_flush;
 
-    evpl_add_event(evpl, &queue->event, queue->eventfd,
-                   evpl_vfio_event_callback, NULL, NULL);
+    /*
+     * In poll mode the completion queue is reaped by the poll callback and the
+     * submitting thread is pinned into poll mode while requests are
+     * outstanding, so the MSI-X eventfd is never armed (ien=0) and we skip the
+     * interrupt event entirely.  Only register the eventfd when poll mode is
+     * disabled.
+     */
+    if (!queue->poll_mode) {
+        evpl_add_event(evpl, &queue->event, queue->eventfd,
+                       evpl_vfio_event_callback, NULL, NULL);
 
-    evpl_event_read_interest(evpl, &queue->event);
+        evpl_event_read_interest(evpl, &queue->event);
+    }
 
     evpl_deferral_init(&queue->ring_sq, evpl_vfio_defer_ring_sq, queue);
 
