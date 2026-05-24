@@ -59,7 +59,7 @@ struct evpl_iovec_ref {
         struct evpl_iovec_ref *ref);
 #ifdef EVPL_IOVEC_TRACE
     pthread_t         owner_thread;  /* Thread that allocated this ref (LOCAL only) */
-#endif
+#endif // ifdef EVPL_IOVEC_TRACE
 };
 
 struct evpl_iovec {
@@ -198,7 +198,7 @@ evpl_iovec_ref_release(
                                   "(owner=%lu, caller=%lu)",
                                   (unsigned long) ref->owner_thread,
                                   (unsigned long) pthread_self());
-#endif
+#endif // ifdef EVPL_IOVEC_TRACE
         prev = ref->refcnt--;
     }
 
@@ -265,7 +265,7 @@ evpl_iovec_ref_incr(struct evpl_iovec_ref *ref)
                                   "(owner=%lu, caller=%lu)",
                                   (unsigned long) ref->owner_thread,
                                   (unsigned long) pthread_self());
-#endif
+#endif // ifdef EVPL_IOVEC_TRACE
         ref->refcnt++;
     }
 } /* evpl_iovec_ref_incr */
@@ -418,29 +418,8 @@ void *
 evpl_slab_alloc(
     void **slab_private);
 
-/* Diagnostic metric instances the allocator updates inline.  Caller
- * owns the instances (typically a prometheus_metrics instance in the
- * embedding application).  Any field may be NULL — the allocator
- * skips NULL instances on update.
+/* The allocator's diagnostic counters and gauges are registered on
+ * libevpl's internal metrics registry at startup and exposed through
+ * evpl_metrics_scrape() (see evpl_core.h).  No caller registration is
+ * required.
  */
-struct prometheus_counter_instance;
-struct prometheus_gauge_instance;
-
-struct evpl_allocator_metrics {
-    struct prometheus_counter_instance *slabs_inline;
-    struct prometheus_counter_instance *slabs_prealloc;
-    struct prometheus_counter_instance *consumer_waits;
-    struct prometheus_counter_instance *consumer_wait_ns;
-    struct prometheus_gauge_instance   *free_buffers;
-    struct prometheus_gauge_instance   *outstanding_slabs;
-    struct prometheus_gauge_instance   *target_buffers;
-    struct prometheus_gauge_instance   *total_slabs;
-};
-
-/* Register prometheus metric instances with the global allocator.
- * Must be called after evpl_init.  The static gauges (target_buffers)
- * are populated immediately; counters and dynamic gauges fill in as
- * the allocator runs.
- */
-void evpl_set_allocator_metrics(
-    const struct evpl_allocator_metrics *metrics);

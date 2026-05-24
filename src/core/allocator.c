@@ -37,6 +37,10 @@ static void *
 evpl_allocator_prealloc_thread(
     void *arg);
 
+static void
+evpl_allocator_register_metrics(
+    struct evpl_allocator *allocator);
+
 struct evpl_allocator *
 evpl_allocator_create()
 {
@@ -63,6 +67,12 @@ evpl_allocator_create()
     allocator->target_buffers       = slabs * allocator->buffers_per_slab;
     allocator->num_prealloc_threads = threads;
 
+    /* Register before any slab is allocated and before the prealloc
+     * threads start, so the instance pointers are non-NULL by the time
+     * any path touches them (no race, full lifetime counted).
+     */
+    evpl_allocator_register_metrics(allocator);
+
     if (threads > 0) {
         allocator->prealloc_threads = evpl_zalloc(threads * sizeof(pthread_t));
 
@@ -80,6 +90,7 @@ evpl_allocator_create()
         pthread_mutex_lock(&allocator->lock);
         allocator->outstanding_slabs = slabs;
         allocator->wakeup_credits    = slabs;
+        prometheus_gauge_set(allocator->m_outstanding_slabs, slabs);
         for (i = 0; i < (int) slabs; i++) {
             pthread_cond_signal(&allocator->producer_cv);
         }
@@ -571,50 +582,82 @@ evpl_allocator_alloc_slab(
 
 } /* evpl_allocator_alloc_slab */
 
-SYMBOL_EXPORT void
-evpl_set_allocator_metrics(const struct evpl_allocator_metrics *m)
+static struct prometheus_counter_instance *
+evpl_allocator_counter(
+    struct prometheus_metrics *metrics,
+    const char                *name,
+    const char                *help)
 {
-    struct evpl_allocator *allocator;
-    struct evpl_slab      *slab;
-    uint64_t               total_slabs = 0;
+    struct prometheus_counter        *counter;
+    struct prometheus_counter_series *series;
 
-    __evpl_init();
+    counter = prometheus_metrics_create_counter(metrics, name, help);
+    series  = prometheus_counter_create_series(counter, NULL, NULL, 0);
 
-    allocator = evpl_shared->allocator;
+    return prometheus_counter_series_create_instance(series);
+} /* evpl_allocator_counter */
 
-    pthread_mutex_lock(&allocator->lock);
+static struct prometheus_gauge_instance *
+evpl_allocator_gauge(
+    struct prometheus_metrics *metrics,
+    const char                *name,
+    const char                *help)
+{
+    struct prometheus_gauge        *gauge;
+    struct prometheus_gauge_series *series;
 
-    allocator->m_slabs_inline      = m->slabs_inline;
-    allocator->m_slabs_prealloc    = m->slabs_prealloc;
-    allocator->m_consumer_waits    = m->consumer_waits;
-    allocator->m_consumer_wait_ns  = m->consumer_wait_ns;
-    allocator->m_free_buffers      = m->free_buffers;
-    allocator->m_outstanding_slabs = m->outstanding_slabs;
-    allocator->m_target_buffers    = m->target_buffers;
-    allocator->m_total_slabs       = m->total_slabs;
+    gauge  = prometheus_metrics_create_gauge(metrics, name, help);
+    series = prometheus_gauge_create_series(gauge, NULL, NULL, 0);
 
-    /* Backfill current state into the gauges so the first scrape
-     * shows reality, not zero.
-     */
-    if (m->free_buffers) {
-        prometheus_gauge_set(m->free_buffers, allocator->free_buffer_count);
-    }
-    if (m->outstanding_slabs) {
-        prometheus_gauge_set(m->outstanding_slabs, allocator->outstanding_slabs);
-    }
-    if (m->target_buffers) {
-        prometheus_gauge_set(m->target_buffers, allocator->target_buffers);
-    }
-    if (m->total_slabs) {
-        LL_FOREACH(allocator->slabs, slab)
-        {
-            total_slabs++;
-        }
-        prometheus_gauge_set(m->total_slabs, total_slabs);
-    }
+    return prometheus_gauge_series_create_instance(series);
+} /* evpl_allocator_gauge */
 
-    pthread_mutex_unlock(&allocator->lock);
-} /* evpl_set_allocator_metrics */
+/* Create the allocator's diagnostic metrics on libevpl's internal
+ * registry and store the instance handles in the allocator.  Called
+ * once from evpl_allocator_create() before any slab is allocated, so
+ * every counter starts at zero and counts the full lifetime; from then
+ * on the instances are mutated inline under allocator->lock.
+ */
+static void
+evpl_allocator_register_metrics(struct evpl_allocator *allocator)
+{
+    struct prometheus_metrics *metrics = evpl_shared->metrics;
+
+    allocator->m_slabs_inline = evpl_allocator_counter(metrics,
+                                                       "evpl_allocator_slabs_inline_total",
+                                                       "Slabs allocated inline on the consumer path");
+
+    allocator->m_slabs_prealloc = evpl_allocator_counter(metrics,
+                                                         "evpl_allocator_slabs_prealloc_total",
+                                                         "Slabs allocated by the preallocation threads");
+
+    allocator->m_consumer_waits = evpl_allocator_counter(metrics,
+                                                         "evpl_allocator_consumer_waits_total",
+                                                         "Times a consumer blocked waiting for a free buffer");
+
+    allocator->m_consumer_wait_ns = evpl_allocator_counter(metrics,
+                                                           "evpl_allocator_consumer_wait_ns_total",
+                                                           "Total nanoseconds consumers spent waiting for free buffers")
+    ;
+
+    allocator->m_free_buffers = evpl_allocator_gauge(metrics,
+                                                     "evpl_allocator_free_buffers",
+                                                     "Buffers currently available on the free list");
+
+    allocator->m_outstanding_slabs = evpl_allocator_gauge(metrics,
+                                                          "evpl_allocator_outstanding_slabs",
+                                                          "Slab fill requests issued but not yet satisfied");
+
+    allocator->m_target_buffers = evpl_allocator_gauge(metrics,
+                                                       "evpl_allocator_target_buffers",
+                                                       "Target free-buffer count the preallocator maintains");
+
+    allocator->m_total_slabs = evpl_allocator_gauge(metrics,
+                                                    "evpl_allocator_total_slabs",
+                                                    "Slabs allocated over the lifetime of the allocator");
+
+    prometheus_gauge_set(allocator->m_target_buffers, allocator->target_buffers);
+} /* evpl_allocator_register_metrics */
 
 
 void *

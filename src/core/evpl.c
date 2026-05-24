@@ -106,6 +106,12 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_shared->numa_config = evpl_numa_discover();
 
+    /* Registry for libevpl's own metrics.  Created before the allocator
+     * so the allocator can self-register its counters/gauges on it.
+     * Exposed to embedders via evpl_metrics_scrape().
+     */
+    evpl_shared->metrics = prometheus_metrics_create(NULL, NULL, 0);
+
     evpl_shared->allocator = evpl_allocator_create();
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_SOCKET_UDP,
@@ -196,6 +202,12 @@ evpl_cleanup()
 
     evpl_allocator_destroy(evpl_shared->allocator);
 
+    /* Destroyed after the allocator so any teardown-time gauge updates
+     * still target live instances.  Cascades free of all counters,
+     * gauges, series and instances registered on it.
+     */
+    prometheus_metrics_destroy(evpl_shared->metrics);
+
     for (i = 0; i < EVPL_NUM_FRAMEWORK; ++i) {
         if (evpl_shared->framework_private[i]) {
             evpl_shared->framework[i]->cleanup(evpl_shared->framework_private[i]
@@ -239,6 +251,16 @@ __evpl_init(void)
 {
     pthread_once(&evpl_shared_once, evpl_init_once);
 } /* __evpl_init */
+
+SYMBOL_EXPORT int
+evpl_metrics_scrape(
+    char *buffer,
+    int   buffer_size)
+{
+    __evpl_init();
+
+    return prometheus_metrics_scrape(evpl_shared->metrics, buffer, buffer_size);
+} /* evpl_metrics_scrape */
 
 static inline struct evpl_global_config *
 evpl_get_config(void)

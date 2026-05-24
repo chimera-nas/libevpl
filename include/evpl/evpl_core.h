@@ -48,6 +48,15 @@ struct evpl_thread_config;
 void evpl_init(
     struct evpl_global_config *global_config);
 
+/* Serialize libevpl's own metrics into buffer in Prometheus text
+ * exposition format (version 0.0.4).  Returns the number of bytes
+ * written, or -1 if the buffer was too small.  Safe to call from any
+ * thread; triggers evpl initialization if it has not happened yet.
+ */
+int evpl_metrics_scrape(
+    char *buffer,
+    int   buffer_size);
+
 struct evpl * evpl_create(
     struct evpl_thread_config *config);
 
