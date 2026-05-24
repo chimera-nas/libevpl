@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
 #include <utlist.h>
@@ -72,6 +73,8 @@ struct evpl_vfio_queue {
     int                            eventfd;
     struct evpl_event              event;
     struct evpl_deferral           ring_sq;
+    struct evpl_poll              *poll;
+    int                            event_registered;
     struct evpl_vfio_callback_ctx *callbacks;
     struct evpl_vfio_queue        *prev;
     struct evpl_vfio_queue        *next;
@@ -91,6 +94,7 @@ struct evpl_vfio_group {
 
 struct evpl_vfio_shared {
     int                     container_fd;
+    int                     iommu_set;
     uint64_t                iova_current;
     struct evpl_vfio_group *groups;
     pthread_mutex_t         lock;
@@ -115,13 +119,41 @@ struct evpl_vfio_device {
     uint64_t                    max_queue_size;
     uint64_t                    dbstride;
     int                        *eventfds;
+    size_t                      reg_size;
     struct evpl_vfio_shared    *vfio;
+    struct evpl_vfio_group     *group;
     struct vfio_device_info     device_info;
     struct nvme_controller_reg *reg;
     struct evpl_vfio_queue     *adminq;
     struct evpl_vfio_queue     *ioq;
     pthread_mutex_t             lock;
 };
+
+void evpl_remove_deferral(
+    struct evpl          *evpl,
+    struct evpl_deferral *deferral);
+
+static uint64_t
+evpl_vfio_now_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return (uint64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+} /* evpl_vfio_now_ms */
+
+static uint64_t
+evpl_vfio_timeout_ms(struct evpl_vfio_device *device)
+{
+    uint64_t timeout = device->timeout * 500;
+
+    if (timeout < 5000) {
+        timeout = 5000;
+    }
+
+    return timeout;
+} /* evpl_vfio_timeout_ms */
 
 static void *
 evpl_vfio_init(void)
@@ -302,7 +334,8 @@ evpl_vfio_unregister_memory(
 static int
 evpl_vfio_attach_device(
     struct evpl_vfio_shared *vfio,
-    const char              *pciname)
+    const char              *pciname,
+    struct evpl_vfio_group **out_group)
 {
     int                     pci_bus, pci_device, pci_function;
     char                    pciname_vfio[32];
@@ -313,7 +346,6 @@ evpl_vfio_attach_device(
     ssize_t                 len;
     struct evpl_vfio_group *group;
     int                     device_fd;
-    int                     first_group = !!(vfio->groups == NULL);
     int                     rc;
 
     if (sscanf(pciname, "%x:%x.%x", &pci_bus, &pci_device, &pci_function) != 3) {
@@ -353,15 +385,17 @@ evpl_vfio_attach_device(
 
     evpl_vfio_abort_if(rc, "Failed to set VFIO container");
 
-    if (first_group) {
+    if (!vfio->iommu_set) {
         rc = ioctl(vfio->container_fd, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU);
         evpl_vfio_abort_if(rc < 0, "Failed to set VFIO IOMMU to Type 1: %s", strerror(errno));
+        vfio->iommu_set = 1;
     }
 
     device_fd = ioctl(group->fd, VFIO_GROUP_GET_DEVICE_FD, pciname_vfio);
 
     evpl_vfio_abort_if(device_fd < 0, "Failed to open VFIO IOMMU NVMe device");
 
+    *out_group = group;
 
     return device_fd;
 } /* evpl_vfio_attach_device */
@@ -438,8 +472,22 @@ evpl_vfio_queue_alloc(
 static void
 evpl_vfio_queue_close(
     struct evpl_vfio_device *device,
+    struct evpl             *evpl,
     struct evpl_vfio_queue  *queue)
 {
+    if (evpl) {
+        evpl_remove_deferral(evpl, &queue->ring_sq);
+
+        if (queue->poll) {
+            evpl_remove_poll(evpl, queue->poll);
+            queue->poll = NULL;
+        }
+
+        if (queue->event_registered) {
+            evpl_remove_event(evpl, &queue->event);
+            queue->event_registered = 0;
+        }
+    }
 
     evpl_vfio_free(device->vfio, queue->sqbuffer);
     evpl_vfio_free(device->vfio, queue->cqbuffer);
@@ -501,7 +549,7 @@ evpl_vfio_poll_queue(
 
         moved = 1;
 
-        cid = queue->cq_head;
+        cid = cqe->cid;
 
         cb = &queue->callbacks[cid];
 
@@ -531,6 +579,68 @@ evpl_vfio_poll_queue(
 
     return moved;
 } /* evpl_vfio_poll_queue */
+
+static int
+evpl_vfio_wait_adminq(struct evpl_vfio_device *device)
+{
+    uint64_t deadline = evpl_vfio_now_ms() + evpl_vfio_timeout_ms(device);
+
+    while (device->adminq->cidcount > 0) {
+        evpl_vfio_poll_queue(NULL, device->adminq);
+
+        if (device->adminq->cidcount == 0) {
+            return 0;
+        }
+
+        if (evpl_vfio_now_ms() > deadline) {
+            evpl_vfio_error("Timed out waiting for NVMe admin command completion");
+            return -1;
+        }
+
+        sched_yield();
+    }
+
+    return 0;
+} /* evpl_vfio_wait_adminq */
+
+static int
+evpl_vfio_delete_ioq_locked(
+    struct evpl_vfio_device *device,
+    struct evpl_vfio_queue  *queue)
+{
+    struct nvme_admin_delete_ioq *cmd;
+    int                           cid;
+
+    if (queue->id == 0) {
+        return 0;
+    }
+
+    cid = evpl_vfio_alloc_cid(device->adminq, NULL, 0);
+    cmd = &device->adminq->sq[cid].delete_ioq;
+
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->common.opc = NVME_ADMIN_DELETE_IO_SQ;
+    cmd->common.cid = cid;
+    cmd->qid        = queue->id;
+
+    evpl_vfio_ring_sq(device->adminq);
+
+    if (evpl_vfio_wait_adminq(device) < 0) {
+        return -1;
+    }
+
+    cid = evpl_vfio_alloc_cid(device->adminq, NULL, 0);
+    cmd = &device->adminq->sq[cid].delete_ioq;
+
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->common.opc = NVME_ADMIN_DELETE_IO_CQ;
+    cmd->common.cid = cid;
+    cmd->qid        = queue->id;
+
+    evpl_vfio_ring_sq(device->adminq);
+
+    return evpl_vfio_wait_adminq(device);
+} /* evpl_vfio_delete_ioq_locked */
 
 static void
 evpl_vfio_create_adminq(
@@ -635,6 +745,8 @@ evpl_vfio_create_ioq(
     while (device->adminq->cidcount > 0) {
         evpl_vfio_poll_queue(evpl, device->adminq);
     }
+
+    DL_APPEND(device->ioq, ioq);
 
     pthread_mutex_unlock(&device->lock);
 
@@ -1076,14 +1188,118 @@ evpl_vfio_close_queue(
     struct evpl             *evpl,
     struct evpl_block_queue *bqueue)
 {
-    struct evpl_vfio_queue *queue = bqueue->private_data;
+    struct evpl_vfio_queue  *queue  = bqueue->private_data;
+    struct evpl_vfio_device *device = queue->device;
 
-    evpl_vfio_queue_close(
-        queue->device,
-        queue);
+    pthread_mutex_lock(&device->lock);
+
+    if (evpl_vfio_delete_ioq_locked(device, queue) == 0) {
+        DL_DELETE(device->ioq, queue);
+    } else {
+        evpl_vfio_error("Proceeding with VFIO queue close after failed NVMe I/O queue delete");
+        DL_DELETE(device->ioq, queue);
+    }
+
+    pthread_mutex_unlock(&device->lock);
+
+    evpl_vfio_queue_close(device, evpl, queue);
 
     evpl_free(bqueue);
 } /* evpl_vfio_close_queue */
+
+static int
+evpl_vfio_wait_csts(
+    struct evpl_vfio_device *dev,
+    int (                   *predicate )(union nvme_controller_status status),
+    const char              *what)
+{
+    uint64_t deadline = evpl_vfio_now_ms() + evpl_vfio_timeout_ms(dev);
+
+    while (1) {
+        union nvme_controller_status status;
+
+        status.value = dev->reg->csts.value;
+
+        if (predicate(status)) {
+            return 0;
+        }
+
+        if (evpl_vfio_now_ms() > deadline) {
+            evpl_vfio_error("Timed out waiting for NVMe controller %s", what);
+            return -1;
+        }
+
+        sched_yield();
+    }
+} /* evpl_vfio_wait_csts */
+
+static int
+evpl_vfio_csts_shutdown_complete(union nvme_controller_status status)
+{
+    return status.shst == 2;
+} /* evpl_vfio_csts_shutdown_complete */
+
+static int
+evpl_vfio_csts_not_ready(union nvme_controller_status status)
+{
+    return !status.rdy;
+} /* evpl_vfio_csts_not_ready */
+
+static void
+evpl_vfio_shutdown_controller(struct evpl_vfio_device *dev)
+{
+    union nvme_controller_config cc;
+    union nvme_controller_status status;
+
+    if (!dev->reg) {
+        return;
+    }
+
+    status.value = dev->reg->csts.value;
+    cc.value     = dev->reg->cc.value;
+
+    if (cc.en && status.rdy) {
+        cc.shn             = 1; /* Normal shutdown notification */
+        dev->reg->cc.value = cc.value;
+
+        evpl_vfio_wait_csts(dev, evpl_vfio_csts_shutdown_complete,
+                            "shutdown completion");
+    }
+
+    cc.value = dev->reg->cc.value;
+
+    if (cc.en) {
+        cc.shn             = 0;
+        cc.en              = 0;
+        dev->reg->cc.value = cc.value;
+
+        evpl_vfio_wait_csts(dev, evpl_vfio_csts_not_ready,
+                            "disable completion");
+    }
+} /* evpl_vfio_shutdown_controller */
+
+static void
+evpl_vfio_disable_msix(struct evpl_vfio_device *dev)
+{
+    struct vfio_irq_set irqs = { 0 };
+    int                 rc;
+
+    if (!dev->eventfds) {
+        return;
+    }
+
+    irqs.argsz = sizeof(irqs);
+    irqs.index = VFIO_PCI_MSIX_IRQ_INDEX;
+    irqs.flags = VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_TRIGGER;
+    irqs.start = 0;
+    irqs.count = 0;
+
+    rc = ioctl(dev->fd, VFIO_DEVICE_SET_IRQS, &irqs);
+
+    if (rc) {
+        evpl_vfio_error("Failed to disable MSI-X on device: %s", strerror(errno));
+    }
+} /* evpl_vfio_disable_msix */
 
 static void
 evpl_vfio_event_callback(
@@ -1155,13 +1371,14 @@ evpl_vfio_open_queue(
     if (!queue->poll_mode) {
         evpl_add_event(evpl, &queue->event, queue->eventfd,
                        evpl_vfio_event_callback, NULL, NULL);
+        queue->event_registered = 1;
 
         evpl_event_read_interest(evpl, &queue->event);
     }
 
     evpl_deferral_init(&queue->ring_sq, evpl_vfio_defer_ring_sq, queue);
 
-    evpl_add_poll(evpl, NULL, NULL, evpl_vfio_poll_cq, queue);
+    queue->poll = evpl_add_poll(evpl, NULL, NULL, evpl_vfio_poll_cq, queue);
 
     return bqueue;
 } /* evpl_vfio_open_queue */
@@ -1170,12 +1387,32 @@ static void
 evpl_vfio_close_device(struct evpl_block_device *bdev)
 {
     struct evpl_vfio_device *dev = bdev->private_data;
+    struct evpl_vfio_queue  *queue, *tmp;
     int                      i;
+
+    DL_FOREACH_SAFE(dev->ioq, queue, tmp)
+    {
+        evpl_vfio_error("Closing VFIO device with I/O queue %d still open", queue->id);
+
+        pthread_mutex_lock(&dev->lock);
+        evpl_vfio_delete_ioq_locked(dev, queue);
+        DL_DELETE(dev->ioq, queue);
+        pthread_mutex_unlock(&dev->lock);
+
+        evpl_vfio_queue_close(dev, NULL, queue);
+    }
+
+    evpl_vfio_shutdown_controller(dev);
+    evpl_vfio_disable_msix(dev);
 
     evpl_vfio_queue_close(
         dev,
+        NULL,
         dev->adminq);
 
+    if (dev->reg) {
+        munmap(dev->reg, dev->reg_size);
+    }
 
     for (i = 0; i < dev->msixsize; ++i) {
         close(dev->eventfds[i]);
@@ -1184,6 +1421,21 @@ evpl_vfio_close_device(struct evpl_block_device *bdev)
     evpl_free(dev->eventfds);
 
     close(dev->fd);
+
+    if (dev->group) {
+        pthread_mutex_lock(&dev->vfio->lock);
+        DL_DELETE(dev->vfio->groups, dev->group);
+        pthread_mutex_unlock(&dev->vfio->lock);
+
+        if (ioctl(dev->group->fd, VFIO_GROUP_UNSET_CONTAINER)) {
+            evpl_vfio_error("Failed to unset VFIO group container: %s", strerror(errno));
+        }
+
+        close(dev->group->fd);
+        evpl_free(dev->group);
+    }
+
+    pthread_mutex_destroy(&dev->lock);
 
     evpl_free(dev);
     evpl_free(bdev);
@@ -1221,7 +1473,7 @@ evpl_vfio_open_device(
 
     dev->vfio = vfio;
 
-    dev->fd = evpl_vfio_attach_device(vfio, uri);
+    dev->fd = evpl_vfio_attach_device(vfio, uri, &dev->group);
 
     evpl_vfio_abort_if(dev->fd < 0, "Failed to open VFIO IOMMU NVMe device");
 
@@ -1257,15 +1509,18 @@ evpl_vfio_open_device(
         }
     }
 
-    dev->reg = mmap(0, sizeof(*dev->reg), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED, dev->fd, 0);
+    dev->reg_size = sizeof(*dev->reg);
+    dev->reg      = mmap(0, dev->reg_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED, dev->fd, 0);
 
-    evpl_vfio_abort_if(dev->reg == NULL, "Failed to memory map NVMe controller registers");
+    evpl_vfio_abort_if(dev->reg == MAP_FAILED, "Failed to memory map NVMe controller registers");
 
     cap.value = dev->reg->cap.value;
 
     dev->timeout        = cap.to;
     dev->max_queue_size = cap.mqes + 1;
     dev->dbstride       = 1 << cap.dstrd;
+
+    evpl_vfio_shutdown_controller(dev);
 
     evpl_vfio_enable_msix(dev);
 
