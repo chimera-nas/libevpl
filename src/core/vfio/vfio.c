@@ -561,7 +561,11 @@ evpl_vfio_poll_queue(
             cb->fn(evpl, cqe->sc ? EIO : 0, cb->arg);
         }
 
-        if (queue->poll_mode) {
+        /* The admin queue is drained synchronously during device setup
+         * with a NULL evpl (and is never poll_mode), so only unpin when
+         * we have a real event loop that was pinned at submit time.
+         */
+        if (queue->poll_mode && evpl) {
             evpl_poll_unpin(evpl);
         }
 
