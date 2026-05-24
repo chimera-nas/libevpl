@@ -23,6 +23,7 @@ struct evpl_shared {
     struct prometheus_histogram *block_latency;
     struct prometheus_histogram *block_request_size;
     struct prometheus_gauge     *block_queue_depth;
+    struct prometheus_gauge     *rpc2_queue_depth;
     struct evpl_allocator       *allocator;
     struct evpl_framework       *framework[EVPL_NUM_FRAMEWORK];
     void                        *framework_private[EVPL_NUM_FRAMEWORK];
@@ -31,6 +32,13 @@ struct evpl_shared {
 };
 
 extern struct evpl_shared *evpl_shared;
+
+struct prometheus_gauge_series * evpl_rpc2_queue_depth_create_series(
+    const char *role,
+    const char *thread);
+
+void evpl_rpc2_queue_depth_destroy_series(
+    struct prometheus_gauge_series *series);
 
 
 static inline void
