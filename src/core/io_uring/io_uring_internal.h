@@ -74,7 +74,9 @@ struct evpl_io_uring_request {
 };
 
 struct evpl_io_uring_device {
-    int fd;
+    int      fd;
+    uint32_t nsid;
+    uint32_t sector_size;
 };
 
 struct evpl_io_uring_context {
