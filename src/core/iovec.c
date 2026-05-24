@@ -45,6 +45,12 @@ evpl_iovec_reserve(
         }
 
         if (unlikely(niovs + 1 > max_iovecs)) {
+            /* Out of iovec slots with data still to place.  Release the
+             * refs already taken into r_iovec so we don't leak buffers
+             * on this error return; the current buffer stays retained
+             * for the next allocation.
+             */
+            evpl_iovecs_release(evpl, r_iovec, niovs);
             return -1;
         }
 
@@ -139,6 +145,12 @@ evpl_iovec_alloc(
         }
 
         if (unlikely(niovs + 1 > max_iovecs)) {
+            /* Out of iovec slots with data still to place.  Release the
+             * refs already taken into r_iovec so we don't leak buffers
+             * on this error return; the current buffer stays retained
+             * for the next allocation.
+             */
+            evpl_iovecs_release(evpl, r_iovec, niovs);
             return -1;
         }
 
