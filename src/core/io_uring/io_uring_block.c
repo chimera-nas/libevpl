@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <linux/fs.h>
 
 #include "core/io_uring/io_uring.h"
 #include "core/io_uring/io_uring_internal.h"
@@ -104,7 +105,10 @@ evpl_io_uring_write(
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
     struct io_uring_sqe          *sqe;
     struct evpl_io_uring_request *req;
-    int                           i, need_bounce = 0, flags = 0;
+    int                           i, need_bounce = 0;
+    /* Honor the caller's durability request: O_DIRECT alone does not flush the
+     * device's volatile write cache, so a sync write must carry RWF_DSYNC. */
+    int                           flags = sync ? RWF_DSYNC : 0;
     uint64_t                      bounce_offset;
 
     req = evpl_io_uring_request_alloc(ctx, EVPL_IO_URING_REQ_BLOCK);
