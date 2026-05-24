@@ -9,6 +9,12 @@
 struct evpl_event;
 struct evpl_bind;
 struct evpl_shared;
+struct evpl_block_op;
+
+struct prometheus_histogram_series;
+struct prometheus_histogram_instance;
+struct prometheus_gauge_series;
+struct prometheus_gauge_instance;
 
 /*
  * Some sets of protocols share a common framework that requires
@@ -156,40 +162,63 @@ struct evpl_protocol {
 
 struct evpl_block_device {
     /* Private data owned by the protocol */
-    void                       *private_data;
+    void                               *private_data;
 
     /* Protocol that owns this device */
-    struct evpl_block_protocol *protocol;
+    struct evpl_block_protocol         *protocol;
 
     /* Size of the device in bytes, set by the protocol */
-    uint64_t                    size;
+    uint64_t                            size;
 
     /* maximum size of a single I/O request in bytes */
-    uint64_t                    max_request_size;
+    uint64_t                            max_request_size;
+
+    /* Per-device metric series, labelled by device URI and protocol
+     * type.  Each queue creates its own instance from these so the
+     * hot path is mutated lock-free; the scrape aggregates instances.
+     */
+    struct prometheus_histogram_series *m_latency;
+    struct prometheus_histogram_series *m_request_size;
+    struct prometheus_gauge_series     *m_queue_depth;
 
     /* Open a device queue */
-    struct evpl_block_queue   * (*open_queue)(
+    struct evpl_block_queue           * (*open_queue)(
         struct evpl              *evpl,
         struct evpl_block_device *blockdev);
 
-    void                        (*close_device)(
+    void                                (*close_device)(
         struct evpl_block_device *blockdev);
 };
 
 struct evpl_block_queue {
     /* Private data owned by the protocol */
-    void                       *private_data;
+    void                                 *private_data;
 
     /* Protocol that owns this queue */
-    struct evpl_block_protocol *protocol;
+    struct evpl_block_protocol           *protocol;
+
+    /* Device that owns this queue, retained so the per-queue metric
+     * instances can be released against its series at close.
+     */
+    struct evpl_block_device             *device;
+
+    /* Per-queue metric instances, mutated only on this queue's thread
+     * (lock-free).  Created from the device's series at open.
+     */
+    struct prometheus_histogram_instance *m_latency;
+    struct prometheus_histogram_instance *m_request_size;
+    struct prometheus_gauge_instance     *m_queue_depth;
+
+    /* Freelist of completion-tracking ops; queue-thread-local. */
+    struct evpl_block_op                 *op_freelist;
 
     /* Close a device queue */
-    void                        (*close_queue)(
+    void                                  (*close_queue)(
         struct evpl             *evpl,
         struct evpl_block_queue *queue);
 
     /* Read from a block queue */
-    void                        (*read)(
+    void                                  (*read)(
         struct evpl             *evpl,
         struct evpl_block_queue *queue,
         struct evpl_iovec       *iov,
@@ -199,7 +228,7 @@ struct evpl_block_queue {
         void                    *private_data);
 
     /* Write to a block queue */
-    void                        (*write)(
+    void                                  (*write)(
         struct evpl             *evpl,
         struct evpl_block_queue *queue,
         const struct evpl_iovec *iov,
@@ -210,7 +239,7 @@ struct evpl_block_queue {
         void                    *private_data);
 
     /* Flush a block device */
-    void                        (*flush)(
+    void                                  (*flush)(
         struct evpl             *evpl,
         struct evpl_block_queue *queue,
         evpl_block_callback_t    callback,

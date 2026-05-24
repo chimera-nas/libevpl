@@ -112,6 +112,23 @@ evpl_shared_init(struct evpl_global_config *config)
      */
     evpl_shared->metrics = prometheus_metrics_create(NULL, NULL, 0);
 
+    /* Block I/O metric definitions.  Per-device series (labelled by
+     * device and type) are created lazily when a device is opened; the
+     * histograms use base-2 buckets, so 32 buckets cover up to ~2.1s of
+     * latency and ~2GiB of request size.
+     */
+    evpl_shared->block_latency = prometheus_metrics_create_histogram_exponential(
+        evpl_shared->metrics, "evpl_block_latency_nanoseconds",
+        "Block I/O request latency in nanoseconds", 32);
+
+    evpl_shared->block_request_size = prometheus_metrics_create_histogram_exponential(
+        evpl_shared->metrics, "evpl_block_request_bytes",
+        "Block I/O request size in bytes", 32);
+
+    evpl_shared->block_queue_depth = prometheus_metrics_create_gauge(
+        evpl_shared->metrics, "evpl_block_queue_depth",
+        "Outstanding block I/O requests");
+
     evpl_shared->allocator = evpl_allocator_create();
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_SOCKET_UDP,
