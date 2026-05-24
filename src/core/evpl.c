@@ -129,6 +129,15 @@ evpl_shared_init(struct evpl_global_config *config)
         evpl_shared->metrics, "evpl_block_queue_depth",
         "Outstanding block I/O requests");
 
+    /* RPC2 in-flight request gauge.  Per-thread series (labelled by role
+     * server/client and a thread id) are created when an rpc2 thread is
+     * initialized; the I/O path mutates each instance lock-free on its
+     * own thread.
+     */
+    evpl_shared->rpc2_queue_depth = prometheus_metrics_create_gauge(
+        evpl_shared->metrics, "evpl_rpc2_queue_depth",
+        "Outstanding RPC2 requests");
+
     evpl_shared->allocator = evpl_allocator_create();
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_SOCKET_UDP,
@@ -278,6 +287,25 @@ evpl_metrics_scrape(
 
     return prometheus_metrics_scrape(evpl_shared->metrics, buffer, buffer_size);
 } /* evpl_metrics_scrape */
+
+SYMBOL_EXPORT struct prometheus_gauge_series *
+evpl_rpc2_queue_depth_create_series(
+    const char *role,
+    const char *thread)
+{
+    __evpl_init();
+
+    return prometheus_gauge_create_series(
+        evpl_shared->rpc2_queue_depth,
+        (const char *[]) { "role", "thread" },
+        (const char *[]) { role, thread }, 2);
+} /* evpl_rpc2_queue_depth_create_series */
+
+SYMBOL_EXPORT void
+evpl_rpc2_queue_depth_destroy_series(struct prometheus_gauge_series *series)
+{
+    prometheus_gauge_destroy_series(evpl_shared->rpc2_queue_depth, series);
+} /* evpl_rpc2_queue_depth_destroy_series */
 
 static inline struct evpl_global_config *
 evpl_get_config(void)

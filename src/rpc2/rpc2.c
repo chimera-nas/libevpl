@@ -4,6 +4,7 @@
 
 #include <complex.h>
 #define _GNU_SOURCE
+#include <stdio.h>
 #include <time.h>
 #include <utlist.h>
 #include <uthash.h>
@@ -21,8 +22,27 @@
 #include "core/macros.h"
 
 #include "prometheus-c.h"
+#include "core/evpl_shared.h"
 
 #include "rpc2/rpc2_cursor.h"
+
+/* Roles for the evpl_rpc2_queue_depth gauge: a request is in flight on the
+ * server (CALL received, reply not yet sent) or the client (CALL sent,
+ * reply not yet received).  Each rpc2 thread keeps one gauge instance per
+ * role so the scrape can break out offered depth by direction and thread.
+ */
+#define EVPL_RPC2_ROLE_SERVER 0
+#define EVPL_RPC2_ROLE_CLIENT 1
+#define EVPL_RPC2_NUM_ROLES   2
+
+static const char *evpl_rpc2_role_names[EVPL_RPC2_NUM_ROLES] = {
+    [EVPL_RPC2_ROLE_SERVER] = "server",
+    [EVPL_RPC2_ROLE_CLIENT] = "client",
+};
+
+/* Monotonic id stamped onto each rpc2 thread to label its gauge series.
+ * Bumped atomically since threads initialize on their own cores. */
+static int         evpl_rpc2_next_thread_id = 0;
 
 /*
  * evpl_rpc2_msg represents a single received RPC message (either a CALL or REPLY).
@@ -59,6 +79,7 @@ struct evpl_rpc2_request {
     struct evpl_rpc2_program             *program;
     struct timespec                       timestamp;
     struct prometheus_histogram_instance *metric;
+    struct prometheus_gauge_instance     *m_inflight;
     void                                 *callback;
     void                                 *callback_arg;
     struct UT_hash_handle                 hh;
@@ -126,16 +147,19 @@ struct evpl_rpc2_server_binding {
 };
 
 struct evpl_rpc2_thread {
-    struct evpl                     *evpl;
-    struct evpl_rpc2_program       **programs;
-    int                              nprograms;
-    struct evpl_rpc2_conn           *conns;
-    evpl_rpc2_notify_callback_t      notify_callback;
-    void                            *private_data;
-    struct evpl_rpc2_msg            *free_msg;
-    struct evpl_rpc2_request        *free_requests;
-    struct evpl_rpc2_server_binding *servers;
-    xdr_dbuf                        *client_dbuf;
+    struct evpl                      *evpl;
+    struct evpl_rpc2_program        **programs;
+    int                               nprograms;
+    struct evpl_rpc2_conn            *conns;
+    evpl_rpc2_notify_callback_t       notify_callback;
+    void                             *private_data;
+    struct evpl_rpc2_msg             *free_msg;
+    struct evpl_rpc2_request         *free_requests;
+    struct evpl_rpc2_server_binding  *servers;
+    xdr_dbuf                         *client_dbuf;
+    int                               id;
+    struct prometheus_gauge_series   *m_inflight_series[EVPL_RPC2_NUM_ROLES];
+    struct prometheus_gauge_instance *m_inflight[EVPL_RPC2_NUM_ROLES];
 };
 
 static struct evpl_rpc2_msg *
@@ -184,6 +208,7 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
     }
 
     request->thread                      = thread;
+    request->m_inflight                  = NULL;
     request->pending_reads               = 0;
     request->read_chunk.niov             = 0;
     request->read_chunk.length           = 0;
@@ -207,6 +232,14 @@ evpl_rpc2_request_free(
     struct evpl_rpc2_request *request)
 {
     struct evpl *evpl = thread->evpl;
+
+    /* Drop the in-flight count for whichever role (server/client) claimed
+     * this request at allocation.  Centralized here so every teardown path
+     * -- reply sent, reply received, connection error -- balances the inc. */
+    if (request->m_inflight) {
+        prometheus_gauge_add(request->m_inflight, -1);
+        request->m_inflight = NULL;
+    }
 
     evpl_iovecs_release(evpl, request->read_chunk.iov, request->read_chunk.niov);
     evpl_iovecs_release(evpl, request->write_chunk.iov, request->write_chunk.niov);
@@ -1020,6 +1053,9 @@ evpl_rpc2_recv_msg(
             request      = evpl_rpc2_request_alloc(thread);
             request->msg = msg;
 
+            request->m_inflight = thread->m_inflight[EVPL_RPC2_ROLE_SERVER];
+            prometheus_gauge_add(request->m_inflight, 1);
+
             request->conn      = rpc2_conn;
             request->bind      = bind;
             request->xid       = rpc_msg.xid;
@@ -1308,6 +1344,8 @@ evpl_rpc2_thread_init(
     void                       *private_data)
 {
     struct evpl_rpc2_thread *thread;
+    char                     thread_id_str[16];
+    int                      role;
 
     thread = evpl_zalloc(sizeof(*thread));
 
@@ -1316,6 +1354,22 @@ evpl_rpc2_thread_init(
     thread->notify_callback = notify_callback;
     thread->private_data    = private_data;
     thread->client_dbuf     = xdr_dbuf_alloc(128 * 1024);
+
+    thread->id = __atomic_fetch_add(&evpl_rpc2_next_thread_id, 1,
+                                    __ATOMIC_RELAXED);
+
+    /* One in-flight gauge instance per role, labelled with role and thread
+     * id.  The I/O path mutates the instance on this thread only. */
+    snprintf(thread_id_str, sizeof(thread_id_str), "%d", thread->id);
+
+    for (role = 0; role < EVPL_RPC2_NUM_ROLES; ++role) {
+        thread->m_inflight_series[role] =
+            evpl_rpc2_queue_depth_create_series(
+                evpl_rpc2_role_names[role],
+                thread_id_str);
+        thread->m_inflight[role] = prometheus_gauge_series_create_instance(
+            thread->m_inflight_series[role]);
+    }
 
     if (nprograms) {
         thread->programs = evpl_zalloc(nprograms * sizeof(*programs));
@@ -1333,6 +1387,7 @@ evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
     struct evpl_rpc2_msg     *msg;
     struct evpl_rpc2_request *request;
     struct evpl_rpc2_conn    *rpc2_conn;
+    int                       role;
 
     DL_FOREACH(thread->conns, rpc2_conn)
     {
@@ -1362,6 +1417,19 @@ evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
 
     if (thread->client_dbuf) {
         xdr_dbuf_free(thread->client_dbuf);
+    }
+
+    for (role = 0; role < EVPL_RPC2_NUM_ROLES; ++role) {
+        if (thread->m_inflight[role]) {
+            prometheus_gauge_series_destroy_instance(
+                thread->m_inflight_series[role],
+                thread->m_inflight[role]);
+        }
+
+        if (thread->m_inflight_series[role]) {
+            evpl_rpc2_queue_depth_destroy_series(
+                thread->m_inflight_series[role]);
+        }
     }
 
     evpl_free(thread);
@@ -1598,6 +1666,9 @@ evpl_rpc2_call(
 
     /* Allocate request for the exchange */
     request = evpl_rpc2_request_alloc(thread);
+
+    request->m_inflight = thread->m_inflight[EVPL_RPC2_ROLE_CLIENT];
+    prometheus_gauge_add(request->m_inflight, 1);
 
     /* Allocate msg for client - needed for dbuf in RDMA case */
     msg          = evpl_rpc2_msg_alloc(thread);
