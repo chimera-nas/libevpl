@@ -23,15 +23,37 @@ evpl_libaio_flush_submit(
     struct evpl_libaio_context *ctx = private_data;
     int                         rc;
 
+    (void) evpl;
+
     if (ctx->num_pending == 0) {
         return;
     }
 
-    rc = io_submit(ctx->io_ctx, ctx->num_pending, ctx->pending_iocbs);
+    do {
+        rc = io_submit(ctx->io_ctx, ctx->num_pending, ctx->pending_iocbs);
+    } while (rc == -EINTR);
+
+    /* Ring saturated by in-flight requests: nothing accepted this round.
+     * Leave the iocbs queued; a completion frees ring slots and re-arms this
+     * flush (see evpl_libaio_complete), so the remainder goes out on a later
+     * event-loop iteration rather than spinning here. */
+    if (rc == -EAGAIN) {
+        rc = 0;
+    }
 
     evpl_libaio_abort_if(rc < 0, "io_submit failed: %d", rc);
 
-    ctx->num_pending = 0;
+    /* io_submit() accepts iocbs one at a time and may take fewer than
+     * requested (a short submit) under load.  Keep the unsubmitted tail for a
+     * later attempt rather than dropping it -- a dropped iocb never completes,
+     * so its callback never runs and the caller hangs forever. */
+    if (rc < ctx->num_pending) {
+        ctx->num_pending -= rc;
+        memmove(ctx->pending_iocbs, &ctx->pending_iocbs[rc],
+                ctx->num_pending * sizeof(ctx->pending_iocbs[0]));
+    } else {
+        ctx->num_pending = 0;
+    }
 } /* evpl_libaio_flush_submit */
 
 static void *
@@ -107,6 +129,13 @@ evpl_libaio_complete(
 
     if (n) {
         evpl_activity(evpl);
+
+        /* Reaping freed ring slots: resubmit any iocbs that hit backpressure
+        * on an earlier flush.  Gating the re-arm on n > 0 means we only retry
+        * after a completion actually made room, so this never busy-spins. */
+        if (ctx->num_pending) {
+            evpl_defer(evpl, &ctx->flush);
+        }
     }
 
     return n;
