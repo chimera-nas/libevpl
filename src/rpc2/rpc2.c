@@ -1056,11 +1056,12 @@ evpl_rpc2_recv_msg(
             request->m_inflight = thread->m_inflight[EVPL_RPC2_ROLE_SERVER];
             prometheus_gauge_add(request->m_inflight, 1);
 
-            request->conn      = rpc2_conn;
-            request->bind      = bind;
-            request->xid       = rpc_msg.xid;
-            request->proc      = rpc_msg.body.cbody.proc;
-            request->timestamp = now;
+            request->conn         = rpc2_conn;
+            request->bind         = bind;
+            request->xid          = rpc_msg.xid;
+            request->encoding.xid = request->xid;
+            request->proc         = rpc_msg.body.cbody.proc;
+            request->timestamp    = now;
 
             /* Parse credentials - authsys data is in msg->dbuf which persists */
             flavor = rpc_msg.body.cbody.cred.flavor;
