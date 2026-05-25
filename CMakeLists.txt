@@ -78,6 +78,35 @@ if (URING_LIB AND URING_INCLUDE_DIR)
     include_directories(${URING_INCLUDE_DIR})
     add_definitions(-DHAVE_IO_URING)
     set(HAVE_IO_URING 1)
+
+    # The NVMe passthrough block backend needs io_uring_prep_uring_cmd()
+    # (newer liburing) plus the NVMe uring_cmd ioctl definitions (newer kernel
+    # headers).  Detect both and build that backend only when present, so the
+    # rest of io_uring still builds on older toolchains.
+    include(CheckCSourceCompiles)
+    set(CMAKE_REQUIRED_INCLUDES ${URING_INCLUDE_DIR})
+    set(CMAKE_REQUIRED_LIBRARIES ${URING_LIB})
+    check_c_source_compiles("
+#define _GNU_SOURCE
+#include <liburing.h>
+#include <linux/nvme_ioctl.h>
+int main(void) {
+    struct io_uring_sqe   *sqe = 0;
+    struct nvme_uring_cmd *cmd = 0;
+    io_uring_prep_uring_cmd(sqe, NVME_URING_CMD_IO_VEC, 0);
+    (void) cmd;
+    return 0;
+}
+" HAVE_IO_URING_NVME)
+    unset(CMAKE_REQUIRED_INCLUDES)
+    unset(CMAKE_REQUIRED_LIBRARIES)
+
+    if (HAVE_IO_URING_NVME)
+        add_definitions(-DHAVE_IO_URING_NVME)
+        message(STATUS "io_uring NVMe uring_cmd backend enabled")
+    else()
+        message(STATUS "io_uring NVMe uring_cmd backend unavailable (needs newer liburing/kernel headers)")
+    endif()
 else()
     message(STATUS "io_uring library not found.")
 endif()
