@@ -75,7 +75,12 @@ find_path(URING_INCLUDE_DIR NAMES liburing/io_uring.h)
 if (URING_LIB AND URING_INCLUDE_DIR)
     message(STATUS "io_uring library ${URING_LIB}")
     message(STATUS "io_uring include ${URING_INCLUDE_DIR}")
-    include_directories(${URING_INCLUDE_DIR})
+    # Treat liburing as a system include: its headers define static-inline
+    # helpers (e.g. io_uring_prep_uring_cmd) that the clang static analyzer
+    # would otherwise analyze as user code and flag with false positives
+    # (a null-deref of an sqe the caller already guards).  SYSTEM also keeps
+    # any third-party-header warnings out of our -Werror build.
+    include_directories(SYSTEM ${URING_INCLUDE_DIR})
     add_definitions(-DHAVE_IO_URING)
     set(HAVE_IO_URING 1)
 
