@@ -76,6 +76,7 @@ struct evpl_rpc2_encoding {
     struct xdr_dbuf             *dbuf;        /* Dynamic buffer for allocations */
     struct evpl_rpc2_rdma_chunk *read_chunk;  /* RDMA read chunk (for writes) */
     struct evpl_rpc2_rdma_chunk *write_chunk; /* RDMA write chunk (for replies) */
+    uint32_t                     xid;         /* RPC transaction id for this request */
     /* Optional reply-capture hook -- see evpl_rpc2_reply_capture_cb_t.
      * NULL means "do not capture". */
     evpl_rpc2_reply_capture_cb_t reply_capture_cb;
