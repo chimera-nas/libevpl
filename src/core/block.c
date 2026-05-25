@@ -110,6 +110,13 @@ evpl_block_open_device(
 
     protocol = evpl_shared->block_protocol[protocol_id];
 
+    if (!protocol) {
+        /* In-range id but the backend was not registered (e.g. gated out at
+         * build time, such as the NVMe uring_cmd backend on older liburing).
+         * Report failure rather than dereferencing a NULL protocol. */
+        return NULL;
+    }
+
     evpl_attach_framework_shared(protocol->framework->id);
 
     protocol_private_data = evpl_shared->framework_private[protocol->framework->
