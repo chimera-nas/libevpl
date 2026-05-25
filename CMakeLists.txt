@@ -5,6 +5,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 option(IO_URING_ENABLED "Enable io_uring support" ON)
+option(IO_URING_NVME_ENABLED "Enable the io_uring NVMe uring_cmd block backend (auto-detected when ON; set OFF to force-disable, e.g. under the clang static analyzer)" ON)
 option(REQUIRE_NETNS_TESTS "Fail configure if network namespace tests cannot be enabled" OFF)
 set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES=required, NO=disabled)")
 
@@ -87,11 +88,16 @@ if (URING_LIB AND URING_INCLUDE_DIR)
     # The NVMe passthrough block backend needs io_uring_prep_uring_cmd()
     # (newer liburing) plus the NVMe uring_cmd ioctl definitions (newer kernel
     # headers).  Detect both and build that backend only when present, so the
-    # rest of io_uring still builds on older toolchains.
-    include(CheckCSourceCompiles)
-    set(CMAKE_REQUIRED_INCLUDES ${URING_INCLUDE_DIR})
-    set(CMAKE_REQUIRED_LIBRARIES ${URING_LIB})
-    check_c_source_compiles("
+    # rest of io_uring still builds on older toolchains.  IO_URING_NVME_ENABLED
+    # lets a consumer force it off without touching detection -- chimera's
+    # scan-build pass sets it OFF because the clang static analyzer
+    # false-positives on liburing's io_uring_prep_uring_cmd inline (a NULL deref
+    # of an sqe the only call site already guards).
+    if (IO_URING_NVME_ENABLED)
+        include(CheckCSourceCompiles)
+        set(CMAKE_REQUIRED_INCLUDES ${URING_INCLUDE_DIR})
+        set(CMAKE_REQUIRED_LIBRARIES ${URING_LIB})
+        check_c_source_compiles("
 #define _GNU_SOURCE
 #include <liburing.h>
 #include <linux/nvme_ioctl.h>
@@ -103,8 +109,12 @@ int main(void) {
     return 0;
 }
 " HAVE_IO_URING_NVME)
-    unset(CMAKE_REQUIRED_INCLUDES)
-    unset(CMAKE_REQUIRED_LIBRARIES)
+        unset(CMAKE_REQUIRED_INCLUDES)
+        unset(CMAKE_REQUIRED_LIBRARIES)
+    else()
+        set(HAVE_IO_URING_NVME OFF)
+        message(STATUS "io_uring NVMe uring_cmd backend force-disabled (IO_URING_NVME_ENABLED=OFF)")
+    endif()
 
     if (HAVE_IO_URING_NVME)
         add_definitions(-DHAVE_IO_URING_NVME)
