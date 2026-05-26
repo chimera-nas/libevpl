@@ -703,7 +703,7 @@ evpl_http_event(
              * element: there is no need to keep the list consistent while
              * draining it, and it avoids DL_DELETE's (head)->prev access that
              * the static analyzer cannot prove is non-NULL. */
-            request                    = http_conn->pending_requests;
+            request                     = http_conn->pending_requests;
             http_conn->pending_requests = NULL;
             while (request) {
                 next = request->next;
