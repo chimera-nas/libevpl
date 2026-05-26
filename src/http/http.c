@@ -686,7 +686,7 @@ evpl_http_event(
             break;
         case EVPL_NOTIFY_DISCONNECTED:
         {
-            struct evpl_http_request *request, *tmp;
+            struct evpl_http_request *request, *next;
 
             /* Release any request still in flight on this connection: a
              * partially-parsed request (current_request, e.g. one allocated on
@@ -699,10 +699,16 @@ evpl_http_event(
                 http_conn->current_request = NULL;
             }
 
-            DL_FOREACH_SAFE(http_conn->pending_requests, request, tmp)
-            {
-                DL_DELETE(http_conn->pending_requests, request);
+            /* Walk and free the whole list directly rather than DL_DELETE per
+             * element: there is no need to keep the list consistent while
+             * draining it, and it avoids DL_DELETE's (head)->prev access that
+             * the static analyzer cannot prove is non-NULL. */
+            request                    = http_conn->pending_requests;
+            http_conn->pending_requests = NULL;
+            while (request) {
+                next = request->next;
                 evpl_http_request_free(http_conn->agent, request);
+                request = next;
             }
 
             free(http_conn);
