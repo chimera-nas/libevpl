@@ -209,6 +209,7 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
 
     request->thread                      = thread;
     request->m_inflight                  = NULL;
+    request->rdma_credits                = 1;
     request->pending_reads               = 0;
     request->read_chunk.niov             = 0;
     request->read_chunk.length           = 0;
@@ -1084,6 +1085,15 @@ evpl_rpc2_recv_msg(
             } /* switch */
 
             if (rdma) {
+                /* Grant the requester exactly the credit it asked for.  Per
+                 * RFC 8166 this is the max number of RPCs the client may keep
+                 * outstanding on this connection; previously we shipped an
+                 * uninitialized request->rdma_credits (always 0), which the
+                 * Linux client floored to 1 -- serializing each connection.
+                 * NOTE: experimental echo with no server-side ceiling; a
+                 * proper grant should clamp to receive capacity. */
+                request->rdma_credits = rdma_msg.rdma_credit ? rdma_msg.rdma_credit : 1;
+
                 if (rdma_msg.rdma_body.proc == RDMA_MSG) {
 
                     read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
