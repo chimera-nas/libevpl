@@ -685,8 +685,29 @@ evpl_http_event(
         case EVPL_NOTIFY_CONNECTED:
             break;
         case EVPL_NOTIFY_DISCONNECTED:
+        {
+            struct evpl_http_request *request, *tmp;
+
+            /* Release any request still in flight on this connection: a
+             * partially-parsed request (current_request, e.g. one allocated on
+             * a final read that returned EOF) and any received requests whose
+             * response has not yet completed (pending_requests). Otherwise
+             * tearing down the connection leaks them. */
+            if (http_conn->current_request) {
+                evpl_http_request_free(http_conn->agent,
+                                       http_conn->current_request);
+                http_conn->current_request = NULL;
+            }
+
+            DL_FOREACH_SAFE(http_conn->pending_requests, request, tmp)
+            {
+                DL_DELETE(http_conn->pending_requests, request);
+                evpl_http_request_free(http_conn->agent, request);
+            }
+
             free(http_conn);
-            break;
+        }
+        break;
         case EVPL_NOTIFY_RECV_DATA:
             if (http_conn->is_server) {
                 evpl_http_server_handle_data(http_conn);
