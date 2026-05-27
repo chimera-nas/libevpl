@@ -10,6 +10,16 @@
 #include "evpl/evpl_rpc2.h"
 #define EVPL_RPC2 1
 
+/*
+ * Status passed to a client reply callback when the peer's reply could not be
+ * decoded (truncated, malformed, or wrong length).  The reply argument is NULL
+ * (or a zero value for a by-value reply), so callbacks -- which must check
+ * status before touching the reply -- treat it as a failed call rather than the
+ * connection being torn down by an abort.  Negative so it cannot collide with a
+ * protocol status code.
+ */
+#define EVPL_RPC2_REPLY_DECODE_ERROR (-1)
+
 #include <pthread.h>
 struct prometheus_histogram_instance;
 
