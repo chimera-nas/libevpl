@@ -301,6 +301,15 @@ rpc2_segment_callback(
 
 #define EVPL_RPC2_REASM_INIT_CAP   8
 
+/* Upper bound on the payload iovec count handed downstream.  A real client
+ * keeps a message's payload in a handful of large iovecs; only a peer that
+ * fragments one RPC into hundreds of tiny record marks (a conformance test)
+ * exceeds this.  When it does, the payload is flattened into a minimal
+ * contiguous copy so consumers can assume a bounded count -- in particular
+ * the diskfs backend stages write iovecs into a fixed array (cap 260), so
+ * this stays comfortably below that. */
+#define EVPL_RPC2_MAX_PAYLOAD_NIOV 256
+
 static inline int
 evpl_rpc2_iovec_skip(
     struct evpl_iovec *out_iov,
@@ -333,6 +342,64 @@ evpl_rpc2_iovec_skip(
 
     return outc - out_iov;
 } /* evpl_rpc2_iovec_skip */
+
+/*
+ * Collapse a heavily fragmented payload into a minimal contiguous copy.
+ *
+ * A peer that splits one RPC into hundreds of tiny record-mark fragments
+ * (only a conformance-test client does this -- real clients keep the payload
+ * in a few large fragments) hands us a payload iovec list with far more
+ * entries than config->max_num_iovec.  Some consumers (e.g. VFS backends that
+ * stage the write iovecs into a fixed array) bound that count, so flatten the
+ * list here, once, into freshly allocated buffers and let the rest of the
+ * stack assume a small iovec count.  This is a cold path; the memcpy cost is
+ * irrelevant.
+ *
+ * Fills @dst (capacity @dst_cap) with the @length payload bytes drawn from
+ * @src and returns the number of destination iovecs, or -1 if @length does
+ * not fit in @dst_cap buffers.
+ */
+static int
+evpl_rpc2_flatten_iovecs(
+    struct evpl       *evpl,
+    struct evpl_iovec *src,
+    int                src_niov,
+    int                length,
+    struct evpl_iovec *dst,
+    int                dst_cap)
+{
+    int    dst_niov, si = 0;
+    size_t soff = 0;
+
+    dst_niov = evpl_iovec_alloc(evpl, length, 0, dst_cap, 0, dst);
+
+    if (unlikely(dst_niov <= 0)) {
+        return -1;
+    }
+
+    for (int di = 0; di < dst_niov; di++) {
+        char  *d     = dst[di].data;
+        size_t dleft = dst[di].length;
+
+        while (dleft && si < src_niov) {
+            size_t savail = src[si].length - soff;
+            size_t n      = dleft < savail ? dleft : savail;
+
+            memcpy(d, (char *) src[si].data + soff, n);
+
+            d     += n;
+            dleft -= n;
+            soff  += n;
+
+            if (soff == src[si].length) {
+                si++;
+                soff = 0;
+            }
+        }
+    }
+
+    return dst_niov;
+} /* evpl_rpc2_flatten_iovecs */
 
 static void
 evpl_rpc2_reasm_reset(
@@ -1001,6 +1068,38 @@ evpl_rpc2_recv_msg(
                                (hdr & 0x7FFFFFFF) + 4, length);
         }
         /* offset == 0: reassembled iovec list with no leading mark. */
+    }
+
+    /* Pathological-fragmentation guard.  A peer that fragments one RPC into
+     * hundreds of tiny record marks produces more payload iovecs than
+     * config->max_num_iovec; flatten that into a minimal contiguous copy so
+     * downstream consumers can rely on a bounded iovec count.  Only reachable
+     * on the reassembled TCP path -- a single delivered fragment is already
+     * capped at max_num_iovec -- so offset is 0 and the source array is the
+     * heap accumulator owned here. */
+    if (!rdma && niov > EVPL_RPC2_MAX_PAYLOAD_NIOV) {
+        struct evpl_iovec *flat;
+        int                flat_niov;
+
+        flat = evpl_zalloc(sizeof(*flat) * EVPL_RPC2_MAX_PAYLOAD_NIOV);
+
+        flat_niov = evpl_rpc2_flatten_iovecs(evpl, iovec, niov, length, flat,
+                                             EVPL_RPC2_MAX_PAYLOAD_NIOV);
+
+        evpl_rpc2_abort_if(flat_niov <= 0,
+                           "Failed to flatten %d-iovec RPC payload (%d bytes)",
+                           niov, length);
+
+        evpl_iovecs_release(evpl, iovec, niov);
+
+        if (offset == 0) {
+            /* Reassembled path: free the heap accumulator array. */
+            evpl_free(iovec);
+        }
+
+        iovec  = flat;
+        niov   = flat_niov;
+        offset = 0;
     }
 
     hdr_iov = xdr_dbuf_alloc_space(sizeof(*hdr_iov) * niov, &msg->dbuf);
