@@ -195,6 +195,9 @@ include_directories(3rdparty)
 include_directories(include)
 
 include_directories(ext/prometheus-c)
+# stopwatch.h is vendored by the prometheus-c submodule; use that single copy
+# so libevpl and prometheus-c always share the same version.
+include_directories(ext/prometheus-c/ext/stopwatch)
 
 add_subdirectory(ext)
 add_subdirectory(src)

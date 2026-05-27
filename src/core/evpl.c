@@ -112,14 +112,21 @@ evpl_shared_init(struct evpl_global_config *config)
      */
     evpl_shared->metrics = prometheus_metrics_create(NULL, NULL, 0);
 
+    /* Initialize the process-wide TSC clock and anchor it to wall-clock
+     * monotonic time. Captured adjacently so the anchor is tight.
+     */
+    stopwatch_context_init(&evpl_shared->hf_stopwatch);
+    clock_gettime(CLOCK_MONOTONIC, &evpl_shared->hf_base_time);
+    stopwatch_start(&evpl_shared->hf_stopwatch, &evpl_shared->hf_base_sw);
+
     /* Block I/O metric definitions.  Per-device series (labelled by
      * device and type) are created lazily when a device is opened; the
      * histograms use base-2 buckets, so 32 buckets cover up to ~2.1s of
      * latency and ~2GiB of request size.
      */
-    evpl_shared->block_latency = prometheus_metrics_create_histogram_exponential(
+    evpl_shared->block_latency = prometheus_metrics_create_histogram_time(
         evpl_shared->metrics, "evpl_block_latency_nanoseconds",
-        "Block I/O request latency in nanoseconds", 32);
+        "Block I/O request latency in nanoseconds", 34);
 
     evpl_shared->block_request_size = prometheus_metrics_create_histogram_exponential(
         evpl_shared->metrics, "evpl_block_request_bytes",
@@ -404,6 +411,10 @@ evpl_create(struct evpl_thread_config *config)
         evpl->config = evpl_shared->config->thread_default;
     }
 
+    /* Precompute the poll-mode spin grace period in ticks so the event loop
+     * compares it without converting on every iteration. */
+    evpl->spin_ticks = evpl_ns_to_ticks(evpl->config.spin_ns);
+
     evpl_core_init(&evpl->core, 64);
 
     evpl->running = 1;
@@ -432,7 +443,7 @@ evpl_continue(struct evpl *evpl)
     int                   msecs = evpl->config.wait_ms;
     uint64_t              elapsed;
     int64_t               remain;
-    struct timespec       now;
+    uint64_t              now_ticks;
 
     if (evpl->poll_mode && evpl->poll_iterations < evpl->config.poll_iterations) {
 
@@ -445,17 +456,19 @@ evpl_continue(struct evpl *evpl)
 
     } else {
 
-        evpl_get_hf_monotonic_time(evpl, &now);
+        now_ticks = evpl_now_ticks();
 
         if (evpl->num_timers) {
 
             do {
                 timer = evpl->timers[0];
 
-                remain = evpl_ts_interval(&timer->deadline, &now);
+                remain = (int64_t) (timer->deadline - now_ticks);
 
                 if (remain > 0) {
-                    remain /= 1000000;
+                    /* Timer not yet due; convert the remaining ticks to the
+                     * millisecond wait only here, off the busy path. */
+                    remain = (int64_t) (evpl_ticks_to_ns((uint64_t) remain) / 1000000);
 
                     if (remain < msecs || msecs == -1) {
                         msecs = remain;
@@ -480,18 +493,18 @@ evpl_continue(struct evpl *evpl)
         if (evpl->config.poll_mode && evpl->num_poll) {
 
             if (evpl->activity != evpl->last_activity) {
-                evpl->last_activity    = evpl->activity;
-                evpl->last_activity_ts = now;
-                elapsed                = 0;
+                evpl->last_activity       = evpl->activity;
+                evpl->last_activity_ticks = now_ticks;
+                elapsed                   = 0;
             } else {
-                elapsed = evpl_ts_interval(&now, &evpl->last_activity_ts);
+                elapsed = now_ticks - evpl->last_activity_ticks;
             }
         } else {
             elapsed = 0;
         }
 
         if (!evpl->force_poll_mode && !evpl->poll_pin_count &&
-            elapsed > evpl->config.spin_ns) {
+            elapsed > evpl->spin_ticks) {
             if (evpl->poll_mode) {
                 for (i = 0; i < evpl->num_poll; ++i) {
                     poll = &evpl->poll[i];
@@ -591,59 +604,26 @@ evpl_continue(struct evpl *evpl)
 
 } /* evpl_continue */
 
-#define EVPL_TSC_SHIFT        32u
-#define EVPL_TSC_CALIBRATE_NS 100000000ULL     /* 100 ms */
-
 SYMBOL_EXPORT void
 evpl_get_hf_monotonic_time(
     struct evpl     *evpl,
     struct timespec *ts)
 {
-#ifdef __x86_64__
+    (void) evpl;
 
-    if (evpl_shared->config->hf_time_mode > 0) {
-        uint64_t tsc;
+    /* Back the high-frequency clock with the shared stopwatch: absolute
+     * monotonic time = wall-clock anchor + elapsed ticks since the base
+     * stopwatch was started at init. Falls back to clock_gettime when the
+     * stopwatch could not use the TSC or hf_time_mode is disabled.
+     */
+    if (evpl_shared->config->hf_time_mode > 0 &&
+        evpl_shared->hf_stopwatch.use_tsc) {
+        uint64_t delta_ns = stopwatch_elapsed_ns(&evpl_shared->hf_stopwatch,
+                                                 &evpl_shared->hf_base_sw);
 
-        tsc = __rdtsc();
+        uint64_t nsec = evpl_shared->hf_base_time.tv_nsec + (delta_ns % NS_PER_S);
 
-        if (unlikely(evpl->hf_tsc_start.tv_sec == 0)) {
-            /* We need to calibrate TSC rate first */
-            clock_gettime(CLOCK_MONOTONIC, &evpl->hf_tsc_start);
-            evpl->hf_tsc_value = tsc;
-
-            evpl->hf_tsc_mult = 0;
-
-            *ts = evpl->hf_tsc_start;
-            return;
-        }
-
-        /* Calibrate once we have a long-enough baseline (≈100 ms). */
-        if (unlikely(evpl->hf_tsc_mult == 0)) {
-            uint64_t elapsed_ns, tsc_delta;
-
-            clock_gettime(CLOCK_MONOTONIC, ts);
-            elapsed_ns = evpl_ts_interval(ts, &evpl->hf_tsc_start);
-
-            if (elapsed_ns > EVPL_TSC_CALIBRATE_NS) {
-                tsc_delta = tsc - evpl->hf_tsc_value;
-
-                /* mult = round((elapsed_ns << SHIFT) / tsc_delta) */
-                __uint128_t num  = ((__uint128_t) elapsed_ns) << EVPL_TSC_SHIFT;
-                uint64_t    mult = (uint64_t) ((num + (tsc_delta / 2)) / tsc_delta);
-
-                evpl->hf_tsc_mult = mult;
-            }
-
-            return;
-        }
-
-        uint64_t    cycles   = tsc - evpl->hf_tsc_value;
-        __uint128_t prod     = (__uint128_t) cycles * (__uint128_t) evpl->hf_tsc_mult;
-        uint64_t    delta_ns = (uint64_t) (prod >> EVPL_TSC_SHIFT);
-
-        uint64_t    nsec = evpl->hf_tsc_start.tv_nsec + (delta_ns % NS_PER_S);
-
-        ts->tv_sec = evpl->hf_tsc_start.tv_sec + (delta_ns / NS_PER_S);
+        ts->tv_sec = evpl_shared->hf_base_time.tv_sec + (delta_ns / NS_PER_S);
 
         if (nsec >= NS_PER_S) {
             ts->tv_sec++;
@@ -654,12 +634,6 @@ evpl_get_hf_monotonic_time(
     } else {
         clock_gettime(CLOCK_MONOTONIC, ts);
     }
-
-#else  /* __x86_64__ */
-
-    clock_gettime(CLOCK_MONOTONIC, ts);
-
-#endif /* __x86_64__ */
 } /* evpl_get_hf_monotonic_time */
 
 
