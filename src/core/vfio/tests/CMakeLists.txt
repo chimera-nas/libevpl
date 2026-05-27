@@ -8,3 +8,7 @@
 # Run directly: vfio_bench <pci-bdf> [seconds-per-level] [block-bytes]
 add_executable(vfio_bench bench.c)
 target_link_libraries(vfio_bench evpl pthread)
+
+# Multi-thread, all-drives variant (chimera-like fan-out).
+add_executable(vfio_bench_mt bench_mt.c)
+target_link_libraries(vfio_bench_mt evpl pthread)
