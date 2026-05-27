@@ -19,8 +19,8 @@ typedef void (*evpl_timer_callback_t)(
 
 struct evpl_timer {
     evpl_timer_callback_t callback;
-    uint64_t              interval;
-    struct timespec       deadline;
+    uint64_t              interval;       /* microseconds */
+    uint64_t              deadline;       /* stopwatch ticks (see evpl_now_ticks) */
     int                   oneshot;
 };
 

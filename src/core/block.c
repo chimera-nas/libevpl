@@ -16,12 +16,12 @@
  * touched only on the queue's own thread, so no locking is required.
  */
 struct evpl_block_op {
-    struct timespec          start;
-    uint64_t                 size;
-    struct evpl_block_queue *queue;
-    evpl_block_callback_t    callback;
-    void                    *private_data;
-    struct evpl_block_op    *next;
+    struct prometheus_stopwatch start;
+    uint64_t                    size;
+    struct evpl_block_queue    *queue;
+    evpl_block_callback_t       callback;
+    void                       *private_data;
+    struct evpl_block_op       *next;
 };
 
 static inline uint64_t
@@ -63,16 +63,8 @@ evpl_block_complete(
     struct evpl_block_queue *queue = op->queue;
     evpl_block_callback_t    callback;
     void                    *callback_private;
-    struct timespec          now;
-    int64_t                  elapsed;
 
-    evpl_get_hf_monotonic_time(evpl, &now);
-    elapsed = evpl_ts_interval(&now, &op->start);
-
-    /* prometheus_histogram_sample() bucketizes via clz, which is
-     * undefined at zero, so floor the latency at one nanosecond.
-     */
-    prometheus_histogram_sample(queue->m_latency, elapsed > 0 ? elapsed : 1);
+    prometheus_time_histogram_sample(queue->m_latency, &op->start);
 
     if (op->size) {
         prometheus_histogram_sample(queue->m_request_size, op->size);
@@ -246,7 +238,7 @@ evpl_block_read(
     op->private_data = private_data;
     op->size         = evpl_block_iov_size(iov, niov);
 
-    evpl_get_hf_monotonic_time(evpl, &op->start);
+    prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
 
     queue->read(evpl, queue, iov, niov, offset, evpl_block_complete, op);
@@ -270,7 +262,7 @@ evpl_block_write(
     op->private_data = private_data;
     op->size         = evpl_block_iov_size(iov, niov);
 
-    evpl_get_hf_monotonic_time(evpl, &op->start);
+    prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
 
     queue->write(evpl, queue, iov, niov, offset, sync, evpl_block_complete, op);
@@ -290,7 +282,7 @@ evpl_block_flush(
     op->private_data = private_data;
     op->size         = 0;
 
-    evpl_get_hf_monotonic_time(evpl, &op->start);
+    prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
 
     queue->flush(evpl, queue, evpl_block_complete, op);

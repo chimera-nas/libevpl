@@ -5,6 +5,7 @@
 #include "core/evpl.h"
 #include "core/timer.h"
 #include "core/macros.h"
+#include "core/evpl_shared.h"
 
 #include "core/timing.h"
 
@@ -18,7 +19,7 @@ evpl_timer_heap_up(
     while (i > 0) {
         int parent = (i - 1) / 2;
 
-        if (evpl_ts_compare(&evpl->timers[parent]->deadline, &evpl->timers[i]->deadline) < 0) {
+        if (evpl->timers[parent]->deadline < evpl->timers[i]->deadline) {
             break;
         }
 
@@ -48,12 +49,12 @@ evpl_timer_heap_down(
 
         child = 2 * i + 2;
         if (child < evpl->num_timers &&
-            evpl_ts_compare(&evpl->timers[child]->deadline, &evpl->timers[min_child]->deadline) < 0) {
+            evpl->timers[child]->deadline < evpl->timers[min_child]->deadline) {
             min_child = child;
         }
 
         if (min_child == -1 ||
-            evpl_ts_compare(&evpl->timers[i]->deadline, &evpl->timers[min_child]->deadline) < 0) {
+            evpl->timers[i]->deadline < evpl->timers[min_child]->deadline) {
             break;
         }
 
@@ -89,9 +90,8 @@ evpl_timer_insert(
 {
     int i;
 
-    clock_gettime(CLOCK_MONOTONIC, &timer->deadline);
-    timer->deadline.tv_sec  += timer->interval / 1000000;
-    timer->deadline.tv_nsec += (timer->interval % 1000000) * 1000;
+    /* interval is in microseconds; arm the deadline in stopwatch ticks. */
+    timer->deadline = evpl_now_ticks() + evpl_ns_to_ticks(timer->interval * 1000);
 
     evpl->timers[evpl->num_timers] = timer;
 

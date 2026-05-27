@@ -92,14 +92,10 @@ typedef void (*evpl_accept_callback_t)(
 struct evpl {
     struct evpl_core              core; /* must be first */
 
-
-    uint64_t                      hf_tsc_value;
-    uint64_t                      hf_tsc_mult;
-    struct timespec               hf_tsc_start;
-
     uint64_t                      poll_iters;
 
-    struct timespec               last_activity_ts;
+    uint64_t                      last_activity_ticks;
+    uint64_t                      spin_ticks;
     uint64_t                      activity;
     uint64_t                      last_activity;
     uint64_t                      poll_iterations;

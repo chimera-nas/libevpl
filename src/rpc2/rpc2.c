@@ -77,7 +77,7 @@ struct evpl_rpc2_request {
     struct evpl_rpc2_conn                *conn;
     struct evpl_rpc2_thread              *thread;
     struct evpl_rpc2_program             *program;
-    struct timespec                       timestamp;
+    struct prometheus_stopwatch           timestamp;
     struct prometheus_histogram_instance *metric;
     struct prometheus_gauge_instance     *m_inflight;
     void                                 *callback;
@@ -572,8 +572,6 @@ evpl_rpc2_send_reply(
     struct evpl_iovec            *segment_iov, *reply_segment_iov;
     struct evpl_rpc2_iovec_cursor write_cursor;
     int                           segment_niov;
-    struct timespec               now;
-    uint64_t                      elapsed;
     int                           i, reduce = 0, rdma = request->conn->rdma;
     struct evpl_iovec            *final_reply_iov;
     int                           final_reply_niov, final_reply_length;
@@ -721,12 +719,8 @@ evpl_rpc2_send_reply(
         memcpy(msg_iov[0].data, &hdr, sizeof(hdr));
     }
 
-    evpl_get_hf_monotonic_time(evpl, &now);
-
-    elapsed = evpl_ts_interval(&now, &request->timestamp);
-
     if (request->metric) {
-        prometheus_histogram_sample(request->metric, elapsed);
+        prometheus_time_histogram_sample(request->metric, &request->timestamp);
     }
 
     if (reduce) {
@@ -1012,7 +1006,6 @@ evpl_rpc2_recv_msg(
     struct xdr_write_list           *write_list;
     struct evpl_iovec               *segment_iov;
     int                              segment_offset;
-    struct timespec                  now;
     auth_flavor                      flavor;
     struct authsys_parms            *authsys = NULL;
 
@@ -1020,8 +1013,6 @@ evpl_rpc2_recv_msg(
     msg = evpl_rpc2_msg_alloc(thread);
 
     rdma = rpc2_conn->rdma;
-
-    evpl_get_hf_monotonic_time(evpl, &now);
 
     if (rdma) {
         /* RPC2 on RDMA has no header since its message based,
@@ -1161,7 +1152,7 @@ evpl_rpc2_recv_msg(
             request->xid          = rpc_msg.xid;
             request->encoding.xid = request->xid;
             request->proc         = rpc_msg.body.cbody.proc;
-            request->timestamp    = now;
+            prometheus_stopwatch_start(&request->timestamp);
 
             /* Parse credentials - authsys data is in msg->dbuf which persists */
             flavor = rpc_msg.body.cbody.cred.flavor;
