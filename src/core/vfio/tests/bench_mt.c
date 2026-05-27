@@ -23,6 +23,7 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/resource.h>
 
 #include "evpl/evpl.h"
 
@@ -179,6 +180,11 @@ main(
         fprintf(stderr, "usage: %s <seconds> <qd-per-thread> <threads> <bdf> [bdf ...]\n", argv[0]);
         return 1;
     }
+
+    /* Each VFIO device allocates msixsize eventfds; 16 drives blow past the
+     * default 1024 FD limit (the daemon raises this too). */
+    struct rlimit rl = { 65535, 65535 };
+    setrlimit(RLIMIT_NOFILE, &rl);
 
     g_seconds = atoi(argv[1]);
     g_qd      = atoi(argv[2]);
