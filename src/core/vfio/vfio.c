@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <linux/vfio.h>
 #include <linux/pci.h>
@@ -140,6 +141,9 @@ struct evpl_vfio_device {
     /* Per-device latency-split series (instanced per queue). */
     struct prometheus_histogram_series *m_submit_latency;
     struct prometheus_histogram_series *m_reap_gap;
+    /* Test toggle (EVPL_VFIO_IMMEDIATE_RING): ring the SQ doorbell inline on
+     * each submit instead of deferring it to the end of the event-loop pass. */
+    int                         immediate_ring;
 };
 
 void evpl_remove_deferral(
@@ -1120,12 +1124,20 @@ evpl_vfio_read(
 
     evpl_vfio_prepare_payload(device, queue, cid, cmd, iov, niov);
 
-    if (queue->m_submit_latency && !queue->batch_armed) {
-        evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
-        queue->batch_armed = 1;
-    }
+    if (queue->device->immediate_ring) {
+        /* Ring the doorbell inline so the drive starts this command while the
+         * thread keeps dispatching the rest of the burst -- pipelines
+         * submission with drive execution instead of stalling every command
+         * behind the whole dispatch pass. */
+        evpl_vfio_ring_sq(queue);
+    } else {
+        if (queue->m_submit_latency && !queue->batch_armed) {
+            evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
+            queue->batch_armed = 1;
+        }
 
-    evpl_defer(evpl, &queue->ring_sq);
+        evpl_defer(evpl, &queue->ring_sq);
+    }
 } /* evpl_vfio_read */
 
 static void
@@ -1177,12 +1189,20 @@ evpl_vfio_write(
 
     evpl_vfio_prepare_payload(device, queue, cid, cmd, iov, niov);
 
-    if (queue->m_submit_latency && !queue->batch_armed) {
-        evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
-        queue->batch_armed = 1;
-    }
+    if (queue->device->immediate_ring) {
+        /* Ring the doorbell inline so the drive starts this command while the
+         * thread keeps dispatching the rest of the burst -- pipelines
+         * submission with drive execution instead of stalling every command
+         * behind the whole dispatch pass. */
+        evpl_vfio_ring_sq(queue);
+    } else {
+        if (queue->m_submit_latency && !queue->batch_armed) {
+            evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
+            queue->batch_armed = 1;
+        }
 
-    evpl_defer(evpl, &queue->ring_sq);
+        evpl_defer(evpl, &queue->ring_sq);
+    }
 
 } /* evpl_vfio_write */
 
@@ -1231,12 +1251,20 @@ evpl_vfio_flush(
     cmd->common.prp1   = 0;
     cmd->common.prp2   = 0;
 
-    if (queue->m_submit_latency && !queue->batch_armed) {
-        evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
-        queue->batch_armed = 1;
-    }
+    if (queue->device->immediate_ring) {
+        /* Ring the doorbell inline so the drive starts this command while the
+         * thread keeps dispatching the rest of the burst -- pipelines
+         * submission with drive execution instead of stalling every command
+         * behind the whole dispatch pass. */
+        evpl_vfio_ring_sq(queue);
+    } else {
+        if (queue->m_submit_latency && !queue->batch_armed) {
+            evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
+            queue->batch_armed = 1;
+        }
 
-    evpl_defer(evpl, &queue->ring_sq);
+        evpl_defer(evpl, &queue->ring_sq);
+    }
 } /* evpl_vfio_flush */
 
 static void
@@ -1648,6 +1676,9 @@ evpl_vfio_open_device(
         evpl_shared->block_reap_gap,
         (const char *[]) { "device", "type" },
         (const char *[]) { uri, "vfio" }, 2);
+
+    dev->immediate_ring = (getenv("EVPL_VFIO_IMMEDIATE_RING") != NULL);
+    evpl_vfio_debug("NVMe device %s immediate_ring=%d", uri, dev->immediate_ring);
 
     evpl_vfio_debug("NVMe controller %s [%s] SGLs=%d SGLa=%d max_queues=%d max_xfer_size=%d",
                     dev->model, dev->serial, dev->sgls, dev->sgl_unaligned,
