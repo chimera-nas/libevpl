@@ -129,6 +129,15 @@ evpl_shared_init(struct evpl_global_config *config)
         evpl_shared->metrics, "evpl_block_queue_depth",
         "Outstanding block I/O requests");
 
+    /* VFIO latency-split diagnostics (see evpl_shared.h). */
+    evpl_shared->block_submit_latency = prometheus_metrics_create_histogram_exponential(
+        evpl_shared->metrics, "evpl_block_submit_latency_nanoseconds",
+        "Block I/O submit-to-doorbell delay in nanoseconds", 32);
+
+    evpl_shared->block_reap_gap = prometheus_metrics_create_histogram_exponential(
+        evpl_shared->metrics, "evpl_block_reap_gap_nanoseconds",
+        "Interval between polls of a block queue with outstanding I/O, in nanoseconds", 32);
+
     /* RPC2 in-flight request gauge.  Per-thread series (labelled by role
      * server/client and a thread id) are created when an rpc2 thread is
      * initialized; the I/O path mutates each instance lock-free on its

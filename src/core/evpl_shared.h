@@ -23,6 +23,11 @@ struct evpl_shared {
     struct prometheus_histogram *block_latency;
     struct prometheus_histogram *block_request_size;
     struct prometheus_gauge     *block_queue_depth;
+    /* VFIO latency-split diagnostics (test instrumentation): submit->doorbell
+     * delay, and the interval between polls of a queue that has outstanding
+     * I/O (an upper bound on completion-reap lag). */
+    struct prometheus_histogram *block_submit_latency;
+    struct prometheus_histogram *block_reap_gap;
     struct prometheus_gauge     *rpc2_queue_depth;
     struct evpl_allocator       *allocator;
     struct evpl_framework       *framework[EVPL_NUM_FRAMEWORK];

@@ -24,6 +24,9 @@
 #include "core/event_fn.h"
 #include "core/poll.h"
 #include "core/macros.h"
+#include "core/evpl_shared.h"
+#include "core/timing.h"
+#include "prometheus-c.h"
 #include "nvme.h"
 
 #define VFIO_IOVA_START 0x10000000000ULL
@@ -75,6 +78,13 @@ struct evpl_vfio_queue {
     struct evpl_deferral           ring_sq;
     struct evpl_poll              *poll;
     int                            event_registered;
+    /* Latency-split instrumentation (per-queue, lock-free). */
+    struct prometheus_histogram_instance *m_submit_latency;
+    struct prometheus_histogram_instance *m_reap_gap;
+    struct timespec                batch_arm_ts;
+    struct timespec                last_poll_ts;
+    int                            batch_armed;
+    int                            reap_gap_armed;
     struct evpl_vfio_callback_ctx *callbacks;
     struct evpl_vfio_queue        *prev;
     struct evpl_vfio_queue        *next;
@@ -127,6 +137,9 @@ struct evpl_vfio_device {
     struct evpl_vfio_queue     *adminq;
     struct evpl_vfio_queue     *ioq;
     pthread_mutex_t             lock;
+    /* Per-device latency-split series (instanced per queue). */
+    struct prometheus_histogram_series *m_submit_latency;
+    struct prometheus_histogram_series *m_reap_gap;
 };
 
 void evpl_remove_deferral(
@@ -489,6 +502,13 @@ evpl_vfio_queue_close(
         }
     }
 
+    if (queue->m_submit_latency) {
+        prometheus_histogram_series_destroy_instance(device->m_submit_latency, queue->m_submit_latency);
+    }
+    if (queue->m_reap_gap) {
+        prometheus_histogram_series_destroy_instance(device->m_reap_gap, queue->m_reap_gap);
+    }
+
     evpl_vfio_free(device->vfio, queue->sqbuffer);
     evpl_vfio_free(device->vfio, queue->cqbuffer);
     evpl_vfio_free(device->vfio, queue->prplist);
@@ -538,6 +558,23 @@ evpl_vfio_poll_queue(
     struct nvme_cq_entry          *cqe;
     int                            cid, moved = 0;
     struct evpl_vfio_callback_ctx *cb;
+
+    /* reap gap: when this queue has outstanding I/O, record how long since we
+     * last polled it.  An upper bound on completion-reap lag -- if this is
+     * large while block latency is large, the latency is reaping starvation
+     * (thread busy elsewhere), not the drive. */
+    if (queue->cidcount && evpl && queue->m_reap_gap) {
+        struct timespec now;
+        evpl_get_hf_monotonic_time(evpl, &now);
+        if (queue->reap_gap_armed) {
+            int64_t gap = evpl_ts_interval(&now, &queue->last_poll_ts);
+            prometheus_histogram_sample(queue->m_reap_gap, gap > 0 ? gap : 1);
+        }
+        queue->last_poll_ts   = now;
+        queue->reap_gap_armed = 1;
+    } else if (!queue->cidcount) {
+        queue->reap_gap_armed = 0;
+    }
 
     while (queue->cidcount) {
 
@@ -1083,6 +1120,11 @@ evpl_vfio_read(
 
     evpl_vfio_prepare_payload(device, queue, cid, cmd, iov, niov);
 
+    if (queue->m_submit_latency && !queue->batch_armed) {
+        evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
+        queue->batch_armed = 1;
+    }
+
     evpl_defer(evpl, &queue->ring_sq);
 } /* evpl_vfio_read */
 
@@ -1135,6 +1177,11 @@ evpl_vfio_write(
 
     evpl_vfio_prepare_payload(device, queue, cid, cmd, iov, niov);
 
+    if (queue->m_submit_latency && !queue->batch_armed) {
+        evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
+        queue->batch_armed = 1;
+    }
+
     evpl_defer(evpl, &queue->ring_sq);
 
 } /* evpl_vfio_write */
@@ -1183,6 +1230,11 @@ evpl_vfio_flush(
     cmd->nlb           = 0;
     cmd->common.prp1   = 0;
     cmd->common.prp2   = 0;
+
+    if (queue->m_submit_latency && !queue->batch_armed) {
+        evpl_get_hf_monotonic_time(evpl, &queue->batch_arm_ts);
+        queue->batch_armed = 1;
+    }
 
     evpl_defer(evpl, &queue->ring_sq);
 } /* evpl_vfio_flush */
@@ -1333,6 +1385,16 @@ evpl_vfio_defer_ring_sq(
 {
     struct evpl_vfio_queue *queue = private_data;
 
+    /* submit->doorbell delay: age of the oldest un-rung submit in this batch. */
+    if (queue->batch_armed && queue->m_submit_latency) {
+        struct timespec now;
+        int64_t         d;
+        evpl_get_hf_monotonic_time(evpl, &now);
+        d = evpl_ts_interval(&now, &queue->batch_arm_ts);
+        prometheus_histogram_sample(queue->m_submit_latency, d > 0 ? d : 1);
+        queue->batch_armed = 0;
+    }
+
     evpl_vfio_ring_sq(queue);
 } /* evpl_vfio_defer_ring_sq */
 
@@ -1358,6 +1420,9 @@ evpl_vfio_open_queue(
     bqueue = evpl_zalloc(sizeof(*bqueue));
 
     queue = evpl_vfio_create_ioq(evpl, device, device->queue_size);
+
+    queue->m_submit_latency = prometheus_histogram_series_create_instance(device->m_submit_latency);
+    queue->m_reap_gap       = prometheus_histogram_series_create_instance(device->m_reap_gap);
 
     bqueue->private_data = queue;
     bqueue->close_queue  = evpl_vfio_close_queue;
@@ -1440,6 +1505,13 @@ evpl_vfio_close_device(struct evpl_block_device *bdev)
     }
 
     pthread_mutex_destroy(&dev->lock);
+
+    if (dev->m_submit_latency) {
+        prometheus_histogram_destroy_series(evpl_shared->block_submit_latency, dev->m_submit_latency);
+    }
+    if (dev->m_reap_gap) {
+        prometheus_histogram_destroy_series(evpl_shared->block_reap_gap, dev->m_reap_gap);
+    }
 
     evpl_free(dev);
     evpl_free(bdev);
@@ -1565,6 +1637,17 @@ evpl_vfio_open_device(
 
     bdev->size             = dev->num_sectors * dev->sector_size;
     bdev->max_request_size = dev->max_xfer_bytes;
+
+    /* Latency-split diagnostic series, labelled per device like the existing
+     * evpl_block_latency series so the scrape aggregates instances per drive. */
+    dev->m_submit_latency = prometheus_histogram_create_series(
+        evpl_shared->block_submit_latency,
+        (const char *[]) { "device", "type" },
+        (const char *[]) { uri, "vfio" }, 2);
+    dev->m_reap_gap = prometheus_histogram_create_series(
+        evpl_shared->block_reap_gap,
+        (const char *[]) { "device", "type" },
+        (const char *[]) { uri, "vfio" }, 2);
 
     evpl_vfio_debug("NVMe controller %s [%s] SGLs=%d SGLa=%d max_queues=%d max_xfer_size=%d",
                     dev->model, dev->serial, dev->sgls, dev->sgl_unaligned,
