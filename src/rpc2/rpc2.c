@@ -1803,11 +1803,6 @@ evpl_rpc2_call(
         rpc_msg.body.cbody.cred.authsys.gid             = cred->authsys.gid;
         rpc_msg.body.cbody.cred.authsys.num_gids        = cred->authsys.num_gids;
         rpc_msg.body.cbody.cred.authsys.gids            = cred->authsys.gids;
-
-        evpl_rpc2_debug("AUTH_SYS: machinename=%.*s (len=%d) uid=%u gid=%u num_gids=%u",
-                        cred->authsys.machinename_len, cred->authsys.machinename,
-                        cred->authsys.machinename_len, cred->authsys.uid,
-                        cred->authsys.gid, cred->authsys.num_gids);
     } else {
         rpc_msg.body.cbody.cred.flavor = AUTH_NONE;
     }
