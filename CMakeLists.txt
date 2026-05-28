@@ -45,6 +45,11 @@ endif()
 
 message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
 
+# Keep frame pointers in every build type so that perf and other
+# frame-pointer-based profilers can unwind call stacks (the cost at -O3 is
+# negligible and the unwind reliability is worth it for production profiling).
+add_compile_options(-fno-omit-frame-pointer)
+
 set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};/opt/nvidia")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
