@@ -1042,6 +1042,10 @@ evpl_rdmacm_create(
 
         dev->td = ibv_alloc_td(dev->context, &td_attr);
 
+        evpl_rdmacm_abort_if(!dev->td,
+                             "Failed to allocate thread domain for rdma device: %s",
+                             strerror(errno));
+
         memset(&pd_attr, 0, sizeof(pd_attr));
 
         pd_attr.pd        = dev->parent_pd;
@@ -1051,7 +1055,8 @@ evpl_rdmacm_create(
         dev->pd = ibv_alloc_parent_domain(dev->context, &pd_attr);
 
         evpl_rdmacm_abort_if(!dev->pd,
-                             "Failed to create protection domain for rdma device");
+                             "Failed to allocate parent domain for rdma device: %s",
+                             strerror(errno));
 
         memset(&cq_attr, 0, sizeof(cq_attr));
 
