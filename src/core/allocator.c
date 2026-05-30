@@ -18,6 +18,11 @@
 #include "core/protocol.h"
 #include "core/macros.h"
 
+/* Encodes the log2 of a specific hugetlb page size into the mmap flags so a
+ * non-default pool (e.g. 1 GiB) can be selected; see mmap(2) MAP_HUGE_*. */
+#ifndef MAP_HUGE_SHIFT
+#define MAP_HUGE_SHIFT 26
+#endif /* ifndef MAP_HUGE_SHIFT */
 
 extern struct evpl_shared *evpl_shared;
 
@@ -223,14 +228,26 @@ evpl_allocator_build_slab(
  again:
 
     if (hugepages) {
+        uint64_t huge_page_size = evpl_shared->config->huge_page_size;
+        int      flags          = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB;
 
-        slab->data = mmap(NULL, evpl_shared->config->slab_size,
+        /* Pin the mapping to a specific hugetlb pool (validated to be a
+         * power of two in evpl_global_config_set_huge_page_size).  The slab
+         * size must be a multiple of it, or the kernel rejects the mapping and
+         * we fall back to base pages below. */
+        if (huge_page_size) {
+            flags |= (__builtin_ctzll(huge_page_size) << MAP_HUGE_SHIFT);
+        }
+
+        slab->data = mmap(NULL, slab->size,
                           PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                          flags,
                           -1, 0);
 
         if (slab->data == MAP_FAILED) {
-            evpl_core_info("Could not allocate huge pages, disabling...");
+            evpl_core_info(
+                "Could not allocate %llu-byte huge pages, disabling...",
+                (unsigned long long) huge_page_size);
             allocator->hugepages = 0;
             hugepages            = 0;
             goto again;

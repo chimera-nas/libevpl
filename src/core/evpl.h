@@ -37,6 +37,7 @@ struct evpl_global_config {
     unsigned int              max_num_iovec;
     unsigned int              buffer_size;
     unsigned int              huge_pages;
+    uint64_t                  huge_page_size;
     uint64_t                  slab_size;
     unsigned int              page_size;
     unsigned int              max_datagram_size;

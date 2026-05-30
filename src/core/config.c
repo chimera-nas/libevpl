@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <unistd.h>
+#include <stdio.h>
 #include <string.h>
 #include <pthread.h>
 
@@ -28,6 +29,7 @@ evpl_global_config_init(void)
     config->max_poll_fd            = 16;
     config->max_num_iovec          = 128;
     config->huge_pages             = 0;
+    config->huge_page_size         = 2 * 1024 * 1024;
     config->buffer_size            = 2 * 1024 * 1024;
     config->slab_size              = 1 * 1024 * 1024 * 1024;
     config->refcnt                 = 1;
@@ -148,6 +150,44 @@ evpl_global_config_set_huge_pages(
 {
     config->huge_pages = huge_pages;
 } /* evpl_global_config_set_huge_pages */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_huge_page_size(
+    struct evpl_global_config *config,
+    uint64_t                   size)
+{
+    char path[64];
+
+    /* A hugetlb page size is always a power of two strictly larger than the
+     * base page.  Bound it sanely (the largest real page on any arch today is
+     * 16 GiB) so a bogus value can never be encoded into MAP_HUGE_* or used to
+     * size a slab. */
+    if (size == 0 || (size & (size - 1)) != 0 ||
+        size <= (uint64_t) config->page_size ||
+        size > (16ULL << 30)) {
+        evpl_core_error(
+            "Ignoring invalid huge page size %llu: must be a power of two in "
+            "(%u, 16GiB]; keeping %llu",
+            (unsigned long long) size,
+            config->page_size,
+            (unsigned long long) config->huge_page_size);
+        return;
+    }
+
+    /* Warn (but accept) if the running kernel exposes no hugetlb pool of this
+     * size: the slab mmap will simply fall back to base pages.  This is a soft
+     * check so a sandboxed /sys does not block a legitimate size. */
+    snprintf(path, sizeof(path), "/sys/kernel/mm/hugepages/hugepages-%llukB",
+             (unsigned long long) (size / 1024));
+    if (access(path, F_OK) != 0) {
+        evpl_core_info(
+            "No %llukB hugetlb pool on this system (%s); slab allocation will "
+            "fall back to base pages unless one is reserved",
+            (unsigned long long) (size / 1024), path);
+    }
+
+    config->huge_page_size = size;
+} /* evpl_global_config_set_huge_page_size */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_tos(
