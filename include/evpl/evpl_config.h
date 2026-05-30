@@ -37,6 +37,15 @@ void evpl_global_config_set_huge_pages(
     struct evpl_global_config *config,
     int                        huge_pages);
 
+/* Select the hugetlb page size used to back slabs when huge pages are enabled.
+ * Must be a power-of-two size of a hugetlb pool the kernel exposes (e.g.
+ * 2 MiB or 1 GiB); invalid sizes are rejected and the default (2 MiB) kept.
+ * The slab size should be a multiple of this, or the mapping falls back to
+ * base pages. */
+void evpl_global_config_set_huge_page_size(
+    struct evpl_global_config *config,
+    uint64_t                   size);
+
 void evpl_global_config_set_rdmacm_tos(
     struct evpl_global_config *config,
     uint8_t                    tos);
