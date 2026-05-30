@@ -420,6 +420,18 @@ evpl_rdmacm_event_callback(
                 rdmacm_id->resolve_addr = NULL;
 
             } else {
+                /* On the connecting (client) side bind->local was never
+                 * populated; the accept path sets it, but connect() does not.
+                 * Now that the connection is established the cm_id's route
+                 * holds the resolved local address and port, so record it
+                 * (mirrors the server attach path) before notifying the
+                 * upper layer, which may query the local address. */
+                if (!bind->local) {
+                    bind->local = evpl_address_init(
+                        &cm_event->id->route.addr.src_addr,
+                        sizeof(cm_event->id->route.addr.src_addr));
+                }
+
                 notify.notify_type   = EVPL_NOTIFY_CONNECTED;
                 notify.notify_status = 0;
 
