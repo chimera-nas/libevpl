@@ -85,6 +85,9 @@ struct evpl_rpc2_request {
     struct UT_hash_handle                 hh;
     struct evpl_rpc2_rdma_chunk           read_chunk;
     struct evpl_rpc2_rdma_chunk           write_chunk;
+    /* The write_chunk iovecs are a borrowed caller buffer (read-into), not
+     * libevpl-allocated -- do not release them when the request is freed. */
+    int                                   write_chunk_borrowed;
     struct evpl_rpc2_rdma_segment_list    reply_segments;
     struct evpl_rpc2_rdma_segment_list    write_segments;
     struct evpl_iovec                     reply_segment_iov;
@@ -216,6 +219,7 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
     request->write_chunk.niov            = 0;
     request->write_chunk.length          = 0;
     request->write_chunk.max_length      = 0;
+    request->write_chunk_borrowed        = 0;
     request->write_segments.num_segments = 0;
     request->reply_segments.num_segments = 0;
     request->msg                         = NULL;
@@ -243,7 +247,12 @@ evpl_rpc2_request_free(
     }
 
     evpl_iovecs_release(evpl, request->read_chunk.iov, request->read_chunk.niov);
-    evpl_iovecs_release(evpl, request->write_chunk.iov, request->write_chunk.niov);
+    /* A borrowed write-chunk (read-into) is owned by the caller -- never release
+     * it here.  On the normal reply path write_chunk.niov is already 0 (moved to
+     * read_chunk); this guards the abort/error path where it is still set. */
+    if (!request->write_chunk_borrowed) {
+        evpl_iovecs_release(evpl, request->write_chunk.iov, request->write_chunk.niov);
+    }
 
     if (request->msg) {
         evpl_rpc2_msg_free(thread, request->msg);
@@ -1765,6 +1774,14 @@ evpl_rpc2_call(
     int                       total_length;
     int                       rdma = conn->rdma;
 
+    /* Consume any one-shot armed write-chunk destination (read-into) up front,
+     * regardless of transport, so a stale arm can never leak to a later call. */
+    struct evpl_iovec        *wc_dest_iov  = conn->write_chunk_dest_iov;
+    int                       wc_dest_niov = conn->write_chunk_dest_niov;
+
+    conn->write_chunk_dest_iov  = NULL;
+    conn->write_chunk_dest_niov = 0;
+
     /* Allocate request for the exchange */
     request = evpl_rpc2_request_alloc(thread);
 
@@ -1854,9 +1871,23 @@ evpl_rpc2_call(
 
             evpl_rpc2_abort_if(request->write_chunk.iov == NULL, "Failed to allocate write chunk iovec");
 
-            request->write_chunk.niov = evpl_iovec_alloc(evpl, max_rdma_write_chunk, 4096, 1, 0,
-                                                         request->write_chunk.iov);
-            request->write_chunk.length = max_rdma_write_chunk;
+            if (wc_dest_iov && wc_dest_niov == 1) {
+                /* read-into: borrow the caller's buffer as the write-chunk
+                 * destination so the server RDMA-writes the reply data straight
+                 * into it (zero copy).  Shallow-copy the iovec (no ref taken --
+                 * the caller keeps ownership and the buffer alive until the
+                 * reply); write_chunk_borrowed keeps the free path from releasing
+                 * it.  evpl_rdma_get_address reads the registration off the
+                 * caller's (same-evpl, registered) buffer below. */
+                request->write_chunk.iov[0]   = wc_dest_iov[0];
+                request->write_chunk.niov     = 1;
+                request->write_chunk.length   = max_rdma_write_chunk;
+                request->write_chunk_borrowed = 1;
+            } else {
+                request->write_chunk.niov = evpl_iovec_alloc(evpl, max_rdma_write_chunk, 4096, 1, 0,
+                                                             request->write_chunk.iov);
+                request->write_chunk.length = max_rdma_write_chunk;
+            }
 
             rdma_msg.rdma_body.rdma_msg.rdma_writes = &write_list;
             write_list.next                         = NULL;
@@ -1907,6 +1938,16 @@ evpl_rpc2_call(
 
     return 0;
 } /* evpl_rpc2_call */
+
+SYMBOL_EXPORT void
+evpl_rpc2_conn_set_write_chunk_dest(
+    struct evpl_rpc2_conn *conn,
+    struct evpl_iovec     *iov,
+    int                    niov)
+{
+    conn->write_chunk_dest_iov  = iov;
+    conn->write_chunk_dest_niov = niov;
+} /* evpl_rpc2_conn_set_write_chunk_dest */
 
 SYMBOL_EXPORT void
 evpl_rpc2_conn_get_local_address(

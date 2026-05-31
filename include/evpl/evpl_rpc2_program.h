@@ -8,7 +8,7 @@
 #include <uthash.h>
 
 #include "evpl/evpl_rpc2.h"
-#define EVPL_RPC2 1
+#define EVPL_RPC2                    1
 
 /*
  * Status passed to a client reply callback when the peer's reply could not be
@@ -152,6 +152,24 @@ evpl_rpc2_call(
     int                          max_rdma_reply_chunk,
     void                        *callback,
     void                        *private_data);
+
+/*
+ * Arm the next evpl_rpc2_call on `conn` to land its RDMA write-chunk reply data
+ * directly in the caller-provided buffer (read-into) instead of an internally
+ * allocated chunk.  Borrow semantics: the caller keeps ownership of the buffer,
+ * must keep it alive until the reply, and releases it itself; libevpl never
+ * releases it.  Consumed (and cleared) by the very next call on this conn --
+ * call it immediately before the matching send_call, with no intervening
+ * evpl_rpc2_call on the same connection.  Only honored over RDMA and only when
+ * niov == 1 (a single contiguous, RDMA-registered buffer); otherwise the call
+ * falls back to an internally allocated chunk.  Passing iov == NULL / niov == 0
+ * disarms.
+ */
+void
+evpl_rpc2_conn_set_write_chunk_dest(
+    struct evpl_rpc2_conn *conn,
+    struct evpl_iovec     *iov,
+    int                    niov);
 
 /*
  * Transfer ownership of read_chunk iovecs to the caller.
