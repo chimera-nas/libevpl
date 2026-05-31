@@ -26,8 +26,18 @@
 #include "core/macros.h"
 #include "nvme.h"
 
+/* Fallback IOVA window, used only if the IOMMU does not report its valid IOVA
+ * ranges (VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE).  When it does, we place the
+ * window inside the reported range instead -- a blindly-chosen base can fall
+ * outside the IOMMU aperture, and VFIO_IOMMU_MAP_DMA then fails with EINVAL. */
 #define VFIO_IOVA_START 0x10000000000ULL
 #define VFIO_IOVA_MAX   0x20000000000ULL
+
+/* Align every registered region's IOVA to 2 MiB: keeps the allocation packed,
+ * lets the IOMMU use 2 MiB pages, and (since it is a real power-of-two mask)
+ * fixes the prior `& ~(size-1)` alignment that only worked when the region size
+ * was itself a power of two. */
+#define VFIO_IOVA_ALIGN 0x200000ULL
 
 #define evpl_vfio_debug(...) evpl_debug("vfio", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_vfio_error(...) evpl_error("vfio", __FILE__, __LINE__, __VA_ARGS__)
@@ -96,6 +106,7 @@ struct evpl_vfio_shared {
     int                     container_fd;
     int                     iommu_set;
     uint64_t                iova_current;
+    uint64_t                iova_max;
     struct evpl_vfio_group *groups;
     pthread_mutex_t         lock;
 };
@@ -179,7 +190,10 @@ evpl_vfio_init(void)
     shared = evpl_zalloc(sizeof(*shared));
 
     shared->container_fd = container_fd;
+    /* Fallback window; replaced by the IOMMU-reported range once the IOMMU type
+     * is set (evpl_vfio_query_iova_range). */
     shared->iova_current = VFIO_IOVA_START;
+    shared->iova_max     = VFIO_IOVA_MAX;
 
     pthread_mutex_init(&shared->lock, NULL);
 
@@ -219,6 +233,96 @@ evpl_vfio_destroy(
 {
 } /* evpl_vfio_destroy */
 
+/*
+ * Once the IOMMU type is set, ask it for the valid IOVA range(s) and place our
+ * allocation window inside the largest one.  The kernel silently rejects any
+ * VFIO_IOMMU_MAP_DMA whose IOVA falls outside these ranges with EINVAL, so the
+ * previous hard-coded 1 TB base only worked on IOMMUs whose aperture happened
+ * to extend past 1 TB.  Falls back to the compiled-in window if the IOMMU does
+ * not advertise the IOVA-range capability.
+ */
+static void
+evpl_vfio_query_iova_range(struct evpl_vfio_shared *vfio)
+{
+    struct vfio_iommu_type1_info *info;
+    struct vfio_info_cap_header  *hdr;
+    uint32_t                      argsz = sizeof(*info);
+    uint64_t                      best_start = 0, best_end = 0, best_len = 0;
+
+    info        = evpl_zalloc(argsz);
+    info->argsz = argsz;
+
+    if (ioctl(vfio->container_fd, VFIO_IOMMU_GET_INFO, info) != 0) {
+        evpl_vfio_error("VFIO_IOMMU_GET_INFO failed (%s); using fallback IOVA window",
+                        strerror(errno));
+        evpl_free(info);
+        return;
+    }
+
+    /* The capability chain (incl. the IOVA range list) needs a second, larger
+     * call sized by the argsz the kernel just reported back. */
+    if (info->argsz > argsz) {
+        argsz = info->argsz;
+        evpl_free(info);
+        info        = evpl_zalloc(argsz);
+        info->argsz = argsz;
+
+        if (ioctl(vfio->container_fd, VFIO_IOMMU_GET_INFO, info) != 0) {
+            evpl_vfio_error("VFIO_IOMMU_GET_INFO (caps) failed (%s); using fallback",
+                            strerror(errno));
+            evpl_free(info);
+            return;
+        }
+    }
+
+    if (!(info->flags & VFIO_IOMMU_INFO_CAPS) || info->cap_offset == 0) {
+        evpl_vfio_error("IOMMU does not report IOVA ranges; using fallback window "
+                        "[0x%lx, 0x%lx)", vfio->iova_current, vfio->iova_max);
+        evpl_free(info);
+        return;
+    }
+
+    /* Walk the capability chain for the IOVA-range list and pick the largest
+     * advertised range (offsets in the chain are relative to `info`). */
+    hdr = (struct vfio_info_cap_header *) ((char *) info + info->cap_offset);
+    while (1) {
+        if (hdr->id == VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE) {
+            struct vfio_iommu_type1_info_cap_iova_range *cap =
+                (struct vfio_iommu_type1_info_cap_iova_range *) hdr;
+            uint32_t                                     i;
+
+            for (i = 0; i < cap->nr_iovas; i++) {
+                uint64_t s = cap->iova_ranges[i].start;
+                uint64_t e = cap->iova_ranges[i].end;       /* inclusive */
+
+                if (e > s && (e - s) > best_len) {
+                    best_start = s;
+                    best_end   = e;
+                    best_len   = e - s;
+                }
+            }
+        }
+
+        if (!hdr->next) {
+            break;
+        }
+        hdr = (struct vfio_info_cap_header *) ((char *) info + hdr->next);
+    }
+
+    if (best_len) {
+        uint64_t base = (best_start + VFIO_IOVA_ALIGN - 1) & ~(VFIO_IOVA_ALIGN - 1);
+        uint64_t top  = (best_end + 1) & ~(VFIO_IOVA_ALIGN - 1);  /* end is inclusive */
+
+        if (top > base) {
+            vfio->iova_current = base;
+            vfio->iova_max     = top;
+            evpl_vfio_debug("Using IOMMU IOVA window [0x%lx, 0x%lx)", base, top);
+        }
+    }
+
+    evpl_free(info);
+} /* evpl_vfio_query_iova_range */
+
 static struct evpl_vfio_mr *
 evpl_vfio_register(
     struct evpl_vfio_shared *vfio,
@@ -233,12 +337,17 @@ evpl_vfio_register(
 
     pthread_mutex_lock(&vfio->lock);
 
-    evpl_vfio_abort_if(vfio->iova_current + size > VFIO_IOVA_MAX,
-                       "Registered maximum amount of VFIO memory");
-
     size = (size + 4095) & ~4095;
 
-    vfio->iova_current = (vfio->iova_current + size - 1) & ~(size - 1);
+    /* Align the IOVA to 2 MiB.  This is a correct power-of-two mask (the prior
+     * `& ~(size-1)` only aligned correctly when size was itself a power of two)
+     * and keeps the IOVA off 1 GiB boundaries, so the IOMMU maps with 2 MiB
+     * pages rather than attempting a 1 GiB super-page. */
+    vfio->iova_current = (vfio->iova_current + VFIO_IOVA_ALIGN - 1) & ~(VFIO_IOVA_ALIGN - 1);
+
+    evpl_vfio_abort_if(vfio->iova_current + size > vfio->iova_max,
+                       "Exhausted VFIO IOVA window (need 0x%x at 0x%lx, max 0x%lx)",
+                       size, vfio->iova_current, vfio->iova_max);
 
     mr->buffer = buffer;
     mr->iova   = vfio->iova_current;
@@ -389,6 +498,10 @@ evpl_vfio_attach_device(
         rc = ioctl(vfio->container_fd, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU);
         evpl_vfio_abort_if(rc < 0, "Failed to set VFIO IOMMU to Type 1: %s", strerror(errno));
         vfio->iommu_set = 1;
+
+        /* The IOMMU type is now set, so its valid IOVA range is queryable;
+         * place our allocation window inside it. */
+        evpl_vfio_query_iova_range(vfio);
     }
 
     device_fd = ioctl(group->fd, VFIO_GROUP_GET_DEVICE_FD, pciname_vfio);
