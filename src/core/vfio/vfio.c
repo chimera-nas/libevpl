@@ -319,12 +319,18 @@ evpl_vfio_query_iova_range(struct evpl_vfio_shared *vfio)
 
     if (best_len) {
         uint64_t base = (best_start + VFIO_IOVA_ALIGN - 1) & ~(VFIO_IOVA_ALIGN - 1);
-        uint64_t top  = (best_end + 1) & ~(VFIO_IOVA_ALIGN - 1);  /* end is inclusive */
+        /* The reported end is inclusive; the exclusive top is best_end + 1, but
+         * that overflows to 0 when the IOMMU reports an aperture up to
+         * UINT64_MAX -- round best_end down in that case (losing the final
+         * partial 2 MiB is harmless). */
+        uint64_t top = (best_end == UINT64_MAX)
+            ? (best_end & ~(VFIO_IOVA_ALIGN - 1))
+            : ((best_end + 1) & ~(VFIO_IOVA_ALIGN - 1));
 
         if (top > base) {
             vfio->iova_current = base;
             vfio->iova_max     = top;
-            evpl_vfio_error("Using IOMMU IOVA window [0x%lx, 0x%lx) "
+            evpl_vfio_debug("Using IOMMU IOVA window [0x%lx, 0x%lx) "
                             "(reported range [0x%lx, 0x%lx])",
                             base, top, best_start, best_end);
         } else {
