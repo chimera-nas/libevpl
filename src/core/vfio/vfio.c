@@ -316,8 +316,18 @@ evpl_vfio_query_iova_range(struct evpl_vfio_shared *vfio)
         if (top > base) {
             vfio->iova_current = base;
             vfio->iova_max     = top;
-            evpl_vfio_debug("Using IOMMU IOVA window [0x%lx, 0x%lx)", base, top);
+            evpl_vfio_error("Using IOMMU IOVA window [0x%lx, 0x%lx) "
+                            "(reported range [0x%lx, 0x%lx])",
+                            base, top, best_start, best_end);
+        } else {
+            evpl_vfio_error("IOMMU IOVA range [0x%lx, 0x%lx] too small after "
+                            "alignment; using fallback window [0x%lx, 0x%lx)",
+                            best_start, best_end, vfio->iova_current, vfio->iova_max);
         }
+    } else {
+        evpl_vfio_error("IOMMU advertises caps but no usable IOVA range; "
+                        "using fallback window [0x%lx, 0x%lx)",
+                        vfio->iova_current, vfio->iova_max);
     }
 
     evpl_free(info);
@@ -365,7 +375,14 @@ evpl_vfio_register(
     rc = ioctl(vfio->container_fd, VFIO_IOMMU_MAP_DMA, &map);
 
 
-    evpl_vfio_abort_if(rc < 0, "Failed to MAP DMA memory: %s", strerror(errno));
+    evpl_vfio_abort_if(rc < 0,
+                       "Failed to MAP DMA memory: %s "
+                       "(iova=0x%llx vaddr=0x%llx size=0x%llx window_max=0x%lx)",
+                       strerror(errno),
+                       (unsigned long long) map.iova,
+                       (unsigned long long) map.vaddr,
+                       (unsigned long long) map.size,
+                       vfio->iova_max);
 
     pthread_mutex_unlock(&vfio->lock);
 
