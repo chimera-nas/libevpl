@@ -137,6 +137,18 @@ struct evpl_rpc2_program {
         int                          length);
 };
 
+/*
+ * Issue an RPC call.
+ *
+ * write_chunk_iov/write_chunk_niov (optional, NULL/0 to omit) supply a
+ * caller-owned buffer for the reply's RDMA write chunk to land in directly
+ * (zero-copy read-into) instead of an internally allocated one.  Borrow
+ * semantics: the caller keeps ownership, must keep the buffer alive until the
+ * reply, and releases it itself; libevpl never releases it.  Only honored over
+ * RDMA and only when niov == 1 (a single contiguous, RDMA-registered buffer);
+ * otherwise an internal chunk is allocated.  max_rdma_write_chunk still gives
+ * the advertised chunk length.
+ */
 int
 evpl_rpc2_call(
     struct evpl                 *evpl,
@@ -149,27 +161,11 @@ evpl_rpc2_call(
     int                          req_length,
     struct evpl_rpc2_rdma_chunk *rdma_chunk,
     int                          max_rdma_write_chunk,
+    struct evpl_iovec           *write_chunk_iov,
+    int                          write_chunk_niov,
     int                          max_rdma_reply_chunk,
     void                        *callback,
     void                        *private_data);
-
-/*
- * Arm the next evpl_rpc2_call on `conn` to land its RDMA write-chunk reply data
- * directly in the caller-provided buffer (read-into) instead of an internally
- * allocated chunk.  Borrow semantics: the caller keeps ownership of the buffer,
- * must keep it alive until the reply, and releases it itself; libevpl never
- * releases it.  Consumed (and cleared) by the very next call on this conn --
- * call it immediately before the matching send_call, with no intervening
- * evpl_rpc2_call on the same connection.  Only honored over RDMA and only when
- * niov == 1 (a single contiguous, RDMA-registered buffer); otherwise the call
- * falls back to an internally allocated chunk.  Passing iov == NULL / niov == 0
- * disarms.
- */
-void
-evpl_rpc2_conn_set_write_chunk_dest(
-    struct evpl_rpc2_conn *conn,
-    struct evpl_iovec     *iov,
-    int                    niov);
 
 /*
  * Transfer ownership of read_chunk iovecs to the caller.

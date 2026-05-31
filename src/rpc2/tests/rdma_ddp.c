@@ -438,7 +438,7 @@ main(
     read_req.offset = 0;
     read_req.count  = READ_SIZE;
     /* Enable DDP: ddp=1, no write chunk, reply chunk of READ_SIZE */
-    prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, READ_SIZE,
+    prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, NULL, 0, READ_SIZE,
                         client_recv_reply_read, &state);
 
     /* Test 2: WRITE operation - uses write chunk for DDP */
@@ -451,14 +451,14 @@ main(
     write_req_iov.length = WRITE_SIZE;
     xdr_set_ref(&write_req, data, &write_req_iov, 1, WRITE_SIZE);
     /* Enable DDP: ddp=1, no write chunk (write_chunk is for READ), no reply chunk */
-    prog.send_call_WRITE(&prog.rpc2, evpl, conn, NULL, &write_req, 1, 0, 0,
+    prog.send_call_WRITE(&prog.rpc2, evpl, conn, NULL, &write_req, 1, 0, NULL, 0, 0,
                          client_recv_reply_write, &state);
 
     /* Test 3: REDUCE operation - large reply to trigger reply chunk */
     evpl_test_info("Client sending REDUCE request");
     reduce_req.response_size = REDUCE_SIZE;
     /* Enable DDP: ddp=1, no write chunk, reply chunk of REDUCE_SIZE */
-    prog.send_call_REDUCE(&prog.rpc2, evpl, conn, NULL, &reduce_req, 1, 0, REDUCE_SIZE,
+    prog.send_call_REDUCE(&prog.rpc2, evpl, conn, NULL, &reduce_req, 1, 0, NULL, 0, REDUCE_SIZE,
                           client_recv_reply_reduce, &state);
 
     /* Wait for all replies */
@@ -466,7 +466,7 @@ main(
         evpl_continue(evpl);
     }
 
-    /* Test 4 (RDMA only): READ_INTO -- arm a caller-owned buffer as the RDMA
+    /* Test 4 (RDMA only): READ_INTO -- pass a caller-owned buffer as the RDMA
      * write-chunk destination so the server RDMA-writes the reply data straight
      * into it (zero copy).  Over TCP there is no write chunk (data arrives
      * inline), so this path only applies to RDMA. */
@@ -479,10 +479,9 @@ main(
         read_into_req.offset = 0;
         read_into_req.count  = READ_SIZE;
 
-        evpl_rpc2_conn_set_write_chunk_dest(conn, &read_into_dest, 1);
-
-        /* ddp=0, max_rdma_write_chunk=READ_SIZE (write chunk), reply_chunk=0 */
-        prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_into_req, 0, READ_SIZE, 0,
+        /* ddp=0, max_rdma_write_chunk=READ_SIZE, write_chunk_iov=our buffer */
+        prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_into_req, 0, READ_SIZE,
+                            &read_into_dest, 1, 0,
                             client_recv_reply_read_into, &state);
 
         while (!read_into_done) {
@@ -498,7 +497,7 @@ main(
         state.read_done = 0;
         read_req.offset = 0;
         read_req.count  = READ_SIZE;
-        prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, READ_SIZE,
+        prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, NULL, 0, READ_SIZE,
                             client_recv_reply_read, &state);
         while (!state.read_done) {
             evpl_continue(evpl);
