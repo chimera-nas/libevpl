@@ -185,7 +185,7 @@ main(
 
     /* Make RPC call */
     evpl_test_info("Client sending GREET request");
-    prog.send_call_GREET(&prog.rpc2, evpl, conn, NULL, &request, 0, 0, 0, client_recv_reply_greet, &state);
+    prog.send_call_GREET(&prog.rpc2, evpl, conn, NULL, &request, 0, 0, NULL, 0, 0, client_recv_reply_greet, &state);
 
     /* Wait for reply */
     while (!state.test_complete) {

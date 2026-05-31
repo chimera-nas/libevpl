@@ -180,7 +180,7 @@ main(
 
     /* Make RPC call */
     evpl_test_info("Client sending PING request");
-    prog.send_call_PING(&prog.rpc2, evpl, conn, NULL, request, 0, 0, 0, client_recv_reply_ping, &state);
+    prog.send_call_PING(&prog.rpc2, evpl, conn, NULL, request, 0, 0, NULL, 0, 0, client_recv_reply_ping, &state);
 
     /* Wait for reply */
     while (!state.test_complete) {
