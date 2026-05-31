@@ -58,9 +58,12 @@ struct evpl_vfio_callback_ctx {
 
 
 struct evpl_vfio_mr {
-    void    *buffer;
-    uint64_t iova;
-    uint64_t size;
+    void                *buffer;
+    uint64_t             iova;
+    uint64_t             size;
+    int                  mapped; /* MAP_DMA done (0 while queued on ->pending) */
+    struct evpl_vfio_mr *prev;
+    struct evpl_vfio_mr *next;
 };
 
 struct evpl_vfio_queue {
@@ -108,6 +111,11 @@ struct evpl_vfio_shared {
     uint64_t                iova_current;
     uint64_t                iova_max;
     struct evpl_vfio_group *groups;
+    /* Regions registered before the IOMMU type could be set (no device/group
+     * is attached yet at framework init, so VFIO_SET_IOMMU is not possible and
+     * MAP_DMA would EINVAL).  Mapped by evpl_vfio_flush_pending once the first
+     * device attach establishes the IOMMU and the valid IOVA window. */
+    struct evpl_vfio_mr    *pending;
     pthread_mutex_t         lock;
 };
 
@@ -333,21 +341,18 @@ evpl_vfio_query_iova_range(struct evpl_vfio_shared *vfio)
     evpl_free(info);
 } /* evpl_vfio_query_iova_range */
 
-static struct evpl_vfio_mr *
-evpl_vfio_register(
+/*
+ * Assign an IOVA from the (already established) window and perform the
+ * VFIO_IOMMU_MAP_DMA.  Caller holds vfio->lock and must only call this once the
+ * IOMMU type is set and the valid IOVA window has been queried.
+ */
+static void
+evpl_vfio_map_locked(
     struct evpl_vfio_shared *vfio,
-    void                    *buffer,
-    int                      size)
+    struct evpl_vfio_mr     *mr)
 {
     struct vfio_iommu_type1_dma_map map = { 0 };
-    struct evpl_vfio_mr            *mr;
     int                             rc;
-
-    mr = evpl_zalloc(sizeof(*mr));
-
-    pthread_mutex_lock(&vfio->lock);
-
-    size = (size + 4095) & ~4095;
 
     /* Align the IOVA to 2 MiB.  This is a correct power-of-two mask (the prior
      * `& ~(size-1)` only aligned correctly when size was itself a power of two)
@@ -355,25 +360,20 @@ evpl_vfio_register(
      * pages rather than attempting a 1 GiB super-page. */
     vfio->iova_current = (vfio->iova_current + VFIO_IOVA_ALIGN - 1) & ~(VFIO_IOVA_ALIGN - 1);
 
-    evpl_vfio_abort_if(vfio->iova_current + size > vfio->iova_max,
-                       "Exhausted VFIO IOVA window (need 0x%x at 0x%lx, max 0x%lx)",
-                       size, vfio->iova_current, vfio->iova_max);
+    evpl_vfio_abort_if(vfio->iova_current + mr->size > vfio->iova_max,
+                       "Exhausted VFIO IOVA window (need 0x%lx at 0x%lx, max 0x%lx)",
+                       mr->size, vfio->iova_current, vfio->iova_max);
 
-    mr->buffer = buffer;
-    mr->iova   = vfio->iova_current;
-    mr->size   = size;
-
-
-    vfio->iova_current += size;
+    mr->iova = vfio->iova_current;
+    vfio->iova_current += mr->size;
 
     map.argsz = sizeof(map);
     map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
-    map.vaddr = (uint64_t) buffer;
+    map.vaddr = (uint64_t) mr->buffer;
     map.iova  = mr->iova;
     map.size  = mr->size;
 
     rc = ioctl(vfio->container_fd, VFIO_IOMMU_MAP_DMA, &map);
-
 
     evpl_vfio_abort_if(rc < 0,
                        "Failed to MAP DMA memory: %s "
@@ -383,6 +383,53 @@ evpl_vfio_register(
                        (unsigned long long) map.vaddr,
                        (unsigned long long) map.size,
                        vfio->iova_max);
+
+    mr->mapped = 1;
+} /* evpl_vfio_map_locked */
+
+/*
+ * Map every region that was registered before the IOMMU type was set.  Called
+ * from the device-attach path immediately after VFIO_SET_IOMMU and the IOVA
+ * range query, so the deferred maps land in the correct window.
+ */
+static void
+evpl_vfio_flush_pending(struct evpl_vfio_shared *vfio)
+{
+    struct evpl_vfio_mr *mr;
+
+    pthread_mutex_lock(&vfio->lock);
+
+    while (vfio->pending) {
+        mr = vfio->pending;
+        DL_DELETE(vfio->pending, mr);
+        evpl_vfio_map_locked(vfio, mr);
+    }
+
+    pthread_mutex_unlock(&vfio->lock);
+} /* evpl_vfio_flush_pending */
+
+static struct evpl_vfio_mr *
+evpl_vfio_register(
+    struct evpl_vfio_shared *vfio,
+    void                    *buffer,
+    int                      size)
+{
+    struct evpl_vfio_mr *mr;
+
+    mr         = evpl_zalloc(sizeof(*mr));
+    mr->buffer = buffer;
+    mr->size   = (size + 4095) & ~4095;
+
+    pthread_mutex_lock(&vfio->lock);
+
+    if (vfio->iommu_set) {
+        evpl_vfio_map_locked(vfio, mr);
+    } else {
+        /* No device/group is attached yet, so the IOMMU type cannot be set and
+         * MAP_DMA would EINVAL.  Queue the region; evpl_vfio_flush_pending maps
+         * it once the first device attach establishes the IOMMU window. */
+        DL_APPEND(vfio->pending, mr);
+    }
 
     pthread_mutex_unlock(&vfio->lock);
 
@@ -396,12 +443,21 @@ evpl_vfio_unregister(
 {
     struct vfio_iommu_type1_dma_unmap unmap = { 0 };
 
-    unmap.argsz = sizeof(unmap);
-    unmap.flags = 0;
-    unmap.iova  = mr->iova;
-    unmap.size  = mr->size;
+    pthread_mutex_lock(&vfio->lock);
 
-    ioctl(vfio->container_fd, VFIO_IOMMU_UNMAP_DMA, &unmap);
+    if (mr->mapped) {
+        unmap.argsz = sizeof(unmap);
+        unmap.flags = 0;
+        unmap.iova  = mr->iova;
+        unmap.size  = mr->size;
+
+        ioctl(vfio->container_fd, VFIO_IOMMU_UNMAP_DMA, &unmap);
+    } else {
+        /* Freed before the IOMMU was ready -- still on the pending queue. */
+        DL_DELETE(vfio->pending, mr);
+    }
+
+    pthread_mutex_unlock(&vfio->lock);
 
     evpl_free(mr);
 } /* evpl_vfio_unregister */
@@ -519,6 +575,10 @@ evpl_vfio_attach_device(
         /* The IOMMU type is now set, so its valid IOVA range is queryable;
          * place our allocation window inside it. */
         evpl_vfio_query_iova_range(vfio);
+
+        /* Map any regions registered before the IOMMU was ready (slabs that
+         * already existed when the VFIO framework initialised). */
+        evpl_vfio_flush_pending(vfio);
     }
 
     device_fd = ioctl(group->fd, VFIO_GROUP_GET_DEVICE_FD, pciname_vfio);
