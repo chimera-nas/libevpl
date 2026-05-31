@@ -37,9 +37,9 @@ struct evpl_rpc2_verf {
 /*
  * Authentication flavor values (from ONC RPC).
  */
-#define EVPL_RPC2_AUTH_NONE  0
-#define EVPL_RPC2_AUTH_SYS   1
-#define EVPL_RPC2_AUTH_SHORT 2
+#define EVPL_RPC2_AUTH_NONE         0
+#define EVPL_RPC2_AUTH_SYS          1
+#define EVPL_RPC2_AUTH_SHORT        2
 
 /*
  * RPC2 credential structure.
@@ -95,6 +95,15 @@ struct evpl_rpc2_conn {
     int                              reasm_niov;
     int                              reasm_cap;
     uint32_t                         reasm_length;
+
+    /* One-shot armed write-chunk destination (RDMA read-into).  When set, the
+     * next evpl_rpc2_call on this connection lands its RDMA write-chunk reply
+     * data directly in these caller-owned buffers (borrow -- the caller keeps
+     * ownership) instead of an internally allocated chunk.  Set immediately
+     * before the call via evpl_rpc2_conn_set_write_chunk_dest(); the call
+     * consumes and clears it.  See that function for constraints. */
+    struct evpl_iovec               *write_chunk_dest_iov;
+    int                              write_chunk_dest_niov;
 };
 
 typedef void (*evpl_rpc2_notify_callback_t)(

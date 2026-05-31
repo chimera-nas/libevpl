@@ -40,6 +40,11 @@ struct evpl_bind {
     struct evpl_iovec_ring  iovec_send;
     struct evpl_iovec_ring  iovec_recv;
     struct evpl_iovec_ring  iovec_rdma_read;
+    /* Framed, ready-to-write output for transports that add per-message framing
+     * (TCP_RDMA emulation).  Kept separate from iovec_send -- which stages the
+     * raw payload paired positionally with dgram_send -- so framed output and a
+     * mid-flush ack can never be mis-paired with a later send's payload. */
+    struct evpl_iovec_ring  iovec_send_framed;
     struct evpl_dgram_ring  dgram_read;
     struct evpl_dgram_ring  dgram_send;
 
