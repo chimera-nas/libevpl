@@ -201,7 +201,11 @@ evpl_finish(
 
     bind->flags |= EVPL_BIND_FINISH;
 
-    if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
+    /* Close once nothing is left to send.  Transports that frame their output
+     * (TCP_RDMA) hold ready-to-write bytes in iovec_send_framed, so it must be
+     * drained too, not just the raw iovec_send staging ring. */
+    if (evpl_iovec_ring_is_empty(&bind->iovec_send) &&
+        evpl_iovec_ring_is_empty(&bind->iovec_send_framed)) {
         evpl_close(evpl, bind);
     }
 
@@ -226,6 +230,7 @@ evpl_bind_destroy(
 
     evpl_iovec_ring_clear(evpl, &bind->iovec_recv);
     evpl_iovec_ring_clear(evpl, &bind->iovec_send);
+    evpl_iovec_ring_clear(evpl, &bind->iovec_send_framed);
     evpl_dgram_ring_clear(evpl, &bind->dgram_send);
     evpl_dgram_ring_clear(evpl, &bind->dgram_read);
 
