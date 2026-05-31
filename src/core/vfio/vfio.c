@@ -370,7 +370,7 @@ evpl_vfio_map_locked(
                        "Exhausted VFIO IOVA window (need 0x%lx at 0x%lx, max 0x%lx)",
                        mr->size, vfio->iova_current, vfio->iova_max);
 
-    mr->iova = vfio->iova_current;
+    mr->iova            = vfio->iova_current;
     vfio->iova_current += mr->size;
 
     map.argsz = sizeof(map);
