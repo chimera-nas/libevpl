@@ -39,6 +39,11 @@ struct test_state {
     int                 test_passed;
 };
 
+/* read_into test: a caller-armed write-chunk destination buffer and a flag the
+ * reply callback sets once it has verified the data landed directly in it. */
+static struct evpl_iovec read_into_dest;
+static int               read_into_done;
+
 /* Initialize test data with pattern */
 static void
 init_test_data(void)
@@ -308,6 +313,37 @@ client_recv_reply_reduce(
     }
 } /* client_recv_reply_reduce */
 
+/* Client-side: Handle READ reply for the read_into (armed write-chunk) test.
+ * The data must have been RDMA-written straight into our armed destination
+ * buffer -- so reply->data.iov[0] must reference that exact buffer (zero copy),
+ * not an internally allocated one. */
+void
+client_recv_reply_read_into(
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    struct ReadResponse         *reply,
+    int                          status,
+    void                        *callback_private_data)
+{
+    evpl_test_info("Client received READ_INTO reply: status=%d, count=%u, niov=%d",
+                   status, reply->count, reply->data.niov);
+
+    evpl_test_abort_if(status != 0, "read_into status mismatch");
+    evpl_test_abort_if(reply->count != READ_SIZE, "read_into count mismatch");
+    evpl_test_abort_if(reply->data.niov != 1, "read_into niov mismatch");
+
+    /* Zero-copy: the reply data references our armed buffer, not a fresh one. */
+    evpl_test_abort_if(xdr_iovec_data(&reply->data.iov[0]) != read_into_dest.data,
+                       "read_into did not land in the caller's buffer");
+
+    /* And the bytes actually arrived there. */
+    evpl_test_abort_if(verify_data(read_into_dest.data, 0, READ_SIZE) != 0,
+                       "read_into data verification failed");
+
+    read_into_done = 1;
+    evpl_test_info("READ_INTO test PASSED!");
+} /* client_recv_reply_read_into */
+
 static void
 usage(const char *prog_name)
 {
@@ -428,6 +464,39 @@ main(
     /* Wait for all replies */
     while (!state.test_complete) {
         evpl_continue(evpl);
+    }
+
+    /* Test 4 (RDMA only): READ_INTO -- arm a caller-owned buffer as the RDMA
+     * write-chunk destination so the server RDMA-writes the reply data straight
+     * into it (zero copy).  Over TCP there is no write chunk (data arrives
+     * inline), so this path only applies to RDMA.
+     *
+     * This runs last on purpose: it is the only exchange here that advertises a
+     * server-written *write* chunk, and the TCP_RDMA software emulation desyncs
+     * its stream framing when more traffic follows a write-chunk reply on the
+     * same connection (a pre-existing emulation limitation -- real RDMA, which
+     * NFS READ uses continuously, is unaffected).  Placing it last keeps that
+     * emulation quirk from disturbing the other cases. */
+    if (conn->rdma) {
+        struct ReadRequest read_into_req;
+
+        evpl_iovec_alloc(evpl, READ_SIZE, 1, 1, 0, &read_into_dest);
+        memset(read_into_dest.data, 0, READ_SIZE);
+
+        read_into_req.offset = 0;
+        read_into_req.count  = READ_SIZE;
+
+        evpl_rpc2_conn_set_write_chunk_dest(conn, &read_into_dest, 1);
+
+        /* ddp=0, max_rdma_write_chunk=READ_SIZE (write chunk), reply_chunk=0 */
+        prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_into_req, 0, READ_SIZE, 0,
+                            client_recv_reply_read_into, &state);
+
+        while (!read_into_done) {
+            evpl_continue(evpl);
+        }
+
+        evpl_iovec_release(evpl, &read_into_dest);
     }
 
     /* Cleanup */
