@@ -141,6 +141,11 @@ evpl_bind_prepare(
             evpl_shared->config->page_size);
 
         evpl_iovec_ring_alloc(
+            &bind->iovec_send_framed,
+            evpl_shared->config->iovec_ring_size,
+            evpl_shared->config->page_size);
+
+        evpl_iovec_ring_alloc(
             &bind->iovec_recv,
             evpl_shared->config->iovec_ring_size,
             evpl_shared->config->page_size);

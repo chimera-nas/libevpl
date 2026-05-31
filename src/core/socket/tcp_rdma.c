@@ -494,8 +494,8 @@ tcp_rdma_queue_message(
 
     iov.length = TCP_RDMA_HEADER_SIZE + payload_len;
 
-    /* Add to send ring */
-    evpl_iovec_ring_add(&bind->iovec_send, &iov);
+    /* Add to the framed-output ring (ready to write), never the raw send ring. */
+    evpl_iovec_ring_add(&bind->iovec_send_framed, &iov);
 } /* tcp_rdma_queue_message */
 
 /*
@@ -529,12 +529,11 @@ tcp_rdma_queue_message_iov(
 
     iov.length = TCP_RDMA_HEADER_SIZE;
 
-    /* Add header to send ring */
-    evpl_iovec_ring_add(&bind->iovec_send, &iov);
+    /* Add header + payload to the framed-output ring (ready to write). */
+    evpl_iovec_ring_add(&bind->iovec_send_framed, &iov);
 
-    /* Add payload iovecs to send ring */
     for (i = 0; i < niov; i++) {
-        evpl_iovec_ring_add_clone(&bind->iovec_send, &payload_iov[i]);
+        evpl_iovec_ring_add_clone(&bind->iovec_send_framed, &payload_iov[i]);
     }
 } /* tcp_rdma_queue_message_iov */
 
@@ -1000,7 +999,7 @@ evpl_tcp_rdma_write(
         evpl_tcp_rdma_flush(evpl, bind);
     }
 
-    niov = evpl_iovec_ring_iov(&total, iov, maxiov, &bind->iovec_send);
+    niov = evpl_iovec_ring_iov(&total, iov, maxiov, &bind->iovec_send_framed);
 
     if (!niov) {
         res = 0;
@@ -1019,7 +1018,7 @@ evpl_tcp_rdma_write(
         goto out;
     }
 
-    evpl_iovec_ring_consume(evpl, &bind->iovec_send, res);
+    evpl_iovec_ring_consume(evpl, &bind->iovec_send_framed, res);
 
     if (res != total) {
         evpl_event_mark_unwritable(evpl, event);
@@ -1034,7 +1033,7 @@ evpl_tcp_rdma_write(
     }
 
  out:
-    if (evpl_iovec_ring_is_empty(&bind->iovec_send)) {
+    if (evpl_iovec_ring_is_empty(&bind->iovec_send_framed)) {
         evpl_event_write_disinterest(evpl, event);
 
         if (bind->flags & EVPL_BIND_FINISH) {

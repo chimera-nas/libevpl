@@ -469,14 +469,7 @@ main(
     /* Test 4 (RDMA only): READ_INTO -- arm a caller-owned buffer as the RDMA
      * write-chunk destination so the server RDMA-writes the reply data straight
      * into it (zero copy).  Over TCP there is no write chunk (data arrives
-     * inline), so this path only applies to RDMA.
-     *
-     * This runs last on purpose: it is the only exchange here that advertises a
-     * server-written *write* chunk, and the TCP_RDMA software emulation desyncs
-     * its stream framing when more traffic follows a write-chunk reply on the
-     * same connection (a pre-existing emulation limitation -- real RDMA, which
-     * NFS READ uses continuously, is unaffected).  Placing it last keeps that
-     * emulation quirk from disturbing the other cases. */
+     * inline), so this path only applies to RDMA. */
     if (conn->rdma) {
         struct ReadRequest read_into_req;
 
@@ -497,6 +490,19 @@ main(
         }
 
         evpl_iovec_release(evpl, &read_into_dest);
+
+        /* Regression guard: issue a normal READ right after the write-chunk
+        * exchange.  The server's write-chunk reply involves a mid-receive ack
+        * (OP_WRITE_REPLY) on each side; if that ack is mis-framed against the
+        * following request the stream desyncs.  This must still succeed. */
+        state.read_done = 0;
+        read_req.offset = 0;
+        read_req.count  = READ_SIZE;
+        prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, READ_SIZE,
+                            client_recv_reply_read, &state);
+        while (!state.read_done) {
+            evpl_continue(evpl);
+        }
     }
 
     /* Cleanup */
