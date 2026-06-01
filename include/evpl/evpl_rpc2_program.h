@@ -8,7 +8,7 @@
 #include <uthash.h>
 
 #include "evpl/evpl_rpc2.h"
-#define EVPL_RPC2                    1
+#define EVPL_RPC2                       1
 
 /*
  * Status passed to a client reply callback when the peer's reply could not be
@@ -18,7 +18,17 @@
  * connection being torn down by an abort.  Negative so it cannot collide with a
  * protocol status code.
  */
-#define EVPL_RPC2_REPLY_DECODE_ERROR (-1)
+#define EVPL_RPC2_REPLY_DECODE_ERROR    (-1)
+
+/*
+ * Status passed to a client reply callback when an in-flight call is terminated
+ * without a reply because the connection was torn down.  As with
+ * EVPL_RPC2_REPLY_DECODE_ERROR, the reply argument is NULL (or a zero value for
+ * a by-value reply), so callbacks treat it as a failed call.  A distinct
+ * negative value (cannot collide with a protocol status code) so callers can
+ * tell a transport reset apart from a malformed reply.
+ */
+#define EVPL_RPC2_REPLY_TRANSPORT_ERROR (-2)
 
 #include <pthread.h>
 struct prometheus_histogram_instance;
@@ -126,6 +136,13 @@ struct evpl_rpc2_program {
         int                          length,
         void                        *callback_fn,
         void                        *callback_private_data);
+
+    int                                  (*recv_reply_error)(
+        struct evpl *evpl,
+        uint32_t     proc,
+        int          status,
+        void        *callback_fn,
+        void        *callback_private_data);
 
 
     int                                  (*send_reply_dispatch)(

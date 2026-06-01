@@ -1364,7 +1364,7 @@ evpl_rpc2_event(
     struct evpl_rpc2_conn    *rpc2_conn   = private_data;
     struct evpl_rpc2_thread  *rpc2_thread = rpc2_conn->thread;
     struct evpl_rpc2_notify   rpc2_notify;
-    struct evpl_rpc2_request *rpc2_request, *tmp;
+    struct evpl_rpc2_request *rpc2_request, *tmp, *pending;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -1375,17 +1375,44 @@ evpl_rpc2_event(
             }
             break;
         case EVPL_NOTIFY_DISCONNECTED:
+            /*
+             * Tear down in an order that is safe against re-entrancy: an
+             * error-completed call may run a caller callback that synchronously
+             * issues a new request.
+             *
+             * 1. Unlink the dying conn from the thread list first, so a
+             *    re-entrant evpl_rpc2_client_connect never re-finds it.
+             * 2. Detach the pending list into a local, so the drain below is
+             *    immune to re-entrant HASH_ADD into this conn's table.
+             * 3. Notify the consumer BEFORE draining, so it drops its cached
+             *    pointer and re-entrant ops land on a fresh conn, not this one.
+             * 4. Error-complete each pending call so its caller's callback
+             *    fires (rather than hanging forever) and then free it.
+             */
             DL_DELETE(rpc2_thread->conns, rpc2_conn);
-            HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_request, tmp)
-            {
-                HASH_DELETE(hh, rpc2_conn->pending_calls, rpc2_request);
-                evpl_rpc2_request_free(rpc2_conn->thread, rpc2_request);
-            }
+
+            pending                  = rpc2_conn->pending_calls;
+            rpc2_conn->pending_calls = NULL;
+
             if (rpc2_conn->thread->notify_callback) {
                 rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_DISCONNECTED;
                 rpc2_conn->thread->notify_callback(rpc2_conn->thread, rpc2_conn, &rpc2_notify, rpc2_thread->private_data
                                                    );
             }
+
+            HASH_ITER(hh, pending, rpc2_request, tmp)
+            {
+                HASH_DELETE(hh, pending, rpc2_request);
+                if (rpc2_request->program->recv_reply_error) {
+                    rpc2_request->program->recv_reply_error(evpl,
+                                                            rpc2_request->proc,
+                                                            EVPL_RPC2_REPLY_TRANSPORT_ERROR,
+                                                            rpc2_request->callback,
+                                                            rpc2_request->callback_arg);
+                }
+                evpl_rpc2_request_free(rpc2_conn->thread, rpc2_request);
+            }
+
             /* Release any iovecs stashed mid-reassembly. */
             evpl_rpc2_reasm_reset(evpl, rpc2_conn);
             free(rpc2_conn);
