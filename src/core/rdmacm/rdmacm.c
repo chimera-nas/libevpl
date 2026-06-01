@@ -95,6 +95,8 @@ struct evpl_rdmacm_device {
     int                         srq_fill;
     int                         index;
     int                         num_qp;
+    uint32_t                    last_qp_num;
+    struct evpl_rdmacm_id      *last_rdmacm_id;
     struct evpl_rdmacm_id     **qp_lookup[QP_LOOKUP_LEVEL1_SIZE];
 };
 
@@ -201,6 +203,34 @@ evpl_rdmacm_qp_lookup_find(
     return dev->qp_lookup[level1_idx][level2_idx];
 } /* evpl_rdmacm_qp_lookup_find */
 
+/*
+ * Receive completions very often arrive in bursts from the same QP, so cache
+ * the last resolved qp_num -> rdmacm_id mapping and check it before consulting
+ * the two-level lookup table.  The cache lives on the device, which is only
+ * touched from the single completion-processing thread, so no locking is
+ * needed.  The cache is invalidated when its qp_num is removed (see _del).
+ */
+static inline struct evpl_rdmacm_id *
+evpl_rdmacm_qp_lookup_find_cached(
+    struct evpl_rdmacm_device *dev,
+    uint32_t                   qp_num)
+{
+    struct evpl_rdmacm_id *rdmacm_id;
+
+    if (dev->last_rdmacm_id && dev->last_qp_num == qp_num) {
+        return dev->last_rdmacm_id;
+    }
+
+    rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
+
+    if (rdmacm_id) {
+        dev->last_qp_num    = qp_num;
+        dev->last_rdmacm_id = rdmacm_id;
+    }
+
+    return rdmacm_id;
+} /* evpl_rdmacm_qp_lookup_find_cached */
+
 static inline void
 evpl_rdmacm_qp_lookup_del(
     struct evpl_rdmacm_device *dev,
@@ -214,6 +244,10 @@ evpl_rdmacm_qp_lookup_del(
     }
 
     dev->qp_lookup[level1_idx][level2_idx] = NULL;
+
+    if (dev->last_qp_num == qp_num) {
+        dev->last_rdmacm_id = NULL;
+    }
 } /* evpl_rdmacm_qp_lookup_del */
 
 static struct evpl_rdmacm_device *
@@ -788,7 +822,7 @@ evpl_rdmacm_poll_cq(
 
                     qp_num = ibv_wc_read_qp_num(cq);
 
-                    rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
+                    rdmacm_id = evpl_rdmacm_qp_lookup_find_cached(dev, qp_num);
 
                     if (unlikely(!rdmacm_id)) {
                         evpl_iovec_release(evpl, &req->iovec);
