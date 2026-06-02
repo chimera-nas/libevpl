@@ -145,6 +145,8 @@ struct evpl {
 
     struct evpl_thread_config     config;
 
+    struct evpl_loop_hooks        loop_hooks;
+
     void                         *protocol_private[EVPL_NUM_PROTO];
     void                         *framework_private[EVPL_NUM_FRAMEWORK];
 };
