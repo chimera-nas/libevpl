@@ -1396,6 +1396,133 @@ evpl_vfio_flush(
 } /* evpl_vfio_flush */
 
 static void
+evpl_vfio_discard(
+    struct evpl             *evpl,
+    struct evpl_block_queue *bqueue,
+    uint64_t                 offset,
+    uint64_t                 length,
+    evpl_block_callback_t    callback,
+    void                    *private_data)
+{
+    struct evpl_vfio_queue  *queue  = bqueue->private_data;
+    struct evpl_vfio_device *device = queue->device;
+    struct nvme_command_dsm *cmd;
+    struct nvme_dsm_range   *ranges;
+    uint64_t                 slba = offset >> device->sector_shift;
+    uint64_t                 nlba = length >> device->sector_shift;
+    int                      cid, nr = 0;
+
+    evpl_activity(evpl);
+
+    if (queue->poll_mode) {
+        evpl_poll_pin(evpl);
+    }
+
+    cid = evpl_vfio_alloc_cid(queue, callback, private_data);
+
+    /* Build the deallocate range list in this cid's 4 KiB prplist scratch.
+     * A DSM range length is a 32-bit LBA count, so split larger spans; the
+     * list is bounded to 256 ranges (one page), which covers any single
+     * device in one command. */
+    ranges = (struct nvme_dsm_range *) (queue->prplist->buffer + (cid << 12));
+
+    while (nlba && nr < 256) {
+        uint64_t this_lba = nlba > 0xFFFFFFFFULL ? 0xFFFFFFFFULL : nlba;
+
+        ranges[nr].attrs  = 0;
+        ranges[nr].length = (uint32_t) this_lba;
+        ranges[nr].lba    = slba;
+
+        slba += this_lba;
+        nlba -= this_lba;
+        nr++;
+    }
+
+    evpl_vfio_abort_if(nlba, "Discard range too large for one DSM command "
+                       "(%lu LBAs remain after 256 ranges)", nlba);
+
+    cmd = &queue->sq[cid].dsm;
+
+    cmd->common.opc    = NVME_CMD_DATASET_MANAGEMENT;
+    cmd->common.fuse   = 0;
+    cmd->common.rsvd   = 0;
+    cmd->common.psdt   = 0;
+    cmd->common.cid    = cid;
+    cmd->common.cdw2_3 = 0;
+    cmd->common.mptr   = 0;
+    cmd->common.nsid   = 1;
+    cmd->common.prp1   = queue->prplist->iova + (cid << 12);
+    cmd->common.prp2   = 0;
+    cmd->nr            = nr - 1;
+    cmd->idr           = 0;
+    cmd->idw           = 0;
+    cmd->ad            = 1;
+    cmd->rsrvd11       = 0;
+    cmd->rsrvd12[0]    = 0;
+    cmd->rsrvd12[1]    = 0;
+    cmd->rsrvd12[2]    = 0;
+    cmd->rsrvd12[3]    = 0;
+
+    evpl_defer(evpl, &queue->ring_sq);
+} /* evpl_vfio_discard */
+
+static void
+evpl_vfio_write_zeroes(
+    struct evpl             *evpl,
+    struct evpl_block_queue *bqueue,
+    uint64_t                 offset,
+    uint64_t                 length,
+    evpl_block_callback_t    callback,
+    void                    *private_data)
+{
+    struct evpl_vfio_queue  *queue  = bqueue->private_data;
+    struct evpl_vfio_device *device = queue->device;
+    struct nvme_command_wz  *cmd;
+    uint64_t                 nlba = length >> device->sector_shift;
+    int                      cid;
+
+    evpl_activity(evpl);
+
+    if (queue->poll_mode) {
+        evpl_poll_pin(evpl);
+    }
+
+    /* NLB is a 16-bit, 0's-based LBA count: one command spans 1..65536 LBAs.
+     * Callers needing a larger span issue multiple write-zeroes. */
+    evpl_vfio_abort_if(nlba == 0 || nlba > 0x10000ULL,
+                       "Write-zeroes span %lu LBAs out of range (1..65536)",
+                       nlba);
+
+    cid = evpl_vfio_alloc_cid(queue, callback, private_data);
+
+    cmd = &queue->sq[cid].wz;
+
+    cmd->common.opc    = NVME_CMD_WRITE_ZEROES;
+    cmd->common.fuse   = 0;
+    cmd->common.rsvd   = 0;
+    cmd->common.psdt   = 0;
+    cmd->common.cid    = cid;
+    cmd->common.cdw2_3 = 0;
+    cmd->common.mptr   = 0;
+    cmd->common.nsid   = 1;
+    cmd->common.prp1   = 0;
+    cmd->common.prp2   = 0;
+    cmd->slba          = offset >> device->sector_shift;
+    cmd->nlb           = (uint16_t) (nlba - 1);
+    cmd->rsvd12        = 0;
+    cmd->deac          = 0;
+    cmd->prinfo        = 0;
+    cmd->fua           = 0;
+    cmd->lr            = 0;
+    cmd->rsvd13        = 0;
+    cmd->eilbrt        = 0;
+    cmd->elbat         = 0;
+    cmd->elbatm        = 0;
+
+    evpl_defer(evpl, &queue->ring_sq);
+} /* evpl_vfio_write_zeroes */
+
+static void
 evpl_vfio_close_queue(
     struct evpl             *evpl,
     struct evpl_block_queue *bqueue)
@@ -1572,6 +1699,8 @@ evpl_vfio_open_queue(
     bqueue->read         = evpl_vfio_read;
     bqueue->write        = evpl_vfio_write;
     bqueue->flush        = evpl_vfio_flush;
+    bqueue->discard      = evpl_vfio_discard;
+    bqueue->write_zeroes = evpl_vfio_write_zeroes;
 
     /*
      * In poll mode the completion queue is reaped by the poll callback and the

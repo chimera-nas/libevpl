@@ -244,6 +244,24 @@ struct evpl_block_queue {
         struct evpl_block_queue *queue,
         evpl_block_callback_t    callback,
         void                    *private_data);
+
+    /* Discard/deallocate a range (optional; NULL => core treats as no-op). */
+    void                                  (*discard)(
+        struct evpl             *evpl,
+        struct evpl_block_queue *queue,
+        uint64_t                 offset,
+        uint64_t                 length,
+        evpl_block_callback_t    callback,
+        void                    *private_data);
+
+    /* Write zeros to a range (optional; NULL => core emulates via write). */
+    void                                  (*write_zeroes)(
+        struct evpl             *evpl,
+        struct evpl_block_queue *queue,
+        uint64_t                 offset,
+        uint64_t                 length,
+        evpl_block_callback_t    callback,
+        void                    *private_data);
 };
 
 struct evpl_block_protocol {
