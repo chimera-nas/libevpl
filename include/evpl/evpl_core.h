@@ -75,6 +75,32 @@ void evpl_continue(
 void evpl_run(
     struct evpl *evpl);
 
+typedef void (*evpl_loop_callback_t)(
+    struct evpl *evpl,
+    void        *private_data);
+
+/*
+ * Per-thread event-loop hooks, invoked by evpl_continue() at fixed points so an
+ * application can interleave per-iteration bookkeeping with the loop.  All
+ * members are optional (NULL is skipped), so there is no cost unless set.
+ *
+ * The motivating use is userspace-RCU in QSBR mode: iteration_end maps to
+ * rcu_quiescent_state(), and pre_wait/post_wait bracket the (possibly blocking)
+ * core wait with rcu_thread_offline()/rcu_thread_online() so a thread asleep in
+ * the wait does not hold up grace periods.
+ */
+struct evpl_loop_hooks {
+    evpl_loop_callback_t iteration_end; /* end of every evpl_continue() pass   */
+    evpl_loop_callback_t pre_wait;      /* before the core wait (may block)    */
+    evpl_loop_callback_t post_wait;     /* after the core wait returns         */
+    void                *private_data;
+};
+
+/* Install (replace, or clear with NULL) this thread's loop hooks. */
+void evpl_set_loop_hooks(
+    struct evpl                  *evpl,
+    const struct evpl_loop_hooks *hooks);
+
 void evpl_stop(
     struct evpl *evpl);
 

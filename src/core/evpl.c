@@ -535,7 +535,15 @@ evpl_continue(struct evpl *evpl)
             msecs = 0;
         }
 
+        if (evpl->loop_hooks.pre_wait) {
+            evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
+        }
+
         n = evpl_core_wait(&evpl->core, msecs);
+
+        if (evpl->loop_hooks.post_wait) {
+            evpl->loop_hooks.post_wait(evpl, evpl->loop_hooks.private_data);
+        }
 
         if (evpl->pending_close_binds && n == 0) {
             struct evpl_bind *next;
@@ -602,6 +610,10 @@ evpl_continue(struct evpl *evpl)
         deferral->callback(evpl, deferral->private_data);
     }
 
+    if (evpl->loop_hooks.iteration_end) {
+        evpl->loop_hooks.iteration_end(evpl, evpl->loop_hooks.private_data);
+    }
+
 } /* evpl_continue */
 
 SYMBOL_EXPORT void
@@ -644,6 +656,18 @@ evpl_run(struct evpl *evpl)
         evpl_continue(evpl);
     }
 } /* evpl_run */
+
+SYMBOL_EXPORT void
+evpl_set_loop_hooks(
+    struct evpl                  *evpl,
+    const struct evpl_loop_hooks *hooks)
+{
+    if (hooks) {
+        evpl->loop_hooks = *hooks;
+    } else {
+        memset(&evpl->loop_hooks, 0, sizeof(evpl->loop_hooks));
+    }
+} /* evpl_set_loop_hooks */
 
 SYMBOL_EXPORT void
 evpl_stop(struct evpl *evpl)

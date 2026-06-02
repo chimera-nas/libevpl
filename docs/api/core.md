@@ -96,6 +96,39 @@ Stop a running event loop. Causes `evpl_run()` to return.
 
 **Thread Safety:** Can be called from any thread
 
+#### `evpl_set_loop_hooks`
+
+```c
+typedef void (*evpl_loop_callback_t)(struct evpl *evpl, void *private_data);
+
+struct evpl_loop_hooks {
+    evpl_loop_callback_t iteration_end; /* end of every evpl_continue() pass */
+    evpl_loop_callback_t pre_wait;      /* before the core wait (may block)  */
+    evpl_loop_callback_t post_wait;     /* after the core wait returns       */
+    void                *private_data;
+};
+
+void evpl_set_loop_hooks(struct evpl *evpl, const struct evpl_loop_hooks *hooks);
+```
+
+Install (or replace) a set of callbacks that `evpl_continue()` invokes at fixed points in each iteration of the loop, so an application can interleave per-iteration bookkeeping with the loop without taking it over. Passing `NULL` clears any previously installed hooks.
+
+The hooks are copied into the event loop. Each member is optional — a `NULL` member is skipped — so there is no cost unless a hook is set, and applications that never call this function are unaffected.
+
+| Hook | Invoked |
+| --- | --- |
+| `iteration_end` | At the end of every `evpl_continue()` pass. |
+| `pre_wait` | Immediately before the (possibly blocking) core wait. |
+| `post_wait` | Immediately after the core wait returns. |
+
+**Parameters:**
+- `evpl` - Event loop to install the hooks on
+- `hooks` - Hook set to install (copied), or `NULL` to clear
+
+**Thread Safety:** Must be called from the same thread that owns the event loop.
+
+**Example — userspace-RCU (QSBR):** a reader thread maps `iteration_end` to `rcu_quiescent_state()` and brackets the core wait with `pre_wait` → `rcu_thread_offline()` and `post_wait` → `rcu_thread_online()`, so a thread asleep in the wait announces no quiescent states yet does not hold up RCU grace periods for other threads.
+
 ---
 
 ### Metrics
