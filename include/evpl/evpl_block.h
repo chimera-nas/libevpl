@@ -65,3 +65,32 @@ void evpl_block_flush(
     struct evpl_block_queue *queue,
     evpl_block_callback_t    callback,
     void                    *private_data);
+
+/*
+ * Discard (deallocate / unmap / TRIM) the byte range [offset, offset+length).
+ * This is an advisory hint that the range is no longer needed: the backend may
+ * drop its mappings for it (NVMe Dataset Management Deallocate), but is not
+ * required to, and the data read back afterwards is unspecified.  Backends that
+ * cannot discard treat it as a successful no-op.
+ */
+void evpl_block_discard(
+    struct evpl             *evpl,
+    struct evpl_block_queue *queue,
+    uint64_t                 offset,
+    uint64_t                 length,
+    evpl_block_callback_t    callback,
+    void                    *private_data);
+
+/*
+ * Write zeros to the byte range [offset, offset+length).  Unlike discard this
+ * is a data guarantee: the range reads back as zeros afterwards.  Backends with
+ * native support use it (NVMe Write Zeroes); the rest emulate it with an
+ * ordinary write from an internal zero buffer.
+ */
+void evpl_block_write_zeroes(
+    struct evpl             *evpl,
+    struct evpl_block_queue *queue,
+    uint64_t                 offset,
+    uint64_t                 length,
+    evpl_block_callback_t    callback,
+    void                    *private_data);

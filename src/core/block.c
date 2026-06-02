@@ -4,6 +4,7 @@
 
 #include <pthread.h>
 #include <time.h>
+#include <string.h>
 
 #include "core/evpl_shared.h"
 #include "core/macros.h"
@@ -287,3 +288,147 @@ evpl_block_flush(
 
     queue->flush(evpl, queue, evpl_block_complete, op);
 } /* evpl_block_flush */
+
+SYMBOL_EXPORT void
+evpl_block_discard(
+    struct evpl *evpl,
+    struct evpl_block_queue *queue,
+    uint64_t offset,
+    uint64_t length,
+    void ( *callback )(struct evpl *evpl, int status, void *private_data),
+    void *private_data)
+{
+    struct evpl_block_op *op;
+
+    if (!queue->discard) {
+        /* Advisory hint; a backend that cannot discard succeeds as a no-op. */
+        callback(evpl, 0, private_data);
+        return;
+    }
+
+    op               = evpl_block_op_get(queue);
+    op->queue        = queue;
+    op->callback     = callback;
+    op->private_data = private_data;
+    op->size         = length;
+
+    prometheus_stopwatch_start(&op->start);
+    prometheus_gauge_add(queue->m_queue_depth, 1);
+
+    queue->discard(evpl, queue, offset, length, evpl_block_complete, op);
+} /* evpl_block_discard */
+
+/* Emulated write-zeroes: an ordinary write from an internal zero buffer, for
+ * backends without a native zeroing op.  One reusable zero chunk is written
+ * across the range; the chunk's view length is trimmed for a short final
+ * write.  Serial (one write outstanding) -- this is a cold/setup path. */
+struct evpl_block_wz_emul {
+    struct evpl_block_queue *queue;
+    struct evpl_iovec        zero;
+    uint64_t                 offset;
+    uint64_t                 remaining;
+    unsigned int             chunk;
+    int                      status;
+    evpl_block_callback_t    callback;
+    void                    *private_data;
+};
+
+static void evpl_block_wz_emul_step(
+    struct evpl               *evpl,
+    struct evpl_block_wz_emul *e);
+
+static void
+evpl_block_wz_emul_done(
+    struct evpl *evpl,
+    int          status,
+    void        *private_data)
+{
+    struct evpl_block_wz_emul *e = private_data;
+
+    if (status) {
+        e->status = status;
+    }
+
+    if (e->status || e->remaining == 0) {
+        evpl_block_callback_t callback     = e->callback;
+        void                 *cb_private   = e->private_data;
+        int                   final_status = e->status;
+
+        evpl_iovec_release(evpl, &e->zero);
+        evpl_free(e);
+        callback(evpl, final_status, cb_private);
+        return;
+    }
+
+    evpl_block_wz_emul_step(evpl, e);
+} /* evpl_block_wz_emul_done */
+
+static void
+evpl_block_wz_emul_step(
+    struct evpl               *evpl,
+    struct evpl_block_wz_emul *e)
+{
+    uint64_t n   = e->remaining < e->chunk ? e->remaining : e->chunk;
+    uint64_t off = e->offset;
+
+    e->zero.length = (unsigned int) n;
+    e->offset     += n;
+    e->remaining  -= n;
+
+    evpl_block_write(evpl, e->queue, &e->zero, 1, off, 0,
+                     evpl_block_wz_emul_done, e);
+} /* evpl_block_wz_emul_step */
+
+SYMBOL_EXPORT void
+evpl_block_write_zeroes(
+    struct evpl *evpl,
+    struct evpl_block_queue *queue,
+    uint64_t offset,
+    uint64_t length,
+    void ( *callback )(struct evpl *evpl, int status, void *private_data),
+    void *private_data)
+{
+    struct evpl_block_op      *op;
+    struct evpl_block_wz_emul *e;
+    unsigned int               chunk;
+
+    if (queue->write_zeroes) {
+        op               = evpl_block_op_get(queue);
+        op->queue        = queue;
+        op->callback     = callback;
+        op->private_data = private_data;
+        op->size         = length;
+
+        prometheus_stopwatch_start(&op->start);
+        prometheus_gauge_add(queue->m_queue_depth, 1);
+
+        queue->write_zeroes(evpl, queue, offset, length,
+                            evpl_block_complete, op);
+        return;
+    }
+
+    if (length == 0) {
+        callback(evpl, 0, private_data);
+        return;
+    }
+
+    /* No native support: write a zero buffer through the ordinary write path,
+     * chunked at the device's maximum request size.  The underlying writes
+     * carry their own op-tracking/metrics, so no block_op is taken here. */
+    chunk = (unsigned int) (length < queue->device->max_request_size ?
+                            length : queue->device->max_request_size);
+
+    e               = evpl_zalloc(sizeof(*e));
+    e->queue        = queue;
+    e->offset       = offset;
+    e->remaining    = length;
+    e->chunk        = chunk;
+    e->status       = 0;
+    e->callback     = callback;
+    e->private_data = private_data;
+
+    evpl_iovec_alloc(evpl, chunk, 4096, 1, 0, &e->zero);
+    memset(e->zero.data, 0, chunk);
+
+    evpl_block_wz_emul_step(evpl, e);
+} /* evpl_block_write_zeroes */
