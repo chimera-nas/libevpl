@@ -128,6 +128,13 @@ struct evpl_vfio_device {
     uint32_t                    queue_size;
     uint64_t                    max_queues;
     uint32_t                    next_ioq_id;
+    /* Recycled I/O-queue ids.  Closing a queue returns its id here so a later
+     * open reuses it, instead of next_ioq_id climbing monotonically into the
+     * msixsize ceiling across open/close cycles (e.g. successive fio job
+     * sections each spin up and tear down a queue per thread).  Stack of at
+     * most msixsize entries; both fields are guarded by device->lock. */
+    uint32_t                   *free_ioq_ids;
+    uint32_t                    num_free_ioq_ids;
     char                        model[64];
     char                        serial[64];
     uint64_t                    msixsize;
@@ -605,6 +612,12 @@ evpl_vfio_enable_msix(struct evpl_vfio_device *device)
 
     device->eventfds = evpl_zalloc(device->msixsize * sizeof(int));
 
+    /* Free-list of recyclable I/O-queue ids (ids 1..msixsize-1); admin id 0
+     * is never recycled.  Bounded by msixsize, the same ceiling next_ioq_id
+     * is checked against. */
+    device->free_ioq_ids     = evpl_zalloc(device->msixsize * sizeof(uint32_t));
+    device->num_free_ioq_ids = 0;
+
     for (i = 0; i < device->msixsize; ++i) {
         device->eventfds[i] = eventfd(0, EFD_NONBLOCK);
 
@@ -907,10 +920,16 @@ evpl_vfio_create_ioq(
 
     pthread_mutex_lock(&device->lock);
 
-    evpl_vfio_abort_if(device->next_ioq_id >= device->msixsize,
-                       "Too many VFIO device queues, exceeded msixsize.  Consider reducing thread count.");
+    if (device->num_free_ioq_ids > 0) {
+        /* Reuse a previously-closed queue's id (and its doorbell, eventfd and
+         * MSI-X vector, all device-owned and indexed by id). */
+        id = device->free_ioq_ids[--device->num_free_ioq_ids];
+    } else {
+        evpl_vfio_abort_if(device->next_ioq_id >= device->msixsize,
+                           "Too many VFIO device queues, exceeded msixsize.  Consider reducing thread count.");
 
-    id = device->next_ioq_id++;
+        id = device->next_ioq_id++;
+    }
 
     ioq = evpl_vfio_queue_alloc(device, id, size);
 
@@ -1539,6 +1558,14 @@ evpl_vfio_close_queue(
         DL_DELETE(device->ioq, queue);
     }
 
+    /* Return the id for reuse.  DELETE_IO_SQ/CQ have already drained on the
+     * adminq (evpl_vfio_delete_ioq_locked waits), so no stale completion can
+     * target this id before a later create_ioq re-uses it.  Admin id 0 is
+     * never closed through this path. */
+    if (queue->id > 0) {
+        device->free_ioq_ids[device->num_free_ioq_ids++] = queue->id;
+    }
+
     pthread_mutex_unlock(&device->lock);
 
     evpl_vfio_queue_close(device, evpl, queue);
@@ -1760,6 +1787,7 @@ evpl_vfio_close_device(struct evpl_block_device *bdev)
     }
 
     evpl_free(dev->eventfds);
+    evpl_free(dev->free_ioq_ids);
 
     close(dev->fd);
 
