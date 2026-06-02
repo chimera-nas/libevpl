@@ -6,6 +6,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <errno.h>
+#include <string.h>
 
 #include "core/evpl.h"
 #include "evpl/evpl.h"
@@ -37,6 +38,14 @@ struct evpl_thread {
     pthread_mutex_t                 lock;
     pthread_cond_t                  cond;
     int                             ready;
+    /* Stop signal.  Owned by evpl_thread (this struct outlives the worker's
+     * evpl, since it is freed only after pthread_join), so evpl_thread_destroy
+     * can stop the worker by writing this fd without ever dereferencing the
+     * worker's evpl -- which the worker creates, runs, and destroys entirely on
+     * its own thread.  The event is registered on the worker's evpl and its
+     * handler clears running from the worker thread. */
+    int                             stop_eventfd;
+    struct evpl_event               stop_event;
     struct evpl_thread_config      *config;
     struct evpl                    *evpl;
     evpl_thread_init_callback_t     init_callback;
@@ -49,6 +58,12 @@ struct evpl_threadpool {
     int                  nthreads;
 };
 
+/*
+ * Read handler for a thread's stop_eventfd, registered on the worker's own evpl.
+ * Runs on the worker thread, so it clears running directly (the same thread
+ * evpl_run() reads it on); the loop exits on its next iteration.  Direct
+ * assignment rather than evpl_stop() so it is idempotent if signaled twice.
+ */
 void
 evpl_thread_event(
     struct evpl       *evpl,
@@ -65,6 +80,7 @@ evpl_thread_event(
         evpl_event_mark_unreadable(evpl, event);
     }
 
+    evpl->running = 0;
 } /* evpl_thread_event */
 
 void *
@@ -76,6 +92,14 @@ evpl_thread_function(void *ptr)
     evpl = evpl_create(evpl_thread->config);
 
     evpl_thread->evpl = evpl;
+
+    /* Register the stop fd (created by evpl_thread_create) on our own evpl, so
+     * a write from evpl_thread_destroy wakes us and clears running on this
+     * thread.  Done before signaling ready so the event is always live by the
+     * time a destroyer can run. */
+    evpl_add_event(evpl, &evpl_thread->stop_event, evpl_thread->stop_eventfd,
+                   evpl_thread_event, NULL, NULL);
+    evpl_event_read_interest(evpl, &evpl_thread->stop_event);
 
     if (evpl_thread->init_callback) {
         evpl_thread->private_data = evpl_thread->init_callback(
@@ -89,6 +113,8 @@ evpl_thread_function(void *ptr)
     pthread_mutex_unlock(&evpl_thread->lock);
 
     evpl_run(evpl);
+
+    evpl_remove_event(evpl, &evpl_thread->stop_event);
 
     evpl_destroy_close_bind(evpl);
 
@@ -119,6 +145,10 @@ evpl_thread_create(
     evpl_thread->shutdown_callback = shutdown_function;
     evpl_thread->private_data      = private_data;
 
+    evpl_thread->stop_eventfd = eventfd(0, EFD_NONBLOCK);
+    evpl_thread_abort_if(evpl_thread->stop_eventfd < 0,
+                         "evpl_thread_create: eventfd failed");
+
     pthread_mutex_init(&evpl_thread->lock, NULL);
     pthread_cond_init(&evpl_thread->cond, NULL);
 
@@ -139,10 +169,23 @@ evpl_thread_create(
 SYMBOL_EXPORT void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
-    evpl_stop(evpl_thread->evpl);
+    uint64_t value = 1;
+    ssize_t  len;
 
+    /* Signal stop via our own fd (never touch the worker's evpl, which the
+     * worker frees on its own thread); the worker's stop_event handler clears
+     * running.  Then join and only then close the fd. */
+    do {
+        len = write(evpl_thread->stop_eventfd, &value, sizeof(value));
+    } while (len < 0 && errno == EINTR);
+
+    evpl_thread_abort_if(len != sizeof(value),
+                         "evpl_thread_destroy: write to stop_eventfd failed: "
+                         "len=%zd errno=%d (%s)", len, errno, strerror(errno));
 
     pthread_join(evpl_thread->thread, NULL);
+
+    close(evpl_thread->stop_eventfd);
 
     evpl_free(evpl_thread);
 } /* evpl_thread_destroy */
