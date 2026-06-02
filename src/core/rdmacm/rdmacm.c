@@ -1365,8 +1365,40 @@ evpl_rdmacm_get_rdma_address(
     uint64_t          *r_address)
 {
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
-    struct ibv_mr        **mrset     = evpl_memory_framework_private(iov, EVPL_FRAMEWORK_RDMACM);
-    struct ibv_mr         *mr        = mrset[rdmacm_id->devindex];
+    struct ibv_mr        **mrset;
+    struct ibv_mr         *mr;
+
+    /* The rkey we return is for the MR registered against the device this
+     * QP is bound to (mrset[rdmacm_id->devindex]).  devindex is only set
+     * once evpl_rdmacm_create_qp runs at RDMA_CM_EVENT_ROUTE_RESOLVED;
+     * before then it is still the evpl_zalloc default of 0.  If the cm_id
+     * later binds to a different device (multi-HCA / bonded topologies
+     * routinely do), the rkey we advertised in any pre-bind call belongs
+     * to a PD the responder QP can't see, and the responder rejects the
+     * subsequent RDMA_READ with REM_ACCESS_ERR (Mellanox responder
+     * vendor 0x95 / requester vendor 0x88).  The bug is silent because
+     * the caller already queued the SEND with the wrong rkey; the
+     * failure surfaces minutes or millions of ops later at the responder.
+     *
+     * Refuse the call loudly so callers learn to wait for
+     * EVPL_NOTIFY_CONNECTED before issuing operations that advertise a
+     * remote key. */
+    evpl_rdmacm_abort_if(
+        !rdmacm_id->dev,
+        "evpl_rdma_get_address called before the QP is bound to a device; "
+        "callers must wait for EVPL_NOTIFY_CONNECTED on this bind before "
+        "issuing operations that advertise an rkey to the peer");
+
+    mrset = evpl_memory_framework_private(iov, EVPL_FRAMEWORK_RDMACM);
+
+    evpl_rdmacm_abort_if(
+        !mrset,
+        "evpl_rdma_get_address: iovec is from a slab that was never "
+        "registered with the rdmacm framework (framework_private[RDMACM] "
+        "is NULL).  Was the iovec allocated before the framework attached "
+        "and not picked up by evpl_allocator_reregister?");
+
+    mr = mrset[rdmacm_id->devindex];
 
     *r_key     = mr->rkey;
     *r_address = (uint64_t) iov->data;
