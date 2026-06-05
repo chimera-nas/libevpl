@@ -34,3 +34,23 @@ void
 evpl_remove_poll(
     struct evpl      *evpl,
     struct evpl_poll *poll);
+
+/* Mark loop activity so a poll-mode thread does not fall back to event mode
+ * after spin_ns of apparent inactivity (e.g. after servicing a polled ring). */
+void
+evpl_activity(
+    struct evpl *evpl);
+
+/*
+ * Pin the calling thread into poll mode while the (refcounted) pin count is
+ * non-zero.  Use when a thread has work outstanding that can only be observed
+ * by polling -- e.g. a request handed to another thread whose completion this
+ * thread reaps from a polled ring -- so the loop never sleeps and misses it.
+ */
+void
+evpl_poll_pin(
+    struct evpl *evpl);
+
+void
+evpl_poll_unpin(
+    struct evpl *evpl);
