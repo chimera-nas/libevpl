@@ -30,6 +30,8 @@ falling back to system-call-based waiting.
   (RDMA CQ, io_uring CQE, VFIO-NVMe, libaio, XLIO).
 - Pinning a worker thread on-CPU for a configured duration after the last
   request, in anticipation of more work.
+- Keeping a thread on-CPU for as long as it has work outstanding that can
+  only be reaped by polling (see [`evpl_poll_pin`](#evpl_poll_pin)).
 
 **Relation to doorbells:** a doorbell ring counts as activity, so it
 re-enters poll mode automatically. Combining a doorbell (for the wake) with
@@ -90,6 +92,83 @@ Detach a previously registered poll callback.
 **Parameters:**
 - `evpl` - Event loop the poll was attached to.
 - `poll` - Handle returned by `evpl_add_poll`.
+
+**Thread Safety:** Must be called from the thread that owns `evpl`.
+
+---
+
+### `evpl_poll_pin`
+
+```c
+void
+evpl_poll_pin(
+    struct evpl *evpl);
+```
+
+Pin the calling thread into poll mode. While the (refcounted) pin count is
+non-zero the event loop will not fall back to event-driven waiting after
+`spin_ns` of idleness — it keeps spinning and calling poll callbacks.
+
+Use this when the thread has work outstanding that can **only** be observed
+by polling — for example a request handed to another thread whose completion
+this thread reaps from a polled ring (RDMA CQ, io_uring CQE, VFIO-NVMe). If
+the loop were allowed to sleep in `epoll_wait()`, that completion would never
+wake it and the work would stall.
+
+**Parameters:**
+- `evpl` - Event loop to pin.
+
+**Thread Safety:** Must be called from the thread that owns `evpl`.
+
+**Behavior notes:**
+- Refcounted, so multiple independent sources of outstanding work on one
+  thread compose correctly. Each `evpl_poll_pin` must be balanced by exactly
+  one `evpl_poll_unpin`.
+- Pinning forces poll mode regardless of activity; it does not register a
+  poll callback. Pair it with `evpl_add_poll` to actually drain the polled
+  resource each iteration.
+
+---
+
+### `evpl_poll_unpin`
+
+```c
+void
+evpl_poll_unpin(
+    struct evpl *evpl);
+```
+
+Release one poll-mode pin taken with `evpl_poll_pin`. When the pin count
+returns to zero the loop is again free to fall back to event-driven waiting
+after `spin_ns` of idleness.
+
+**Parameters:**
+- `evpl` - Event loop to unpin.
+
+**Thread Safety:** Must be called from the thread that owns `evpl`.
+
+---
+
+### `evpl_activity`
+
+```c
+void
+evpl_activity(
+    struct evpl *evpl);
+```
+
+Mark that the loop did useful work this iteration. This resets the idleness
+timer that governs the fall-back from poll mode to event-driven waiting, so
+a poll-mode thread does not drop out of poll mode after `spin_ns` of
+*apparent* inactivity when it is in fact making progress.
+
+Call it after a poll callback services a polled resource (e.g. drains entries
+from a ring). Sources that already feed the event loop — sockets, doorbells,
+timers — record activity on their own; `evpl_activity` is for work discovered
+by polling that the loop would otherwise not see as activity.
+
+**Parameters:**
+- `evpl` - Event loop that did work.
 
 **Thread Safety:** Must be called from the thread that owns `evpl`.
 
