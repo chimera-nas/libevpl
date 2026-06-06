@@ -19,10 +19,19 @@
 struct evpl_block_op {
     struct prometheus_stopwatch start;
     uint64_t                    size;
+    enum evpl_block_op_kind kind;
     struct evpl_block_queue    *queue;
     evpl_block_callback_t       callback;
     void                       *private_data;
     struct evpl_block_op       *next;
+};
+
+/* "op" label values, indexed by enum evpl_block_op_kind. */
+static const char *const evpl_block_op_names[EVPL_BLOCK_NUM_OP_KIND] = {
+    [EVPL_BLOCK_OP_READ]    = "read",
+    [EVPL_BLOCK_OP_WRITE]   = "write",
+    [EVPL_BLOCK_OP_FLUSH]   = "flush",
+    [EVPL_BLOCK_OP_DISCARD] = "discard",
 };
 
 static inline uint64_t
@@ -65,10 +74,10 @@ evpl_block_complete(
     evpl_block_callback_t    callback;
     void                    *callback_private;
 
-    prometheus_time_histogram_sample(queue->m_latency, &op->start);
+    prometheus_time_histogram_sample(queue->m_latency[op->kind], &op->start);
 
     if (op->size) {
-        prometheus_histogram_sample(queue->m_request_size, op->size);
+        prometheus_histogram_sample(queue->m_request_size[op->kind], op->size);
     }
 
     prometheus_gauge_add(queue->m_queue_depth, -1);
@@ -125,17 +134,20 @@ evpl_block_open_device(
 
     /* Per-device metric series, labelled with the device URI and the
      * protocol type so callers can aggregate across all devices or
-     * break out by device/type.
+     * break out by device/type.  The histograms additionally carry an
+     * "op" label, so one series is created per operation class.
      */
-    blockdev->m_latency = prometheus_histogram_create_series(
-        evpl_shared->block_latency,
-        (const char *[]) { "device", "type" },
-        (const char *[]) { uri, protocol->name }, 2);
+    for (int k = 0; k < EVPL_BLOCK_NUM_OP_KIND; k++) {
+        blockdev->m_latency[k] = prometheus_histogram_create_series(
+            evpl_shared->block_latency,
+            (const char *[]) { "device", "type", "op" },
+            (const char *[]) { uri, protocol->name, evpl_block_op_names[k] }, 3);
 
-    blockdev->m_request_size = prometheus_histogram_create_series(
-        evpl_shared->block_request_size,
-        (const char *[]) { "device", "type" },
-        (const char *[]) { uri, protocol->name }, 2);
+        blockdev->m_request_size[k] = prometheus_histogram_create_series(
+            evpl_shared->block_request_size,
+            (const char *[]) { "device", "type", "op" },
+            (const char *[]) { uri, protocol->name, evpl_block_op_names[k] }, 3);
+    }
 
     blockdev->m_queue_depth = prometheus_gauge_create_series(
         evpl_shared->block_queue_depth,
@@ -148,10 +160,12 @@ evpl_block_open_device(
 SYMBOL_EXPORT void
 evpl_block_close_device(struct evpl_block_device *bdev)
 {
-    prometheus_histogram_destroy_series(evpl_shared->block_latency,
-                                        bdev->m_latency);
-    prometheus_histogram_destroy_series(evpl_shared->block_request_size,
-                                        bdev->m_request_size);
+    for (int k = 0; k < EVPL_BLOCK_NUM_OP_KIND; k++) {
+        prometheus_histogram_destroy_series(evpl_shared->block_latency,
+                                            bdev->m_latency[k]);
+        prometheus_histogram_destroy_series(evpl_shared->block_request_size,
+                                            bdev->m_request_size[k]);
+    }
     prometheus_gauge_destroy_series(evpl_shared->block_queue_depth,
                                     bdev->m_queue_depth);
 
@@ -188,10 +202,12 @@ evpl_block_open_queue(
     /* Each queue gets its own instance of the device's series so the
      * I/O path mutates them lock-free; the scrape sums instances.
      */
-    queue->m_latency = prometheus_histogram_series_create_instance(
-        blockdev->m_latency);
-    queue->m_request_size = prometheus_histogram_series_create_instance(
-        blockdev->m_request_size);
+    for (int k = 0; k < EVPL_BLOCK_NUM_OP_KIND; k++) {
+        queue->m_latency[k] = prometheus_histogram_series_create_instance(
+            blockdev->m_latency[k]);
+        queue->m_request_size[k] = prometheus_histogram_series_create_instance(
+            blockdev->m_request_size[k]);
+    }
     queue->m_queue_depth = prometheus_gauge_series_create_instance(
         blockdev->m_queue_depth);
 
@@ -206,10 +222,12 @@ evpl_block_close_queue(
     struct evpl_block_device *bdev = queue->device;
     struct evpl_block_op     *op;
 
-    prometheus_histogram_series_destroy_instance(bdev->m_latency,
-                                                 queue->m_latency);
-    prometheus_histogram_series_destroy_instance(bdev->m_request_size,
-                                                 queue->m_request_size);
+    for (int k = 0; k < EVPL_BLOCK_NUM_OP_KIND; k++) {
+        prometheus_histogram_series_destroy_instance(bdev->m_latency[k],
+                                                     queue->m_latency[k]);
+        prometheus_histogram_series_destroy_instance(bdev->m_request_size[k],
+                                                     queue->m_request_size[k]);
+    }
     prometheus_gauge_series_destroy_instance(bdev->m_queue_depth,
                                              queue->m_queue_depth);
 
@@ -238,6 +256,7 @@ evpl_block_read(
     op->callback     = callback;
     op->private_data = private_data;
     op->size         = evpl_block_iov_size(iov, niov);
+    op->kind         = EVPL_BLOCK_OP_READ;
 
     prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
@@ -262,6 +281,7 @@ evpl_block_write(
     op->callback     = callback;
     op->private_data = private_data;
     op->size         = evpl_block_iov_size(iov, niov);
+    op->kind         = EVPL_BLOCK_OP_WRITE;
 
     prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
@@ -282,6 +302,7 @@ evpl_block_flush(
     op->callback     = callback;
     op->private_data = private_data;
     op->size         = 0;
+    op->kind         = EVPL_BLOCK_OP_FLUSH;
 
     prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
@@ -311,6 +332,7 @@ evpl_block_discard(
     op->callback     = callback;
     op->private_data = private_data;
     op->size         = length;
+    op->kind         = EVPL_BLOCK_OP_DISCARD;
 
     prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
@@ -398,6 +420,7 @@ evpl_block_write_zeroes(
         op->callback     = callback;
         op->private_data = private_data;
         op->size         = length;
+        op->kind         = EVPL_BLOCK_OP_WRITE;
 
         prometheus_stopwatch_start(&op->start);
         prometheus_gauge_add(queue->m_queue_depth, 1);
