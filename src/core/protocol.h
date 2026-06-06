@@ -160,6 +160,18 @@ struct evpl_protocol {
 
 /* API for a block protocol */
 
+/* Operation classes used to break out the per-device block histograms by
+ * an "op" label.  write_zeroes is accounted as a write.  Kept in sync with
+ * evpl_block_op_names[] in block.c.
+ */
+enum evpl_block_op_kind {
+    EVPL_BLOCK_OP_READ = 0,
+    EVPL_BLOCK_OP_WRITE,
+    EVPL_BLOCK_OP_FLUSH,
+    EVPL_BLOCK_OP_DISCARD,
+    EVPL_BLOCK_NUM_OP_KIND
+};
+
 struct evpl_block_device {
     /* Private data owned by the protocol */
     void                               *private_data;
@@ -176,9 +188,11 @@ struct evpl_block_device {
     /* Per-device metric series, labelled by device URI and protocol
      * type.  Each queue creates its own instance from these so the
      * hot path is mutated lock-free; the scrape aggregates instances.
+     * The histograms are further broken out by operation class via an
+     * "op" label, so they are one series per evpl_block_op_kind.
      */
-    struct prometheus_histogram_series *m_latency;
-    struct prometheus_histogram_series *m_request_size;
+    struct prometheus_histogram_series *m_latency[EVPL_BLOCK_NUM_OP_KIND];
+    struct prometheus_histogram_series *m_request_size[EVPL_BLOCK_NUM_OP_KIND];
     struct prometheus_gauge_series     *m_queue_depth;
 
     /* Open a device queue */
@@ -203,10 +217,11 @@ struct evpl_block_queue {
     struct evpl_block_device             *device;
 
     /* Per-queue metric instances, mutated only on this queue's thread
-     * (lock-free).  Created from the device's series at open.
+     * (lock-free).  Created from the device's series at open.  The
+     * histograms have one instance per evpl_block_op_kind.
      */
-    struct prometheus_histogram_instance *m_latency;
-    struct prometheus_histogram_instance *m_request_size;
+    struct prometheus_histogram_instance *m_latency[EVPL_BLOCK_NUM_OP_KIND];
+    struct prometheus_histogram_instance *m_request_size[EVPL_BLOCK_NUM_OP_KIND];
     struct prometheus_gauge_instance     *m_queue_depth;
 
     /* Freelist of completion-tracking ops; queue-thread-local. */
