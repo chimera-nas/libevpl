@@ -191,6 +191,19 @@ else()
     message(STATUS "xlio library not found.")
 endif()
 
+find_library(NGHTTP2_LIB NAMES nghttp2)
+find_path(NGHTTP2_INCLUDE_DIR NAMES nghttp2/nghttp2.h)
+
+if (NGHTTP2_LIB AND NGHTTP2_INCLUDE_DIR)
+    message(STATUS "nghttp2 library ${NGHTTP2_LIB}")
+    message(STATUS "nghttp2 include ${NGHTTP2_INCLUDE_DIR}")
+    include_directories(SYSTEM ${NGHTTP2_INCLUDE_DIR})
+    add_definitions(-DHAVE_NGHTTP2)
+    set(HAVE_NGHTTP2 1)
+else()
+    message(STATUS "nghttp2 library not found; HTTP/2 support disabled.")
+endif()
+
 add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
 add_definitions(-fvisibility=hidden)
 

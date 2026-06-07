@@ -203,6 +203,9 @@ void * evpl_zalloc(
 void * evpl_calloc(
     unsigned int n,
     unsigned int size);
+void * evpl_realloc(
+    void        *p,
+    unsigned int size);
 void * evpl_valloc(
     unsigned int size,
     unsigned int alignment);

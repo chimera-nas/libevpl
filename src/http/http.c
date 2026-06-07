@@ -5,105 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <utlist.h>
 
-#include "core/evpl.h"
-#include "evpl/evpl.h"
-#include "core/iovec_ring.h"
-#include "evpl/evpl_http.h"
-
-#define evpl_http_debug(...) evpl_debug("http", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_http_info(...)  evpl_info("http", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_http_error(...) evpl_error("http", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_http_fatal(...) evpl_fatal("http", __FILE__, __LINE__, __VA_ARGS__)
-#define evpl_http_abort(...) evpl_abort("http", __FILE__, __LINE__, __VA_ARGS__)
-
-#define evpl_http_fatal_if(cond, ...) \
-        evpl_fatal_if(cond, "http", __FILE__, __LINE__, __VA_ARGS__)
-
-#define evpl_http_abort_if(cond, ...) \
-        evpl_abort_if(cond, "http", __FILE__, __LINE__, __VA_ARGS__)
-
-enum evpl_http_request_state {
-    EVPL_HTTP_REQUEST_STATE_INIT,
-    EVPL_HTTP_REQUEST_STATE_HEADERS,
-    EVPL_HTTP_REQUEST_STATE_BODY,
-    EVPL_HTTP_REQUEST_STATE_COMPLETE,
-};
-
-enum evpl_http_request_http_version {
-    EVPL_HTTP_REQUEST_HTTP_VERSION_1_0,
-    EVPL_HTTP_REQUEST_HTTP_VERSION_1_1,
-};
-
-enum evpl_http_request_transfer_encoding {
-    EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT,
-    EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED,
-};
-
-struct evpl_http_request_header {
-    struct evpl_http_request_header *prev;
-    struct evpl_http_request_header *next;
-    char                             name[256];
-    char                             value[16384];
-};
-
-#define EVPL_HTTP_REQUEST_WANTS_CONTINUE    0x01
-#define EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL   0x02
-#define EVPL_HTTP_REQUEST_RESPONSE_READY    0x04
-#define EVPL_HTTP_REQUEST_RESPONSE_HDR_SENT 0x08
-#define EVPL_HTTP_REQUEST_RESPONSE_FINISHED 0x10
-
-struct evpl_http_request {
-    enum evpl_http_request_type              request_type;
-    enum evpl_http_request_state             request_state;
-    enum evpl_http_request_http_version      http_version;
-    enum evpl_http_request_transfer_encoding request_transfer_encoding;
-    enum evpl_http_request_transfer_encoding response_transfer_encoding;
-    evpl_http_notify_callback_t              notify_callback;
-    void                                    *notify_data;
-    uint64_t                                 request_length;
-    uint64_t                                 request_left;
-    uint64_t                                 request_chunk_left;
-    uint64_t                                 response_length;
-    uint64_t                                 response_left;
-    uint64_t                                 request_flags;
-    int                                      status;
-    int                                      uri_len;
-    struct evpl_http_conn                   *conn;
-    struct evpl_iovec_ring                   send_ring;
-    struct evpl_iovec_ring                   recv_ring;
-    struct evpl_http_request_header         *request_headers;
-    struct evpl_http_request_header         *response_headers;
-    struct evpl_http_request                *prev;
-    struct evpl_http_request                *next;
-    char                                     uri[16384];
-};
-
-struct evpl_http_conn {
-    int                       is_server;
-    struct evpl_http_server  *server;
-    struct evpl_http_agent   *agent;
-    struct evpl_bind         *bind;
-    struct evpl_deferral      flush;
-    struct evpl_http_request *current_request;
-    struct evpl_http_request *pending_requests;
-    void                     *private_data;
-};
-
-struct evpl_http_server {
-    struct evpl_http_agent       *agent;
-    struct evpl_listener         *listener;
-    struct evpl_listener_binding *binding;
-    void                         *private_data;
-    evpl_http_dispatch_callback_t dispatch_callback;
-};
-
-struct evpl_http_agent {
-    struct evpl_http_request        *free_requests;
-    struct evpl_http_request_header *free_headers;
-    struct evpl                     *evpl;
-};
+#include "http_internal.h"
+#include "core/tls/tls.h"
 
 static const char *http_version_string[] = {
     "HTTP/1.0",
@@ -201,86 +105,6 @@ evpl_http_response_status_string(int status)
     } /* switch */
 } /* evpl_http_response_status_string */
 
-static inline struct evpl_http_request_header *
-evpl_http_request_header_alloc(struct evpl_http_agent *agent)
-{
-    struct evpl_http_request_header *header;
-
-    header = agent->free_headers;
-
-    if (header) {
-        agent->free_headers = header->next;
-    } else {
-        header = evpl_zalloc(sizeof(*header));
-    }
-
-    return header;
-} /* evpl_http_request_header_alloc */
-
-static inline void
-evpl_http_request_header_free(
-    struct evpl_http_agent          *agent,
-    struct evpl_http_request_header *header)
-{
-    LL_PREPEND(agent->free_headers, header);
-} /* evpl_http_request_header_free */
-
-static inline struct evpl_http_request *
-evpl_http_request_alloc(struct evpl_http_agent *agent)
-{
-    struct evpl_http_request *request;
-
-    request = agent->free_requests;
-
-    if (request) {
-        agent->free_requests = request->next;
-    } else {
-        request = evpl_zalloc(sizeof(*request));
-        evpl_iovec_ring_alloc(&request->send_ring, 1024, 4096);
-        evpl_iovec_ring_alloc(&request->recv_ring, 1024, 4096);
-    }
-
-    request->request_type               = EVPL_HTTP_REQUEST_TYPE_UNKNOWN;
-    request->request_state              = EVPL_HTTP_REQUEST_STATE_INIT;
-    request->request_transfer_encoding  = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT;
-    request->response_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT;
-    request->request_length             = 0;
-    request->request_left               = 0;
-    request->request_chunk_left         = 0;
-    request->response_length            = 0;
-    request->response_left              = 0;
-    request->request_flags              = 0;
-    request->notify_callback            = NULL;
-    request->request_headers            = NULL;
-    request->response_headers           = NULL;
-    return request;
-} /* evpl_http_request_alloc */
-
-static inline void
-evpl_http_request_free(
-    struct evpl_http_agent   *agent,
-    struct evpl_http_request *request)
-{
-    struct evpl_http_request_header *header;
-
-    while (request->request_headers) {
-        header = request->request_headers;
-        DL_DELETE(request->request_headers, header);
-        evpl_http_request_header_free(agent, header);
-    }
-
-    while (request->response_headers) {
-        header = request->response_headers;
-        DL_DELETE(request->response_headers, header);
-        evpl_http_request_header_free(agent, header);
-    }
-
-    evpl_iovec_ring_clear(agent->evpl, &request->recv_ring);
-    evpl_iovec_ring_clear(agent->evpl, &request->send_ring);
-
-    LL_PREPEND(agent->free_requests, request);
-} /* evpl_http_request_free */
-
 SYMBOL_EXPORT struct evpl_http_agent *
 evpl_http_init(struct evpl *evpl)
 {
@@ -361,28 +185,114 @@ evpl_http_parse_line(
     return -1;
 } /* evpl_http_parse_line */
 
-static inline int
-evpl_copy_string(
-    char       *dst,
-    const char *src,
-    int         maxlen)
+/*
+ * Parse a body (Content-Length or chunked) from the wire into request->recv_ring
+ * and emit RECEIVE_DATA / RECEIVE_COMPLETE notifications.  Shared by the server
+ * (request body) and client (response body) HTTP/1.x paths: the only
+ * differences are which list the request lives on when complete (the caller
+ * handles that via the COMPLETE transition) and the private data passed to the
+ * callback.  Returns 0 on success, -1 if the connection was closed.
+ */
+static int
+evpl_http_handle_body(
+    struct evpl_http_conn    *conn,
+    struct evpl_http_request *request)
 {
-    const char *sp = src;
-    char       *dp = dst;
+    struct evpl_http_agent *agent = conn->agent;
+    struct evpl            *evpl  = agent->evpl;
+    struct evpl_bind       *bind  = conn->bind;
+    void                   *priv  = evpl_http_priv(conn);
+    int                     rc;
+    char                    line[4096];
 
-    while (*sp) {
+    if (request->request_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
+        int               niov;
+        struct evpl_iovec iov;
 
-        if (unlikely(dp - dst >= maxlen - 1)) {
-            return -1;
+        while (!evpl_iovec_ring_is_full(&request->recv_ring) && request->request_left > 0) {
+            niov = evpl_recvv(evpl, bind, &iov, 1, request->request_left, NULL);
+
+            if (niov == 0) {
+                break;
+            }
+
+            request->request_left -= iov.length;
+
+            evpl_iovec_ring_add(&request->recv_ring, &iov);
         }
 
-        *dp++ = *sp++;
+        if (request->notify_callback && evpl_iovec_ring_elements(&request->recv_ring) > 0) {
+            request->notify_callback(evpl, agent, request,
+                                     EVPL_HTTP_NOTIFY_RECEIVE_DATA,
+                                     request->request_type, request->uri,
+                                     request->notify_data, priv);
+        }
+
+        if (request->request_left == 0) {
+            request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
+        }
+    } else {
+        int               niov;
+        uint64_t          received = 0;
+        struct evpl_iovec iov;
+
+        while (!evpl_iovec_ring_is_full(&request->recv_ring)) {
+
+            if (request->request_chunk_left > 0) {
+                niov = evpl_recvv(evpl, bind, &iov, 1, request->request_chunk_left, NULL);
+
+                if (niov == 0) {
+                    break;
+                }
+
+                request->request_chunk_left -= iov.length;
+                received                    += iov.length;
+
+                evpl_iovec_ring_add(&request->recv_ring, &iov);
+
+            } else {
+
+                rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
+
+                if (unlikely(rc == -2)) {
+                    evpl_close(evpl, bind);
+                    return -1;
+                }
+
+                if (rc == -1) {
+                    break;
+                }
+
+                if (request->request_flags & EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL) {
+                    if (line[0] != '\0') {
+                        evpl_close(evpl, bind);
+                        return -1;
+                    }
+                    request->request_flags &= ~EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL;
+                    continue;
+                }
+
+                request->request_chunk_left = strtoul(line, NULL, 16);
+                request->request_flags     |= EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL;
+
+                if (request->request_chunk_left == 0) {
+                    request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
+                    break;
+                }
+            }
+        }
+
+        if (request->notify_callback && received &&
+            request->request_state != EVPL_HTTP_REQUEST_STATE_COMPLETE) {
+            request->notify_callback(evpl, agent, request,
+                                     EVPL_HTTP_NOTIFY_RECEIVE_DATA,
+                                     request->request_type, request->uri,
+                                     request->notify_data, priv);
+        }
     }
 
-    *dp = '\0';
-
-    return dp - dst;
-} /* evpl_copy_string */
+    return 0;
+} /* evpl_http_handle_body */
 
 static void
 evpl_http_server_handle_data(struct evpl_http_conn *conn)
@@ -426,17 +336,9 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             return;
         }
 
-        if (strncmp(token, "GET", 3) == 0) {
-            request->request_type = EVPL_HTTP_REQUEST_TYPE_GET;
-        } else if (strncmp(token, "HEAD", 4) == 0) {
-            request->request_type = EVPL_HTTP_REQUEST_TYPE_HEAD;
-        } else if (strncmp(token, "POST", 4) == 0) {
-            request->request_type = EVPL_HTTP_REQUEST_TYPE_POST;
-        } else if (strncmp(token, "PUT", 3) == 0) {
-            request->request_type = EVPL_HTTP_REQUEST_TYPE_PUT;
-        } else if (strncmp(token, "DELETE", 6) == 0) {
-            request->request_type = EVPL_HTTP_REQUEST_TYPE_DELETE;
-        } else {
+        request->request_type = evpl_http_method_from_string(token);
+
+        if (request->request_type == EVPL_HTTP_REQUEST_TYPE_UNKNOWN) {
             evpl_http_debug("unsupported request type: %s", token);
             evpl_close(evpl, bind);
             return;
@@ -545,132 +447,278 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         goto again;
 
     } else if (request->request_state == EVPL_HTTP_REQUEST_STATE_BODY) {
-        if (request->request_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
-            int               niov;
-            struct evpl_iovec iov;
 
-            while (!evpl_iovec_ring_is_full(&request->recv_ring) && request->request_left > 0) {
-                niov = evpl_recvv(evpl, bind, &iov, 1, request->request_left, NULL);
+        if (evpl_http_handle_body(conn, request) < 0) {
+            return;
+        }
 
-                if (niov == 0) {
-                    break;
-                }
+        if (request->request_state == EVPL_HTTP_REQUEST_STATE_COMPLETE) {
+            DL_APPEND(conn->pending_requests, request);
+            conn->current_request = NULL;
 
-                request->request_left -= iov.length;
-
-                evpl_iovec_ring_add(&request->recv_ring, &iov);
-            }
-
-            if (request->notify_callback && evpl_iovec_ring_elements(&request->recv_ring) > 0) {
-                request->notify_callback(evpl,
-                                         agent,
-                                         request,
-                                         EVPL_HTTP_NOTIFY_RECEIVE_DATA,
-                                         request->request_type,
-                                         request->uri,
+            if (request->notify_callback) {
+                request->notify_callback(evpl, agent, request,
+                                         EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
+                                         request->request_type, request->uri,
                                          request->notify_data,
                                          server->private_data);
             }
-
-            if (request->request_left == 0) {
-                request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
-                DL_APPEND(conn->pending_requests, request);
-                conn->current_request = NULL;
-
-                if (request->notify_callback) {
-                    request->notify_callback(evpl,
-                                             agent,
-                                             request,
-                                             EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
-                                             request->request_type,
-                                             request->uri,
-                                             request->notify_data,
-                                             server->private_data);
-                }
-            }
-        } else if (request->request_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) {
-            int               niov;
-            uint64_t          received = 0;
-            struct evpl_iovec iov;
-
-            while (!evpl_iovec_ring_is_full(&request->recv_ring)) {
-
-                if (request->request_chunk_left > 0) {
-                    niov = evpl_recvv(evpl, bind, &iov, 1, request->request_chunk_left, NULL);
-
-                    if (niov == 0) {
-                        break;
-                    }
-
-                    request->request_chunk_left -= iov.length;
-                    received                    += iov.length;
-
-                    evpl_iovec_ring_add(&request->recv_ring, &iov);
-
-                } else {
-
-                    rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
-
-                    if (unlikely(rc == -2)) {
-                        evpl_close(evpl, bind);
-                        return;
-                    }
-
-                    if (rc == -1) {
-                        break;
-                    }
-
-                    if (request->request_flags & EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL) {
-                        if (line[0] != '\0') {
-                            evpl_close(evpl, bind);
-                            return;
-                        }
-                        request->request_flags &= ~EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL;
-                        continue;
-                    }
-
-                    request->request_chunk_left = strtoul(line, NULL, 16);
-                    request->request_flags     |= EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL;
-
-                    if (request->request_chunk_left == 0) {
-                        request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
-                        break;
-                    }
-                }
-            }
-
-            if (request->notify_callback) {
-                if (request->request_state == EVPL_HTTP_REQUEST_STATE_COMPLETE) {
-                    DL_APPEND(conn->pending_requests, request);
-                    conn->current_request = NULL;
-
-                    request->notify_callback(evpl,
-                                             agent,
-                                             request,
-                                             EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
-                                             request->request_type,
-                                             request->uri,
-                                             request->notify_data,
-                                             server->private_data);
-                } else if (received) {
-                    request->notify_callback(evpl,
-                                             agent,
-                                             request,
-                                             EVPL_HTTP_NOTIFY_RECEIVE_DATA,
-                                             request->request_type,
-                                             request->uri,
-                                             request->notify_data,
-                                             server->private_data);
-                }
-            }
-
-        } else {
-            abort();
         }
     } else {
         abort();
     }
 } /* evpl_http_server_handle_data */
+
+static void
+evpl_http_client_handle_data(struct evpl_http_conn *conn)
+{
+    struct evpl_http_agent          *agent = conn->agent;
+    struct evpl                     *evpl  = agent->evpl;
+    struct evpl_bind                *bind  = conn->bind;
+    struct evpl_http_request        *request;
+    struct evpl_http_request_header *header;
+    char                             line[4096];
+    int                              rc;
+    char                            *token, *saveptr;
+
+    if (!conn->current_request) {
+        if (!conn->pending_requests) {
+            evpl_http_debug("response data with no pending request");
+            evpl_close(evpl, bind);
+            return;
+        }
+        /* HTTP/1.x responses arrive in request order: the head of the queue. */
+        conn->current_request = conn->pending_requests;
+    }
+
+    request = conn->current_request;
+
+ again:
+
+    if (request->request_state == EVPL_HTTP_REQUEST_STATE_INIT) {
+        rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
+
+        if (unlikely(rc == -2)) {
+            evpl_close(evpl, bind);
+            return;
+        }
+
+        if (rc == -1) {
+            return;
+        }
+
+        token = strtok_r(line, " \t", &saveptr);
+
+        if (!token) {
+            evpl_http_debug("missing status line version");
+            evpl_close(evpl, bind);
+            return;
+        }
+
+        if (strncmp(token, "HTTP/1.1", 8) == 0) {
+            request->http_version = EVPL_HTTP_REQUEST_HTTP_VERSION_1_1;
+        } else if (strncmp(token, "HTTP/1.0", 8) == 0) {
+            request->http_version = EVPL_HTTP_REQUEST_HTTP_VERSION_1_0;
+        } else {
+            evpl_http_debug("unsupported http version: %s", token);
+            evpl_close(evpl, bind);
+            return;
+        }
+
+        token = strtok_r(NULL, " \t", &saveptr);
+
+        if (!token) {
+            evpl_http_debug("missing status code");
+            evpl_close(evpl, bind);
+            return;
+        }
+
+        request->status        = atoi(token);
+        request->request_state = EVPL_HTTP_REQUEST_STATE_HEADERS;
+
+        goto again;
+
+    } else if (request->request_state == EVPL_HTTP_REQUEST_STATE_HEADERS) {
+        rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
+
+        if (unlikely(rc == -2)) {
+            evpl_close(evpl, bind);
+            return;
+        }
+
+        if (rc == -1) {
+            return;
+        }
+
+        if (line[0] == '\0') {
+            request->request_state = EVPL_HTTP_REQUEST_STATE_BODY;
+
+            if (request->notify_callback) {
+                request->notify_callback(evpl, agent, request,
+                                         EVPL_HTTP_NOTIFY_RESPONSE_HEADERS,
+                                         request->request_type, request->uri,
+                                         request->notify_data,
+                                         conn->private_data);
+            }
+
+            goto again;
+        } else {
+            header = evpl_http_request_header_alloc(agent);
+
+            token = strtok_r(line, ":", &saveptr);
+
+            if (!token) {
+                evpl_http_debug("malformed header line");
+                evpl_close(evpl, bind);
+                return;
+            }
+
+            strncpy(header->name, token, sizeof(header->name) - 1);
+
+            token = strtok_r(NULL, "", &saveptr);
+
+            if (!token) {
+                evpl_http_debug("missing header value");
+                evpl_close(evpl, bind);
+                return;
+            }
+
+            while (*token == ' ') {
+                token++;
+            }
+            strncpy(header->value, token, sizeof(header->value) - 1);
+
+            DL_APPEND(request->response_headers, header);
+
+            if (strncasecmp(header->name, "Content-Length", 15) == 0) {
+                request->request_length = strtoul(header->value, NULL, 10);
+                request->request_left   = request->request_length;
+            } else if (strncasecmp(header->name, "Transfer-Encoding", 18) == 0) {
+                if (strncasecmp(header->value, "chunked", 6) == 0) {
+                    request->request_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
+                }
+            }
+        }
+
+        goto again;
+
+    } else if (request->request_state == EVPL_HTTP_REQUEST_STATE_BODY) {
+
+        if (evpl_http_handle_body(conn, request) < 0) {
+            return;
+        }
+
+        if (request->request_state == EVPL_HTTP_REQUEST_STATE_COMPLETE) {
+            DL_DELETE(conn->pending_requests, request);
+            conn->current_request = NULL;
+
+            if (request->notify_callback) {
+                request->notify_callback(evpl, agent, request,
+                                         EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
+                                         request->request_type, request->uri,
+                                         request->notify_data,
+                                         conn->private_data);
+            }
+
+            evpl_http_request_free(agent, request);
+        }
+    } else {
+        abort();
+    }
+} /* evpl_http_client_handle_data */
+
+static void
+evpl_http_conn_connected(struct evpl_http_conn *conn)
+{
+    struct evpl          *evpl = conn->agent->evpl;
+    enum evpl_protocol_id pid  = evpl_bind_get_protocol(conn->bind);
+
+    conn->connected = 1;
+
+    if (conn->proto == EVPL_HTTP_PROTO_UNKNOWN) {
+        if (pid == EVPL_STREAM_SOCKET_TLS) {
+            char alpn[16];
+
+            evpl_tls_get_alpn(conn->bind, alpn, sizeof(alpn));
+
+#ifdef HAVE_NGHTTP2
+            if (strcmp(alpn, "h2") == 0) {
+                conn->proto = EVPL_HTTP_PROTO_H2;
+            } else {
+                conn->proto = EVPL_HTTP_PROTO_H1;
+            }
+#else  /* ifdef HAVE_NGHTTP2 */
+            conn->proto = EVPL_HTTP_PROTO_H1;
+#endif /* ifdef HAVE_NGHTTP2 */
+        } else if (!conn->is_server) {
+            /* Plain TCP client: prior-knowledge selection from requested version */
+#ifdef HAVE_NGHTTP2
+            if (conn->version == EVPL_HTTP_VERSION_HTTP2) {
+                conn->proto = EVPL_HTTP_PROTO_H2;
+            } else {
+                conn->proto = EVPL_HTTP_PROTO_H1;
+            }
+#else  /* ifdef HAVE_NGHTTP2 */
+            conn->proto = EVPL_HTTP_PROTO_H1;
+#endif /* ifdef HAVE_NGHTTP2 */
+        }
+        /* Plain TCP server: leave UNKNOWN, decided by preface sniff on first read */
+    }
+
+#ifdef HAVE_NGHTTP2
+    if (conn->proto == EVPL_HTTP_PROTO_H2) {
+        struct evpl_http_request *request, *tmp;
+
+        evpl_http2_conn_init(conn);
+
+        /* Submit any requests the client queued before the connection
+         * completed. */
+        DL_FOREACH_SAFE(conn->pending_requests, request, tmp)
+        {
+            DL_DELETE(conn->pending_requests, request);
+            evpl_http2_dispatch(request);
+        }
+
+        evpl_defer(evpl, &conn->flush);
+        return;
+    }
+#endif /* ifdef HAVE_NGHTTP2 */
+
+    if (!conn->is_server && conn->pending_requests) {
+        evpl_defer(evpl, &conn->flush);
+    }
+} /* evpl_http_conn_connected */
+
+#ifdef HAVE_NGHTTP2
+/*
+ * Detect the HTTP/2 client connection preface ("PRI * HTTP/2.0\r\n...") on a
+ * plain-TCP server connection without consuming it.  Returns 1 if it is h2c, 0
+ * if it is HTTP/1.x, and -1 if not enough bytes have arrived to decide yet.
+ */
+static int
+evpl_http_sniff_h2c(struct evpl_http_conn *conn)
+{
+    static const char preface[] = "PRI * HTTP/2.0\r\n";
+    char              buf[16];
+    int               n;
+
+    n = evpl_peek(conn->agent->evpl, conn->bind, buf, (int) sizeof(buf));
+
+    if (n <= 0) {
+        return -1;
+    }
+
+    if (memcmp(buf, preface, n < (int) sizeof(buf) ? n : (int) sizeof(buf)) != 0) {
+        return 0;
+    }
+
+    if (n < (int) sizeof(buf)) {
+        return -1;
+    }
+
+    return 1;
+} /* evpl_http_sniff_h2c */
+#endif /* ifdef HAVE_NGHTTP2 */
 
 static void
 evpl_http_event(
@@ -683,10 +731,17 @@ evpl_http_event(
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
+            evpl_http_conn_connected(http_conn);
             break;
         case EVPL_NOTIFY_DISCONNECTED:
         {
             struct evpl_http_request *request, *next;
+
+#ifdef HAVE_NGHTTP2
+            if (http_conn->proto == EVPL_HTTP_PROTO_H2) {
+                evpl_http2_conn_destroy(http_conn);
+            }
+#endif /* ifdef HAVE_NGHTTP2 */
 
             /* Release any request still in flight on this connection: a
              * partially-parsed request (current_request, e.g. one allocated on
@@ -711,14 +766,39 @@ evpl_http_event(
                 request = next;
             }
 
-            free(http_conn);
+            evpl_free(http_conn);
         }
         break;
         case EVPL_NOTIFY_RECV_DATA:
+
+#ifdef HAVE_NGHTTP2
+            if (http_conn->is_server &&
+                http_conn->proto == EVPL_HTTP_PROTO_UNKNOWN) {
+                int r = evpl_http_sniff_h2c(http_conn);
+
+                if (r < 0) {
+                    return; /* need more bytes to decide */
+                }
+
+                if (r) {
+                    http_conn->proto     = EVPL_HTTP_PROTO_H2;
+                    http_conn->connected = 1;
+                    evpl_http2_conn_init(http_conn);
+                } else {
+                    http_conn->proto = EVPL_HTTP_PROTO_H1;
+                }
+            }
+
+            if (http_conn->proto == EVPL_HTTP_PROTO_H2) {
+                evpl_http2_recv(http_conn);
+                break;
+            }
+#endif /* ifdef HAVE_NGHTTP2 */
+
             if (http_conn->is_server) {
                 evpl_http_server_handle_data(http_conn);
             } else {
-                abort();
+                evpl_http_client_handle_data(http_conn);
             }
             break;
         default:
@@ -771,19 +851,134 @@ evpl_http_server_send_headers(
 } /* evpl_http_server_send_headers */
 
 static void
-evpl_http_server_flush(
-    struct evpl *evpl,
-    void        *arg)
+evpl_http_client_send_headers(
+    struct evpl              *evpl,
+    struct evpl_http_request *request)
 {
-    struct evpl_http_conn    *conn   = arg;
+    struct evpl_http_conn           *conn = request->conn;
+    struct evpl_bind                *bind = conn->bind;
+    struct evpl_http_request_header *header;
+    struct evpl_iovec                iov;
+    int                              niov;
+    char                            *rsp_base, *rsp;
+
+    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, 0, &iov);
+
+    evpl_http_abort_if(niov < 0, "failed to allocate iovec");
+
+    rsp_base = iov.data;
+    rsp      = rsp_base;
+
+    rsp += snprintf(rsp, 4096, "%s %s HTTP/1.1\r\n",
+                    evpl_http_method_to_wire(request->request_type),
+                    request->uri);
+
+    DL_FOREACH(request->request_headers, header)
+    {
+        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "%s: %s\r\n", header->name, header->value);
+    }
+
+    if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) {
+        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Transfer-Encoding: chunked\r\n");
+    } else {
+        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %lu\r\n", request->response_length);
+    }
+
+    rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "\r\n");
+
+    iov.length = rsp - rsp_base;
+
+    evpl_sendv(evpl, bind, &iov, 1, iov.length, EVPL_SEND_FLAG_TAKE_REF);
+} /* evpl_http_client_send_headers */
+
+/*
+ * Send the body staged in request->send_ring to the wire, honoring the
+ * configured transfer encoding.  Shared by the server (response body) and
+ * client (request body) HTTP/1.x paths.  Returns 1 if the body has been fully
+ * sent, 0 if more data is needed (a WANT_DATA notification was emitted).
+ */
+static int
+evpl_http_send_body(
+    struct evpl              *evpl,
+    struct evpl_http_request *request)
+{
+    struct evpl_http_conn *conn = request->conn;
+    struct evpl_bind      *bind = conn->bind;
+    struct evpl_iovec     *iovp;
+    struct evpl_iovec      iov;
+    uint64_t               chunk_length;
+    int                    chunk_hdr_len, niov;
+
+    if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
+
+        while (request->response_left && !evpl_iovec_ring_is_empty(&request->send_ring)) {
+            iovp = evpl_iovec_ring_tail(&request->send_ring);
+            evpl_sendv(evpl, bind, iovp, 1, iovp->length, EVPL_SEND_FLAG_TAKE_REF);
+
+            request->response_left -= iovp->length;
+            evpl_iovec_ring_remove(&request->send_ring);
+        }
+
+        return request->response_left == 0;
+    } else {
+
+        chunk_length = evpl_iovec_ring_bytes(&request->send_ring);
+
+        if (chunk_length) {
+
+            niov = evpl_iovec_alloc(evpl, 64, 0, 1, 0, &iov);
+
+            chunk_hdr_len = snprintf(iov.data, 64, "%lx\r\n", chunk_length);
+
+            evpl_http_abort_if(niov < 0, "failed to allocate iovec");
+
+            evpl_sendv(evpl, bind, &iov, 1, chunk_hdr_len, EVPL_SEND_FLAG_TAKE_REF);
+
+            while (!evpl_iovec_ring_is_empty(&request->send_ring)) {
+                iovp = evpl_iovec_ring_tail(&request->send_ring);
+                evpl_sendv(evpl, bind, iovp, 1, iovp->length, EVPL_SEND_FLAG_TAKE_REF);
+                evpl_iovec_ring_remove(&request->send_ring);
+            }
+
+            niov = evpl_iovec_alloc(evpl, 2, 0, 1, 0, &iov);
+
+            evpl_http_abort_if(niov < 0, "failed to allocate iovec");
+
+            ((char *) iov.data)[0] = '\r';
+            ((char *) iov.data)[1] = '\n';
+
+            evpl_sendv(evpl, bind, &iov, 1, 2, EVPL_SEND_FLAG_TAKE_REF);
+        }
+
+        if (request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED) {
+            niov = evpl_iovec_alloc(evpl, 5, 0, 1, 0, &iov);
+
+            evpl_http_abort_if(niov < 0, "failed to allocate iovec");
+
+            ((char *) iov.data)[0] = '0';
+            ((char *) iov.data)[1] = '\r';
+            ((char *) iov.data)[2] = '\n';
+            ((char *) iov.data)[3] = '\r';
+            ((char *) iov.data)[4] = '\n';
+
+            evpl_sendv(evpl, bind, &iov, 1, 5, EVPL_SEND_FLAG_TAKE_REF);
+
+            return 1;
+        }
+
+        return 0;
+    }
+} /* evpl_http_send_body */
+
+static void
+evpl_http_server_flush(
+    struct evpl           *evpl,
+    struct evpl_http_conn *conn)
+{
     struct evpl_http_agent   *agent  = conn->agent;
     struct evpl_http_server  *server = conn->server;
-    struct evpl_bind         *bind   = conn->bind;
     struct evpl_http_request *request, *tmp;
-    struct evpl_iovec        *iovp;
-    uint64_t                  chunk_length;
-    int                       chunk_hdr_len, niov;
-    struct evpl_iovec         iov;
+    int                       done;
 
     DL_FOREACH_SAFE(conn->pending_requests, request, tmp)
     {
@@ -797,106 +992,105 @@ evpl_http_server_flush(
             request->request_flags |= EVPL_HTTP_REQUEST_RESPONSE_HDR_SENT;
         }
 
-        if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
+        done = evpl_http_send_body(evpl, request);
 
-            while (request->response_left  && !evpl_iovec_ring_is_empty(&request->send_ring)) {
-                iovp = evpl_iovec_ring_tail(&request->send_ring);
-                evpl_sendv(evpl, bind, iovp, 1, iovp->length, EVPL_SEND_FLAG_TAKE_REF);
-
-                request->response_left -= iovp->length;
-                evpl_iovec_ring_remove(&request->send_ring);
-            }
-
-            if (request->response_left == 0) {
-                request->notify_callback(evpl,
-                                         agent,
-                                         request,
-                                         EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE,
-                                         request->request_type,
-                                         request->uri,
-                                         request->notify_data,
-                                         server->private_data);
-                DL_DELETE(conn->pending_requests, request);
-                evpl_http_request_free(conn->agent, request);
-            } else {
-                request->notify_callback(evpl,
-                                         agent,
-                                         request,
-                                         EVPL_HTTP_NOTIFY_WANT_DATA,
-                                         request->request_type,
-                                         request->uri,
-                                         request->notify_data,
-                                         server->private_data);
-                break;
-            }
-
-        } else {
-
-            chunk_length = evpl_iovec_ring_bytes(&request->send_ring);
-
-            if (chunk_length) {
-
-                niov = evpl_iovec_alloc(evpl, 64, 0, 1, 0, &iov);
-
-                chunk_hdr_len = snprintf(iov.data, 64, "%lx\r\n", chunk_length);
-
-                evpl_http_abort_if(niov < 0, "failed to allocate iovec");
-
-                evpl_sendv(evpl, bind, &iov, 1, chunk_hdr_len, EVPL_SEND_FLAG_TAKE_REF);
-
-                while (!evpl_iovec_ring_is_empty(&request->send_ring)) {
-                    iovp = evpl_iovec_ring_tail(&request->send_ring);
-                    evpl_sendv(evpl, bind, iovp, 1, iovp->length, EVPL_SEND_FLAG_TAKE_REF);
-                    evpl_iovec_ring_remove(&request->send_ring);
-                }
-
-                niov = evpl_iovec_alloc(evpl, 2, 0, 1, 0, &iov);
-
-                evpl_http_abort_if(niov < 0, "failed to allocate iovec");
-
-                ((char *) iov.data)[0] = '\r';
-                ((char *) iov.data)[1] = '\n';
-
-                evpl_sendv(evpl, bind, &iov, 1, 2, EVPL_SEND_FLAG_TAKE_REF);
-            }
-
-            if (request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED) {
-                niov = evpl_iovec_alloc(evpl, 5, 0, 1, 0, &iov);
-
-                evpl_http_abort_if(niov < 0, "failed to allocate iovec");
-
-                ((char *) iov.data)[0] = '0';
-                ((char *) iov.data)[1] = '\r';
-                ((char *) iov.data)[2] = '\n';
-                ((char *) iov.data)[3] = '\r';
-                ((char *) iov.data)[4] = '\n';
-
-                evpl_sendv(evpl, bind, &iov, 1, 5, EVPL_SEND_FLAG_TAKE_REF);
-
+        if (done) {
+            request->notify_callback(evpl, agent, request,
+                                     EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE,
+                                     request->request_type, request->uri,
+                                     request->notify_data, server->private_data);
 #ifdef __clang_analyzer__
-                /* DL_DELETE asserts head != NULL but NDEBUG strips it
-                 * in Release builds; guide the analyzer explicitly */
-                if (!conn->pending_requests) {
-                    return;
-                }
-#endif /* ifdef __clang_analyzer__ */
-                DL_DELETE(conn->pending_requests, request);
-                evpl_http_request_free(conn->agent, request);
-            } else {
-                request->notify_callback(evpl,
-                                         agent,
-                                         request,
-                                         EVPL_HTTP_NOTIFY_WANT_DATA,
-                                         request->request_type,
-                                         request->uri,
-                                         request->notify_data,
-                                         server->private_data);
-                break;
+            /* DL_DELETE asserts head != NULL but NDEBUG strips it
+             * in Release builds; guide the analyzer explicitly */
+            if (!conn->pending_requests) {
+                return;
             }
+#endif /* ifdef __clang_analyzer__ */
+            DL_DELETE(conn->pending_requests, request);
+            evpl_http_request_free(conn->agent, request);
+        } else {
+            request->notify_callback(evpl, agent, request,
+                                     EVPL_HTTP_NOTIFY_WANT_DATA,
+                                     request->request_type, request->uri,
+                                     request->notify_data, server->private_data);
+            break;
         }
-
     }
 } /* evpl_http_server_flush */
+
+static void
+evpl_http_client_flush(
+    struct evpl           *evpl,
+    struct evpl_http_conn *conn)
+{
+    struct evpl_http_agent   *agent = conn->agent;
+    struct evpl_http_request *request, *tmp;
+    int                       done;
+
+    if (!conn->connected) {
+        return;
+    }
+
+    DL_FOREACH_SAFE(conn->pending_requests, request, tmp)
+    {
+
+        if (request->request_flags & EVPL_HTTP_REQUEST_REQUEST_SENT) {
+            continue;
+        }
+
+        if (!(request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_READY)) {
+            break;
+        }
+
+        if (!(request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_HDR_SENT)) {
+            evpl_http_client_send_headers(evpl, request);
+            request->request_flags |= EVPL_HTTP_REQUEST_RESPONSE_HDR_SENT;
+        }
+
+        done = evpl_http_send_body(evpl, request);
+
+        if (done) {
+            request->request_flags |= EVPL_HTTP_REQUEST_REQUEST_SENT;
+
+            if (request->notify_callback) {
+                request->notify_callback(evpl, agent, request,
+                                         EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE,
+                                         request->request_type, request->uri,
+                                         request->notify_data, conn->private_data);
+            }
+            /* Stays on pending_requests as the await-response FIFO. */
+        } else {
+            if (request->notify_callback) {
+                request->notify_callback(evpl, agent, request,
+                                         EVPL_HTTP_NOTIFY_WANT_DATA,
+                                         request->request_type, request->uri,
+                                         request->notify_data, conn->private_data);
+            }
+            break;
+        }
+    }
+} /* evpl_http_client_flush */
+
+void
+evpl_http_flush(
+    struct evpl *evpl,
+    void        *arg)
+{
+    struct evpl_http_conn *conn = arg;
+
+#ifdef HAVE_NGHTTP2
+    if (conn->proto == EVPL_HTTP_PROTO_H2) {
+        evpl_http2_flush(evpl, conn);
+        return;
+    }
+#endif /* ifdef HAVE_NGHTTP2 */
+
+    if (conn->is_server) {
+        evpl_http_server_flush(evpl, conn);
+    } else {
+        evpl_http_client_flush(evpl, conn);
+    }
+} /* evpl_http_flush */
 
 static void
 evpl_http_accept(
@@ -913,13 +1107,15 @@ evpl_http_accept(
     http_conn            = evpl_zalloc(sizeof(*http_conn));
     http_conn->server    = server;
     http_conn->is_server = 1;
+    http_conn->proto     = EVPL_HTTP_PROTO_UNKNOWN;
+    http_conn->connected = 1;
     http_conn->agent     = server->agent;
     http_conn->bind      = bind;
     *notify_callback     = evpl_http_event;
     *segment_callback    = NULL;
     *conn_private_data   = http_conn;
 
-    evpl_deferral_init(&http_conn->flush, evpl_http_server_flush, http_conn);
+    evpl_deferral_init(&http_conn->flush, evpl_http_flush, http_conn);
 
 
 } /* evpl_http_accept */
@@ -932,6 +1128,13 @@ evpl_http_attach(
     void                         *private_data)
 {
     struct evpl_http_server *server;
+
+#ifdef HAVE_NGHTTP2
+    /* Advertise ALPN so a TLS listener can negotiate "h2"; harmless for a
+     * plain-TCP listener (no TLS context is created). */
+    static const char *const protos[] = { "h2", "http/1.1" };
+    evpl_tls_set_alpn_protocols(protos, 2);
+#endif /* ifdef HAVE_NGHTTP2 */
 
     server = evpl_zalloc(sizeof(*server));
 
@@ -953,6 +1156,119 @@ evpl_http_server_destroy(
     evpl_listener_detach(agent->evpl, server->binding);
     evpl_free(server);
 } /* evpl_http_server_destroy */
+
+SYMBOL_EXPORT struct evpl_http_conn *
+evpl_http_client_connect(
+    struct evpl_http_agent *agent,
+    enum evpl_protocol_id   protocol_id,
+    struct evpl_endpoint   *endpoint,
+    enum evpl_http_version  version,
+    void                   *private_data)
+{
+    struct evpl_http_conn *conn;
+
+#ifdef HAVE_NGHTTP2
+    /* Advertise ALPN so an h2-over-TLS connection can be negotiated. */
+    if (protocol_id == EVPL_STREAM_SOCKET_TLS) {
+        if (version == EVPL_HTTP_VERSION_HTTP2) {
+            static const char *const protos[] = { "h2" };
+            evpl_tls_set_alpn_protocols(protos, 1);
+        } else if (version == EVPL_HTTP_VERSION_AUTO) {
+            static const char *const protos[] = { "h2", "http/1.1" };
+            evpl_tls_set_alpn_protocols(protos, 2);
+        }
+    }
+#endif /* ifdef HAVE_NGHTTP2 */
+
+    conn               = evpl_zalloc(sizeof(*conn));
+    conn->is_server    = 0;
+    conn->proto        = EVPL_HTTP_PROTO_UNKNOWN;
+    conn->version      = version;
+    conn->connected    = 0;
+    conn->agent        = agent;
+    conn->private_data = private_data;
+
+    evpl_deferral_init(&conn->flush, evpl_http_flush, conn);
+
+    conn->bind = evpl_connect(agent->evpl, protocol_id, NULL, endpoint,
+                              evpl_http_event, NULL, conn);
+
+    return conn;
+} /* evpl_http_client_connect */
+
+SYMBOL_EXPORT void
+evpl_http_client_close(
+    struct evpl_http_agent *agent,
+    struct evpl_http_conn  *conn)
+{
+    evpl_close(agent->evpl, conn->bind);
+} /* evpl_http_client_close */
+
+SYMBOL_EXPORT struct evpl_http_request *
+evpl_http_request_create(
+    struct evpl_http_conn      *conn,
+    enum evpl_http_request_type method,
+    const char                 *url)
+{
+    struct evpl_http_request *request;
+
+    request               = evpl_http_request_alloc(conn->agent);
+    request->conn         = conn;
+    request->request_type = method;
+    request->uri_len      = evpl_copy_string(request->uri, url, sizeof(request->uri));
+
+    return request;
+} /* evpl_http_request_create */
+
+SYMBOL_EXPORT void
+evpl_http_client_set_request_length(
+    struct evpl_http_request *request,
+    uint64_t                  content_length)
+{
+    request->response_length = content_length;
+    request->response_left   = content_length;
+} /* evpl_http_client_set_request_length */
+
+SYMBOL_EXPORT void
+evpl_http_client_set_request_chunked(struct evpl_http_request *request)
+{
+    request->response_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
+} /* evpl_http_client_set_request_chunked */
+
+SYMBOL_EXPORT void
+evpl_http_request_dispatch(
+    struct evpl_http_request   *request,
+    evpl_http_notify_callback_t notify_callback,
+    void                       *notify_data)
+{
+    struct evpl_http_conn *conn = request->conn;
+    struct evpl           *evpl = conn->agent->evpl;
+
+    request->notify_callback = notify_callback;
+    request->notify_data     = notify_data;
+    request->request_flags  |= EVPL_HTTP_REQUEST_RESPONSE_READY;
+
+#ifdef HAVE_NGHTTP2
+    if (conn->proto == EVPL_HTTP_PROTO_H2) {
+        evpl_http2_dispatch(request);
+        return;
+    }
+#endif /* ifdef HAVE_NGHTTP2 */
+
+    /* Queue in request order; flushed now if connected, otherwise once the
+     * connection completes (or the h2c/h1 protocol is decided). */
+    DL_APPEND(conn->pending_requests, request);
+
+    if (conn->connected) {
+        evpl_defer(evpl, &conn->flush);
+    }
+} /* evpl_http_request_dispatch */
+
+SYMBOL_EXPORT int
+evpl_http_request_status(struct evpl_http_request *request)
+{
+    return request->status;
+} /* evpl_http_request_status */
 
 SYMBOL_EXPORT enum evpl_http_request_type
 evpl_http_request_type(struct evpl_http_request *request)
@@ -995,12 +1311,26 @@ evpl_http_request_add_datav(
 
     if (niov == 0) {
         request->request_flags |= EVPL_HTTP_REQUEST_RESPONSE_FINISHED;
+
+#ifdef HAVE_NGHTTP2
+        if (request->conn->proto == EVPL_HTTP_PROTO_H2) {
+            request->h2.eof = 1;
+            evpl_http2_submit(request);
+        }
+#endif /* ifdef HAVE_NGHTTP2 */
         return;
     }
 
     for (i = 0; i < niov; i++) {
         evpl_iovec_ring_add(&request->send_ring, &iov[i]);
     }
+
+#ifdef HAVE_NGHTTP2
+    if (request->conn->proto == EVPL_HTTP_PROTO_H2) {
+        evpl_http2_submit(request);
+        return;
+    }
+#endif /* ifdef HAVE_NGHTTP2 */
 
     if (request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_READY) {
         evpl_defer(request->conn->agent->evpl, &request->conn->flush);
@@ -1037,6 +1367,15 @@ evpl_http_server_dispatch_default(
 
     request->status         = status;
     request->request_flags |= EVPL_HTTP_REQUEST_RESPONSE_READY;
+
+#ifdef HAVE_NGHTTP2
+    if (conn->proto == EVPL_HTTP_PROTO_H2) {
+        /* HTTP/2 carries no hop-by-hop Connection header and frames its own
+         * body, so the response is submitted directly to the session. */
+        evpl_http2_dispatch(request);
+        return;
+    }
+#endif /* ifdef HAVE_NGHTTP2 */
 
     evpl_http_request_add_header(request, "Connection", "keep-alive");
 
@@ -1104,6 +1443,37 @@ evpl_http_request_header_iterate(
         callback(header->name, header->value, private_data);
     }
 } /* evpl_http_request_header_iterate */
+
+SYMBOL_EXPORT const char *
+evpl_http_response_header(
+    struct evpl_http_request *request,
+    const char               *name)
+{
+    struct evpl_http_request_header *header;
+
+    DL_FOREACH(request->response_headers, header)
+    {
+        if (strncasecmp(header->name, name, sizeof(header->name) - 1) == 0) {
+            return header->value;
+        }
+    }
+
+    return NULL;
+} /* evpl_http_response_header */
+
+SYMBOL_EXPORT void
+evpl_http_response_header_iterate(
+    struct evpl_http_request     *request,
+    evpl_http_request_header_cb_t callback,
+    void                         *private_data)
+{
+    struct evpl_http_request_header *header;
+
+    DL_FOREACH(request->response_headers, header)
+    {
+        callback(header->name, header->value, private_data);
+    }
+} /* evpl_http_response_header_iterate */
 
 SYMBOL_EXPORT uint64_t
 evpl_http_request_get_data_avail(struct evpl_http_request *request)
