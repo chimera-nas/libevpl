@@ -54,6 +54,8 @@ server_notify(
     int               header_count;
 
     switch (notify_type) {
+        case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
+            break;
         case EVPL_HTTP_NOTIFY_RECEIVE_DATA:
             fprintf(stderr, "notify request\n");
             break;

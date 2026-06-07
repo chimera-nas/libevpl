@@ -45,6 +45,20 @@ evpl_calloc(
 } /* evpl_calloc */
 
 SYMBOL_EXPORT void *
+evpl_realloc(
+    void        *p,
+    unsigned int size)
+{
+    void *np = realloc(p, size);
+
+    if (!np && size) {
+        evpl_core_fatal("Failed to reallocate %u bytes\n", size);
+    }
+
+    return np;
+} /* evpl_realloc */
+
+SYMBOL_EXPORT void *
 evpl_valloc(
     unsigned int size,
     unsigned int alignment)

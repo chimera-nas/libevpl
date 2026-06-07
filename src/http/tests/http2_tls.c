@@ -2,9 +2,15 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+/*
+ * Drives the libevpl HTTP/2 server with libcurl over TLS, with HTTP/2 selected
+ * via ALPN ("h2").  The server uses an auto-generated self-signed certificate
+ * (peer verification disabled on both ends).
+ */
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/eventfd.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <curl/curl.h>
@@ -12,9 +18,11 @@
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"
 
+#define TEST_PORT 8082
+
 struct test_server {
     pthread_t            thread;
-    int                  run;
+    volatile int         run;
     struct evpl_doorbell doorbell;
 };
 
@@ -23,7 +31,6 @@ server_wake(
     struct evpl          *evpl,
     struct evpl_doorbell *doorbell)
 {
-    /* do nothing */
 } /* server_wake */
 
 static void
@@ -40,30 +47,19 @@ server_notify(
     struct evpl_iovec iov;
 
     switch (notify_type) {
-        case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
-            break;
-        case EVPL_HTTP_NOTIFY_RECEIVE_DATA:
-            fprintf(stderr, "notify request\n");
-            break;
         case EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE:
-            fprintf(stderr, "notify request complete\n");
             evpl_http_request_add_header(request, "MyHeader", "MyValue");
-            evpl_http_server_set_response_chunked(request);
-            evpl_http_server_dispatch_default(request, 200);
-            break;
-        case EVPL_HTTP_NOTIFY_WANT_DATA:
-            fprintf(stderr, "notify want data\n");
-
             evpl_iovec_alloc(evpl, 11, 0, 1, 0, &iov);
             memcpy(iov.data, "hello world", 11);
             iov.length = 11;
-
+            evpl_http_server_set_response_length(request, 11);
             evpl_http_request_add_datav(request, &iov, 1);
-            evpl_http_request_add_datav(request, NULL, 0);
-
+            evpl_http_server_dispatch_default(request, 200);
             break;
+        case EVPL_HTTP_NOTIFY_RECEIVE_DATA:
+        case EVPL_HTTP_NOTIFY_WANT_DATA:
+        case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
-            fprintf(stderr, "notify response complete\n");
             break;
     } /* switch */
 } /* server_notify */
@@ -77,15 +73,14 @@ server_dispatch(
     void                       **notify_data,
     void                        *private_data)
 {
-    fprintf(stderr, "dispatch request\n");
     *notify_callback = server_notify;
     *notify_data     = NULL;
 } /* server_dispatch */
 
-void *
+static void *
 server_function(void *ptr)
 {
-    struct test_server      *server_ctx = (struct test_server *) ptr;
+    struct test_server      *server_ctx = ptr;
     struct evpl_http_server *server;
     struct evpl             *evpl;
     struct evpl_endpoint    *endpoint;
@@ -93,21 +88,15 @@ server_function(void *ptr)
     struct evpl_http_agent  *agent;
 
     evpl = evpl_create(NULL);
-
     evpl_add_doorbell(evpl, &server_ctx->doorbell, server_wake);
-
-    agent = evpl_http_init(evpl);
-
-    endpoint = evpl_endpoint_create("0.0.0.0", 80);
-
+    agent    = evpl_http_init(evpl);
+    endpoint = evpl_endpoint_create("0.0.0.0", TEST_PORT);
     listener = evpl_listener_create();
+    server   = evpl_http_attach(agent, listener, server_dispatch, NULL);
 
-    server = evpl_http_attach(agent, listener, server_dispatch, NULL);
-
-    evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
+    evpl_listen(listener, EVPL_STREAM_SOCKET_TLS, endpoint);
 
     __sync_synchronize();
-
     server_ctx->run = 1;
 
     while (server_ctx->run) {
@@ -116,26 +105,11 @@ server_function(void *ptr)
 
     evpl_http_server_destroy(agent, server);
     evpl_http_destroy(agent);
-
     evpl_listener_destroy(listener);
-
     evpl_destroy(evpl);
 
     return NULL;
-} /* server */
-
-static size_t
-header_callback(
-    char  *buffer,
-    size_t size,
-    size_t nitems,
-    void  *userdata)
-{
-    size_t total_size = size * nitems;
-
-    fprintf(stderr, "Received header: %.*s", (int) total_size, buffer);
-    return total_size;
-} /* header_callback */
+} /* server_function */
 
 static size_t
 write_callback(
@@ -144,53 +118,28 @@ write_callback(
     size_t nmemb,
     void  *userdata)
 {
-    size_t total_size = size * nmemb;
-
-    fprintf(stderr, "Response body: %.*s\n", (int) total_size, ptr);
-    return total_size;
+    return size * nmemb;
 } /* write_callback */
-
-static size_t      total_sent = 0;
-static const char *chunks[]   = {
-    "This is the first chunk of data",
-    "Here comes the second chunk",
-    "And finally, the third chunk"
-};
-static size_t      num_chunks = 3;
-
-static size_t
-read_callback(
-    char  *buffer,
-    size_t size,
-    size_t nitems,
-    void  *userdata)
-{
-    size_t chunk_index = total_sent;
-
-    if (chunk_index >= num_chunks) {
-        return 0;  // Signal end of data
-    }
-
-    size_t to_copy = strlen(chunks[chunk_index]);
-    memcpy(buffer, chunks[chunk_index], to_copy);
-    total_sent++;
-
-    return to_copy;
-} /* read_callback */
 
 int
 main(
     int   argc,
     char *argv[])
-
 {
-    struct test_server server;
-    CURL              *curl;
-    CURLcode           res;
-    long               http_code = 0;
+    struct test_server         server;
+    struct evpl_global_config *config;
+    CURL                      *curl;
+    CURLcode                   res;
+    long                       http_code    = 0;
+    long                       http_version = 0;
+    char                       url[64];
+
+    /* Self-signed server cert; don't require a client cert. */
+    config = evpl_global_config_init();
+    evpl_global_config_set_tls_verify_peer(config, 0);
+    evpl_init(config);
 
     server.run = 0;
-
     pthread_create(&server.thread, NULL, server_function, &server);
 
     while (!server.run) {
@@ -198,42 +147,38 @@ main(
     }
 
     curl = curl_easy_init();
-
     if (!curl) {
         fprintf(stderr, "Failed to initialize curl\n");
         return 1;
     }
 
-    curl_easy_setopt(curl, CURLOPT_URL, "http://localhost:80");
+    snprintf(url, sizeof(url), "https://localhost:%d", TEST_PORT);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-
-    // Set up chunked transfer
-    curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
-    curl_easy_setopt(curl, CURLOPT_READFUNCTION, read_callback);
-    curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, -1L);  // Required for chunked transfer
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-
-    total_sent = 0;  // Reset counter before sending
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
+                     (long) CURL_HTTP_VERSION_2TLS);
 
     res = curl_easy_perform(curl);
 
     if (res == CURLE_OK) {
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        fprintf(stderr, "http_code %ld\n", http_code);
-
-
+        curl_easy_getinfo(curl, CURLINFO_HTTP_VERSION, &http_version);
+        fprintf(stderr, "http_code %ld http_version %ld\n", http_code, http_version);
+    } else {
+        fprintf(stderr, "curl failed: %s\n", curl_easy_strerror(res));
     }
 
     curl_easy_cleanup(curl);
 
     server.run = 0;
     __sync_synchronize();
-
     evpl_ring_doorbell(&server.doorbell);
-
     pthread_join(server.thread, NULL);
 
-    return (res == CURLE_OK && http_code == 200) ? 0 : 1;
+    return (res == CURLE_OK && http_code == 200 &&
+            http_version == CURL_HTTP_VERSION_2_0) ? 0 : 1;
 } /* main */

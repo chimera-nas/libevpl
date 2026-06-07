@@ -67,14 +67,94 @@ struct evpl_tls {
     struct evpl_event         event;
     int                       fd;
     SSL                      *ssl;
-    enum evpl_tls_state state;
+    enum evpl_tls_state       state;
     int                       is_server;
     int                       is_attached;
     int                       ktls_checked;
     struct evpl_tls_datagram *free_datagrams;
     struct evpl_iovec         recv1;
     struct evpl_iovec         recv2;
+    int                       alpn_len;
+    char                      alpn[16];
 };
+
+/*
+ * ALPN protocol list in OpenSSL wire format (each entry: 1-byte length followed
+ * by the protocol name), in client-preference / server-selection order.
+ * Process-wide; configured via evpl_tls_set_alpn_protocols() before the first
+ * TLS connection.
+ */
+static unsigned char evpl_tls_alpn_wire[256];
+static unsigned int  evpl_tls_alpn_wire_len;
+
+SYMBOL_EXPORT void
+evpl_tls_set_alpn_protocols(
+    const char *const *protocols,
+    int                count)
+{
+    unsigned int off = 0;
+    int          i;
+    size_t       plen;
+
+    for (i = 0; i < count; i++) {
+        plen = strlen(protocols[i]);
+        evpl_tls_abort_if(plen == 0 || plen > 255, "invalid ALPN protocol");
+        evpl_tls_abort_if(off + 1 + plen > sizeof(evpl_tls_alpn_wire),
+                          "ALPN protocol list too long");
+        evpl_tls_alpn_wire[off++] = (unsigned char) plen;
+        memcpy(&evpl_tls_alpn_wire[off], protocols[i], plen);
+        off += plen;
+    }
+
+    evpl_tls_alpn_wire_len = off;
+} /* evpl_tls_set_alpn_protocols */
+
+static int
+evpl_tls_alpn_select_cb(
+    SSL                  *ssl,
+    const unsigned char **out,
+    unsigned char        *outlen,
+    const unsigned char  *in,
+    unsigned int          inlen,
+    void                 *arg)
+{
+    /* SSL_select_next_proto wants a non-const "server" list; ours is static. */
+    if (evpl_tls_alpn_wire_len == 0) {
+        return SSL_TLSEXT_ERR_NOACK;
+    }
+
+    if (SSL_select_next_proto((unsigned char **) out, outlen,
+                              evpl_tls_alpn_wire, evpl_tls_alpn_wire_len,
+                              in, inlen) != OPENSSL_NPN_NEGOTIATED) {
+        return SSL_TLSEXT_ERR_NOACK;
+    }
+
+    return SSL_TLSEXT_ERR_OK;
+} /* evpl_tls_alpn_select_cb */
+
+SYMBOL_EXPORT int
+evpl_tls_get_alpn(
+    struct evpl_bind *bind,
+    char             *buf,
+    int               len)
+{
+    struct evpl_tls *t = evpl_bind_private(bind);
+    int              n = t->alpn_len;
+
+    if (n >= len) {
+        n = len - 1;
+    }
+
+    if (n > 0) {
+        memcpy(buf, t->alpn, n);
+    }
+
+    if (len > 0) {
+        buf[n > 0 ? n : 0] = '\0';
+    }
+
+    return t->alpn_len;
+} /* evpl_tls_get_alpn */
 
 #define evpl_event_tls(eventp) container_of((eventp), struct evpl_tls, event)
 
@@ -203,6 +283,10 @@ evpl_tls_create_ctx(int is_server)
         /* Default cipher list for kTLS */
         rc = SSL_CTX_set_cipher_list(ctx, "AES128-GCM-SHA256");
         evpl_tls_abort_if(rc <= 0, "Failed to set cipher list: AES128-GCM-SHA256");
+    }
+
+    if (is_server && evpl_tls_alpn_wire_len > 0) {
+        SSL_CTX_set_alpn_select_cb(ctx, evpl_tls_alpn_select_cb, NULL);
     }
 
     if (is_server) {
@@ -350,10 +434,21 @@ evpl_tls_handshake(
     }
 
     if (ret == 1) {
+        const unsigned char *alpn     = NULL;
+        unsigned int         alpn_len = 0;
+
         t->state = EVPL_TLS_STATE_CONNECTED;
         // Initially interested in both read and write
         evpl_event_read_interest(evpl, &t->event);
         evpl_event_write_interest(evpl, &t->event);
+
+        SSL_get0_alpn_selected(t->ssl, &alpn, &alpn_len);
+
+        if (alpn_len > 0 && alpn_len < sizeof(t->alpn)) {
+            memcpy(t->alpn, alpn, alpn_len);
+            t->alpn[alpn_len] = '\0';
+            t->alpn_len       = alpn_len;
+        }
 
         notify.notify_type   = EVPL_NOTIFY_CONNECTED;
         notify.notify_status = 0;
@@ -843,8 +938,13 @@ evpl_tls_init(
     t->ssl          = SSL_new(ssl_ctx);
     t->is_attached  = 0;
     t->ktls_checked = 0;
+    t->alpn_len     = 0;
 
     evpl_tls_abort_if(!t->ssl, "Failed to create SSL object");
+
+    if (!is_server && !is_listen && evpl_tls_alpn_wire_len > 0) {
+        SSL_set_alpn_protos(t->ssl, evpl_tls_alpn_wire, evpl_tls_alpn_wire_len);
+    }
 
     flags = fcntl(t->fd, F_GETFL, 0);
     evpl_tls_abort_if(flags < 0, "Failed to get socket flags: %s", strerror(errno));
