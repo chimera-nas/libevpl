@@ -8,3 +8,6 @@
 [submodule "ext/prometheus-c"]
 	path = ext/prometheus-c
 	url = https://github.com/chimera-nas/prometheus-c.git
+[submodule "ext/oteltracing-c"]
+	path = ext/oteltracing-c
+	url = https://github.com/chimera-nas/oteltracing-c.git
