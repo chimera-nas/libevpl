@@ -68,3 +68,9 @@ endif()
 add_subdirectory(core)
 add_subdirectory(rpc2)
 add_subdirectory(http)
+
+# OTLP/gRPC span exporter over the HTTP/2 client; needs both oteltracing-c
+# (protobuf-c) and nghttp2.
+if (HAVE_OTELTRACING AND HAVE_NGHTTP2)
+    add_subdirectory(otel)
+endif()
