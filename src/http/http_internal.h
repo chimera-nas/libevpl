@@ -115,6 +115,11 @@ struct evpl_http_conn {
     struct evpl_http_request *pending_requests;
     struct evpl_http2_conn   *h2;          /* NULL unless proto == H2 */
     void                     *private_data;
+    /* Agent-wide live-connection list (agent->conns): every conn's bind holds
+     * notify callbacks that dereference the agent, so evpl_http_destroy must
+     * be able to find and retire them before the agent is freed. */
+    struct evpl_http_conn    *prev;
+    struct evpl_http_conn    *next;
 };
 
 struct evpl_http_server {
@@ -128,6 +133,7 @@ struct evpl_http_server {
 struct evpl_http_agent {
     struct evpl_http_request        *free_requests;
     struct evpl_http_request_header *free_headers;
+    struct evpl_http_conn           *conns; /* live connections; see conn */
     struct evpl                     *evpl;
 };
 

@@ -122,6 +122,23 @@ evpl_http_destroy(struct evpl_http_agent *agent)
 {
     struct evpl_http_request        *request;
     struct evpl_http_request_header *header;
+    struct evpl_http_conn           *conn;
+
+    /* Close and retire every live connection before freeing the agent.  Conn
+     * binds hold notify callbacks that dereference the agent (the h2 receive
+     * path reads conn->agent->evpl on every data event), so an agent freed
+     * while a bind still has buffered input is a use-after-free as soon as
+     * evpl_destroy's close pump delivers that data.  Pump the loop until the
+     * disconnect notifications retire each conn (evpl_close is idempotent on
+     * a bind already pending close).  Must run on the agent's evpl thread,
+     * which every existing caller already does. */
+    while (agent->conns) {
+        DL_FOREACH(agent->conns, conn)
+        {
+            evpl_close(agent->evpl, conn->bind);
+        }
+        evpl_continue(agent->evpl);
+    }
 
     while (agent->free_headers) {
         header = agent->free_headers;
@@ -765,6 +782,7 @@ evpl_http_event(
                 request = next;
             }
 
+            DL_DELETE(http_conn->agent->conns, http_conn);
             evpl_free(http_conn);
         }
         break;
@@ -1116,6 +1134,7 @@ evpl_http_accept(
 
     evpl_deferral_init(&http_conn->flush, evpl_http_flush, http_conn);
 
+    DL_APPEND(server->agent->conns, http_conn);
 
 } /* evpl_http_accept */
 
@@ -1188,6 +1207,8 @@ evpl_http_client_connect(
     conn->private_data = private_data;
 
     evpl_deferral_init(&conn->flush, evpl_http_flush, conn);
+
+    DL_APPEND(agent->conns, conn);
 
     conn->bind = evpl_connect(agent->evpl, protocol_id, NULL, endpoint,
                               evpl_http_event, NULL, conn);
