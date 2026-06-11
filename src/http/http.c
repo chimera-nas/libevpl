@@ -667,14 +667,13 @@ evpl_http_conn_connected(struct evpl_http_conn *conn)
 
 #ifdef HAVE_NGHTTP2
     if (conn->proto == EVPL_HTTP_PROTO_H2) {
-        struct evpl_http_request *request, *tmp;
+        struct evpl_http_request *request;
 
         evpl_http2_conn_init(conn);
 
         /* Submit any requests the client queued before the connection
          * completed. */
-        DL_FOREACH_SAFE(conn->pending_requests, request, tmp)
-        {
+        while ((request = conn->pending_requests) != NULL) {
             DL_DELETE(conn->pending_requests, request);
             evpl_http2_dispatch(request);
         }
