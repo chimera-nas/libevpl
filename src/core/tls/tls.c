@@ -280,9 +280,17 @@ evpl_tls_create_ctx(int is_server)
         rc = SSL_CTX_set_cipher_list(ctx, config->tls_cipher_list);
         evpl_tls_abort_if(rc <= 0, "Failed to set cipher list: %s", config->tls_cipher_list);
     } else if (config->tls_ktls_enabled) {
-        /* Default cipher list for kTLS */
-        rc = SSL_CTX_set_cipher_list(ctx, "AES128-GCM-SHA256");
-        evpl_tls_abort_if(rc <= 0, "Failed to set cipher list: AES128-GCM-SHA256");
+        /* Default cipher list for kTLS: the kernel offload depends on the
+         * record cipher (AES-128-GCM), not the key exchange, so prefer
+         * ECDHE -- hardened crypto policies (e.g. RHEL DEFAULT) drop the
+         * plain-RSA key exchange entirely, and a server offering only
+         * AES128-GCM-SHA256 fails those clients with "no shared cipher".
+         * Keep the RSA-kex variant as a last-resort fallback. */
+        rc = SSL_CTX_set_cipher_list(ctx,
+                                     "ECDHE-ECDSA-AES128-GCM-SHA256:"
+                                     "ECDHE-RSA-AES128-GCM-SHA256:"
+                                     "AES128-GCM-SHA256");
+        evpl_tls_abort_if(rc <= 0, "Failed to set default kTLS cipher list");
     }
 
     if (is_server && evpl_tls_alpn_wire_len > 0) {
