@@ -17,6 +17,7 @@
 #include "core/allocator.h"
 #include "core/protocol.h"
 #include "core/macros.h"
+#include "core/pthread_util.h"
 
 /* Encodes the log2 of a specific hugetlb page size into the mmap flags so a
  * non-default pool (e.g. 1 GiB) can be selected; see mmap(2) MAP_HUGE_*. */
@@ -82,8 +83,15 @@ evpl_allocator_create()
         allocator->prealloc_threads = evpl_zalloc(threads * sizeof(pthread_t));
 
         for (i = 0; i < (int) threads; i++) {
-            pthread_create(&allocator->prealloc_threads[i], NULL,
-                           evpl_allocator_prealloc_thread, allocator);
+            int rc = evpl_pthread_create(&allocator->prealloc_threads[i], NULL,
+                                         evpl_allocator_prealloc_thread,
+                                         allocator);
+
+            /* A missing producer would leave outstanding_slabs credits that
+            * nothing services and destroy() joining a garbage pthread_t. */
+            evpl_core_abort_if(rc,
+                               "evpl_allocator_create: pthread_create failed: %s",
+                               strerror(rc));
         }
 
         /* Seed initial fill so target is reached before first consumer.

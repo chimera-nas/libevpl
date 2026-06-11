@@ -134,7 +134,9 @@ evpl_fatal(
     EvplLog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
-    EvplFlush();
+    if (EvplFlush) {
+        EvplFlush();
+    }
 
     exit(1);
 } /* evpl_fatal */
@@ -153,7 +155,9 @@ evpl_abort(
     EvplLog(level_string[EVPL_LOG_FATAL], mod, srcfile, lineno, fmt, argp);
     va_end(argp);
 
-    EvplFlush();
+    if (EvplFlush) {
+        EvplFlush();
+    }
 
     abort();
 } /* evpl_abort */

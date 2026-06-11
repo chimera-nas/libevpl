@@ -13,6 +13,7 @@
 #include "core/evpl_shared.h"
 #include "core/event_fn.h"
 #include "core/macros.h"
+#include "core/pthread_util.h"
 
 extern struct evpl_shared *evpl_shared;
 
@@ -135,6 +136,7 @@ evpl_thread_create(
     void                           *private_data)
 {
     struct evpl_thread *evpl_thread;
+    int                 rc;
 
     __evpl_init();
 
@@ -152,8 +154,13 @@ evpl_thread_create(
     pthread_mutex_init(&evpl_thread->lock, NULL);
     pthread_cond_init(&evpl_thread->cond, NULL);
 
-    pthread_create(&evpl_thread->thread, NULL,
-                   evpl_thread_function, evpl_thread);
+    /* If the thread is never created, the ready-wait below would block
+     * forever, so a creation failure must abort rather than fall through. */
+    rc = evpl_pthread_create(&evpl_thread->thread, NULL,
+                             evpl_thread_function, evpl_thread);
+
+    evpl_thread_abort_if(rc, "evpl_thread_create: pthread_create failed: %s",
+                         strerror(rc));
 
     pthread_mutex_lock(&evpl_thread->lock);
 
