@@ -137,6 +137,10 @@ struct evpl {
     struct evpl_buffer           *datagram_buffer;
     struct evpl_buffer           *free_local_buffers;
     struct evpl_buffer           *free_shared_buffers;
+    struct evpl_buffer           *free_shared_buffers_tail;
+    struct evpl_buffer           *free_shared_buffers_low_prev;
+    struct evpl_buffer           *free_shared_buffers_low_head;
+    int                           free_shared_buffer_count;
     struct evpl_bind             *free_binds;
     struct evpl_bind             *binds;
     struct evpl_bind             *pending_close_binds;

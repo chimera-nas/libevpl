@@ -87,6 +87,13 @@ evpl_allocator_free(
     struct evpl_allocator *allocator,
     struct evpl_buffer    *buffer);
 
+void
+evpl_allocator_free_list(
+    struct evpl_allocator *allocator,
+    struct evpl_buffer    *head,
+    struct evpl_buffer    *tail,
+    int                    count);
+
 void *
 evpl_memory_framework_private(
     const struct evpl_iovec *iov,
