@@ -117,6 +117,7 @@ evpl_allocator_create()
 void
 evpl_allocator_destroy(struct evpl_allocator *allocator)
 {
+    evpl_iovec_profile_dump("allocator_destroy");
     struct evpl_slab      *slab;
     struct evpl_buffer    *buffer;
     struct evpl_framework *framework;
