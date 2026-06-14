@@ -6,6 +6,7 @@ set(CORE_SRC
     evpl.c
     allocator.c
     iovec.c
+    iovec_profile.c
     config.c
     protocol.c
     address.c

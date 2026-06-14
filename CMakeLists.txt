@@ -8,6 +8,7 @@ option(IO_URING_ENABLED "Enable io_uring support" ON)
 option(IO_URING_NVME_ENABLED "Enable the io_uring NVMe uring_cmd block backend (auto-detected when ON; set OFF to force-disable, e.g. under the clang static analyzer)" ON)
 option(REQUIRE_NETNS_TESTS "Fail configure if network namespace tests cannot be enabled" OFF)
 set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES=required, NO=disabled)")
+option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 project(libevpl LANGUAGES C)
 
@@ -72,6 +73,11 @@ endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_definitions(-O3)
+endif()
+
+if(EVPL_IOVEC_PROFILE)
+    message(STATUS "Enabling retained-iovec stack profiling")
+    add_definitions(-DEVPL_IOVEC_PROFILE=1)
 endif()
 
 if(IO_URING_ENABLED)
