@@ -66,6 +66,9 @@ struct evpl_iovec {
     void                  *data;
     unsigned int           length;
     unsigned int           pad;
+#ifdef EVPL_IOVEC_PROFILE
+    uint32_t               profile_site;
+#endif /* EVPL_IOVEC_PROFILE */
     struct evpl_iovec_ref *ref;
 };
 
@@ -159,6 +162,41 @@ evpl_iovec_canary_move(
 
 #endif /* EVPL_IOVEC_TRACE */
 
+#ifdef EVPL_IOVEC_PROFILE
+uint32_t evpl_iovec_profile_capture(void);
+void evpl_iovec_profile_ref(uint32_t site);
+void evpl_iovec_profile_unref(uint32_t site);
+void evpl_iovec_profile_dump(const char *reason);
+
+static inline void
+evpl_iovec_profile_assign(struct evpl_iovec *iovec)
+{
+    uint32_t site = evpl_iovec_profile_capture();
+
+    iovec->profile_site = site;
+    evpl_iovec_profile_ref(site);
+} /* evpl_iovec_profile_assign */
+
+static inline void
+evpl_iovec_profile_release(struct evpl_iovec *iovec)
+{
+    evpl_iovec_profile_unref(iovec->profile_site);
+    iovec->profile_site = 0;
+} /* evpl_iovec_profile_release */
+
+static inline void
+evpl_iovec_profile_move(struct evpl_iovec *dst, struct evpl_iovec *src)
+{
+    dst->profile_site = src->profile_site;
+    src->profile_site = 0;
+} /* evpl_iovec_profile_move */
+#else /* EVPL_IOVEC_PROFILE */
+static inline void evpl_iovec_profile_assign(struct evpl_iovec *iovec) { (void) iovec; }
+static inline void evpl_iovec_profile_release(struct evpl_iovec *iovec) { (void) iovec; }
+static inline void evpl_iovec_profile_move(struct evpl_iovec *dst, struct evpl_iovec *src) { (void) dst; (void) src; }
+static inline void evpl_iovec_profile_dump(const char *reason) { (void) reason; }
+#endif /* EVPL_IOVEC_PROFILE */
+
 int evpl_iovec_alloc(
     struct evpl       *evpl,
     unsigned int       length,
@@ -212,6 +250,7 @@ evpl_iovec_release(
     struct evpl       *evpl,
     struct evpl_iovec *iovec)
 {
+    evpl_iovec_profile_release(iovec);
 #ifdef EVPL_IOVEC_TRACE
     struct evpl_iovec_ref *real_ref = evpl_iovec_real_ref(iovec);
 
@@ -281,6 +320,7 @@ evpl_iovec_take_ref(
 #else // ifdef EVPL_IOVEC_TRACE
     dst->ref = src;
 #endif // ifdef EVPL_IOVEC_TRACE
+    evpl_iovec_profile_assign(dst);
 } /* evpl_iovec_take_ref */
 
 /*
@@ -298,6 +338,7 @@ evpl_iovec_clone_segment(
 
     evpl_iovec_ref_incr(real_ref);
     evpl_iovec_canary_alloc(dst, real_ref);
+    evpl_iovec_profile_assign(dst);
 #else // ifdef EVPL_IOVEC_TRACE
     evpl_iovec_take_ref(dst, src->ref);
 #endif // ifdef EVPL_IOVEC_TRACE
@@ -322,6 +363,7 @@ evpl_iovec_clone(
 
     evpl_iovec_ref_incr(real_ref);
     evpl_iovec_canary_alloc(dst, real_ref);
+    evpl_iovec_profile_assign(dst);
 #else // ifdef EVPL_IOVEC_TRACE
     evpl_iovec_take_ref(dst, src->ref);
 #endif // ifdef EVPL_IOVEC_TRACE
@@ -343,8 +385,10 @@ evpl_iovec_move_segment(
     dst->data   = src->data;
     dst->length = src->length;
     evpl_iovec_canary_alloc(dst, real_ref);
+    evpl_iovec_profile_move(dst, src);
 #else // ifdef EVPL_IOVEC_TRACE
     dst->ref = src->ref;
+    evpl_iovec_profile_move(dst, src);
 #endif // ifdef EVPL_IOVEC_TRACE
 
     if (offset + length > src->length) {
@@ -373,8 +417,10 @@ evpl_iovec_move(
     dst->data   = src->data;
     dst->length = src->length;
     evpl_iovec_canary_alloc(dst, real_ref);
+    evpl_iovec_profile_move(dst, src);
 #else // ifdef EVPL_IOVEC_TRACE
     *dst = *src;
+    evpl_iovec_profile_move(dst, src);
 #endif // ifdef EVPL_IOVEC_TRACE
     /* Invalidate source to indicate ownership was transferred */
     src->data = NULL;
@@ -395,6 +441,7 @@ evpl_iovec_set_ref(
 #else // ifdef EVPL_IOVEC_TRACE
     iovec->ref = ref;
 #endif // ifdef EVPL_IOVEC_TRACE
+    evpl_iovec_profile_assign(iovec);
 } /* evpl_iovec_set_ref */
 
 /*

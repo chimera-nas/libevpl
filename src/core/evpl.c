@@ -68,6 +68,15 @@
 pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
 struct evpl_shared *evpl_shared      = NULL;
 
+#ifdef EVPL_IOVEC_PROFILE
+static void
+evpl_iovec_profile_signal(int signum)
+{
+    (void) signum;
+    evpl_iovec_profile_dump("SIGUSR2");
+} /* evpl_iovec_profile_signal */
+#endif /* EVPL_IOVEC_PROFILE */
+
 static void
 evpl_shared_init(struct evpl_global_config *config)
 {
@@ -103,6 +112,9 @@ evpl_shared_init(struct evpl_global_config *config)
     }
 
     signal(SIGPIPE, SIG_IGN);
+#ifdef EVPL_IOVEC_PROFILE
+    signal(SIGUSR2, evpl_iovec_profile_signal);
+#endif /* EVPL_IOVEC_PROFILE */
 
     evpl_shared->numa_config = evpl_numa_discover();
 
