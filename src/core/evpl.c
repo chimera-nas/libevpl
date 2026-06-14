@@ -764,10 +764,16 @@ evpl_destroy(struct evpl *evpl)
         evpl_allocator_free(evpl_shared->allocator, buffer);
     }
 
-    while (evpl->free_shared_buffers) {
-        buffer = evpl->free_shared_buffers;
-        LL_DELETE(evpl->free_shared_buffers, buffer);
-        evpl_allocator_free(evpl_shared->allocator, buffer);
+    if (evpl->free_shared_buffers) {
+        evpl_allocator_free_list(evpl_shared->allocator,
+                                 evpl->free_shared_buffers,
+                                 evpl->free_shared_buffers_tail,
+                                 evpl->free_shared_buffer_count);
+        evpl->free_shared_buffers          = NULL;
+        evpl->free_shared_buffers_tail     = NULL;
+        evpl->free_shared_buffers_low_prev = NULL;
+        evpl->free_shared_buffers_low_head = NULL;
+        evpl->free_shared_buffer_count     = 0;
     }
 
     evpl_core_destroy(&evpl->core);
