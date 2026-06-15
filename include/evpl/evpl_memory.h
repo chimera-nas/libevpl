@@ -202,7 +202,11 @@ static inline void evpl_iovec_profile_release(struct evpl_iovec *iovec) { (void)
 static inline void evpl_iovec_profile_move(
     struct evpl_iovec *dst,
     struct evpl_iovec *src) { (void) dst; (void) src; }
-static inline void evpl_iovec_profile_dump(const char *reason) { (void) reason; }
+/* dump is defined (as an exported no-op) in iovec_profile.c for this branch,
+ * so it is only declared here -- defining it static inline as well would
+ * collide with that definition inside the iovec_profile.c translation unit. */
+void evpl_iovec_profile_dump(
+    const char *reason);
 #endif /* EVPL_IOVEC_PROFILE */
 
 int evpl_iovec_alloc(
