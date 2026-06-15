@@ -22,11 +22,26 @@
 /* Encodes the log2 of a specific hugetlb page size into the mmap flags so a
  * non-default pool (e.g. 1 GiB) can be selected; see mmap(2) MAP_HUGE_*. */
 #ifndef MAP_HUGE_SHIFT
-#define MAP_HUGE_SHIFT 26
+#define MAP_HUGE_SHIFT                26
 #endif /* ifndef MAP_HUGE_SHIFT */
 
 extern struct evpl_shared *evpl_shared;
 
+#ifndef EVPL_SHARED_BUFFER_CACHE_LOW
+#define EVPL_SHARED_BUFFER_CACHE_LOW  512
+#endif /* EVPL_SHARED_BUFFER_CACHE_LOW */
+
+#ifndef EVPL_SHARED_BUFFER_CACHE_HIGH
+#define EVPL_SHARED_BUFFER_CACHE_HIGH 1024
+#endif /* EVPL_SHARED_BUFFER_CACHE_HIGH */
+
+#if EVPL_SHARED_BUFFER_CACHE_LOW <= 0
+#error EVPL_SHARED_BUFFER_CACHE_LOW must be positive
+#endif /* EVPL_SHARED_BUFFER_CACHE_LOW <= 0 */
+
+#if EVPL_SHARED_BUFFER_CACHE_HIGH <= EVPL_SHARED_BUFFER_CACHE_LOW
+#error EVPL_SHARED_BUFFER_CACHE_HIGH must be greater than EVPL_SHARED_BUFFER_CACHE_LOW
+#endif /* EVPL_SHARED_BUFFER_CACHE_HIGH <= EVPL_SHARED_BUFFER_CACHE_LOW */
 
 struct evpl_slab {
     void                  *data;
@@ -571,15 +586,31 @@ evpl_allocator_free(
     struct evpl_allocator *allocator,
     struct evpl_buffer    *buffer)
 {
+    buffer->next = NULL;
+    evpl_allocator_free_list(allocator, buffer, buffer, 1);
+} /* evpl_allocator_free */
+
+void
+evpl_allocator_free_list(
+    struct evpl_allocator *allocator,
+    struct evpl_buffer    *head,
+    struct evpl_buffer    *tail,
+    int                    count)
+{
+    if (!head) {
+        return;
+    }
+
     pthread_mutex_lock(&allocator->lock);
-    LL_PREPEND(allocator->free_buffers, buffer);
-    allocator->free_buffer_count++;
+    tail->next                    = allocator->free_buffers;
+    allocator->free_buffers       = head;
+    allocator->free_buffer_count += count;
     if (allocator->m_free_buffers) {
         prometheus_gauge_set(allocator->m_free_buffers,
                              allocator->free_buffer_count);
     }
     pthread_mutex_unlock(&allocator->lock);
-} /* evpl_allocator_free */
+} /* evpl_allocator_free_list */
 
 void *
 evpl_allocator_alloc_slab(
@@ -705,14 +736,46 @@ evpl_buffer_free(
     struct evpl_buffer *buffer = container_of(ref, struct evpl_buffer, ref);
 
     if (evpl) {
-        /* Park on the releasing thread's shared free list rather than
-         * going through the global allocator lock.  Buffers are fungible
-         * so it doesn't matter which thread allocated them — what
-         * matters is they end up cached somewhere a future alloc on this
-         * thread can pick them up lock-free.  Returned to the global
-         * allocator at evpl_destroy time.
+        /* Append to the releasing thread's shared cache. The oldest buffers
+         * are at the head and the newest LOW buffers start at low_head.
+         * When the cache exceeds HIGH, the old prefix can be returned to the
+         * global allocator in O(1) by splicing at low_prev.
          */
-        LL_PREPEND(evpl->free_shared_buffers, buffer);
+        buffer->next = NULL;
+
+        if (evpl->free_shared_buffers_tail) {
+            evpl->free_shared_buffers_tail->next = buffer;
+        } else {
+            evpl->free_shared_buffers = buffer;
+        }
+        evpl->free_shared_buffers_tail = buffer;
+
+        if (evpl->free_shared_buffer_count >= EVPL_SHARED_BUFFER_CACHE_LOW) {
+            evpl->free_shared_buffers_low_prev = evpl->free_shared_buffers_low_head;
+            evpl->free_shared_buffers_low_head = evpl->free_shared_buffers_low_head->next;
+        }
+
+        evpl->free_shared_buffer_count++;
+
+        if (evpl->free_shared_buffer_count == EVPL_SHARED_BUFFER_CACHE_LOW) {
+            evpl->free_shared_buffers_low_head = evpl->free_shared_buffers;
+            evpl->free_shared_buffers_low_prev = NULL;
+        } else if (evpl->free_shared_buffer_count > EVPL_SHARED_BUFFER_CACHE_HIGH) {
+            struct evpl_buffer *spill_head  = evpl->free_shared_buffers;
+            struct evpl_buffer *spill_tail  = evpl->free_shared_buffers_low_prev;
+            int                 spill_count =
+                evpl->free_shared_buffer_count - EVPL_SHARED_BUFFER_CACHE_LOW;
+
+            evpl->free_shared_buffers          = evpl->free_shared_buffers_low_head;
+            evpl->free_shared_buffers_low_prev = NULL;
+            evpl->free_shared_buffer_count     = EVPL_SHARED_BUFFER_CACHE_LOW;
+            spill_tail->next                   = NULL;
+
+            evpl_allocator_free_list(buffer->ref.slab->allocator,
+                                     spill_head,
+                                     spill_tail,
+                                     spill_count);
+        }
     } else {
         /* No evpl context (e.g. during module shutdown) — bypass the
          * cache and go straight to the global allocator.
@@ -749,8 +812,25 @@ evpl_buffer_alloc(
     if (flags & EVPL_IOVEC_FLAG_SHARED) {
         if (evpl && evpl->free_shared_buffers) {
             /* Try thread-local shared cache first (no global lock) */
-            buffer = evpl->free_shared_buffers;
-            LL_DELETE(evpl->free_shared_buffers, buffer);
+            buffer                    = evpl->free_shared_buffers;
+            evpl->free_shared_buffers = buffer->next;
+            if (evpl->free_shared_buffers_tail == buffer) {
+                evpl->free_shared_buffers_tail = NULL;
+            }
+
+            if (evpl->free_shared_buffer_count <= EVPL_SHARED_BUFFER_CACHE_LOW) {
+                evpl->free_shared_buffers_low_prev = NULL;
+                evpl->free_shared_buffers_low_head = evpl->free_shared_buffers;
+            } else if (evpl->free_shared_buffers_low_prev == buffer) {
+                evpl->free_shared_buffers_low_prev = NULL;
+                evpl->free_shared_buffers_low_head = evpl->free_shared_buffers;
+            }
+
+            evpl->free_shared_buffer_count--;
+            if (!evpl->free_shared_buffer_count) {
+                evpl->free_shared_buffers_low_head = NULL;
+            }
+            buffer->next = NULL;
         } else {
             buffer = evpl_allocator_alloc(evpl_shared->allocator);
         }
