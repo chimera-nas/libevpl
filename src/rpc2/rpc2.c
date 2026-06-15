@@ -571,15 +571,15 @@ evpl_rpc2_send_reply(
     int                          error_stat)
 {
     struct evpl_iovec             iov, reply_iov;
-    int                           reply_len, reply_niov, offset, rpc_len;
-    uint32_t                      hdr, write_left, left, chunk, reply_offset;
+    int                           reply_len, reply_niov, offset, rpc_len, reply_chunk_len;
+    uint32_t                      hdr, write_left, left, chunk;
     struct rpc_msg                rpc_reply;
     struct rdma_msg               rdma_msg;
     struct xdr_write_chunk        reply_chunk;
     struct xdr_write_list         write_list;
     struct xdr_rdma_segment      *target;
     struct evpl_iovec            *segment_iov, *reply_segment_iov;
-    struct evpl_rpc2_iovec_cursor write_cursor;
+    struct evpl_rpc2_iovec_cursor write_cursor, reply_cursor;
     int                           segment_niov;
     int                           i, reduce = 0, rdma = request->conn->rdma;
     struct evpl_iovec            *final_reply_iov;
@@ -600,7 +600,11 @@ evpl_rpc2_send_reply(
         rpc_reply.body.rbody.rreply.auth = error_stat;
     }
 
-    rpc_len = marshall_length_rpc_msg(&rpc_reply);
+    rpc_len         = marshall_length_rpc_msg(&rpc_reply);
+    reply_chunk_len = rpc_len + length - reserve;
+
+    evpl_rpc2_abort_if(reply_chunk_len < 0,
+                       "negative RPC2 RDMA reply chunk length %d", reply_chunk_len);
 
     if (rdma) {
 
@@ -662,13 +666,13 @@ evpl_rpc2_send_reply(
 
         if (request->reply_segments.num_segments > 0) {
 
-            if (rpc_len + length > 512) {
+            if (reply_chunk_len > 512) {
                 reduce = 1;
 
                 rdma_msg.rdma_body.proc                  = RDMA_NOMSG;
                 rdma_msg.rdma_body.rdma_nomsg.rdma_reads = NULL;
 
-                left = rpc_len + length;
+                left = reply_chunk_len;
 
                 for (i = 0; i < reply_chunk.num_target; i++) {
 
@@ -745,7 +749,7 @@ evpl_rpc2_send_reply(
         msg_iov[0].data   += offset;
         msg_iov[0].length -= offset;
 
-        reply_offset = 0;
+        evpl_rpc2_iovec_cursor_init(&reply_cursor, msg_iov, msg_niov);
 
         for (i = 0; i < reply_chunk.num_target; i++) {
 
@@ -753,18 +757,19 @@ evpl_rpc2_send_reply(
                 continue;
             }
 
-            reply_segment_iov = &request->reply_segment_iov;
+            segment_niov = evpl_rpc2_iovec_cursor_move(&reply_cursor, &request->msg->dbuf, &reply_segment_iov,
+                                                       reply_chunk.target[i].length);
 
-            evpl_iovec_clone_segment(reply_segment_iov, &msg_iov[0], reply_offset, reply_chunk.target[i].length);
+            if (unlikely(segment_niov < 0)) {
+                evpl_rpc2_abort("Failed to move reply segment iovec");
+            }
 
             evpl_rdma_write(evpl, request->bind,
                             reply_chunk.target[i].handle,
                             reply_chunk.target[i].offset,
-                            reply_segment_iov, 1,
+                            reply_segment_iov, segment_niov,
                             EVPL_RDMA_FLAG_TAKE_REF,
                             NULL, NULL);
-
-            reply_offset += reply_chunk.target[i].length;
         }
 
         /*
@@ -1273,6 +1278,12 @@ evpl_rpc2_recv_msg(
                             request->write_chunk.max_length += write_list->entry.target[i].length;
                         }
 
+                        evpl_rpc2_abort_if(write_list->entry.num_target >
+                                           (int) (sizeof(request->write_segments.segments) /
+                                                  sizeof(request->write_segments.segments[0])),
+                                           "Too many RPC2 RDMA write segments: %u",
+                                           write_list->entry.num_target);
+
                         request->write_segments.num_segments = write_list->entry.num_target;
                         memcpy(request->write_segments.segments,
                                write_list->entry.target,
@@ -1280,6 +1291,21 @@ evpl_rpc2_recv_msg(
 
                         write_list = write_list->next;
                     }
+
+                    if (rdma_msg.rdma_body.rdma_msg.rdma_reply) {
+                        evpl_rpc2_abort_if(rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target >
+                                           (int) (sizeof(request->reply_segments.segments) /
+                                                  sizeof(request->reply_segments.segments[0])),
+                                           "Too many RPC2 RDMA reply segments: %u",
+                                           rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target);
+
+                        request->reply_segments.num_segments =
+                            rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target;
+                        memcpy(request->reply_segments.segments,
+                               rdma_msg.rdma_body.rdma_msg.rdma_reply->target,
+                               request->reply_segments.num_segments * sizeof(struct xdr_rdma_segment));
+                    }
+
                 } else {
                     evpl_rpc2_error("rpc2 received rdma msg with unhandled proc %d", rdma_msg.rdma_body.proc);
                 }
