@@ -209,3 +209,13 @@ enum evpl_protocol_id evpl_bind_get_protocol(
 
 int evpl_bind_is_rdma(
     struct evpl_bind *bind);
+
+/* True once the peer's close has been observed on this bind (read-side FIN seen,
+ * half-close requested, or destroy in progress) but possibly before
+ * EVPL_NOTIFY_DISCONNECTED has been dispatched for it.  A genuinely live,
+ * fully-connected bind returns 0.  Lets a caller distinguish a peer that is on
+ * its way out (its reservations will be released once the disconnect lands) from
+ * one that is still connected, even in the window before the disconnect callback
+ * runs. */
+int evpl_bind_is_closing(
+    struct evpl_bind *bind);
