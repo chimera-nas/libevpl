@@ -277,6 +277,22 @@ evpl_bind_is_rdma(struct evpl_bind *bind)
     return bind->protocol->rdma;
 } /* evpl_bind_is_rdma */
 
+SYMBOL_EXPORT int
+evpl_bind_is_closing(struct evpl_bind *bind)
+{
+    /* True once the peer's close has been observed on this bind but before the
+     * deferred destroy dispatches EVPL_NOTIFY_DISCONNECTED: a read-side FIN
+     * (recv returns 0) calls evpl_close, which sets EVPL_BIND_PENDING_CLOSED
+     * synchronously and defers the destroy; a half-close (evpl_finish) sets
+     * EVPL_BIND_FINISH; the destroy itself sets EVPL_BIND_CLOSED.  A genuinely
+     * live bind has none of these set.  Lets a caller distinguish a peer that is
+     * on its way out (its reservations will be released once the disconnect
+     * callback lands) from one that is still fully connected. */
+    return (bind->flags & (EVPL_BIND_PENDING_CLOSED |
+                           EVPL_BIND_CLOSED |
+                           EVPL_BIND_FINISH)) != 0;
+} /* evpl_bind_is_closing */
+
 SYMBOL_EXPORT void
 evpl_bind_request_send_notifications(
     struct evpl      *evpl,
