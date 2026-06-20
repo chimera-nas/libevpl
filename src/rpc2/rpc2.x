@@ -6,7 +6,8 @@
 enum auth_flavor {
     AUTH_NONE       = 0,
     AUTH_SYS        = 1,
-    AUTH_SHORT      = 2
+    AUTH_SHORT      = 2,
+    RPCSEC_GSS      = 6
 };
 
 struct authsys_parms {
@@ -24,6 +25,14 @@ opaque_union opaque_auth switch (auth_flavor flavor) {
         void;
     case AUTH_SHORT:
         opaque body<400>;
+    /*
+     * For RPCSEC_GSS the credential body is itself an XDR-encoded
+     * rpc_gss_cred_t (see gss.x) and the verifier body is a GSS MIC
+     * token.  We carry both as opaque blobs here and decode/verify them
+     * in C in the rpc2 layer rather than via generated codegen.
+     */
+    case RPCSEC_GSS:
+        opaque rpcsec_gss<400>;
     default:
         void;
 };

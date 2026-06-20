@@ -5,12 +5,16 @@
 #include <complex.h>
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
 #include <time.h>
 #include <utlist.h>
 #include <uthash.h>
 
 #include "core/evpl.h"
 #include "evpl/evpl_rpc2.h"
+#include "evpl/evpl_rpc2_gss.h"
 #include "evpl/evpl_rdma.h"
 
 #include "rpc2/common.h"
@@ -94,6 +98,24 @@ struct evpl_rpc2_request {
     struct evpl_rpc2_msg                 *msg;
     struct evpl_rpc2_request             *next;
     struct evpl_rpc2_encoding             encoding; /* Public interface for apps */
+
+    /* RPCSEC_GSS state for a verified DATA request.  The authenticated
+     * principal is copied in (rather than holding a context pointer) so the
+     * context can be reaped concurrently without dangling into the request.
+     * gss_handle + gss_seq let the reply path re-find the context (under the
+     * global lock) to compute the integrity checksum over the results. */
+    int                                   gss_authenticated;
+    uint32_t                              gss_service;
+    uint32_t                              gss_handle;
+    uint32_t                              gss_seq;
+    char                                  gss_principal[EVPL_RPC2_GSS_PRINCIPAL_MAX];
+    /* Pre-computed reply verifier (e.g. a GSS MIC).  When reply_verf_flavor
+     * is RPCSEC_GSS, evpl_rpc2_send_reply emits this as the accepted-reply
+     * verifier instead of an AUTH_NONE verifier.  reply_verf_data is owned
+     * by the request and freed in evpl_rpc2_request_free. */
+    void                                 *reply_verf_data;
+    uint32_t                              reply_verf_len;
+    uint32_t                              reply_verf_flavor;
 };
 
 /*
@@ -150,19 +172,23 @@ struct evpl_rpc2_server_binding {
 };
 
 struct evpl_rpc2_thread {
-    struct evpl                      *evpl;
-    struct evpl_rpc2_program        **programs;
-    int                               nprograms;
-    struct evpl_rpc2_conn            *conns;
-    evpl_rpc2_notify_callback_t       notify_callback;
-    void                             *private_data;
-    struct evpl_rpc2_msg             *free_msg;
-    struct evpl_rpc2_request         *free_requests;
-    struct evpl_rpc2_server_binding  *servers;
-    xdr_dbuf                         *client_dbuf;
-    int                               id;
-    struct prometheus_gauge_series   *m_inflight_series[EVPL_RPC2_NUM_ROLES];
-    struct prometheus_gauge_instance *m_inflight[EVPL_RPC2_NUM_ROLES];
+    struct evpl                         *evpl;
+    struct evpl_rpc2_program           **programs;
+    int                                  nprograms;
+    struct evpl_rpc2_conn               *conns;
+    evpl_rpc2_notify_callback_t          notify_callback;
+    void                                *private_data;
+    struct evpl_rpc2_msg                *free_msg;
+    struct evpl_rpc2_request            *free_requests;
+    struct evpl_rpc2_server_binding     *servers;
+    xdr_dbuf                            *client_dbuf;
+    int                                  id;
+    struct prometheus_gauge_series      *m_inflight_series[EVPL_RPC2_NUM_ROLES];
+    struct prometheus_gauge_instance    *m_inflight[EVPL_RPC2_NUM_ROLES];
+
+    /* RPCSEC_GSS acceptor provider (NULL == RPCSEC_GSS disabled). */
+    const struct evpl_rpc2_gss_provider *gss_provider;
+    void                                *gss_provider_arg;
 };
 
 static struct evpl_rpc2_msg *
@@ -223,6 +249,13 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
     request->write_segments.num_segments = 0;
     request->reply_segments.num_segments = 0;
     request->msg                         = NULL;
+    request->gss_authenticated           = 0;
+    request->gss_service                 = 0;
+    request->gss_handle                  = 0;
+    request->gss_seq                     = 0;
+    request->reply_verf_data             = NULL;
+    request->reply_verf_len              = 0;
+    request->reply_verf_flavor           = AUTH_NONE;
     /* Reset any reply-capture hook left over from the previous use of
      * this recycled request -- the application must re-arm per-call. */
     request->encoding.reply_capture_cb      = NULL;
@@ -257,6 +290,13 @@ evpl_rpc2_request_free(
     if (request->msg) {
         evpl_rpc2_msg_free(thread, request->msg);
         request->msg = NULL;
+    }
+
+    if (request->reply_verf_data) {
+        free(request->reply_verf_data);
+        request->reply_verf_data   = NULL;
+        request->reply_verf_len    = 0;
+        request->reply_verf_flavor = AUTH_NONE;
     }
 
     LL_PREPEND(thread->free_requests, request);
@@ -558,6 +598,19 @@ evpl_rpc2_dispatch_reply(
     evpl_rpc2_request_free(thread, request);
 } /* evpl_rpc2_dispatch_reply */
 
+/* Defined in the RPCSEC_GSS section below; used by evpl_rpc2_send_reply to
+ * wrap an integrity-service (krb5i) reply body as rpc_gss_integ_data. */
+static int
+evpl_rpc2_gss_wrap_reply_integrity(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    struct evpl_iovec        *msg_iov,
+    int                       msg_niov,
+    int                       length,
+    int                       reserve,
+    struct evpl_iovec        *out_iov,
+    int                      *out_length);
+
 static int
 evpl_rpc2_send_reply(
     struct evpl                 *evpl,
@@ -584,16 +637,45 @@ evpl_rpc2_send_reply(
     int                           i, reduce = 0, rdma = request->conn->rdma;
     struct evpl_iovec            *final_reply_iov;
     int                           final_reply_niov, final_reply_length;
+    struct evpl_iovec             gss_wrapped_iov;
 
     rpc_reply.xid             = request->xid;
     rpc_reply.body.mtype      = REPLY;
     rpc_reply.body.rbody.stat = rstat;
 
     if (rstat == MSG_ACCEPTED) {
-        /* AUTH_SHORT is not implemented - always use AUTH_NONE verifier */
         (void) verf;
-        rpc_reply.body.rbody.areply.verf.flavor     = AUTH_NONE;
+        if (request->reply_verf_flavor == RPCSEC_GSS) {
+            /* Emit the GSS reply verifier precomputed at call-verification
+             * time (a MIC over the request seq_num, or over the seq_window
+             * for a completed context-establishment response). */
+            rpc_reply.body.rbody.areply.verf.flavor          = RPCSEC_GSS;
+            rpc_reply.body.rbody.areply.verf.rpcsec_gss.data = request->reply_verf_data;
+            rpc_reply.body.rbody.areply.verf.rpcsec_gss.len  = request->reply_verf_len;
+        } else {
+            /* AUTH_SHORT is not implemented - always use AUTH_NONE verifier */
+            rpc_reply.body.rbody.areply.verf.flavor = AUTH_NONE;
+        }
         rpc_reply.body.rbody.areply.reply_data.stat = error_stat;
+
+        /* Integrity service (krb5i): reframe the proc results as
+         * rpc_gss_integ_data before the RPC header is prepended.  Non-RDMA
+         * only (GSS over RDMA is not a supported transport).  On failure we
+         * fall through with the unwrapped body -- the client will reject the
+         * reply's missing integrity, which is the safe outcome. */
+        if (!rdma && error_stat == SUCCESS &&
+            request->gss_service == EVPL_RPC2_GSS_SVC_INTEGRITY) {
+            int wrapped_len;
+
+            if (evpl_rpc2_gss_wrap_reply_integrity(evpl, request, msg_iov,
+                                                   msg_niov, length, reserve,
+                                                   &gss_wrapped_iov,
+                                                   &wrapped_len) == 0) {
+                msg_iov  = &gss_wrapped_iov;
+                msg_niov = 1;
+                length   = wrapped_len;
+            }
+        }
     } else {
         /* MSG_DENIED - currently only AUTH_ERROR is supported */
         rpc_reply.body.rbody.rreply.stat = AUTH_ERROR;
@@ -853,6 +935,879 @@ evpl_rpc2_send_reply_success(
                                 request->program->reserve, MSG_ACCEPTED, SUCCESS);
 } /* evpl_rpc2_send_reply_success */
 
+/* ===================== RPCSEC_GSS (RFC 2203 / RFC 5403) =====================
+ *
+ * libevpl owns the RPC-level framing: the rpc_gss_cred_t credential, the
+ * context-establishment handshake (carried on the program NULL procedure),
+ * the per-request call verifier and sequence-number replay window, and the
+ * reply verifier.  A registered provider (evpl_rpc2_set_gss_provider) wraps
+ * the actual GSS mechanism (Kerberos).  This first cut implements the
+ * authentication service (rpc_gss_svc_none, i.e. sec=krb5); integrity and
+ * privacy are rejected with AUTH_TOOWEAK until wrapping is wired up.
+ */
+
+/* rpc_gss_proc_t */
+#define RPCSEC_GSS_DATA             0
+#define RPCSEC_GSS_INIT             1
+#define RPCSEC_GSS_CONTINUE_INIT    2
+#define RPCSEC_GSS_DESTROY          3
+
+#define RPCSEC_GSS_VERS_1           1
+/* Per RFC 2203: sequence numbers must stay below this; past it the client
+ * is expected to create a new context. */
+#define RPCSEC_GSS_MAXSEQ           0x80000000u
+/* Replay window we advertise and enforce.  Bounded by the uint64 bitmap. */
+#define RPCSEC_GSS_SEQ_WINDOW       64
+
+/* GSS major status values emitted in rpc_gss_init_res. */
+#define EVPL_GSS_S_COMPLETE         0x00000000u
+#define EVPL_GSS_S_CONTINUE_NEEDED  0x00000001u
+#define EVPL_GSS_S_FAILURE          0x000d0000u
+
+/* Additional auth_stat values defined by RPCSEC_GSS (RFC 2203 sec 5).
+ * The client treats these as "discard the context and re-establish". */
+#define RPCSEC_GSS_CREDPROBLEM      13
+#define RPCSEC_GSS_CTXPROBLEM       14
+
+/* Headroom reserved at the front of an init-response buffer for the RPC
+ * reply header plus an RPCSEC_GSS verifier (a GSS MIC). */
+#define EVPL_RPC2_GSS_REPLY_RESERVE 1024
+
+struct evpl_rpc2_gss_context {
+    uint32_t               handle;      /* server-minted; uthash key */
+    void                  *gss_ctx;     /* provider context cookie */
+    int                    established;
+    uint32_t               service;     /* last service seen (informational) */
+    /* Sliding replay window: seq_high is the largest accepted seq_num;
+     * bit i of seq_mask marks (seq_high - i) as already seen. */
+    uint32_t               seq_high;
+    uint64_t               seq_mask;
+    char                   principal[EVPL_RPC2_GSS_PRINCIPAL_MAX];
+    /* The connection that established this context.  RPCSEC_GSS handles are
+     * server-global (a context established on one connection may be presented
+     * on another -- NFSv4.1 session trunking / BIND_CONN_TO_SESSION), so the
+     * table below is process-wide rather than per-connection.  We still reap a
+     * context when its creating connection drops (unless explicitly destroyed
+     * sooner), which covers the common single-connection case without leaking. */
+    struct evpl_rpc2_conn *creator_conn;
+    struct UT_hash_handle  hh;
+};
+
+/*
+ * Process-global RPCSEC_GSS context registry.  Handles are unique server-wide
+ * so a context can be looked up regardless of which connection (or rpc2
+ * thread) a DATA request arrives on.  The mutex is held across both the table
+ * operations and the provider crypto calls that touch a context, so a single
+ * gss_ctx_id_t is never used concurrently from two threads.
+ */
+static struct evpl_rpc2_gss_context *evpl_rpc2_gss_table       = NULL;
+static pthread_mutex_t               evpl_rpc2_gss_lock        = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t                      evpl_rpc2_gss_next_handle = 0;
+
+/* Decoded rpc_gss_cred_t (version 1). */
+struct evpl_rpc2_gss_cred {
+    uint32_t       version;
+    uint32_t       proc;
+    uint32_t       seq;
+    uint32_t       service;
+    const uint8_t *handle;
+    uint32_t       handle_len;
+};
+
+/* --- minimal big-endian XDR cursors over contiguous byte buffers --- */
+
+static inline uint32_t
+evpl_rpc2_gss_pad4(uint32_t len)
+{
+    return (len + 3) & ~3u;
+} /* evpl_rpc2_gss_pad4 */
+
+static int
+evpl_rpc2_gss_rd_u32(
+    const uint8_t **p,
+    const uint8_t  *end,
+    uint32_t       *v)
+{
+    if (*p + 4 > end) {
+        return -1;
+    }
+    *v = ((uint32_t) (*p)[0] << 24) | ((uint32_t) (*p)[1] << 16) |
+        ((uint32_t) (*p)[2] << 8) | (uint32_t) (*p)[3];
+    *p += 4;
+    return 0;
+} /* evpl_rpc2_gss_rd_u32 */
+
+static int
+evpl_rpc2_gss_rd_opaque(
+    const uint8_t **p,
+    const uint8_t  *end,
+    const uint8_t **data,
+    uint32_t       *len)
+{
+    uint32_t l, padded;
+
+    if (evpl_rpc2_gss_rd_u32(p, end, &l)) {
+        return -1;
+    }
+    padded = evpl_rpc2_gss_pad4(l);
+    if (*p + padded > end) {
+        return -1;
+    }
+    *data = *p;
+    *len  = l;
+    *p   += padded;
+    return 0;
+} /* evpl_rpc2_gss_rd_opaque */
+
+static int
+evpl_rpc2_gss_wr_u32(
+    uint8_t **p,
+    uint8_t  *end,
+    uint32_t  v)
+{
+    if (*p + 4 > end) {
+        return -1;
+    }
+    (*p)[0] = (v >> 24) & 0xff;
+    (*p)[1] = (v >> 16) & 0xff;
+    (*p)[2] = (v >> 8) & 0xff;
+    (*p)[3] = v & 0xff;
+    *p     += 4;
+    return 0;
+} /* evpl_rpc2_gss_wr_u32 */
+
+static int
+evpl_rpc2_gss_wr_opaque(
+    uint8_t   **p,
+    uint8_t    *end,
+    const void *data,
+    uint32_t    len)
+{
+    uint32_t padded = evpl_rpc2_gss_pad4(len);
+
+    if (evpl_rpc2_gss_wr_u32(p, end, len)) {
+        return -1;
+    }
+    if (*p + padded > end) {
+        return -1;
+    }
+    memcpy(*p, data, len);
+    if (padded > len) {
+        memset(*p + len, 0, padded - len);
+    }
+    *p += padded;
+    return 0;
+} /* evpl_rpc2_gss_wr_opaque */
+
+/* Copy `len` bytes starting at byte offset `off` across an iovec array. */
+static int
+evpl_rpc2_iov_gather(
+    struct evpl_iovec *iov,
+    int                niov,
+    uint32_t           off,
+    void              *dst,
+    uint32_t           len)
+{
+    uint8_t *d      = dst;
+    uint32_t copied = 0;
+    int      i;
+
+    for (i = 0; i < niov && copied < len; i++) {
+        uint32_t ilen = iov[i].length;
+        uint32_t avail, n;
+
+        if (off >= ilen) {
+            off -= ilen;
+            continue;
+        }
+        avail = ilen - off;
+        n     = len - copied;
+        if (n > avail) {
+            n = avail;
+        }
+        memcpy(d + copied, (uint8_t *) iov[i].data + off, n);
+        copied += n;
+        off     = 0;
+    }
+    return copied == len ? 0 : -1;
+} /* evpl_rpc2_iov_gather */
+
+static int
+evpl_rpc2_gss_decode_cred(
+    const void                *blob,
+    uint32_t                   bloblen,
+    struct evpl_rpc2_gss_cred *c)
+{
+    const uint8_t *p   = blob;
+    const uint8_t *end = (const uint8_t *) blob + bloblen;
+
+    if (evpl_rpc2_gss_rd_u32(&p, end, &c->version) ||
+        evpl_rpc2_gss_rd_u32(&p, end, &c->proc) ||
+        evpl_rpc2_gss_rd_u32(&p, end, &c->seq) ||
+        evpl_rpc2_gss_rd_u32(&p, end, &c->service) ||
+        evpl_rpc2_gss_rd_opaque(&p, end, &c->handle, &c->handle_len)) {
+        return -1;
+    }
+    return 0;
+} /* evpl_rpc2_gss_decode_cred */
+
+/* --- process-global context table --- */
+/* The following helpers operate on the global table and assume the caller
+ * holds evpl_rpc2_gss_lock (except evpl_rpc2_gss_conn_cleanup, which locks
+ * itself). */
+
+static struct evpl_rpc2_gss_context *
+evpl_rpc2_gss_ctx_lookup(uint32_t handle)
+{
+    struct evpl_rpc2_gss_context *ctx;
+
+    HASH_FIND(hh, evpl_rpc2_gss_table, &handle, sizeof(handle), ctx);
+    return ctx;
+} /* evpl_rpc2_gss_ctx_lookup */
+
+static struct evpl_rpc2_gss_context *
+evpl_rpc2_gss_ctx_create(struct evpl_rpc2_conn *conn)
+{
+    struct evpl_rpc2_gss_context *ctx = evpl_zalloc(sizeof(*ctx));
+
+    /* Handle 0 is reserved to mean "no handle" on the wire (INIT). */
+    do {
+        ctx->handle = ++evpl_rpc2_gss_next_handle;
+    } while (ctx->handle == 0 || evpl_rpc2_gss_ctx_lookup(ctx->handle));
+
+    ctx->creator_conn = conn;
+    HASH_ADD(hh, evpl_rpc2_gss_table, handle, sizeof(ctx->handle), ctx);
+    return ctx;
+} /* evpl_rpc2_gss_ctx_create */
+
+static void
+evpl_rpc2_gss_ctx_destroy(
+    struct evpl_rpc2_thread      *thread,
+    struct evpl_rpc2_gss_context *ctx)
+{
+    HASH_DELETE(hh, evpl_rpc2_gss_table, ctx);
+    if (ctx->gss_ctx && thread->gss_provider && thread->gss_provider->destroy) {
+        thread->gss_provider->destroy(thread->gss_provider_arg, ctx->gss_ctx);
+    }
+    evpl_free(ctx);
+} /* evpl_rpc2_gss_ctx_destroy */
+
+/*
+ * Connection teardown does NOT reap GSS contexts.  RPCSEC_GSS context handles
+ * are server-global and routinely outlive the connection they were
+ * established on: the Linux client establishes contexts via rpc.gssd on a
+ * short-lived dedicated connection, then presents the handle on the separate
+ * (long-lived) NFS connection.  Reaping on the establishing connection's
+ * disconnect would make every such handle unusable.  Contexts are instead
+ * reclaimed on an explicit RPCSEC_GSS_DESTROY (which clients send on unmount).
+ *
+ * TODO: add a lifetime/idle-based GC to bound the footprint of contexts whose
+ * client departs without sending DESTROY (e.g. a crashed client).
+ */
+static void
+evpl_rpc2_gss_conn_cleanup(
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_conn   *conn)
+{
+    (void) thread;
+    (void) conn;
+} /* evpl_rpc2_gss_conn_cleanup */
+
+/*
+ * Advance the replay window for a DATA request.  Returns 0 if the sequence
+ * number is fresh and acceptable, -1 if it is a replay or has fallen out of
+ * the window (caller should silently drop per RFC 2203).
+ */
+static int
+evpl_rpc2_gss_seq_check(
+    struct evpl_rpc2_gss_context *ctx,
+    uint32_t                      seq)
+{
+    uint32_t diff;
+
+    if (seq > RPCSEC_GSS_MAXSEQ) {
+        return -1;
+    }
+
+    if (seq > ctx->seq_high) {
+        uint32_t shift = seq - ctx->seq_high;
+
+        if (shift >= 64) {
+            ctx->seq_mask = 0;
+        } else {
+            ctx->seq_mask <<= shift;
+        }
+        ctx->seq_mask |= 1;
+        ctx->seq_high  = seq;
+        return 0;
+    }
+
+    diff = ctx->seq_high - seq;
+    if (diff >= RPCSEC_GSS_SEQ_WINDOW) {
+        return -1; /* too old */
+    }
+    if (ctx->seq_mask & (1ULL << diff)) {
+        return -1; /* replay */
+    }
+    ctx->seq_mask |= (1ULL << diff);
+    return 0;
+} /* evpl_rpc2_gss_seq_check */
+
+/*
+ * Integrity service (krb5i): the call arguments are wrapped as
+ *   rpc_gss_integ_data { opaque databody<>; opaque checksum<>; }
+ * where databody = XDR(seq_num) || XDR(proc_args) and checksum is a GSS MIC
+ * over databody.  Verify the checksum and the embedded seq, then repoint
+ * (*iov_p, *niov_p, *len_p) to the inner proc arguments (databody after the
+ * 4-byte seq), so normal program dispatch sees the unwrapped call.
+ *
+ * Must be called with evpl_rpc2_gss_lock held (it touches ctx->gss_ctx).
+ * Returns 0 on success, -1 on a framing/verification failure.
+ */
+static int
+evpl_rpc2_gss_unwrap_integrity(
+    struct evpl_rpc2_request     *request,
+    struct evpl_rpc2_gss_context *ctx,
+    uint32_t                      seq,
+    struct evpl_iovec           **iov_p,
+    int                          *niov_p,
+    int                          *len_p)
+{
+    struct evpl_rpc2_thread *thread = request->thread;
+    struct evpl             *evpl   = thread->evpl;
+    struct xdr_dbuf         *dbuf   = &request->msg->dbuf;
+    struct evpl_iovec       *iov    = *iov_p;
+    int                      niov   = *niov_p;
+    uint8_t                  lenbuf[4];
+    const uint8_t           *lp;
+    uint32_t                 db_len, ck_off, ck_len, embedded, inner_len;
+    uint8_t                 *databody, *checksum;
+    struct evpl_iovec       *inner;
+    int                      ninner;
+
+    /* databody length prefix */
+    if (evpl_rpc2_iov_gather(iov, niov, 0, lenbuf, 4)) {
+        return -1;
+    }
+    lp = lenbuf;
+    if (evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &db_len) || db_len < 4) {
+        return -1;
+    }
+
+    databody = xdr_dbuf_alloc_space(db_len, dbuf);
+    if (!databody || evpl_rpc2_iov_gather(iov, niov, 4, databody, db_len)) {
+        return -1;
+    }
+
+    /* checksum opaque follows the (padded) databody */
+    ck_off = 4 + evpl_rpc2_gss_pad4(db_len);
+    if (evpl_rpc2_iov_gather(iov, niov, ck_off, lenbuf, 4)) {
+        return -1;
+    }
+    lp = lenbuf;
+    evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &ck_len);
+    checksum = xdr_dbuf_alloc_space(ck_len ? ck_len : 1, dbuf);
+    if (!checksum || evpl_rpc2_iov_gather(iov, niov, ck_off + 4, checksum, ck_len)) {
+        return -1;
+    }
+
+    if (thread->gss_provider->verify_mic(thread->gss_provider_arg, ctx->gss_ctx,
+                                         databody, db_len, checksum, ck_len)) {
+        evpl_rpc2_debug("rpcsec_gss: integ databody MIC failed db_len=%u "
+                        "ck_len=%u niov=%d", db_len, ck_len, niov);
+        return -1;
+    }
+
+    /* The seq embedded in databody must match the credential seq. */
+    lp = databody;
+    evpl_rpc2_gss_rd_u32(&lp, databody + 4, &embedded);
+    if (embedded != seq) {
+        evpl_rpc2_debug("rpcsec_gss: integ seq mismatch embedded=%u cred=%u",
+                        embedded, seq);
+        return -1;
+    }
+
+    /* The inner proc arguments are databody after the 4-byte seq.  Copy them
+     * into a fresh, ref-counted iovec: the generated unmarshallers zero-copy
+     * clone opaque fields (e.g. WRITE payload), which requires a real buffer
+     * reference -- a view into the dbuf would have none.  Swap it into the msg
+     * so the existing teardown releases it. */
+    inner_len = db_len - 4;
+    inner     = xdr_dbuf_alloc_space(sizeof(*inner), dbuf);
+    if (!inner) {
+        return -1;
+    }
+    ninner = evpl_iovec_alloc(evpl, inner_len ? inner_len : 1, 8, 1, 0, inner);
+    if (ninner != 1) {
+        return -1;
+    }
+    inner->length = inner_len;
+    if (inner_len) {
+        memcpy(inner->data, databody + 4, inner_len);
+    }
+
+    evpl_iovecs_release(evpl, request->msg->req_iov, request->msg->req_niov);
+    request->msg->req_iov  = inner;
+    request->msg->req_niov = 1;
+
+    *iov_p  = inner;
+    *niov_p = 1;
+    *len_p  = (int) inner_len;
+    return 0;
+} /* evpl_rpc2_gss_unwrap_integrity */
+
+/*
+ * Integrity service reply wrap: reframe the marshalled proc results as
+ *   rpc_gss_integ_data { databody = seq_num || results; checksum = MIC; }
+ * into a fresh buffer that keeps `reserve` bytes of RPC-header headroom at the
+ * front (matching the unwrapped reply convention).  The original reply iovecs
+ * are released.  Returns 0 and fills out_iov/out_length, or -1 on failure.
+ */
+static int
+evpl_rpc2_gss_wrap_reply_integrity(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    struct evpl_iovec        *msg_iov,
+    int                       msg_niov,
+    int                       length,
+    int                       reserve,
+    struct evpl_iovec        *out_iov,
+    int                      *out_length)
+{
+    struct evpl_rpc2_thread      *thread = request->thread;
+    struct evpl_rpc2_gss_context *ctx;
+    uint32_t                      bodylen = length - reserve;
+    uint32_t                      db_len  = 4 + bodylen; /* seq || results */
+    uint32_t                      db_pad  = evpl_rpc2_gss_pad4(db_len);
+    uint32_t                      cap, newbodylen;
+    uint8_t                      *p, *databody, *cksum_pos, *pp;
+    void                         *mic     = NULL;
+    size_t                        mic_len = 0;
+    int                           niov;
+
+    /* reserve headroom + db_len prefix + padded databody + checksum opaque
+     * (4 + padded MIC; krb5 MICs are well under 512). */
+    cap  = reserve + 4 + db_pad + 4 + 512;
+    niov = evpl_iovec_alloc(evpl, cap, 8, 1, 0, out_iov);
+    if (niov != 1) {
+        return -1;
+    }
+
+    p = (uint8_t *) out_iov->data + reserve;
+
+    /* databody length prefix */
+    pp = p;
+    if (evpl_rpc2_gss_wr_u32(&pp, p + 4, db_len)) {
+        goto fail;
+    }
+    databody = p + 4;
+
+    /* databody = seq || results (written contiguously so we can MIC it) */
+    pp = databody;
+    if (evpl_rpc2_gss_wr_u32(&pp, databody + 4, request->gss_seq)) {
+        goto fail;
+    }
+    if (bodylen &&
+        evpl_rpc2_iov_gather(msg_iov, msg_niov, reserve, databody + 4, bodylen)) {
+        goto fail;
+    }
+    if (db_pad > db_len) {
+        memset(databody + db_len, 0, db_pad - db_len);
+    }
+
+    /* checksum = MIC over databody, under the global context lock */
+    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+    ctx = evpl_rpc2_gss_ctx_lookup(request->gss_handle);
+    if (ctx) {
+        thread->gss_provider->get_mic(thread->gss_provider_arg, ctx->gss_ctx,
+                                      databody, db_len, &mic, &mic_len);
+    }
+    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+
+    if (!mic || mic_len > 512) {
+        if (mic) {
+            free(mic);
+        }
+        goto fail;
+    }
+
+    cksum_pos = databody + db_pad;
+    pp        = cksum_pos;
+    if (evpl_rpc2_gss_wr_opaque(&pp, cksum_pos + 4 + evpl_rpc2_gss_pad4(mic_len),
+                                mic, mic_len)) {
+        free(mic);
+        goto fail;
+    }
+    free(mic);
+
+    newbodylen      = 4 + db_pad + 4 + evpl_rpc2_gss_pad4(mic_len);
+    out_iov->length = reserve + newbodylen;
+    *out_length     = reserve + newbodylen;
+
+    evpl_iovecs_release(evpl, msg_iov, msg_niov);
+    return 0;
+
+ fail:
+    evpl_iovec_release(evpl, out_iov);
+    return -1;
+} /* evpl_rpc2_gss_wrap_reply_integrity */
+
+/*
+ * Emit an rpc_gss_init_res reply for the context-establishment handshake.
+ * The response body (handle, major, minor, seq_window, token) is marshalled
+ * into a fresh buffer with header headroom and sent as MSG_ACCEPTED/SUCCESS.
+ * On a completed context, the reply verifier is a GSS MIC over the
+ * advertised seq_window (RFC 2203 sec 5.2.3.1); on an intermediate leg the
+ * verifier is AUTH_NONE.
+ */
+static void
+evpl_rpc2_gss_send_init_res(
+    struct evpl                  *evpl,
+    struct evpl_rpc2_request     *request,
+    struct evpl_rpc2_gss_context *ctx,
+    uint32_t                      gss_major,
+    const void                   *token,
+    uint32_t                      token_len,
+    int                           complete)
+{
+    struct evpl_rpc2_thread *thread = request->thread;
+    struct evpl_iovec        iov;
+    uint8_t                 *p, *end, *body;
+    uint32_t                 body_len;
+    int                      niov;
+
+    niov = evpl_iovec_alloc(evpl, EVPL_RPC2_GSS_REPLY_RESERVE + 512 + token_len,
+                            8, 1, 0, &iov);
+    evpl_rpc2_abort_if(niov != 1, "Failed to allocate gss init reply iovec");
+
+    body = (uint8_t *) iov.data + EVPL_RPC2_GSS_REPLY_RESERVE;
+    p    = body;
+    end  = (uint8_t *) iov.data + iov.length;
+
+    if (evpl_rpc2_gss_wr_opaque(&p, end, &ctx->handle, sizeof(ctx->handle)) ||
+        evpl_rpc2_gss_wr_u32(&p, end, gss_major) ||
+        evpl_rpc2_gss_wr_u32(&p, end, 0 /* gss_minor */) ||
+        evpl_rpc2_gss_wr_u32(&p, end, RPCSEC_GSS_SEQ_WINDOW) ||
+        evpl_rpc2_gss_wr_opaque(&p, end, token, token_len)) {
+        evpl_rpc2_abort("Failed to marshall rpc_gss_init_res");
+    }
+
+    body_len = p - body;
+
+    /* On completion, sign the seq_window so the client can verify us. */
+    if (complete && thread->gss_provider && thread->gss_provider->get_mic) {
+        uint32_t window_be = rpc2_hton32(RPCSEC_GSS_SEQ_WINDOW);
+        void    *mic       = NULL;
+        size_t   mic_len   = 0;
+
+        if (thread->gss_provider->get_mic(thread->gss_provider_arg, ctx->gss_ctx,
+                                          &window_be, sizeof(window_be),
+                                          &mic, &mic_len) == 0) {
+            request->reply_verf_data   = mic;
+            request->reply_verf_len    = mic_len;
+            request->reply_verf_flavor = RPCSEC_GSS;
+        }
+    }
+
+    iov.length = EVPL_RPC2_GSS_REPLY_RESERVE + body_len;
+
+    evpl_rpc2_send_reply(evpl, request, NULL, &iov, 1,
+                         EVPL_RPC2_GSS_REPLY_RESERVE + body_len,
+                         EVPL_RPC2_GSS_REPLY_RESERVE, MSG_ACCEPTED, SUCCESS);
+} /* evpl_rpc2_gss_send_init_res */
+
+/*
+ * Handle a context-establishment leg (INIT / CONTINUE_INIT).  The argument
+ * is an rpc_gss_init_arg, i.e. a single opaque GSS token at the front of the
+ * call args.  Always consumes the request (sends a reply or drops it).
+ */
+static void
+evpl_rpc2_gss_handle_init(
+    struct evpl_rpc2_request        *request,
+    const struct evpl_rpc2_gss_cred *cred,
+    struct evpl_iovec               *req_iov,
+    int                              req_niov,
+    uint32_t                         request_length)
+{
+    struct evpl_rpc2_thread      *thread = request->thread;
+    struct evpl                  *evpl   = thread->evpl;
+    struct evpl_rpc2_conn        *conn   = request->conn;
+    struct evpl_rpc2_gss_context *ctx;
+    uint8_t                       lenbuf[4];
+    const uint8_t                *lp = lenbuf;
+    uint32_t                      token_len, gss_major;
+    void                         *in_token  = NULL;
+    void                         *out_token = NULL;
+    size_t                        out_len   = 0;
+    int                           complete  = 0;
+    int                           rc;
+
+    if (!thread->gss_provider) {
+        evpl_rpc2_send_reply_denied(evpl, request, AUTH_REJECTEDCRED);
+        return;
+    }
+
+    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+
+    /* INIT starts a new context; CONTINUE_INIT resumes an existing one. */
+    if (cred->proc == RPCSEC_GSS_INIT) {
+        ctx = evpl_rpc2_gss_ctx_create(conn);
+    } else {
+        uint32_t handle = 0;
+
+        if (cred->handle_len == sizeof(handle)) {
+            memcpy(&handle, cred->handle, sizeof(handle));
+        }
+        ctx = evpl_rpc2_gss_ctx_lookup(handle);
+        if (!ctx) {
+            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+            evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+            return;
+        }
+    }
+
+    /* Pull the GSS token (opaque<>) out of the call arguments. */
+    if (evpl_rpc2_iov_gather(req_iov, req_niov, 0, lenbuf, 4)) {
+        goto ctx_problem;
+    }
+    if (evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &token_len)) {
+        goto ctx_problem;
+    }
+    if (4 + (uint64_t) token_len > request_length) {
+        goto ctx_problem;
+    }
+
+    if (token_len) {
+        in_token = malloc(token_len);
+        evpl_rpc2_abort_if(in_token == NULL, "Failed to allocate gss token");
+        if (evpl_rpc2_iov_gather(req_iov, req_niov, 4, in_token, token_len)) {
+            free(in_token);
+            goto ctx_problem;
+        }
+    }
+
+    rc = thread->gss_provider->accept(thread->gss_provider_arg, &ctx->gss_ctx,
+                                      in_token, token_len,
+                                      &out_token, &out_len, &complete,
+                                      ctx->principal, sizeof(ctx->principal));
+    free(in_token);
+
+    if (rc) {
+        evpl_rpc2_debug("rpcsec_gss: accept_sec_context failed");
+        if (out_token) {
+            free(out_token);
+        }
+        evpl_rpc2_gss_ctx_destroy(thread, ctx);
+        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+        return;
+    }
+
+    if (complete) {
+        ctx->established = 1;
+        gss_major        = EVPL_GSS_S_COMPLETE;
+        evpl_rpc2_info("rpcsec_gss: context established for principal '%s'",
+                       ctx->principal);
+    } else {
+        gss_major = EVPL_GSS_S_CONTINUE_NEEDED;
+    }
+
+    /* Builds the reply (and, on completion, the seq_window MIC verifier);
+     * touches ctx->gss_ctx so it stays under the lock. */
+    evpl_rpc2_gss_send_init_res(evpl, request, ctx, gss_major,
+                                out_token, (uint32_t) out_len, complete);
+
+    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+
+    if (out_token) {
+        free(out_token);
+    }
+    return;
+
+ ctx_problem:
+    if (cred->proc == RPCSEC_GSS_INIT) {
+        evpl_rpc2_gss_ctx_destroy(thread, ctx);
+    }
+    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+    evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+} /* evpl_rpc2_gss_handle_init */
+
+/*
+ * Front door for an incoming RPCSEC_GSS call.  Returns:
+ *   1  -- a DATA request that passed verification; the caller should proceed
+ *         to normal program dispatch (request->gss_context is populated).
+ *   0  -- the request was fully handled here (init handshake, destroy,
+ *         replay drop, or auth failure); the caller must not dispatch it.
+ */
+static int
+evpl_rpc2_gss_handle_call(
+    struct evpl_rpc2_request *request,
+    const void               *cred_blob,
+    uint32_t                  cred_blob_len,
+    uint32_t                  verf_flavor,
+    const void               *verf_blob,
+    uint32_t                  verf_blob_len,
+    uint32_t                  hdr_offset,
+    struct evpl_iovec       **req_iov_p,
+    int                      *req_niov_p,
+    int                      *request_length_p)
+{
+    struct evpl_rpc2_thread      *thread = request->thread;
+    struct evpl                  *evpl   = thread->evpl;
+    struct evpl_rpc2_gss_cred     cred;
+    struct evpl_rpc2_gss_context *ctx;
+    uint32_t                      handle, seq_be, signed_len;
+    uint8_t                       signed_buf[512];
+    void                         *mic     = NULL;
+    size_t                        mic_len = 0;
+
+    if (!thread->gss_provider) {
+        evpl_rpc2_send_reply_denied(evpl, request, AUTH_REJECTEDCRED);
+        return 0;
+    }
+
+    if (evpl_rpc2_gss_decode_cred(cred_blob, cred_blob_len, &cred) ||
+        cred.version != RPCSEC_GSS_VERS_1) {
+        evpl_rpc2_send_reply_denied(evpl, request, AUTH_BADCRED);
+        return 0;
+    }
+
+    switch (cred.proc) {
+        case RPCSEC_GSS_INIT:
+        case RPCSEC_GSS_CONTINUE_INIT:
+            evpl_rpc2_gss_handle_init(request, &cred, *req_iov_p, *req_niov_p,
+                                      *request_length_p);
+            return 0;
+
+        case RPCSEC_GSS_DESTROY:
+            handle = 0;
+            if (cred.handle_len == sizeof(handle)) {
+                memcpy(&handle, cred.handle, sizeof(handle));
+            }
+            pthread_mutex_lock(&evpl_rpc2_gss_lock);
+            ctx = evpl_rpc2_gss_ctx_lookup(handle);
+            if (ctx) {
+                evpl_rpc2_gss_ctx_destroy(thread, ctx);
+            }
+            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+            /* Acknowledge with an empty successful reply. */
+            evpl_rpc2_send_reply_error(evpl, request, SUCCESS);
+            return 0;
+
+        case RPCSEC_GSS_DATA:
+            break;
+
+        default:
+            evpl_rpc2_send_reply_denied(evpl, request, AUTH_BADCRED);
+            return 0;
+    } /* switch */
+
+    /* DATA: authentication (krb5) and integrity (krb5i) are supported.
+     * Privacy (krb5p) wrapping is not yet implemented. */
+    if (cred.service != EVPL_RPC2_GSS_SVC_NONE &&
+        cred.service != EVPL_RPC2_GSS_SVC_INTEGRITY) {
+        evpl_rpc2_debug("rpcsec_gss: DATA proc=%u service=%u unsupported "
+                        "-> AUTH_TOOWEAK", cred.proc, cred.service);
+        evpl_rpc2_send_reply_denied(evpl, request, AUTH_TOOWEAK);
+        return 0;
+    }
+
+    handle = 0;
+    if (cred.handle_len == sizeof(handle)) {
+        memcpy(&handle, cred.handle, sizeof(handle));
+    }
+
+    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+
+    ctx = evpl_rpc2_gss_ctx_lookup(handle);
+    if (!ctx || !ctx->established) {
+        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_rpc2_debug("rpcsec_gss: DATA ctx lookup miss handle=%u hlen=%u "
+                        "found=%d proc=%u service=%u", handle, cred.handle_len,
+                        ctx ? 1 : 0, cred.proc, cred.service);
+        evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+        return 0;
+    }
+
+    /* Verify the call verifier: a GSS MIC over the RPC header from the xid
+     * through the credential (everything signed by the client before verf). */
+    signed_len = 24 + 8 + evpl_rpc2_gss_pad4(cred_blob_len);
+    if (verf_flavor != RPCSEC_GSS || signed_len > sizeof(signed_buf) ||
+        evpl_rpc2_iov_gather(request->msg->recv_iov, request->msg->recv_niov,
+                             hdr_offset, signed_buf, signed_len)) {
+        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_rpc2_send_reply_denied(evpl, request, AUTH_BADVERF);
+        return 0;
+    }
+
+    if (thread->gss_provider->verify_mic(thread->gss_provider_arg, ctx->gss_ctx,
+                                         signed_buf, signed_len,
+                                         verf_blob, verf_blob_len)) {
+        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_rpc2_debug("rpcsec_gss: HEADER verify_mic failed proc=%u service=%u",
+                        cred.proc, cred.service);
+        evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+        return 0;
+    }
+
+    /* Replay/sequence-window enforcement; silently drop stale or replayed. */
+    if (evpl_rpc2_gss_seq_check(ctx, cred.seq)) {
+        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_rpc2_debug("rpcsec_gss: dropping replayed/stale seq %u", cred.seq);
+        evpl_rpc2_request_free(thread, request);
+        return 0;
+    }
+
+    /* For integrity, unwrap rpc_gss_integ_data -> inner proc args (verifies the
+     * databody checksum + embedded seq).  The reply is wrapped symmetrically in
+     * evpl_rpc2_send_reply, keyed on request->gss_service. */
+    if (cred.service == EVPL_RPC2_GSS_SVC_INTEGRITY) {
+        if (evpl_rpc2_gss_unwrap_integrity(request, ctx, cred.seq, req_iov_p,
+                                           req_niov_p, request_length_p)) {
+            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+            evpl_rpc2_debug("rpcsec_gss: integrity UNWRAP failed proc=%u seq=%u "
+                            "reqlen=%d", cred.proc, cred.seq, *request_length_p);
+            evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+            return 0;
+        }
+    }
+
+    /* Pre-compute the reply verifier: a GSS MIC over the request seq_num. */
+    seq_be = rpc2_hton32(cred.seq);
+    if (thread->gss_provider->get_mic(thread->gss_provider_arg, ctx->gss_ctx,
+                                      &seq_be, sizeof(seq_be),
+                                      &mic, &mic_len) == 0) {
+        request->reply_verf_data   = mic;
+        request->reply_verf_len    = mic_len;
+        request->reply_verf_flavor = RPCSEC_GSS;
+    }
+
+    /* Copy out the principal so the request never dereferences the context
+     * (which may be reaped concurrently once we drop the lock).  gss_handle +
+     * gss_seq let the reply path re-find the context for the integrity MIC. */
+    ctx->service = cred.service;
+    snprintf(request->gss_principal, sizeof(request->gss_principal), "%s",
+             ctx->principal);
+    request->gss_authenticated = 1;
+    request->gss_service       = cred.service;
+    request->gss_handle        = handle;
+    request->gss_seq           = cred.seq;
+
+    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+
+    return 1;
+} /* evpl_rpc2_gss_handle_call */
+
+SYMBOL_EXPORT void
+evpl_rpc2_set_gss_provider(
+    struct evpl_rpc2_thread             *thread,
+    const struct evpl_rpc2_gss_provider *provider,
+    void                                *provider_arg)
+{
+    thread->gss_provider     = provider;
+    thread->gss_provider_arg = provider_arg;
+} /* evpl_rpc2_set_gss_provider */
+
 static void
 evpl_rpc2_server_handle_request(
     struct evpl_rpc2_request   *request,
@@ -876,6 +1831,15 @@ evpl_rpc2_server_handle_request(
     } else if (flavor == AUTH_NONE) {
         cred.flavor = AUTH_NONE;
         cred_ptr    = &cred;
+    } else if (flavor == RPCSEC_GSS && request->gss_authenticated) {
+        /* DATA request on an established GSS context (verified upstream in
+         * evpl_rpc2_gss_handle_call).  Surface the authenticated principal
+         * and service to the program layer. */
+        cred.flavor        = EVPL_RPC2_AUTH_RPCSEC_GSS;
+        cred.gss.principal = request->gss_principal;
+        cred.gss.service   = request->gss_service;
+        cred.gss.gss_ctx   = NULL;
+        cred_ptr           = &cred;
     }
     /* cred_ptr remains NULL for unknown auth flavors */
 
@@ -1181,6 +2145,32 @@ evpl_rpc2_recv_msg(
                     authsys = &rpc_msg.body.cbody.cred.authsys;
                     break;
 
+                case RPCSEC_GSS:
+                {
+                    /* The credential and verifier bodies are opaque blobs in
+                    * msg->dbuf; the GSS layer decodes/verifies them.  INIT,
+                    * CONTINUE_INIT, DESTROY and replayed DATA are handled
+                    * entirely there; a verified DATA request falls through to
+                    * normal dispatch with request->gss_context populated. */
+                    const void *cred_blob     = rpc_msg.body.cbody.cred.rpcsec_gss.data;
+                    uint32_t    cred_blob_len = rpc_msg.body.cbody.cred.rpcsec_gss.len;
+                    uint32_t    vflavor       = rpc_msg.body.cbody.verf.flavor;
+                    const void *vblob         = NULL;
+                    uint32_t    vlen          = 0;
+
+                    if (vflavor == RPCSEC_GSS) {
+                        vblob = rpc_msg.body.cbody.verf.rpcsec_gss.data;
+                        vlen  = rpc_msg.body.cbody.verf.rpcsec_gss.len;
+                    }
+
+                    if (evpl_rpc2_gss_handle_call(request, cred_blob, cred_blob_len,
+                                                  vflavor, vblob, vlen, offset,
+                                                  &req_iov, &req_niov, &request_length) == 0) {
+                        return;
+                    }
+                    break;
+                }
+
                 default:
                     /* Reject unsupported auth flavors */
                     evpl_rpc2_debug("Rejecting unsupported auth flavor %d", flavor);
@@ -1414,6 +2404,8 @@ evpl_rpc2_event(
             }
             /* Release any iovecs stashed mid-reassembly. */
             evpl_rpc2_reasm_reset(evpl, rpc2_conn);
+            /* Tear down any RPCSEC_GSS contexts established on this conn. */
+            evpl_rpc2_gss_conn_cleanup(rpc2_conn->thread, rpc2_conn);
             free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:

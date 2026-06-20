@@ -16,6 +16,7 @@ struct evpl_endpoint;
 struct evpl_iovec;
 struct evpl_rpc2_program;
 struct evpl_rpc2_call;
+struct evpl_rpc2_gss_context;
 
 /*
  * Verifier structure for RPC authentication.
@@ -40,6 +41,7 @@ struct evpl_rpc2_verf {
 #define EVPL_RPC2_AUTH_NONE         0
 #define EVPL_RPC2_AUTH_SYS          1
 #define EVPL_RPC2_AUTH_SHORT        2
+#define EVPL_RPC2_AUTH_RPCSEC_GSS   6
 
 /*
  * RPC2 credential structure.
@@ -53,7 +55,7 @@ struct evpl_rpc2_verf {
  * - Client side: points directly to the caller's credential storage
  */
 struct evpl_rpc2_cred {
-    uint32_t flavor; /* auth_flavor: AUTH_NONE, AUTH_SYS, AUTH_SHORT */
+    uint32_t flavor; /* auth_flavor: AUTH_NONE, AUTH_SYS, AUTH_SHORT, RPCSEC_GSS */
 
     struct {
         uint32_t    uid;
@@ -63,6 +65,19 @@ struct evpl_rpc2_cred {
         const char *machinename;
         int         machinename_len;
     } authsys;
+
+    /*
+     * Populated when flavor == EVPL_RPC2_AUTH_RPCSEC_GSS and the request
+     * carried an established context (a DATA request).  principal is the
+     * authenticated GSS source name (e.g. "user@REALM" or "nfs/host@REALM");
+     * service is one of EVPL_RPC2_GSS_SVC_*.  gss_ctx is the opaque provider
+     * context cookie, for callers that need to re-key off it.
+     */
+    struct {
+        const char *principal;
+        uint32_t    service;
+        void       *gss_ctx;
+    } gss;
 };
 
 #define EVPL_RPC2_NOTIFY_ACCEPTED     1
