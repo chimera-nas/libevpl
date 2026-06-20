@@ -176,6 +176,12 @@ evpl_iovec_alloc(
     return niovs;
 } /* evpl_iovec_alloc */
 
+SYMBOL_EXPORT unsigned int
+evpl_buffer_size(void)
+{
+    return evpl_shared->config->buffer_size;
+} /* evpl_buffer_size */
+
 void
 evpl_iovec_alloc_whole(
     struct evpl       *evpl,

@@ -611,6 +611,19 @@ evpl_rpc2_gss_wrap_reply_integrity(
     struct evpl_iovec        *out_iov,
     int                      *out_length);
 
+/* Defined in the RPCSEC_GSS section below; used by evpl_rpc2_send_reply to
+ * wrap a privacy-service (krb5p) reply body as rpc_gss_priv_data. */
+static int
+evpl_rpc2_gss_wrap_reply_privacy(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    struct evpl_iovec        *msg_iov,
+    int                       msg_niov,
+    int                       length,
+    int                       reserve,
+    struct evpl_iovec        *out_iov,
+    int                      *out_length);
+
 static int
 evpl_rpc2_send_reply(
     struct evpl                 *evpl,
@@ -671,6 +684,23 @@ evpl_rpc2_send_reply(
                                                    msg_niov, length, reserve,
                                                    &gss_wrapped_iov,
                                                    &wrapped_len) == 0) {
+                msg_iov  = &gss_wrapped_iov;
+                msg_niov = 1;
+                length   = wrapped_len;
+            }
+        }
+
+        /* Privacy service (krb5p): GSS-wrap the proc results as the single
+         * opaque of rpc_gss_priv_data.  Same non-RDMA / SUCCESS constraints and
+         * safe-fallthrough semantics as the integrity path above. */
+        if (!rdma && error_stat == SUCCESS &&
+            request->gss_service == EVPL_RPC2_GSS_SVC_PRIVACY) {
+            int wrapped_len;
+
+            if (evpl_rpc2_gss_wrap_reply_privacy(evpl, request, msg_iov,
+                                                 msg_niov, length, reserve,
+                                                 &gss_wrapped_iov,
+                                                 &wrapped_len) == 0) {
                 msg_iov  = &gss_wrapped_iov;
                 msg_niov = 1;
                 length   = wrapped_len;
@@ -941,9 +971,9 @@ evpl_rpc2_send_reply_success(
  * context-establishment handshake (carried on the program NULL procedure),
  * the per-request call verifier and sequence-number replay window, and the
  * reply verifier.  A registered provider (evpl_rpc2_set_gss_provider) wraps
- * the actual GSS mechanism (Kerberos).  This first cut implements the
- * authentication service (rpc_gss_svc_none, i.e. sec=krb5); integrity and
- * privacy are rejected with AUTH_TOOWEAK until wrapping is wired up.
+ * the actual GSS mechanism (Kerberos).  All three services are implemented:
+ * authentication (rpc_gss_svc_none, sec=krb5), integrity (sec=krb5i,
+ * rpc_gss_integ_data) and privacy (sec=krb5p, rpc_gss_priv_data).
  */
 
 /* rpc_gss_proc_t */
@@ -1281,9 +1311,10 @@ evpl_rpc2_gss_unwrap_integrity(
     uint8_t                  lenbuf[4];
     const uint8_t           *lp;
     uint32_t                 db_len, ck_off, ck_len, embedded, inner_len;
-    uint8_t                 *databody, *checksum;
+    uint8_t                 *databody = NULL, *checksum;
+    struct evpl_iovec        databody_iov;
     struct evpl_iovec       *inner;
-    int                      ninner;
+    int                      ninner, rc = -1, have_databody = 0;
 
     /* databody length prefix */
     if (evpl_rpc2_iov_gather(iov, niov, 0, lenbuf, 4)) {
@@ -1294,28 +1325,47 @@ evpl_rpc2_gss_unwrap_integrity(
         return -1;
     }
 
-    databody = xdr_dbuf_alloc_space(db_len, dbuf);
-    if (!databody || evpl_rpc2_iov_gather(iov, niov, 4, databody, db_len)) {
+    /* Bound the claimed length before allocating.  It must fit in the bytes
+     * actually received (a raw wire u32 reaches ~4 GiB; the message itself is
+     * already capped at EVPL_RPC2_MAX_REASM_LENGTH) and within one recycling
+     * buffer: the databody must be contiguous for verify_mic, and a single-iovec
+     * request larger than buffer_size cannot be satisfied.  buffer_size sits far
+     * above any NFS wsize, so a larger databody is treated as malformed. */
+    if (4 + (uint64_t) db_len > (uint64_t) (uint32_t) *len_p ||
+        db_len > evpl_buffer_size()) {
         return -1;
+    }
+
+    /* Gather the databody (seq || args, can be a full WRITE payload) into a
+     * contiguous, recycled iovec (freed via the out: label); the recycling
+     * allocator avoids per-request malloc churn.  The small checksum stays in
+     * the dbuf. */
+    if (evpl_iovec_alloc(evpl, db_len, 8, 1, 0, &databody_iov) != 1) {
+        return -1;
+    }
+    have_databody = 1;
+    databody      = databody_iov.data;
+    if (evpl_rpc2_iov_gather(iov, niov, 4, databody, db_len)) {
+        goto out;
     }
 
     /* checksum opaque follows the (padded) databody */
     ck_off = 4 + evpl_rpc2_gss_pad4(db_len);
     if (evpl_rpc2_iov_gather(iov, niov, ck_off, lenbuf, 4)) {
-        return -1;
+        goto out;
     }
     lp = lenbuf;
     evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &ck_len);
     checksum = xdr_dbuf_alloc_space(ck_len ? ck_len : 1, dbuf);
     if (!checksum || evpl_rpc2_iov_gather(iov, niov, ck_off + 4, checksum, ck_len)) {
-        return -1;
+        goto out;
     }
 
     if (thread->gss_provider->verify_mic(thread->gss_provider_arg, ctx->gss_ctx,
                                          databody, db_len, checksum, ck_len)) {
         evpl_rpc2_debug("rpcsec_gss: integ databody MIC failed db_len=%u "
                         "ck_len=%u niov=%d", db_len, ck_len, niov);
-        return -1;
+        goto out;
     }
 
     /* The seq embedded in databody must match the credential seq. */
@@ -1324,7 +1374,7 @@ evpl_rpc2_gss_unwrap_integrity(
     if (embedded != seq) {
         evpl_rpc2_debug("rpcsec_gss: integ seq mismatch embedded=%u cred=%u",
                         embedded, seq);
-        return -1;
+        goto out;
     }
 
     /* The inner proc arguments are databody after the 4-byte seq.  Copy them
@@ -1335,11 +1385,11 @@ evpl_rpc2_gss_unwrap_integrity(
     inner_len = db_len - 4;
     inner     = xdr_dbuf_alloc_space(sizeof(*inner), dbuf);
     if (!inner) {
-        return -1;
+        goto out;
     }
     ninner = evpl_iovec_alloc(evpl, inner_len ? inner_len : 1, 8, 1, 0, inner);
     if (ninner != 1) {
-        return -1;
+        goto out;
     }
     inner->length = inner_len;
     if (inner_len) {
@@ -1353,8 +1403,134 @@ evpl_rpc2_gss_unwrap_integrity(
     *iov_p  = inner;
     *niov_p = 1;
     *len_p  = (int) inner_len;
-    return 0;
+    rc      = 0;
+
+ out:
+    if (have_databody) {
+        evpl_iovec_release(evpl, &databody_iov);
+    }
+    return rc;
 } /* evpl_rpc2_gss_unwrap_integrity */
+
+/*
+ * Privacy service (krb5p): the call arguments are wrapped as
+ *   rpc_gss_priv_data { opaque databody_priv<>; }
+ * where databody_priv is the GSS-wrapped (encrypted+sealed) token of
+ * XDR(seq_num) || XDR(proc_args).  gss_unwrap recovers the plaintext; verify
+ * the embedded seq, then repoint (*iov_p, *niov_p, *len_p) to the inner proc
+ * arguments (plaintext after the 4-byte seq) so normal dispatch sees the
+ * unwrapped call.
+ *
+ * Must be called with evpl_rpc2_gss_lock held (it touches ctx->gss_ctx).
+ * Returns 0 on success, -1 on a framing/decryption failure.
+ */
+static int
+evpl_rpc2_gss_unwrap_privacy(
+    struct evpl_rpc2_request     *request,
+    struct evpl_rpc2_gss_context *ctx,
+    uint32_t                      seq,
+    struct evpl_iovec           **iov_p,
+    int                          *niov_p,
+    int                          *len_p)
+{
+    struct evpl_rpc2_thread *thread = request->thread;
+    struct evpl             *evpl   = thread->evpl;
+    struct xdr_dbuf         *dbuf   = &request->msg->dbuf;
+    struct evpl_iovec       *iov    = *iov_p;
+    int                      niov   = *niov_p;
+    uint8_t                  lenbuf[4];
+    const uint8_t           *lp;
+    uint32_t                 wrapped_len, embedded, inner_len;
+    struct evpl_iovec        wrapped_iov;
+    void                    *plain     = NULL;
+    size_t                   plain_len = 0;
+    struct evpl_iovec       *inner;
+    int                      ninner, rc;
+
+    /* databody_priv opaque length prefix */
+    if (evpl_rpc2_iov_gather(iov, niov, 0, lenbuf, 4)) {
+        return -1;
+    }
+    lp = lenbuf;
+    if (evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &wrapped_len) || wrapped_len == 0) {
+        return -1;
+    }
+
+    /* Bound the claimed length before allocating.  It must fit in the bytes
+    * actually received (a raw wire u32 reaches ~4 GiB; the message itself is
+    * already capped at EVPL_RPC2_MAX_REASM_LENGTH) and within one recycling
+    * buffer: gss_unwrap needs a single contiguous scratch, and a single-iovec
+    * request larger than buffer_size cannot be satisfied.  buffer_size sits
+    * far above any NFS wsize, so a larger token is treated as malformed. */
+    if (4 + (uint64_t) wrapped_len > (uint64_t) (uint32_t) *len_p ||
+        wrapped_len > evpl_buffer_size()) {
+        return -1;
+    }
+
+    /* Gather the ciphertext into a contiguous, recycled iovec for gss_unwrap
+    * (the recycling allocator avoids per-request malloc churn on the data
+    * path; the wrapped token can be a full WRITE payload + GSS overhead). */
+    if (evpl_iovec_alloc(evpl, wrapped_len, 8, 1, 0, &wrapped_iov) != 1) {
+        return -1;
+    }
+    if (evpl_rpc2_iov_gather(iov, niov, 4, wrapped_iov.data, wrapped_len)) {
+        evpl_iovec_release(evpl, &wrapped_iov);
+        return -1;
+    }
+
+    /* gss_unwrap (decrypt + verify seal) -> seq || proc_args */
+    rc = thread->gss_provider->unwrap(thread->gss_provider_arg, ctx->gss_ctx,
+                                      wrapped_iov.data, wrapped_len, &plain,
+                                      &plain_len);
+    evpl_iovec_release(evpl, &wrapped_iov);
+    if (rc || !plain || plain_len < 4) {
+        evpl_rpc2_debug("rpcsec_gss: privacy unwrap failed wrapped_len=%u "
+                        "plain_len=%zu", wrapped_len, plain_len);
+        if (plain) {
+            free(plain);
+        }
+        return -1;
+    }
+
+    /* The seq embedded in the plaintext must match the credential seq. */
+    lp = plain;
+    evpl_rpc2_gss_rd_u32(&lp, (uint8_t *) plain + 4, &embedded);
+    if (embedded != seq) {
+        evpl_rpc2_debug("rpcsec_gss: privacy seq mismatch embedded=%u cred=%u",
+                        embedded, seq);
+        free(plain);
+        return -1;
+    }
+
+    /* Copy the inner proc arguments into a fresh, ref-counted iovec (see the
+     * integrity path for why a dbuf view is insufficient for the zero-copy
+     * unmarshallers) and swap it into the msg for teardown. */
+    inner_len = (uint32_t) plain_len - 4;
+    inner     = xdr_dbuf_alloc_space(sizeof(*inner), dbuf);
+    if (!inner) {
+        free(plain);
+        return -1;
+    }
+    ninner = evpl_iovec_alloc(evpl, inner_len ? inner_len : 1, 8, 1, 0, inner);
+    if (ninner != 1) {
+        free(plain);
+        return -1;
+    }
+    inner->length = inner_len;
+    if (inner_len) {
+        memcpy(inner->data, (uint8_t *) plain + 4, inner_len);
+    }
+    free(plain);
+
+    evpl_iovecs_release(evpl, request->msg->req_iov, request->msg->req_niov);
+    request->msg->req_iov  = inner;
+    request->msg->req_niov = 1;
+
+    *iov_p  = inner;
+    *niov_p = 1;
+    *len_p  = (int) inner_len;
+    return 0;
+} /* evpl_rpc2_gss_unwrap_privacy */
 
 /*
  * Integrity service reply wrap: reframe the marshalled proc results as
@@ -1451,6 +1627,96 @@ evpl_rpc2_gss_wrap_reply_integrity(
     evpl_iovec_release(evpl, out_iov);
     return -1;
 } /* evpl_rpc2_gss_wrap_reply_integrity */
+
+/*
+ * Privacy service reply wrap: GSS-wrap (encrypt + seal) seq_num || results and
+ * emit it as the single opaque of rpc_gss_priv_data, into a fresh buffer that
+ * keeps `reserve` bytes of RPC-header headroom at the front.  The original
+ * reply iovecs are released.  Returns 0 and fills out_iov/out_length, or -1.
+ */
+static int
+evpl_rpc2_gss_wrap_reply_privacy(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    struct evpl_iovec        *msg_iov,
+    int                       msg_niov,
+    int                       length,
+    int                       reserve,
+    struct evpl_iovec        *out_iov,
+    int                      *out_length)
+{
+    struct evpl_rpc2_thread      *thread = request->thread;
+    struct evpl_rpc2_gss_context *ctx;
+    uint32_t                      bodylen   = length - reserve;
+    uint32_t                      plain_len = 4 + bodylen; /* seq || results */
+    struct evpl_iovec             plain_iov;
+    uint8_t                      *plain, *p, *pp;
+    void                         *wrapped     = NULL;
+    size_t                        wrapped_len = 0;
+    uint32_t                      cap, newbodylen;
+    int                           niov, ok = 0;
+
+    /* Assemble seq || results in a contiguous, recycled iovec so gss_wrap can
+     * seal it in one call (the recycling allocator avoids per-reply malloc
+     * churn).  Bounded by one buffer: a reply above buffer_size cannot be
+     * wrapped, so the caller falls through and sends it unwrapped -- the client
+     * then rejects the missing privacy, which is the safe outcome. */
+    if (plain_len > evpl_buffer_size() ||
+        evpl_iovec_alloc(evpl, plain_len, 8, 1, 0, &plain_iov) != 1) {
+        return -1;
+    }
+    plain = plain_iov.data;
+    pp    = plain;
+    if (evpl_rpc2_gss_wr_u32(&pp, plain + 4, request->gss_seq) ||
+        (bodylen &&
+         evpl_rpc2_iov_gather(msg_iov, msg_niov, reserve, plain + 4, bodylen))) {
+        evpl_iovec_release(evpl, &plain_iov);
+        return -1;
+    }
+
+    /* gss_wrap(seq || results) under the global context lock */
+    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+    ctx = evpl_rpc2_gss_ctx_lookup(request->gss_handle);
+    if (ctx) {
+        ok = (thread->gss_provider->wrap(thread->gss_provider_arg, ctx->gss_ctx,
+                                         plain, plain_len, &wrapped,
+                                         &wrapped_len) == 0);
+    }
+    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+    evpl_iovec_release(evpl, &plain_iov);
+
+    if (!ok || !wrapped) {
+        if (wrapped) {
+            free(wrapped);
+        }
+        return -1;
+    }
+
+    /* reserve headroom + opaque (4-byte length prefix + padded token) */
+    cap  = reserve + 4 + evpl_rpc2_gss_pad4(wrapped_len);
+    niov = evpl_iovec_alloc(evpl, cap, 8, 1, 0, out_iov);
+    if (niov != 1) {
+        free(wrapped);
+        return -1;
+    }
+
+    p  = (uint8_t *) out_iov->data + reserve;
+    pp = p;
+    if (evpl_rpc2_gss_wr_opaque(&pp, p + 4 + evpl_rpc2_gss_pad4(wrapped_len),
+                                wrapped, wrapped_len)) {
+        free(wrapped);
+        evpl_iovec_release(evpl, out_iov);
+        return -1;
+    }
+    free(wrapped);
+
+    newbodylen      = 4 + evpl_rpc2_gss_pad4(wrapped_len);
+    out_iov->length = reserve + newbodylen;
+    *out_length     = reserve + newbodylen;
+
+    evpl_iovecs_release(evpl, msg_iov, msg_niov);
+    return 0;
+} /* evpl_rpc2_gss_wrap_reply_privacy */
 
 /*
  * Emit an rpc_gss_init_res reply for the context-establishment handshake.
@@ -1702,10 +1968,11 @@ evpl_rpc2_gss_handle_call(
             return 0;
     } /* switch */
 
-    /* DATA: authentication (krb5) and integrity (krb5i) are supported.
-     * Privacy (krb5p) wrapping is not yet implemented. */
+    /* DATA: authentication (krb5), integrity (krb5i) and privacy (krb5p) are
+     * all supported. */
     if (cred.service != EVPL_RPC2_GSS_SVC_NONE &&
-        cred.service != EVPL_RPC2_GSS_SVC_INTEGRITY) {
+        cred.service != EVPL_RPC2_GSS_SVC_INTEGRITY &&
+        cred.service != EVPL_RPC2_GSS_SVC_PRIVACY) {
         evpl_rpc2_debug("rpcsec_gss: DATA proc=%u service=%u unsupported "
                         "-> AUTH_TOOWEAK", cred.proc, cred.service);
         evpl_rpc2_send_reply_denied(evpl, request, AUTH_TOOWEAK);
@@ -1766,6 +2033,15 @@ evpl_rpc2_gss_handle_call(
                                            req_niov_p, request_length_p)) {
             pthread_mutex_unlock(&evpl_rpc2_gss_lock);
             evpl_rpc2_debug("rpcsec_gss: integrity UNWRAP failed proc=%u seq=%u "
+                            "reqlen=%d", cred.proc, cred.seq, *request_length_p);
+            evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+            return 0;
+        }
+    } else if (cred.service == EVPL_RPC2_GSS_SVC_PRIVACY) {
+        if (evpl_rpc2_gss_unwrap_privacy(request, ctx, cred.seq, req_iov_p,
+                                         req_niov_p, request_length_p)) {
+            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+            evpl_rpc2_debug("rpcsec_gss: privacy UNWRAP failed proc=%u seq=%u "
                             "reqlen=%d", cred.proc, cred.seq, *request_length_p);
             evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
             return 0;

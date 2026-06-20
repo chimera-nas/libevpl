@@ -217,6 +217,11 @@ int evpl_iovec_alloc(
     unsigned int       flags,
     struct evpl_iovec *r_iovec);
 
+/* The configured iovec buffer size: the largest contiguous region a single
+ * evpl_iovec_alloc (max_iovecs == 1) can satisfy. */
+unsigned int evpl_buffer_size(
+    void);
+
 int evpl_iovec_reserve(
     struct evpl       *evpl,
     unsigned int       length,
