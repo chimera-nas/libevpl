@@ -805,6 +805,36 @@ evpl_vfio_poll_queue(
     return moved;
 } /* evpl_vfio_poll_queue */
 
+/* Debug: dump a queue's submission/completion state.  unreaped = number of
+ * completions the device has already posted to the CQ that the poll loop has
+ * NOT yet consumed (cqe->p != cq_phase, the same test evpl_vfio_poll_queue
+ * uses).  unreaped>0 while cidcount>0 => the device finished but software is
+ * not reaping (poll starvation); unreaped==0 with cidcount>0 => the device
+ * has not completed them yet (genuinely slow I/O).  Call from gdb. */
+SYMBOL_EXPORT void
+evpl_vfio_queue_dump(struct evpl_block_queue *bq)
+{
+    struct evpl_vfio_queue *q = bq->private_data;
+    int                     unreaped = 0, h = q->cq_head, ph = q->cq_phase, i;
+
+    for (i = 0; i < q->cidcount; i++) {
+        struct nvme_cq_entry *cqe = &q->cq[h];
+        if (cqe->p == ph) {
+            break;
+        }
+        unreaped++;
+        if (++h == (int) q->size) {
+            h  = 0;
+            ph = !ph;
+        }
+    }
+
+    evpl_vfio_error(
+        "DBG-Q qid=%u size=%u cidcount=%d unreaped=%d sq_tail=%d cq_head=%d cq_phase=%d poll_mode=%d",
+        q->id, q->size, q->cidcount, unreaped, q->sq_tail, q->cq_head,
+        q->cq_phase, q->poll_mode);
+} /* evpl_vfio_queue_dump */
+
 static int
 evpl_vfio_wait_adminq(struct evpl_vfio_device *device)
 {

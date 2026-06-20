@@ -291,7 +291,7 @@ evpl_io_uring_destroy(
 
     close(ctx->eventfd);
 
-    evpl_iovecs_release(evpl, ctx->recv_ring_iov, ctx->recv_ring_size);
+    evpl_iovecs_release_internal(evpl, ctx->recv_ring_iov, ctx->recv_ring_size);
 
     evpl_free(ctx->recv_ring_iov_empty);
     evpl_free(ctx->recv_ring_iov);

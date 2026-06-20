@@ -376,7 +376,7 @@ evpl_block_wz_emul_done(
         void                 *cb_private   = e->private_data;
         int                   final_status = e->status;
 
-        evpl_iovec_release(evpl, &e->zero);
+        evpl_iovec_release_internal(evpl, &e->zero);
         evpl_free(e);
         callback(evpl, final_status, cb_private);
         return;

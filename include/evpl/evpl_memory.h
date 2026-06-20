@@ -15,8 +15,15 @@
  * iovec flags - stored in evpl_iovec_ref.flags
  * 0 (default): Single-threaded access, uses non-atomic refcnt operations
  * EVPL_IOVEC_FLAG_SHARED: Multi-threaded access, uses atomic refcnt operations
+ * EVPL_IOVEC_FLAG_GLOBAL: User-managed lifetime.  Internal refcount inc/dec
+ *   (evpl_iovec_ref_incr / evpl_iovec_ref_release) are silent no-ops, so the
+ *   library never frees the buffer; only the user's explicit evpl_iovec_release
+ *   actually returns it to its pool.  See evpl_iovec_alloc_global().  The user
+ *   owns exactly one reference and must release it exactly once -- clones are
+ *   non-owning borrows that must NOT be released individually.
  */
 #define EVPL_IOVEC_FLAG_SHARED 1
+#define EVPL_IOVEC_FLAG_GLOBAL 2
 
 #ifdef EVPL_IOVEC_TRACE
 #include <stdlib.h>
@@ -217,6 +224,17 @@ int evpl_iovec_alloc(
     unsigned int       flags,
     struct evpl_iovec *r_iovec);
 
+/*
+ * Allocate one whole, DMA/RDMA-registered buffer as a single GLOBAL iovec with
+ * a user-managed lifetime (1 iovec : 1 dedicated buffer).  Internal libevpl
+ * refcount operations on it are no-ops; the caller owns it and must free it
+ * exactly once with evpl_iovec_release().  Clones of it are non-owning borrows.
+ * Do not sub-carve or otherwise share the buffer behind a GLOBAL iovec.
+ */
+void evpl_iovec_alloc_global(
+    struct evpl       *evpl,
+    struct evpl_iovec *r_iovec);
+
 int evpl_iovec_reserve(
     struct evpl       *evpl,
     unsigned int       length,
@@ -238,6 +256,12 @@ evpl_iovec_ref_release(
 {
     unsigned int prev;
 
+    if (ref->flags & EVPL_IOVEC_FLAG_GLOBAL) {
+        /* User-managed lifetime: internal release never frees.  Only the
+         * public evpl_iovec_release() (the owner's explicit free) frees it. */
+        return;
+    }
+
     if (ref->flags & EVPL_IOVEC_FLAG_SHARED) {
         prev = atomic_fetch_sub_explicit(&ref->refcnt_atomic, 1,
                                          memory_order_release);
@@ -257,8 +281,15 @@ evpl_iovec_ref_release(
     }
 } /* evpl_iovec_ref_release */
 
+/*
+ * Internal release: drop a library-held reference.  For LOCAL/SHARED this
+ * decrements (and frees at zero); for GLOBAL it is a no-op (the borrow was
+ * never counted).  All libevpl-internal release sites (send/recv rings, I/O
+ * completions, teardown) must use this -- NOT the public evpl_iovec_release --
+ * so that a user-owned GLOBAL buffer is never freed out from under the user.
+ */
 static inline void
-evpl_iovec_release(
+evpl_iovec_release_internal(
     struct evpl       *evpl,
     struct evpl_iovec *iovec)
 {
@@ -271,6 +302,51 @@ evpl_iovec_release(
 #else // ifdef EVPL_IOVEC_TRACE
     evpl_iovec_ref_release(evpl, iovec->ref);
 #endif // ifdef EVPL_IOVEC_TRACE
+} /* evpl_iovec_release_internal */
+
+static inline void
+evpl_iovecs_release_internal(
+    struct evpl       *evpl,
+    struct evpl_iovec *iov,
+    int                niov)
+{
+    for (int i = 0; i < niov; i++) {
+        evpl_iovec_release_internal(evpl, &iov[i]);
+    }
+} /* evpl_iovecs_release_internal */
+
+/*
+ * Public release: the application's way to drop its reference.  For LOCAL/
+ * SHARED it is identical to the internal release.  For a GLOBAL iovec it is
+ * the owner's explicit free -- it bypasses the (inert) refcount and returns
+ * the buffer to its pool directly, resetting refcnt to 0 so the allocator's
+ * destroy-time leak check sees a clean buffer.  The owner must call this
+ * exactly once per buffer; clones are non-owning borrows and must not be
+ * released here.
+ */
+static inline void
+evpl_iovec_release(
+    struct evpl       *evpl,
+    struct evpl_iovec *iovec)
+{
+#ifdef EVPL_IOVEC_TRACE
+    struct evpl_iovec_ref *ref = evpl_iovec_real_ref(iovec);
+#else // ifdef EVPL_IOVEC_TRACE
+    struct evpl_iovec_ref *ref = iovec->ref;
+#endif // ifdef EVPL_IOVEC_TRACE
+
+    if (ref->flags & EVPL_IOVEC_FLAG_GLOBAL) {
+        evpl_iovec_profile_release(iovec);
+#ifdef EVPL_IOVEC_TRACE
+        evpl_iovec_canary_free(iovec);
+#endif // ifdef EVPL_IOVEC_TRACE
+        ref->refcnt = 0;
+        ref->release(evpl, ref);
+        iovec->data = NULL;
+        return;
+    }
+
+    evpl_iovec_release_internal(evpl, iovec);
 } /* evpl_iovec_release */
 
 static inline void
@@ -307,6 +383,11 @@ evpl_iovec_set_length(
 static inline void
 evpl_iovec_ref_incr(struct evpl_iovec_ref *ref)
 {
+    if (ref->flags & EVPL_IOVEC_FLAG_GLOBAL) {
+        /* User-managed lifetime: borrows are not counted. */
+        return;
+    }
+
     if (ref->flags & EVPL_IOVEC_FLAG_SHARED) {
         atomic_fetch_add_explicit(&ref->refcnt_atomic, 1, memory_order_relaxed);
     } else {

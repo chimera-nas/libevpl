@@ -73,6 +73,7 @@ struct evpl_rpc2_request {
     uint32_t                              proc;
     uint32_t                              rdma_credits;
     uint16_t                              pending_reads;
+    uint8_t                               dbg_reply_sent; /* RNR diag: 1 once reply SENT */
     struct evpl_bind                     *bind;
     struct evpl_rpc2_conn                *conn;
     struct evpl_rpc2_thread              *thread;
@@ -192,8 +193,8 @@ evpl_rpc2_msg_free(
 {
     struct evpl *evpl = thread->evpl;
 
-    evpl_iovecs_release(evpl, msg->recv_iov, msg->recv_niov);
-    evpl_iovecs_release(evpl, msg->req_iov, msg->req_niov);
+    evpl_iovecs_release_internal(evpl, msg->recv_iov, msg->recv_niov);
+    evpl_iovecs_release_internal(evpl, msg->req_iov, msg->req_niov);
 
     LL_PREPEND(thread->free_msg, msg);
 } /* evpl_rpc2_msg_free */
@@ -213,6 +214,7 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
     request->thread                      = thread;
     request->m_inflight                  = NULL;
     request->rdma_credits                = 1;
+    request->dbg_reply_sent              = 0;
     request->pending_reads               = 0;
     request->read_chunk.niov             = 0;
     request->read_chunk.length           = 0;
@@ -246,12 +248,12 @@ evpl_rpc2_request_free(
         request->m_inflight = NULL;
     }
 
-    evpl_iovecs_release(evpl, request->read_chunk.iov, request->read_chunk.niov);
+    evpl_iovecs_release_internal(evpl, request->read_chunk.iov, request->read_chunk.niov);
     /* A borrowed write-chunk (read-into) is owned by the caller -- never release
      * it here.  On the normal reply path write_chunk.niov is already 0 (moved to
      * read_chunk); this guards the abort/error path where it is still set. */
     if (!request->write_chunk_borrowed) {
-        evpl_iovecs_release(evpl, request->write_chunk.iov, request->write_chunk.niov);
+        evpl_iovecs_release_internal(evpl, request->write_chunk.iov, request->write_chunk.niov);
     }
 
     if (request->msg) {
@@ -416,7 +418,7 @@ evpl_rpc2_reasm_reset(
     struct evpl_rpc2_conn *rpc2_conn)
 {
     if (rpc2_conn->reasm_iov) {
-        evpl_iovecs_release(evpl, rpc2_conn->reasm_iov, rpc2_conn->reasm_niov);
+        evpl_iovecs_release_internal(evpl, rpc2_conn->reasm_iov, rpc2_conn->reasm_niov);
         evpl_free(rpc2_conn->reasm_iov);
     }
     rpc2_conn->reasm_iov    = NULL;
@@ -477,7 +479,7 @@ evpl_rpc2_reassemble(
             "RPC reassembled message exceeds %u-byte cap, dropping connection",
             EVPL_RPC2_MAX_REASM_LENGTH);
         evpl_rpc2_reasm_reset(evpl, rpc2_conn);
-        evpl_iovecs_release(evpl, iovec, niov);
+        evpl_iovecs_release_internal(evpl, iovec, niov);
         return -1;
     }
 
@@ -516,7 +518,7 @@ evpl_rpc2_reassemble(
 
     /* Drop the delivery refs; accumulator clones now own the buffer
      * references on behalf of the conn. */
-    evpl_iovecs_release(evpl, iovec, niov);
+    evpl_iovecs_release_internal(evpl, iovec, niov);
 
     if (!last) {
         return 0;
@@ -584,6 +586,14 @@ evpl_rpc2_send_reply(
     int                           i, reduce = 0, rdma = request->conn->rdma;
     struct evpl_iovec            *final_reply_iov;
     int                           final_reply_niov, final_reply_length;
+
+    /* RNR diag: affirm exactly one reply SEND per request.  A second reply for
+     * the same request would post a SEND the client reserved no receive for
+     * (an RNR source independent of credits).  Abort to capture it definitively. */
+    evpl_rpc2_abort_if(rdma && request->dbg_reply_sent,
+                       "DOUBLE REPLY SEND on xid=%u proc=%u -- second SEND with no client recv",
+                       request->xid, request->proc);
+    request->dbg_reply_sent = 1;
 
     rpc_reply.xid             = request->xid;
     rpc_reply.body.mtype      = REPLY;
@@ -707,7 +717,7 @@ evpl_rpc2_send_reply(
         marshall_rdma_msg(&rdma_msg, &iov, &reply_iov, &reply_niov, NULL, 0);
 
         /* Release the RDMA header iovec - marshall_rpc_msg will create its own */
-        evpl_iovec_release(evpl, &reply_iov);
+        evpl_iovec_release_internal(evpl, &reply_iov);
 
     } else {
         offset = 4;
@@ -722,7 +732,7 @@ evpl_rpc2_send_reply(
     reply_niov = 1;
     reply_len  = marshall_rpc_msg(&rpc_reply, &iov, &reply_iov, &reply_niov, NULL, offset);
 
-    evpl_iovec_release(evpl, &reply_iov);
+    evpl_iovec_release_internal(evpl, &reply_iov);
 
     evpl_rpc2_abort_if(reply_len != rpc_len + offset,
                        "marshalled reply length mismatch %d != %d", reply_len, rpc_len + offset);
@@ -776,7 +786,7 @@ evpl_rpc2_send_reply(
          * Release msg_iov - we've taken new references for final_reply_iov
          * and reply_segment_iov. The original msg_iov is no longer needed.
          */
-        evpl_iovecs_release(evpl, msg_iov, msg_niov);
+        evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
 
     } else {
         final_reply_iov    = msg_iov;
@@ -963,7 +973,7 @@ evpl_rpc2_client_handle_reply(
          * unmarshalling code that comes next will incorrectly use it again
          * when unmarshalling the reply.
          */
-        evpl_iovecs_release(evpl, request->read_chunk.iov, request->read_chunk.niov);
+        evpl_iovecs_release_internal(evpl, request->read_chunk.iov, request->read_chunk.niov);
         request->read_chunk.niov   = 0;
         request->read_chunk.length = 0;
     }
@@ -1095,7 +1105,7 @@ evpl_rpc2_recv_msg(
                            "Failed to flatten %d-iovec RPC payload (%d bytes)",
                            niov, length);
 
-        evpl_iovecs_release(evpl, iovec, niov);
+        evpl_iovecs_release_internal(evpl, iovec, niov);
 
         if (offset == 0) {
             /* Reassembled path: free the heap accumulator array. */
@@ -1126,7 +1136,7 @@ evpl_rpc2_recv_msg(
     msg->recv_niov = niov;
 
     /* Release the original iovec array references from evpl_iovec_ring_copyv */
-    evpl_iovecs_release(evpl, iovec, niov);
+    evpl_iovecs_release_internal(evpl, iovec, niov);
 
     /* On the reassembled path, iovec points at the heap accumulator
      * array handed off by evpl_rpc2_reassemble; free it now that all
@@ -1148,7 +1158,7 @@ evpl_rpc2_recv_msg(
     msg->req_niov = req_niov;
 
     /* Release hdr_iov references - they were addref'd by evpl_rpc2_iovec_skip */
-    evpl_iovecs_release(evpl, hdr_iov, hdr_niov);
+    evpl_iovecs_release_internal(evpl, hdr_iov, hdr_niov);
 
     request_length = length - (rc + offset);
 
@@ -1261,7 +1271,7 @@ evpl_rpc2_recv_msg(
                                        evpl_rpc2_read_segment_callback, ctx);
 
                         /* evpl_rdma_read takes its own clone, so release our reference */
-                        evpl_iovec_release(evpl, segment_iov);
+                        evpl_iovec_release_internal(evpl, segment_iov);
 
                         request->pending_reads++;
 
@@ -1940,13 +1950,13 @@ evpl_rpc2_call(
     marshall_rpc_msg(&rpc_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, transport_hdr_len);
 
     if (out_niov > 0) {
-        evpl_iovec_release(evpl, &hdr_out_iov);
+        evpl_iovec_release_internal(evpl, &hdr_out_iov);
     }
 
     if (rdma) {
         marshall_rdma_msg(&rdma_msg, &hdr_iov, &hdr_out_iov, &out_niov, NULL, 0);
         /* Release the RDMA header iovec - the actual data is in req_iov which gets sent */
-        evpl_iovec_release(evpl, &hdr_out_iov);
+        evpl_iovec_release_internal(evpl, &hdr_out_iov);
     } else {
         /* Add 4-byte record marking header for TCP at the start of the output buffer */
         *(uint32_t *) req_iov[0].data = rpc2_hton32((total_length - 4) | 0x80000000);
