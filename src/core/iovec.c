@@ -50,7 +50,7 @@ evpl_iovec_reserve(
              * on this error return; the current buffer stays retained
              * for the next allocation.
              */
-            evpl_iovecs_release(evpl, r_iovec, niovs);
+            evpl_iovecs_release_internal(evpl, r_iovec, niovs);
             return -1;
         }
 
@@ -150,7 +150,7 @@ evpl_iovec_alloc(
              * on this error return; the current buffer stays retained
              * for the next allocation.
              */
-            evpl_iovecs_release(evpl, r_iovec, niovs);
+            evpl_iovecs_release_internal(evpl, r_iovec, niovs);
             return -1;
         }
 
@@ -189,6 +189,26 @@ evpl_iovec_alloc_whole(
     r_iovec->length = buffer->size;
     evpl_iovec_set_ref(r_iovec, &buffer->ref);
 } /* evpl_iovec_alloc_whole */
+
+SYMBOL_EXPORT void
+evpl_iovec_alloc_global(
+    struct evpl       *evpl,
+    struct evpl_iovec *r_iovec)
+{
+    struct evpl_buffer *buffer;
+
+    /* SHARED so the buffer comes from the DMA/RDMA-registered shared pool and
+     * gets the shared (evpl_buffer_free) release callback; GLOBAL so its
+     * lifetime is user-managed (internal refcount inc/dec are no-ops).  Whole
+     * buffer, 1 iovec : 1 buffer.  refcnt is left at the sentinel 1 set by
+     * evpl_buffer_alloc -- evpl_iovec_set_ref does not increment it. */
+    buffer = evpl_buffer_alloc(evpl,
+                               EVPL_IOVEC_FLAG_SHARED | EVPL_IOVEC_FLAG_GLOBAL);
+
+    r_iovec->data   = buffer->data;
+    r_iovec->length = buffer->size;
+    evpl_iovec_set_ref(r_iovec, &buffer->ref);
+} /* evpl_iovec_alloc_global */
 
 void
 evpl_iovec_alloc_datagram(

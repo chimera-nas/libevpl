@@ -307,7 +307,7 @@ tcp_rdma_pending_complete(
         /* Release the library's reference to the iovecs.
          * For RDMA READ: we cloned the app's iovec, now release our ref.
          * For RDMA WRITE: we moved the iovec, releasing is correct. */
-        evpl_iovecs_release(evpl, op->iov, op->niov);
+        evpl_iovecs_release_internal(evpl, op->iov, op->niov);
         evpl_free(op->iov);
         op->iov = NULL;
     }
@@ -332,7 +332,7 @@ tcp_rdma_pending_clear(
             op->callback(ECONNRESET, op->private_data);
         }
         if (op->iov) {
-            evpl_iovecs_release(evpl, op->iov, op->niov);
+            evpl_iovecs_release_internal(evpl, op->iov, op->niov);
             evpl_free(op->iov);
             op->iov = NULL;
         }
@@ -729,7 +729,7 @@ tcp_rdma_handle_write_request(
             remaining -= chunk;
 
             if (chunk == (int) src_iov->length) {
-                evpl_iovec_release(evpl, src_iov);
+                evpl_iovec_release_internal(evpl, src_iov);
                 bind->iovec_recv.tail = (bind->iovec_recv.tail + 1) &
                     bind->iovec_recv.mask;
             } else {
@@ -1246,7 +1246,7 @@ evpl_tcp_rdma_flush(
 
         /* Release iovecs */
         for (i = 0; i < dgram->niov; i++) {
-            evpl_iovec_release(evpl, &iov[i]);
+            evpl_iovec_release_internal(evpl, &iov[i]);
         }
 
         evpl_dgram_ring_remove(&bind->dgram_send);

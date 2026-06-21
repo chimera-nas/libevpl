@@ -544,7 +544,7 @@ evpl_http2_recv(struct evpl_http_conn *conn)
         for (i = 0; i < niov; i++) {
             rc = nghttp2_session_mem_recv(conn->h2->session, iov[i].data, iov[i].length);
 
-            evpl_iovec_release(evpl, &iov[i]);
+            evpl_iovec_release_internal(evpl, &iov[i]);
 
             if (rc < 0) {
                 evpl_http_error("nghttp2 recv error: %s", nghttp2_strerror((int) rc));

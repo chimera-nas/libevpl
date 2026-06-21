@@ -134,6 +134,24 @@ struct evpl_rdmacm_id {
     int                           cur_rdma_reads;
     int                           cur_sends;
 
+    /* RNR diagnostics: message-SEND (reply) work requests in flight on this
+     * connection, and the high-water mark.  If a SEND completes with RNR
+     * (status 13) this is dumped: a value near/above the client's ~128 recv
+     * credit affirms chimera over-sending replies on the connection; a small
+     * value points elsewhere (wrong-QP routing or a client recv gap). */
+    int                           dbg_send_inflight;
+    int                           dbg_send_hwm;
+    uint64_t                      dbg_send_rnr;
+
+    /* Per-connection 1:1 invariant: CALLs delivered to this bind vs reply
+     * SENDs issued on it.  Replies must follow the bind the CALL arrived on,
+     * so dbg_reply_sent must never exceed dbg_req_recv.  If it does, chimera
+     * put a reply on a connection that never sent the matching CALL
+     * (wrong-QP routing) -- which the client RNRs because it posted no
+     * receive there.  Dumped at the RNR. */
+    uint64_t                      dbg_req_recv;
+    uint64_t                      dbg_reply_sent;
+
     struct evpl_address          *resolve_addr;
 
     struct evpl_rdmacm_listen_id *listen_id;
@@ -613,11 +631,15 @@ evpl_rdmacm_process_send_completions(
 
         for (i = 0; i < dgram->niov; ++i) {
             iovec = evpl_iovec_ring_tail(&bind->iovec_send);
-            evpl_iovec_release(evpl, iovec);
+            evpl_iovec_release_internal(evpl, iovec);
             evpl_iovec_ring_remove(&bind->iovec_send);
         }
 
         --rdmacm_id->cur_sends;
+
+        if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
+            --rdmacm_id->dbg_send_inflight;
+        }
 
         if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_WRITE) {
             if (dgram->callback) {
@@ -686,7 +708,7 @@ evpl_rdmacm_process_rdma_read_completions(
         for (i = 0; i < dgram->niov; ++i) {
             struct evpl_iovec *iovec = evpl_iovec_ring_tail(&bind->iovec_rdma_read);
 
-            evpl_iovec_release(evpl, iovec);
+            evpl_iovec_release_internal(evpl, iovec);
             evpl_iovec_ring_remove(&bind->iovec_rdma_read);
         }
 
@@ -769,6 +791,24 @@ evpl_rdmacm_poll_cq(
                     dgram     = (struct evpl_dgram *) cq->wr_id;
                     rdmacm_id = evpl_bind_private(dgram->bind);
 
+                    /* RNR diagnostics: on an RNR_RETRY_EXC (status 13) SEND, the
+                     * client had no receive posted for our reply.  dbg_send_inflight
+                     * (this failing SEND included) is the number of reply SENDs we
+                     * had outstanding on this QP.  Near/above the client's ~128 recv
+                     * credit => chimera over-sent replies on the connection; a small
+                     * value => wrong-QP routing or a client-side recv gap instead. */
+                    if (cq->status == IBV_WC_RNR_RETRY_EXC_ERR &&
+                        dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
+                        rdmacm_id->dbg_send_rnr++;
+                        evpl_rdmacm_error(
+                            "RNR-DIAG qp=%u send_inflight=%d send_hwm=%d cur_sends=%d rnr_count=%lu req_recv=%lu reply_sent=%lu excess_replies=%ld",
+                            rdmacm_id->qp_num, rdmacm_id->dbg_send_inflight,
+                            rdmacm_id->dbg_send_hwm, rdmacm_id->cur_sends,
+                            rdmacm_id->dbg_send_rnr,
+                            rdmacm_id->dbg_req_recv, rdmacm_id->dbg_reply_sent,
+                            (long) (rdmacm_id->dbg_reply_sent - rdmacm_id->dbg_req_recv));
+                    }
+
                     if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_READ) {
                         evpl_rdmacm_process_rdma_read_completions(evpl, rdmacm_id, dgram, EIO);
                     } else {
@@ -791,7 +831,7 @@ evpl_rdmacm_poll_cq(
                     rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
 
                     if (unlikely(!rdmacm_id)) {
-                        evpl_iovec_release(evpl, &req->iovec);
+                        evpl_iovec_release_internal(evpl, &req->iovec);
                     } else if (rdmacm_id->stream) {
 
                         bind = evpl_private2bind(rdmacm_id);
@@ -813,6 +853,8 @@ evpl_rdmacm_poll_cq(
                             req->iovec.length -= 40;
                             req->iovec.data   += 40;
                         }
+
+                        rdmacm_id->dbg_req_recv++;
 
                         notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
                         notify.notify_status   = 0;
@@ -1172,7 +1214,7 @@ evpl_rdmacm_destroy(
             req = &dev->srq_reqs[j];
 
             if (req->used) {
-                evpl_iovec_release(evpl, &req->iovec);
+                evpl_iovec_release_internal(evpl, &req->iovec);
             }
         }
 
@@ -1584,6 +1626,10 @@ evpl_rdmacm_flush_datagram(
 
         if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
             ibv_wr_send(qp);
+            rdmacm_id->dbg_reply_sent++;
+            if (++rdmacm_id->dbg_send_inflight > rdmacm_id->dbg_send_hwm) {
+                rdmacm_id->dbg_send_hwm = rdmacm_id->dbg_send_inflight;
+            }
         } else {
             ibv_wr_rdma_write(qp, dgram->remote_key, dgram->remote_address);
         }
