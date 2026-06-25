@@ -2089,6 +2089,22 @@ evpl_rpc2_recv_msg(
 
     rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, &msg->dbuf);
 
+    if (rc < 0) {
+        /* Truncated / undecodable RPC header (RFC 5531 §8): the call header
+         * could not be fully decoded.  Reusing the negative return as a byte
+         * offset below drives a negative-offset, over-length iovec clone, so
+         * release every reference acquired so far and drop the connection
+         * instead. */
+        evpl_iovecs_release_internal(evpl, hdr_iov, hdr_niov);
+        evpl_iovecs_release_internal(evpl, iovec, niov);
+        if (!rdma && offset == 0) {
+            evpl_free(iovec);
+        }
+        evpl_rpc2_msg_free(thread, msg);
+        evpl_close(evpl, bind);
+        return;
+    }
+
     /* Clone recv iovecs to msg - this keeps the buffer data alive */
     msg->recv_iov = xdr_dbuf_alloc_space(sizeof(*msg->recv_iov) * niov, &msg->dbuf);
 
