@@ -2336,7 +2336,6 @@ evpl_rpc2_recv_msg(
                     program->version == rpc_msg.body.cbody.vers) {
 
                     request->program = program;
-                    request->metric  = server_binding ? server_binding->metrics[i][request->proc] : NULL;
                     break;
                 }
             }
@@ -2350,6 +2349,25 @@ evpl_rpc2_recv_msg(
                 evpl_rpc2_send_reply_error(evpl, request, PROG_MISMATCH);
                 return;
             }
+
+            /* The proc number is unauthenticated input from the wire.  Range
+             * check it against the program's maxproc BEFORE using it to index
+             * the per-program metrics array (sized maxproc + 1).  An
+             * out-of-range proc is answered with PROC_UNAVAIL per RFC 5531
+             * rather than indexing the array with a wild value. */
+            if (unlikely(request->proc > program->maxproc)) {
+                evpl_rpc2_debug(
+                    "rpc2 received call for out-of-range proc %u (prog %u vers %u maxproc %u)",
+                    request->proc,
+                    rpc_msg.body.cbody.prog,
+                    rpc_msg.body.cbody.vers,
+                    program->maxproc);
+
+                evpl_rpc2_send_reply_error(evpl, request, PROC_UNAVAIL);
+                return;
+            }
+
+            request->metric = server_binding ? server_binding->metrics[i][request->proc] : NULL;
 
             if (request->pending_reads == 0) {
                 evpl_rpc2_server_handle_request(request, req_iov, req_niov, request_length, authsys, flavor);
