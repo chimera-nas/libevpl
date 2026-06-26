@@ -686,8 +686,14 @@ evpl_rpc2_send_reply(
                 length   = wrapped_len;
             }
         }
+    } else if (error_stat == RPC_MISMATCH) {
+        /* MSG_DENIED / RPC_MISMATCH: the call's RPC version is not 2.  Report
+         * the range of RPC versions we support (low = high = 2) per RFC 5531. */
+        rpc_reply.body.rbody.rreply.stat      = RPC_MISMATCH;
+        rpc_reply.body.rbody.rreply.info.low  = 2;
+        rpc_reply.body.rbody.rreply.info.high = 2;
     } else {
-        /* MSG_DENIED - currently only AUTH_ERROR is supported */
+        /* MSG_DENIED / AUTH_ERROR: error_stat carries the auth_stat. */
         rpc_reply.body.rbody.rreply.stat = AUTH_ERROR;
         rpc_reply.body.rbody.rreply.auth = error_stat;
     }
@@ -928,6 +934,26 @@ evpl_rpc2_send_reply_denied(
     return evpl_rpc2_send_reply(evpl, request, NULL, &msg_iov, msg_niov, 4096, 4096,
                                 MSG_DENIED, auth_error);
 } /* evpl_rpc2_send_reply_denied */
+
+/*
+ * Reject a CALL whose RPC version is not 2 (MSG_DENIED, RPC_MISMATCH).
+ *
+ * The supported RPC version range (low = high = 2) is filled in by
+ * evpl_rpc2_send_reply's RPC_MISMATCH branch.
+ */
+static inline int
+evpl_rpc2_send_reply_mismatch(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request)
+{
+    struct evpl_iovec msg_iov;
+    int               msg_niov = 1;
+
+    msg_niov = evpl_iovec_alloc(evpl, 4096, 0, 1, 0, &msg_iov);
+
+    return evpl_rpc2_send_reply(evpl, request, NULL, &msg_iov, msg_niov, 4096, 4096,
+                                MSG_DENIED, RPC_MISMATCH);
+} /* evpl_rpc2_send_reply_mismatch */
 
 
 static inline int
@@ -2158,6 +2184,18 @@ evpl_rpc2_recv_msg(
             request->proc         = rpc_msg.body.cbody.proc;
             prometheus_stopwatch_start(&request->timestamp);
 
+            /* RFC 5531: rpcvers MUST equal 2.  A call claiming a different RPC
+             * version is rejected with MSG_DENIED / RPC_MISMATCH (advertising
+             * the supported version range) rather than being dispatched as if
+             * it were version 2. */
+            if (unlikely(rpc_msg.body.cbody.rpcvers != 2)) {
+                evpl_rpc2_debug("rpc2 received call with unsupported rpcvers %u",
+                                rpc_msg.body.cbody.rpcvers);
+
+                evpl_rpc2_send_reply_mismatch(evpl, request);
+                return;
+            }
+
             /* Parse credentials - authsys data is in msg->dbuf which persists */
             flavor = rpc_msg.body.cbody.cred.flavor;
 
@@ -2336,7 +2374,6 @@ evpl_rpc2_recv_msg(
                     program->version == rpc_msg.body.cbody.vers) {
 
                     request->program = program;
-                    request->metric  = server_binding ? server_binding->metrics[i][request->proc] : NULL;
                     break;
                 }
             }
@@ -2350,6 +2387,25 @@ evpl_rpc2_recv_msg(
                 evpl_rpc2_send_reply_error(evpl, request, PROG_MISMATCH);
                 return;
             }
+
+            /* The proc number is unauthenticated input from the wire.  Range
+             * check it against the program's maxproc BEFORE using it to index
+             * the per-program metrics array (sized maxproc + 1).  An
+             * out-of-range proc is answered with PROC_UNAVAIL per RFC 5531
+             * rather than indexing the array with a wild value. */
+            if (unlikely(request->proc > program->maxproc)) {
+                evpl_rpc2_debug(
+                    "rpc2 received call for out-of-range proc %u (prog %u vers %u maxproc %u)",
+                    request->proc,
+                    rpc_msg.body.cbody.prog,
+                    rpc_msg.body.cbody.vers,
+                    program->maxproc);
+
+                evpl_rpc2_send_reply_error(evpl, request, PROC_UNAVAIL);
+                return;
+            }
+
+            request->metric = server_binding ? server_binding->metrics[i][request->proc] : NULL;
 
             if (request->pending_reads == 0) {
                 evpl_rpc2_server_handle_request(request, req_iov, req_niov, request_length, authsys, flavor);
