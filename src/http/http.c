@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -825,6 +826,69 @@ evpl_http_event(
 
 } /* evpl_http_event */
 
+/*
+ * Append a formatted line into [rsp_base, rsp_base + cap) at *rsp, never
+ * writing past the end of the buffer.
+ *
+ * snprintf() returns the length it *would* have written even when the
+ * output is truncated, so blindly doing `rsp += snprintf(rsp, cap - (rsp -
+ * rsp_base), ...)` lets rsp walk past rsp_base + cap once a prior line
+ * filled the buffer: cap - (rsp - rsp_base) goes negative, and passed as
+ * snprintf's size_t argument that becomes a huge value, so the next call
+ * writes straight through the end of the allocation.
+ *
+ * Here we compute remaining space with unsigned arithmetic that saturates
+ * at 0 instead of wrapping, clamp snprintf's size to that, and clamp the
+ * advance of *rsp to what snprintf actually had room to write (never to
+ * what it merely wanted to write). Once the buffer is full, further calls
+ * are no-ops so the line list stops growing but nothing is ever written
+ * out of bounds; the header block still ends up terminated correctly by
+ * the trailing "\r\n" call as long as at least one byte remains for it.
+ */
+static void
+evpl_http_append_line(
+    char       *rsp_base,
+    size_t      cap,
+    char      **rsp,
+    const char *fmt,
+    ...) __attribute__((format(printf, 4, 5)));
+
+static void
+evpl_http_append_line(
+    char       *rsp_base,
+    size_t      cap,
+    char      **rsp,
+    const char *fmt,
+    ...)
+{
+    size_t  used = *rsp - rsp_base;
+    size_t  remain;
+    int     wanted;
+    va_list ap;
+
+    if (used >= cap) {
+        return;
+    }
+
+    remain = cap - used;
+
+    va_start(ap, fmt);
+    wanted = vsnprintf(*rsp, remain, fmt, ap);
+    va_end(ap);
+
+    if (wanted < 0) {
+        return;
+    }
+
+    if ((size_t) wanted >= remain) {
+        /* Truncated (or exactly filled with no room for the NUL): advance
+         * only to the end of the buffer, never past it. */
+        *rsp = rsp_base + cap;
+    } else {
+        *rsp += wanted;
+    }
+} /* evpl_http_append_line */
+
 static void
 evpl_http_server_send_headers(
     struct evpl              *evpl,
@@ -836,31 +900,32 @@ evpl_http_server_send_headers(
     struct evpl_iovec                iov;
     int                              niov;
     char                            *rsp_base, *rsp;
+    const unsigned int               cap = 4096;
 
-    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, 0, &iov);
+    niov = evpl_iovec_alloc(evpl, cap, cap, 1, 0, &iov);
 
     evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 
     rsp_base = iov.data;
     rsp      = rsp_base;
 
-    rsp += snprintf(rsp, 4096, "%s %d %s\r\n",
-                    http_version_string[request->http_version],
-                    request->status,
-                    evpl_http_response_status_string(request->status));
+    evpl_http_append_line(rsp_base, cap, &rsp, "%s %d %s\r\n",
+                          http_version_string[request->http_version],
+                          request->status,
+                          evpl_http_response_status_string(request->status));
 
     DL_FOREACH(request->response_headers, header)
     {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "%s: %s\r\n", header->name, header->value);
+        evpl_http_append_line(rsp_base, cap, &rsp, "%s: %s\r\n", header->name, header->value);
     }
 
     if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %lu\r\n", request->response_length);
+        evpl_http_append_line(rsp_base, cap, &rsp, "Content-Length: %lu\r\n", request->response_length);
     } else {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Transfer-Encoding: chunked\r\n");
+        evpl_http_append_line(rsp_base, cap, &rsp, "Transfer-Encoding: chunked\r\n");
     }
 
-    rsp +=  snprintf(rsp, 4096 - (rsp - rsp_base), "\r\n");
+    evpl_http_append_line(rsp_base, cap, &rsp, "\r\n");
 
     iov.length = rsp - rsp_base;
 
@@ -878,30 +943,31 @@ evpl_http_client_send_headers(
     struct evpl_iovec                iov;
     int                              niov;
     char                            *rsp_base, *rsp;
+    const unsigned int               cap = 4096;
 
-    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, 0, &iov);
+    niov = evpl_iovec_alloc(evpl, cap, cap, 1, 0, &iov);
 
     evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 
     rsp_base = iov.data;
     rsp      = rsp_base;
 
-    rsp += snprintf(rsp, 4096, "%s %s HTTP/1.1\r\n",
-                    evpl_http_method_to_wire(request->request_type),
-                    request->uri);
+    evpl_http_append_line(rsp_base, cap, &rsp, "%s %s HTTP/1.1\r\n",
+                          evpl_http_method_to_wire(request->request_type),
+                          request->uri);
 
     DL_FOREACH(request->request_headers, header)
     {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "%s: %s\r\n", header->name, header->value);
+        evpl_http_append_line(rsp_base, cap, &rsp, "%s: %s\r\n", header->name, header->value);
     }
 
     if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Transfer-Encoding: chunked\r\n");
+        evpl_http_append_line(rsp_base, cap, &rsp, "Transfer-Encoding: chunked\r\n");
     } else {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %lu\r\n", request->response_length);
+        evpl_http_append_line(rsp_base, cap, &rsp, "Content-Length: %lu\r\n", request->response_length);
     }
 
-    rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "\r\n");
+    evpl_http_append_line(rsp_base, cap, &rsp, "\r\n");
 
     iov.length = rsp - rsp_base;
 
