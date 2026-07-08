@@ -207,7 +207,6 @@ evpl_xlio_socket_accept(
     struct evpl_xlio                 *xlio;
     struct evpl_bind                 *listen_bind;
     struct evpl_xlio_socket          *ls;
-    struct evpl_address              *srcaddr;
     struct evpl_xlio_accepted_socket *accepted_socket;
     int                               rc;
 
@@ -223,15 +222,16 @@ evpl_xlio_socket_accept(
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    srcaddr = evpl_address_alloc();
-
-    xlio->extra->xlio_socket_getpeername(sock, srcaddr->addr, &srcaddr->addrlen);
-
     rc = xlio->extra->xlio_socket_detach_group(sock);
 
     evpl_xlio_abort_if(rc, "Failed to detach socket from group");
 
-    listen_bind->accept_callback(evpl, listen_bind, srcaddr, accepted_socket, listen_bind->private_data);
+    /* The peer address is resolved on the worker thread inside
+     * evpl_xlio_tcp_attach, after the socket has been re-attached to that
+     * thread's poll group. Calling getpeername() from this listener-thread
+     * context races XLIO's internal connection state machine and can return
+     * stale or empty data when sockets churn quickly. */
+    listen_bind->accept_callback(evpl, listen_bind, NULL, accepted_socket, listen_bind->private_data);
 
 } /* evpl_xlio_socket_accept */
 
@@ -266,6 +266,17 @@ evpl_xlio_socket_rx(
 } /* evpl_xlio_socket_rx */
 
 static void
+evpl_xlio_idle_timer(
+    struct evpl       *evpl,
+    struct evpl_timer *timer)
+{
+    struct evpl_xlio *xlio = container_of(timer, struct evpl_xlio, idle_timer);
+
+    xlio->extra->xlio_poll_group_poll(xlio->poll_group);
+    xlio->extra->xlio_poll_group_flush(xlio->poll_group);
+} /* evpl_xlio_idle_timer */
+
+static void
 evpl_xlio_poll(
     struct evpl *evpl,
     void        *private_data)
@@ -274,6 +285,14 @@ evpl_xlio_poll(
     struct evpl_xlio_socket *s;
     struct evpl_bind        *bind;
     int                      i, res;
+
+    /* When this thread has no established XLIO connections, skip the entire
+     * poll. The idle_timer wakes us every 10ms to service listen sockets and
+     * detect new incoming work; once any connection exists, the regular poll
+     * path takes over again. */
+    if (xlio->num_connections == 0) {
+        return;
+    }
 
     xlio->extra->xlio_poll_group_poll(xlio->poll_group);
 
@@ -376,6 +395,9 @@ evpl_xlio_destroy(
 
     if (xlio->poll) {
         evpl_remove_poll(evpl, xlio->poll);
+        if (xlio->idle_timer_active) {
+            evpl_remove_timer(evpl, &xlio->idle_timer);
+        }
         evpl->force_poll_mode = 0;
     }
 
@@ -461,8 +483,26 @@ evpl_xlio_socket_init(
     }
 
     if (!xlio->poll) {
-        xlio->poll            = evpl_add_poll(evpl, NULL, NULL, evpl_xlio_poll, xlio);
-        evpl->force_poll_mode = 1;
+        xlio->poll = evpl_add_poll(evpl, NULL, NULL, evpl_xlio_poll, xlio);
+    }
+
+    if (listen) {
+        /* Listen sockets need a periodic poll to catch incoming accepts
+         * even when num_connections == 0 (poll callback short-circuits).
+         * Worker threads never hit this branch and therefore never pay
+         * for the timer: when a worker has connections the regular poll
+         * runs, and when it doesn't there's nothing for XLIO to service. */
+        if (!xlio->idle_timer_active) {
+            evpl_add_timer(evpl, &xlio->idle_timer, evpl_xlio_idle_timer, 10000UL);
+            xlio->idle_timer_active = 1;
+        }
+    } else {
+        if (xlio->num_connections == 0) {
+            /* First active connection on this thread — pin the event loop
+             * into poll mode so we get per-iteration polling latency. */
+            evpl->force_poll_mode = 1;
+        }
+        ++xlio->num_connections;
     }
 
     s->readable       = 0;
