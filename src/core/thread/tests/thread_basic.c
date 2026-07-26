@@ -6,6 +6,7 @@
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
+#include "tests/test_common.h"
 
 void *
 thread_init(
@@ -39,6 +40,11 @@ main(
 {
     struct evpl_thread *thread;
     int                 number = 42;
+
+    /* Selects the core mechanism from EVPL_TEST_CORE_MECH so ctest can run this
+     * against every mechanism compiled in; thread create/destroy drives the
+     * cross-thread wakeup descriptors through the core wait. */
+    test_evpl_config();
 
     thread = evpl_thread_create(NULL, thread_init, thread_destroy, &number);
 

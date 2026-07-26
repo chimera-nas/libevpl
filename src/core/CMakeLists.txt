@@ -26,12 +26,20 @@ set(CORE_SRC
     numa.c
 )
 
-if (EVPL_MECH STREQUAL "epoll") 
+# Every mechanism supported on this platform is compiled in; the one used is
+# chosen at runtime from the global config (see core.c).
+set(CORE_SRC ${CORE_SRC} core.c core.h)
+
+if (EVPL_HAVE_EPOLL)
     set(CORE_SRC ${CORE_SRC} epoll.c epoll.h)
-elseif (EVPL_MECH STREQUAL "kqueue")
-    set(CORE_SRC ${COER_SRC} kqueue.c kqueue.h)
-else()
-    message(FATAL_ERROR "No supported EVPL_MECH specified")
+endif()
+
+if (EVPL_HAVE_KQUEUE)
+    set(CORE_SRC ${CORE_SRC} kqueue.c kqueue.h)
+endif()
+
+if (EVPL_HAVE_SELECT)
+    set(CORE_SRC ${CORE_SRC} select.c select.h)
 endif()
 
 set(BACKEND_LIBDEPS)
@@ -39,8 +47,13 @@ set(BACKEND_LIBDEPS)
 set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/tcp_rdma.c socket/tcp_rdma.h)
 add_subdirectory(socket)
 
-set(CORE_SRC ${CORE_SRC} tls/tls.c tls/tls.h)
-add_subdirectory(tls)
+# TLS is available wherever OpenSSL is (HAVE_TLS is set at the top level).  Its
+# kTLS zero-copy path is Linux-only; on other platforms BIO_get_ktls_*() simply
+# reports unavailable and the normal SSL_read/SSL_write path is used.
+if (HAVE_TLS)
+    set(CORE_SRC ${CORE_SRC} tls/tls.c tls/tls.h)
+    add_subdirectory(tls)
+endif()
 
 if (HAVE_VFIO)
     set(CORE_SRC ${CORE_SRC} vfio/vfio.c vfio/vfio.h vfio/nvme.h)
@@ -78,7 +91,22 @@ add_subdirectory(thread)
 
 add_library(evpl SHARED ${CORE_SRC})
 
-target_link_libraries(evpl ${BACKEND_LIBDEPS} ssl crypto numa prometheus-c)
+# Base dependencies present on every platform.
+set(EVPL_LIBDEPS ${BACKEND_LIBDEPS} prometheus-c)
+
+# libnuma is Linux-only; on macOS numa.c compiles to a stub with no link dep.
+if (NOT APPLE)
+    set(EVPL_LIBDEPS ${EVPL_LIBDEPS} numa)
+endif()
+
+# OpenSSL is only needed when TLS is compiled in.  Use the imported targets so
+# the include and library paths of a non-standard prefix (Homebrew's keg-only
+# openssl@3) come along automatically.
+if (HAVE_TLS)
+    set(EVPL_LIBDEPS ${EVPL_LIBDEPS} OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+target_link_libraries(evpl ${EVPL_LIBDEPS})
 
 install(TARGETS evpl DESTINATION lib)
 

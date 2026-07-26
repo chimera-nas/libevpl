@@ -27,13 +27,13 @@ add_dependencies(bulk_stream tls_test_certs)
 add_dependencies(rand_full_duplex_stream tls_test_certs)
 
 # TLS tests using the same test binaries as socket tests
-unit_test_bin(tls hello_world_stream_tls hello_world_stream -r STREAM_SOCKET_TLS)
-unit_test_bin(tls hello_world_connected_msg_tls hello_world_connected_msg -r STREAM_SOCKET_TLS)
+unit_test_bin_all_mechs(tls hello_world_stream_tls hello_world_stream -r STREAM_SOCKET_TLS)
+unit_test_bin_all_mechs(tls hello_world_connected_msg_tls hello_world_connected_msg -r STREAM_SOCKET_TLS)
 
-unit_test_bin(tls ping_pong_stream_tls ping_pong_stream -r STREAM_SOCKET_TLS)
-unit_test_bin(tls ping_pong_msg_tls ping_pong_connected_msg -r STREAM_SOCKET_TLS)
+unit_test_bin_all_mechs(tls ping_pong_stream_tls ping_pong_stream -r STREAM_SOCKET_TLS)
+unit_test_bin_all_mechs(tls ping_pong_msg_tls ping_pong_connected_msg -r STREAM_SOCKET_TLS)
 
-unit_test_bin(tls bulk_msg_tls bulk_connected_msg -r STREAM_SOCKET_TLS)
-unit_test_bin(tls bulk_stream_tls bulk_stream -r STREAM_SOCKET_TLS)
+unit_test_bin_all_mechs(tls bulk_msg_tls bulk_connected_msg -r STREAM_SOCKET_TLS)
+unit_test_bin_all_mechs(tls bulk_stream_tls bulk_stream -r STREAM_SOCKET_TLS)
 
-unit_test_bin(tls rand_full_duplex_stream_tls rand_full_duplex_stream -r STREAM_SOCKET_TLS)
+unit_test_bin_all_mechs(tls rand_full_duplex_stream_tls rand_full_duplex_stream -r STREAM_SOCKET_TLS)

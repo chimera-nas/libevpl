@@ -6,6 +6,7 @@
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
+#include "tests/test_common.h"
 
 void *
 thread_init(
@@ -39,6 +40,11 @@ main(
 {
     struct evpl_threadpool *threadpool;
     int                     number = 42;
+
+    /* Selects the core mechanism from EVPL_TEST_CORE_MECH so ctest can run this
+     * against every mechanism compiled in; each worker builds its own core
+     * instance and cross-thread wakeup descriptors. */
+    test_evpl_config();
 
     threadpool = evpl_threadpool_create(NULL, 16, thread_init, thread_destroy, &number);
 

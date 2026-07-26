@@ -11,9 +11,24 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/types.h>
+#include <pthread.h>
 
 #include "logging.h"
 #include "macros.h"
+
+/* Portable thread id for log lines: Linux gettid(2); macOS has no gettid, so
+ * use pthread_threadid_np() which yields the same kernel-level 64-bit id. */
+static inline uint64_t
+evpl_gettid(void)
+{
+#ifdef __APPLE__
+    uint64_t tid = 0;
+    pthread_threadid_np(NULL, &tid);
+    return tid;
+#else  /* ifdef __APPLE__ */
+    return (uint64_t) gettid();
+#endif /* ifdef __APPLE__ */
+} /* evpl_gettid */
 
 #include "evpl/evpl.h"
 
@@ -58,7 +73,7 @@ evpl_vlog(
 
     pid = getpid();
 
-    tid = gettid();
+    tid = evpl_gettid();
 
     bp += snprintf(bp, sizeof(buf),
                    "time=%04d-%02d-%02dT%02d:%02d:%02d.%09ldZ message=\"",
@@ -67,8 +82,9 @@ evpl_vlog(
 
     bp += vsnprintf(bp, (buf + sizeof(buf)) - bp, fmt, argp);
     snprintf(bp, (buf + sizeof(buf)) - bp,
-             "\" process=%lu thread=%lu level=%s module=%s file=\"%s:%d\"\n",
-             pid, tid, level, mod, srcfile, lineno);
+             "\" process=%llu thread=%llu level=%s module=%s file=\"%s:%d\"\n",
+             (unsigned long long) pid, (unsigned long long) tid, level, mod,
+             srcfile, lineno);
     fprintf(stderr, "%s", buf);
 } /* evpl_vlog */
 

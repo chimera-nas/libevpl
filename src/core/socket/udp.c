@@ -26,6 +26,75 @@
 #include "core/socket/common.h"
 #include "core/socket/udp.h"
 
+/*
+ * macOS has neither recvmmsg/sendmmsg nor struct mmsghdr.  Provide a portable
+ * shim that loops over recvmsg/sendmsg so the batched send/receive paths below
+ * compile and work unchanged; the batching just falls back to one syscall per
+ * message.  MSG_NOSIGNAL is likewise absent -- SIGPIPE is ignored process-wide
+ * (see evpl_shared_init) so mapping it to 0 is safe.
+ */
+#ifdef __APPLE__
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif /* ifndef MSG_NOSIGNAL */
+
+struct mmsghdr {
+    struct msghdr msg_hdr;
+    unsigned int  msg_len;
+};
+
+static inline int
+recvmmsg(
+    int              fd,
+    struct mmsghdr  *msgvec,
+    unsigned int     vlen,
+    int              flags,
+    struct timespec *timeout)
+{
+    unsigned int i;
+    ssize_t      rc;
+
+    (void) timeout;
+
+    for (i = 0; i < vlen; ++i) {
+        rc = recvmsg(fd, &msgvec[i].msg_hdr, flags);
+
+        if (rc < 0) {
+            return i ? (int) i : -1;
+        }
+
+        msgvec[i].msg_len = (unsigned int) rc;
+    }
+
+    return (int) i;
+} /* recvmmsg */
+
+static inline int
+sendmmsg(
+    int             fd,
+    struct mmsghdr *msgvec,
+    unsigned int    vlen,
+    int             flags)
+{
+    unsigned int i;
+    ssize_t      rc;
+
+    for (i = 0; i < vlen; ++i) {
+        rc = sendmsg(fd, &msgvec[i].msg_hdr, flags);
+
+        if (rc < 0) {
+            return i ? (int) i : -1;
+        }
+
+        msgvec[i].msg_len = (unsigned int) rc;
+    }
+
+    return (int) i;
+} /* sendmmsg */
+
+#endif /* ifdef __APPLE__ */
+
 void
 evpl_socket_udp_read(
     struct evpl       *evpl,

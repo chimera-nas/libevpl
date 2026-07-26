@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "evpl/evpl.h"
+#include "tests/test_common.h"
 
 static int               oneshot_fired;
 static int               rearm_fired;
@@ -55,7 +56,11 @@ main(
 {
     struct evpl *evpl;
 
-    evpl_init(NULL);
+    /* Selects the core mechanism from EVPL_TEST_CORE_MECH so ctest can run
+     * this against every mechanism compiled in -- the timer deadline drives
+     * the core wait timeout, which each mechanism converts differently. */
+    test_evpl_config();
+
     evpl = evpl_create(NULL);
 
     evpl_add_oneshot_timer(evpl, &oneshot, oneshot_cb, 1000);   /* 1 ms */

@@ -17,7 +17,6 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/eventfd.h>
 #include <utlist.h>
 #include <signal.h>
 
@@ -63,7 +62,10 @@
 #include "socket/udp.h"
 #include "socket/tcp.h"
 #include "socket/tcp_rdma.h"
+
+#ifdef HAVE_TLS
 #include "tls/tls.h"
+#endif /* ifdef HAVE_TLS */
 
 pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
 struct evpl_shared *evpl_shared      = NULL;
@@ -77,6 +79,20 @@ evpl_iovec_profile_signal(int signum)
 } /* evpl_iovec_profile_signal */
 #endif /* EVPL_IOVEC_PROFILE */
 
+/*
+ * Validate the requested core mechanism up front, so a misconfiguration fails
+ * loudly at init rather than at the first evpl_create.  Every mechanism the
+ * build platform supports is compiled in; anything else (e.g. epoll on macOS)
+ * is a hard configuration error.
+ */
+static void
+evpl_check_core_mech(unsigned int requested)
+{
+    evpl_core_abort_if(!evpl_core_ops_lookup(requested),
+                       "evpl_init: core mechanism '%s' is not available on this platform",
+                       evpl_core_mech_name(requested));
+} /* evpl_check_core_mech */
+
 static void
 evpl_shared_init(struct evpl_global_config *config)
 {
@@ -87,6 +103,8 @@ evpl_shared_init(struct evpl_global_config *config)
     if (!config) {
         config = evpl_global_config_init();
     }
+
+    evpl_check_core_mech(config->core_mech);
 
     evpl_shared->config = config;
 
@@ -165,11 +183,13 @@ evpl_shared_init(struct evpl_global_config *config)
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TCP,
                        &evpl_socket_tcp);
 
+#ifdef HAVE_TLS
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TLS,
                         &evpl_framework_tls);
 
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TLS,
                        &evpl_socket_tls);
+#endif /* ifdef HAVE_TLS */
 
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TCP_RDMA,
                         &evpl_framework_tcp_rdma);
@@ -351,14 +371,8 @@ evpl_ipc_callback(
 {
     struct evpl_connect_request *request;
     struct evpl_bind            *new_bind;
-    uint64_t                     value;
-    ssize_t                      rc;
 
-    do {
-        rc = read(event->fd, &value, sizeof(value));
-    } while (rc < 0 && errno == EINTR);
-
-    if (rc != sizeof(value)) {
+    if (evpl_wakeup_drain(event->fd) < 0) {
         evpl_event_mark_unreadable(evpl, event);
         return;
     }
@@ -430,12 +444,11 @@ evpl_create(struct evpl_thread_config *config)
     evpl_core_init(&evpl->core, 64);
 
     evpl->running = 1;
-    evpl->eventfd = eventfd(0, EFD_NONBLOCK);
 
-    evpl_core_abort_if(evpl->eventfd < 0,
-                       "evpl_create: eventfd failed");
+    evpl_core_abort_if(evpl_wakeup_open(&evpl->run_wakeup) < 0,
+                       "evpl_create: wakeup open failed");
 
-    evpl_add_event(evpl, &evpl->run_event, evpl->eventfd,
+    evpl_add_event(evpl, &evpl->run_event, evpl->run_wakeup.rfd,
                    evpl_ipc_callback, NULL, NULL);
 
     evpl_event_read_interest(evpl, &evpl->run_event);
@@ -684,9 +697,8 @@ evpl_set_loop_hooks(
 SYMBOL_EXPORT void
 evpl_stop(struct evpl *evpl)
 {
-    uint64_t value = 1;
-    ssize_t  len;
-    int      err;
+    ssize_t len;
+    int     err;
 
     evpl_core_assert(evpl->running);
 
@@ -694,15 +706,13 @@ evpl_stop(struct evpl *evpl)
 
     __sync_synchronize();
 
-    do {
-        len = write(evpl->eventfd, &value, sizeof(value));
-    } while (len < 0 && errno == EINTR);
+    len = evpl_wakeup_signal(&evpl->run_wakeup);
 
     err = errno;
 
-    evpl_core_abort_if(len != sizeof(value),
-                       "evpl_stop: write to eventfd %d failed: len=%zd errno=%d (%s)",
-                       evpl->eventfd, len, err, strerror(err));
+    evpl_core_abort_if(len != sizeof(uint64_t),
+                       "evpl_stop: wakeup signal (fd %d) failed: len=%zd errno=%d (%s)",
+                       evpl->run_wakeup.wfd, len, err, strerror(err));
 } /* evpl_stop */
 
 
@@ -790,7 +800,7 @@ evpl_destroy(struct evpl *evpl)
 
     evpl_core_destroy(&evpl->core);
 
-    close(evpl->eventfd);
+    evpl_wakeup_close(&evpl->run_wakeup);
 
     evpl_free(evpl->active_events);
     evpl_free(evpl->active_deferrals);

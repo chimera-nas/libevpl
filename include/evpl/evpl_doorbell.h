@@ -12,7 +12,7 @@ struct evpl_doorbell;
 
 #ifndef EVPL_INTERNAL
 struct evpl_doorbell {
-    uint64_t opaque[6];
+    uint64_t opaque[8];
 };
 #endif /* ifndef EVPL_INTERNAL */
 

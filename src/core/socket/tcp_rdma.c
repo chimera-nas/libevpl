@@ -13,8 +13,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <endian.h>
 
+#include "core/endian_compat.h"
 #include "core/allocator.h"
 #include "core/endpoint.h"
 #include "core/bind.h"

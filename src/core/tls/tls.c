@@ -1035,9 +1035,17 @@ evpl_tls_listen(
 {
     struct evpl_tls *t = evpl_bind_private(listen_bind);
     int              rc;
+    const int        yes = 1;
 
     t->fd = socket(listen_bind->local->addr->sa_family, SOCK_STREAM, 0);
     evpl_tls_abort_if(t->fd < 0, "Failed to create tcp listen socket: %s", strerror(errno));
+
+    /* Matches the plain TCP listen path: without SO_REUSEADDR a listener
+     * cannot rebind an address still held in TIME_WAIT by a recently closed
+     * connection, so an immediate restart (or a following test on the same
+     * port) fails with EADDRINUSE. */
+    rc = setsockopt(t->fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    evpl_tls_abort_if(rc < 0, "Failed to set socket options: %s", strerror(errno));
 
     rc = bind(t->fd, listen_bind->local->addr, listen_bind->local->addrlen);
     evpl_tls_abort_if(rc < 0, "Failed to bind listen socket: %s", strerror(errno));

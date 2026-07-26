@@ -37,17 +37,33 @@ macro(unit_test_rpc2 test_name xdr_file)
     set(RPC2_TEST_SRC_${test_name} ${CMAKE_CURRENT_SOURCE_DIR}/${first_source})
 endmacro()
 
-# Macro to add a test instance for a specific protocol
+# Add a test instance for a specific protocol, once per event-loop core
+# mechanism compiled into this build.  Mirrors the shared macros in
+# src/CMakeLists.txt: under network namespaces each instance is isolated, and
+# without them they run directly but share the "evpl_net" resource lock so no
+# two ever hold a listening port at the same time.
 macro(unit_test_rpc2_instance test_name protocol port)
-    if(LIBEVPL_NETNS_TESTING)
-        add_test(NAME libevpl/rpc2/${test_name}_${protocol}
-                 COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
-                         ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
+    foreach(mech ${EVPL_MECHANISMS})
+        set(_test libevpl/rpc2/${test_name}_${protocol}_${mech})
 
-        set_tests_properties(libevpl/rpc2/${test_name}_${protocol} PROPERTIES
-            ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}}"
-            TIMEOUT 10)
-    endif()
+        if(LIBEVPL_NETNS_TESTING)
+            add_test(NAME ${_test}
+                     COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
+                             ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
+
+            set_tests_properties(${_test} PROPERTIES
+                ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=${mech}"
+                TIMEOUT 10)
+        else()
+            add_test(NAME ${_test}
+                     COMMAND ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
+
+            set_tests_properties(${_test} PROPERTIES
+                RESOURCE_LOCK evpl_net
+                ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=${mech}"
+                TIMEOUT 10)
+        endif()
+    endforeach()
 endmacro()
 
 # Build RPC2 test executables

@@ -26,8 +26,7 @@ evpl_listener_accept(
     struct evpl_listener         *listener = private_data;
     struct evpl_listener_binding *binding;
     struct evpl_connect_request  *request;
-    uint64_t                      one = 1;
-    int                           rc;
+    ssize_t                       rc;
     int                           err;
 
     pthread_mutex_lock(&EvplListenerLock);
@@ -61,15 +60,13 @@ evpl_listener_accept(
     DL_APPEND(binding->evpl->connect_requests, request);
     pthread_mutex_unlock(&binding->evpl->lock);
 
-    do {
-        rc = write(binding->evpl->eventfd, &one, sizeof(one));
-    } while (rc < 0 && errno == EINTR);
+    rc = evpl_wakeup_signal(&binding->evpl->run_wakeup);
 
     err = errno;
 
-    evpl_core_abort_if(rc != sizeof(one),
-                       "evpl_listener_accept: write to eventfd %d failed: rc=%d errno=%d (%s)",
-                       binding->evpl->eventfd, rc, err, strerror(err));
+    evpl_core_abort_if(rc != sizeof(uint64_t),
+                       "evpl_listener_accept: wakeup signal (fd %d) failed: rc=%zd errno=%d (%s)",
+                       binding->evpl->run_wakeup.wfd, rc, err, strerror(err));
 
     pthread_mutex_unlock(&EvplListenerLock);
 } /* evpl_listener_accept */

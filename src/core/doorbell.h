@@ -6,9 +6,11 @@
 
 #define EVPL_INTERNAL 1
 #include "event.h"
+#include "wakeup.h"
 #include "evpl/evpl.h"
 
 struct evpl_doorbell {
     struct evpl_event        event;
+    struct evpl_wakeup       wakeup;
     evpl_doorbell_callback_t callback;
 };
