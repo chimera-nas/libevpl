@@ -86,6 +86,18 @@ if (HAVE_XLIO)
     add_subdirectory(xlio)
 endif()
 
+if (HAVE_SPDK)
+    set(CORE_SRC ${CORE_SRC}
+        spdk/spdk_core.c spdk/evpl_spdk.h
+        spdk/spdk_framework.c
+        spdk/spdk_sock_common.h
+        spdk/spdk_block.c
+        spdk/tcp.c
+        thread/thread_spdk.c)
+    add_subdirectory(spdk)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} ${SPDK_LINK_TARGETS})
+endif()
+
 set(CORE_SRC ${CORE_SRC} thread/thread.c)
 add_subdirectory(thread)
 

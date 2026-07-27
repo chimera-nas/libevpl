@@ -9,13 +9,34 @@
 
 #include "evpl/evpl.h"
 
+struct test_state {
+    struct evpl_block_device *bdev;
+    int                       open_status;
+    int                       opened;
+};
+
+static void
+open_callback(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    int                       status,
+    void                     *private_data)
+{
+    struct test_state *state = private_data;
+
+    state->bdev        = blockdev;
+    state->open_status = status;
+    state->opened      = 1;
+} /* open_callback */
+
 int
 main(
     int   argc,
     char *argv[])
 {
-    struct evpl_block_device *bdev;
-    int                       fd;
+    struct evpl      *evpl;
+    struct test_state state = { 0 };
+    int               fd;
 
     fd = open("test.img", O_RDWR | O_CREAT, 0666);
 
@@ -26,12 +47,23 @@ main(
 
     close(fd);
 
-    bdev = evpl_block_open_device(EVPL_BLOCK_PROTOCOL_IO_URING_NVME, "test.img");
+    evpl = evpl_create(NULL);
 
-    if (bdev) {
-        evpl_block_close_device(bdev);
+    /* A plain file is not an NVMe namespace: the open must fail, delivered
+     * asynchronously with a nonzero status and a NULL device. */
+    evpl_block_open_device(evpl, EVPL_BLOCK_PROTOCOL_IO_URING_NVME, "test.img",
+                           open_callback, &state);
+
+    while (!state.opened) {
+        evpl_continue(evpl);
+    }
+
+    if (state.open_status == 0 || state.bdev) {
+        fprintf(stderr, "open unexpectedly succeeded\n");
         exit(1);
     }
+
+    evpl_destroy(evpl);
 
     return 0;
 } /* main */

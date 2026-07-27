@@ -28,6 +28,11 @@ enum evpl_core_mech {
     EVPL_CORE_MECH_EPOLL   = 1,
     EVPL_CORE_MECH_KQUEUE  = 2,
     EVPL_CORE_MECH_SELECT  = 3,
+    /* Guest mode inside an SPDK application: each evpl is pumped by an
+     * spdk_poller on the spdk_thread that created it.  Never the platform
+     * default; requires the host to have initialized the SPDK env and thread
+     * library, and evpl_create() must run on an spdk_thread. */
+    EVPL_CORE_MECH_SPDK    = 4,
 };
 
 struct evpl_global_config *
@@ -122,6 +127,20 @@ void evpl_thread_config_set_wait_ms(
     struct evpl_thread_config *config,
     int                        wait_ms);
 
+/* Thread name, used e.g. to name the spdk_thread created for an evpl_thread
+ * under EVPL_CORE_MECH_SPDK.  Truncated to the config field size. */
+void evpl_thread_config_set_name(
+    struct evpl_thread_config *config,
+    const char                *name);
+
+/* SPDK cpumask string (as accepted by spdk_cpuset_parse, e.g. "0x3" or
+ * "[0,1]") constraining where the host scheduler may place the spdk_thread
+ * created for an evpl_thread.  Empty (default) lets the host decide.  Only
+ * meaningful under EVPL_CORE_MECH_SPDK. */
+void evpl_thread_config_set_spdk_cpumask(
+    struct evpl_thread_config *config,
+    const char                *cpumask);
+
 void evpl_global_config_set_slab_size(
     struct evpl_global_config *config,
     uint64_t                   size);
@@ -209,6 +228,16 @@ void evpl_global_config_set_vfio_enabled(
 void evpl_global_config_set_libaio_enabled(
     struct evpl_global_config *config,
     int                        enabled);
+
+void evpl_global_config_set_spdk_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+/* spdk_sock implementation for STREAM_SPDK_TCP ("posix", "uring", ...);
+ * NULL (default) selects SPDK's default implementation. */
+void evpl_global_config_set_spdk_sock_impl(
+    struct evpl_global_config *config,
+    const char                *impl_name);
 
 void evpl_global_config_set_libaio_max_pending(
     struct evpl_global_config *config,

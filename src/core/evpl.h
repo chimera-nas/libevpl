@@ -21,7 +21,8 @@ struct evpl_thread_config {
     int          poll_iterations;
     unsigned int spin_ns;
     int          wait_ms;
-
+    char         name[32];
+    char         spdk_cpumask[40];
 };
 
 struct evpl_global_config {
@@ -70,6 +71,17 @@ struct evpl_global_config {
 
     unsigned int              libaio_enabled;
     unsigned int              libaio_max_pending;
+
+    unsigned int              spdk_enabled;
+
+    /* spdk_sock implementation name for STREAM_SPDK_TCP ("posix", "uring",
+     * ...); NULL selects SPDK's default implementation. */
+    char                     *spdk_sock_impl;
+
+    /* Alignment for slab allocations; page_size by default, raised to 2 MiB
+     * when the SPDK framework is registered so slabs satisfy
+     * spdk_mem_register()'s alignment requirement. */
+    unsigned int              slab_alignment;
 
     unsigned int              preallocate_slabs;
     unsigned int              preallocate_threads;
@@ -187,7 +199,6 @@ struct evpl_connect_request {
 
 struct evpl_listener {
     struct evpl_thread            *thread;
-    int                            running;
     struct evpl_doorbell           doorbell;
     struct evpl_bind             **binds;
     int                            num_binds;
@@ -223,6 +234,16 @@ __evpl_init(
 
 void
 evpl_destroy_close_bind(
+    struct evpl *evpl);
+
+/* Push every open bind into pending-close state without pumping the loop. */
+void
+evpl_close_all_binds(
+    struct evpl *evpl);
+
+/* True while any bind is still open or draining its close. */
+int
+evpl_has_pending_binds(
     struct evpl *evpl);
 
 /* Exported (defined in poll.c); also declared in the public evpl/evpl_poll.h so

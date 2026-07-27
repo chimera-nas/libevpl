@@ -1,11 +1,10 @@
-// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+// SPDX-FileCopyrightText: 2024 - 2026 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -18,13 +17,14 @@ const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
 
-
 struct client_state {
-    int          sent;
-    int          recv;
-    int          niters;
-    uint32_t     value;
-    struct evpl *server_evpl;
+    volatile int          done;
+    int                   sent;
+    int                   recv;
+    int                   niters;
+    uint32_t              value;
+    struct evpl_endpoint *server_ep;
+    struct evpl_endpoint *client_ep;
 };
 
 void
@@ -47,53 +47,43 @@ client_callback(
 
             evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
 
+            /* Lock-step: only ever one message in flight. */
+            if (state->sent < state->niters) {
+                evpl_sendtoep(evpl, bind, state->server_ep, &state->value,
+                              sizeof(state->value));
+
+                state->value++;
+                state->sent++;
+
+                evpl_test_debug("client sent sent %u recv %u",
+                                state->sent, state->recv);
+            } else {
+                state->done = 1;
+            }
+
             break;
     } /* switch */
 
 } /* client_callback */
 
-void *
-client_thread(void *arg)
+static void *
+client_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
 {
-    struct evpl          *evpl;
-    struct evpl_endpoint *me, *server;
-    struct evpl_bind     *bind;
-    struct client_state  *state = arg;
+    struct client_state *state = private_data;
+    struct evpl_bind    *bind;
 
-    evpl = evpl_create(NULL);
+    bind = evpl_bind(evpl, proto, state->client_ep, client_callback, state);
 
-    me = evpl_endpoint_create(address, port + 1);
+    evpl_sendtoep(evpl, bind, state->server_ep, &state->value,
+                  sizeof(state->value));
 
-    server = evpl_endpoint_create(address, port);
+    state->value++;
+    state->sent++;
 
-    bind = evpl_bind(evpl, proto, me, client_callback, state);
-
-    while (state->sent < state->niters) {
-
-        if (state->sent == state->recv) {
-
-            evpl_sendtoep(evpl, bind, server, &state->value,
-                          sizeof(state->value));
-
-            state->value++;
-            state->sent++;
-
-            evpl_test_debug("client sent sent %u recv %u",
-                            state->sent, state->recv);
-
-        }
-
-        evpl_continue(evpl);
-    }
-
-    evpl_test_debug("client completed iterations");
-
-    evpl_stop(state->server_evpl);
-
-    evpl_destroy(evpl);
-
-    return NULL;
-} /* client_thread */
+    return private_data;
+} /* client_thread_init */
 
 void
 server_callback(
@@ -118,16 +108,28 @@ server_callback(
 
 } /* server_callback */
 
+static void *
+server_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct client_state *state = private_data;
+
+    evpl_bind(evpl, proto, state->server_ep, server_callback,
+              state->client_ep);
+
+    return private_data;
+} /* server_thread_init */
+
 int
 main(
     int   argc,
     char *argv[])
 {
-    pthread_t             thr;
-    struct evpl          *evpl;
-    struct evpl_endpoint *me, *client;
-    int                   rc, opt;
-    struct client_state   state = {
+    struct evpl_thread *server_thread;
+    struct evpl_thread *client_thread;
+    int                 rc, opt;
+    struct client_state state = {
         .sent   = 0,
         .recv   = 0,
         .niters = 100,
@@ -159,23 +161,22 @@ main(
         } /* switch */
     }
 
+    state.server_ep = evpl_endpoint_create(address, port);
+    state.client_ep = evpl_endpoint_create(address, port + 1);
 
-    evpl = evpl_create(NULL);
+    /* evpl_thread_create blocks until the init callback ran, so the server
+     * bind exists before the client sends its first message. */
+    server_thread = evpl_thread_create(NULL, server_thread_init, NULL, &state);
+    client_thread = evpl_thread_create(NULL, client_thread_init, NULL, &state);
 
-    state.server_evpl = evpl;
+    while (!state.done) {
+        usleep(1000);
+    }
 
-    me     = evpl_endpoint_create(address, port);
-    client = evpl_endpoint_create(address, port + 1);
+    evpl_test_debug("client completed iterations");
 
-    evpl_bind(evpl, proto, me, server_callback, client);
-
-    pthread_create(&thr, NULL, client_thread, &state);
-
-    evpl_run(evpl);
-
-    pthread_join(thr, NULL);
-
-    evpl_destroy(evpl);
+    evpl_thread_destroy(client_thread);
+    evpl_thread_destroy(server_thread);
 
     return 0;
 } /* main */

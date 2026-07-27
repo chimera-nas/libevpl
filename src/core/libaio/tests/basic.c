@@ -9,35 +9,71 @@
 
 #include "evpl/evpl.h"
 
+struct test_state {
+    struct evpl_block_device *bdev;
+    int                       open_status;
+    int                       opened;
+    int                       closed;
+    int                       pending;
+};
+
 static void
-read_callback(
+open_callback(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    int                       status,
+    void                     *private_data)
+{
+    struct test_state *state = private_data;
+
+    state->bdev        = blockdev;
+    state->open_status = status;
+    state->opened      = 1;
+} /* open_callback */
+
+static void
+close_callback(
     struct evpl *evpl,
     int          status,
     void        *private_data)
 {
-    int *pending = private_data;
+    struct test_state *state = private_data;
 
     if (status) {
         exit(1);
     }
 
-    (*pending)--;
+    state->closed = 1;
+} /* close_callback */
 
-} /* read_callback */
+static void
+io_callback(
+    struct evpl *evpl,
+    int          status,
+    void        *private_data)
+{
+    struct test_state *state = private_data;
+
+    if (status) {
+        exit(1);
+    }
+
+    state->pending--;
+
+} /* io_callback */
 
 int
 main(
     int   argc,
     char *argv[])
 {
-    struct evpl              *evpl;
-    struct evpl_block_device *bdev;
-    int                       fd;
-    int                       rc;
-    struct evpl_block_queue  *bqueue;
-    int                       pending = 0;
-    struct evpl_iovec         iov;
-    int                       niov;
+    struct evpl             *evpl;
+    int                      fd;
+    int                      rc;
+    struct evpl_block_queue *bqueue;
+    struct test_state        state = { 0 };
+    struct evpl_iovec        iov;
+    int                      niov;
 
     fd = open("test.img", O_RDWR | O_CREAT, 0666);
     rc = ftruncate(fd, 1024 * 1024 * 1024);
@@ -51,23 +87,33 @@ main(
 
     evpl = evpl_create(NULL);
 
-    bdev = evpl_block_open_device(EVPL_BLOCK_PROTOCOL_LIBAIO, "test.img");
+    evpl_block_open_device(evpl, EVPL_BLOCK_PROTOCOL_LIBAIO, "test.img",
+                           open_callback, &state);
 
-    bqueue = evpl_block_open_queue(evpl, bdev);
+    while (!state.opened) {
+        evpl_continue(evpl);
+    }
+
+    if (state.open_status || !state.bdev) {
+        fprintf(stderr, "open failed: %d\n", state.open_status);
+        exit(1);
+    }
+
+    bqueue = evpl_block_open_queue(evpl, state.bdev);
 
 
     niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, 0, &iov);
 
-    pending++;
-    evpl_block_write(evpl, bqueue, &iov, niov, 0, 0, read_callback, &pending);
+    state.pending++;
+    evpl_block_write(evpl, bqueue, &iov, niov, 0, 0, io_callback, &state);
 
-    pending++;
-    evpl_block_read(evpl, bqueue, &iov, niov, 0, read_callback, &pending);
+    state.pending++;
+    evpl_block_read(evpl, bqueue, &iov, niov, 0, io_callback, &state);
 
-    pending++;
-    evpl_block_flush(evpl, bqueue, read_callback, &pending);
+    state.pending++;
+    evpl_block_flush(evpl, bqueue, io_callback, &state);
 
-    while (pending) {
+    while (state.pending) {
         evpl_continue(evpl);
     }
 
@@ -75,7 +121,11 @@ main(
 
     evpl_block_close_queue(evpl, bqueue);
 
-    evpl_block_close_device(bdev);
+    evpl_block_close_device(evpl, state.bdev, close_callback, &state);
+
+    while (!state.closed) {
+        evpl_continue(evpl);
+    }
 
     evpl_destroy(evpl);
 

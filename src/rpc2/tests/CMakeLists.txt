@@ -30,6 +30,9 @@ macro(unit_test_rpc2 test_name xdr_file)
 
     add_executable(evpl_rpc2_${test_name} ${sources} ${XDR_C} ${XDR_H})
     target_link_libraries(evpl_rpc2_${test_name} evpl_rpc2 evpl pthread)
+    if (HAVE_SPDK)
+        target_link_libraries(evpl_rpc2_${test_name} ${SPDK_LINK_TARGETS})
+    endif()
 
     # Set the first source for TEST_FILE environment variable
     list(GET sources 0 first_source)
@@ -66,6 +69,32 @@ macro(unit_test_rpc2_instance test_name protocol port)
     endforeach()
 endmacro()
 
+# EVPL_TEST_CORE_MECH=spdk instance of an rpc2 test that has been refactored
+# to be fully evpl_thread/callback driven; mirrors unit_test_rpc2_instance.
+macro(unit_test_rpc2_instance_spdk test_name protocol port)
+    if (HAVE_SPDK)
+        set(_test libevpl/rpc2/${test_name}_${protocol}_spdk)
+
+        if(LIBEVPL_NETNS_TESTING)
+            add_test(NAME ${_test}
+                     COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
+                             ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
+
+            set_tests_properties(${_test} PROPERTIES
+                ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=spdk;ASAN_OPTIONS=detect_leaks=0"
+                TIMEOUT 10)
+        else()
+            add_test(NAME ${_test}
+                     COMMAND ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
+
+            set_tests_properties(${_test} PROPERTIES
+                RESOURCE_LOCK evpl_net
+                ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=spdk;ASAN_OPTIONS=detect_leaks=0"
+                TIMEOUT 10)
+        endif()
+    endif()
+endmacro()
+
 # Build RPC2 test executables
 unit_test_rpc2(hello_world hello_world.x hello_world.c)
 unit_test_rpc2(builtin_bool builtin_bool.x builtin_bool.c)
@@ -78,6 +107,9 @@ unit_test_rpc2_instance(builtin_bool STREAM_SOCKET_TCP 8101)
 unit_test_rpc2_instance(rdma_ddp STREAM_SOCKET_TCP 8102)
 # multifrag is TCP-only: RDMA bypasses rpc2_segment_callback entirely.
 unit_test_rpc2_instance(multifrag STREAM_SOCKET_TCP 8103)
+# multifrag is fully evpl_thread driven, so it also runs in SPDK guest mode
+# (kernel TCP on spdk_threads).
+unit_test_rpc2_instance_spdk(multifrag STREAM_SOCKET_TCP 8103)
 
 # Add test instances for DATAGRAM_TCP_RDMA
 unit_test_rpc2_instance(hello_world DATAGRAM_TCP_RDMA 8200)

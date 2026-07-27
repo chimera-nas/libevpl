@@ -13,13 +13,49 @@
 struct evpl_block_device;
 struct evpl_block_queue;
 
-struct evpl_block_device *
-evpl_block_open_device(
-    enum evpl_block_protocol_id protocol,
-    const char                 *uri);
+typedef void (*evpl_block_callback_t)(
+    struct evpl *evpl,
+    int          status,
+    void        *private_data);
 
+/*
+ * Completion for evpl_block_open_device.  blockdev is the opened device, or
+ * NULL on failure; status is 0 on success or a positive errno.
+ */
+typedef void (*evpl_block_open_callback_t)(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    int                       status,
+    void                     *private_data);
+
+/*
+ * Open a block device asynchronously.  Like all libevpl operations this runs
+ * in the context of an event loop: the callback fires from a later iteration
+ * of `evpl`'s loop (never inline from this call), including for failures.
+ *
+ * The opening evpl owns the device for lifecycle purposes: it must outlive
+ * the device, backend device events (e.g. hot-remove) are handled on its
+ * thread, and evpl_block_close_device must be called with this same evpl.
+ * Queues may still be opened against the device from any evpl thread.
+ */
+void evpl_block_open_device(
+    struct evpl                *evpl,
+    enum evpl_block_protocol_id protocol,
+    const char                 *uri,
+    evpl_block_open_callback_t  callback,
+    void                       *private_data);
+
+/*
+ * Close a block device asynchronously.  Must be called on the evpl that
+ * opened the device, after all of its queues have been closed.  The callback
+ * (which may be NULL) fires from a later loop iteration once the backend has
+ * released the device; blockdev is invalid as soon as this is called.
+ */
 void evpl_block_close_device(
-    struct evpl_block_device *blockdev);
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    evpl_block_callback_t     callback,
+    void                     *private_data);
 
 uint64_t evpl_block_size(
     struct evpl_block_device *blockdev);
@@ -35,11 +71,6 @@ evpl_block_open_queue(
 void evpl_block_close_queue(
     struct evpl             *evpl,
     struct evpl_block_queue *queue);
-
-typedef void (*evpl_block_callback_t)(
-    struct evpl *evpl,
-    int          status,
-    void        *private_data);
 
 void evpl_block_read(
     struct evpl             *evpl,

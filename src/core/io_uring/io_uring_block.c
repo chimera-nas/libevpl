@@ -217,23 +217,33 @@ evpl_io_uring_open_queue(
 } /* evpl_io_uring_open_queue */
 
 static void
-evpl_io_uring_close_device(struct evpl_block_device *bdev)
+evpl_io_uring_close_device(
+    struct evpl                 *evpl,
+    struct evpl_block_device    *bdev,
+    evpl_block_device_complete_t complete,
+    void                        *ctx)
 {
     struct evpl_io_uring_device *dev = bdev->private_data;
 
     close(dev->fd);
     evpl_free(dev);
     evpl_free(bdev);
+
+    complete(evpl, NULL, 0, ctx);
 } /* evpl_io_uring_close_device */
 
-static struct evpl_block_device *
+static void
 evpl_io_uring_open_device(
-    const char *uri,
-    void       *private_data)
+    struct evpl                 *evpl,
+    const char                  *uri,
+    void                        *private_data,
+    evpl_block_device_complete_t complete,
+    void                        *ctx)
 {
     struct evpl_block_device    *bdev;
     struct evpl_io_uring_device *dev;
     struct stat                  st;
+    int                          err;
 
     bdev = evpl_zalloc(sizeof(*bdev));
     dev  = evpl_zalloc(sizeof(*dev));
@@ -241,15 +251,20 @@ evpl_io_uring_open_device(
     dev->fd = open(uri, O_RDWR | O_DIRECT);
 
     if (dev->fd < 0) {
+        err = errno;
         evpl_free(dev);
-        return NULL;
+        evpl_free(bdev);
+        complete(evpl, NULL, err, ctx);
+        return;
     }
 
     if (fstat(dev->fd, &st) < 0) {
+        err = errno;
         close(dev->fd);
         evpl_free(dev);
         evpl_free(bdev);
-        return NULL;
+        complete(evpl, NULL, err, ctx);
+        return;
     }
 
     bdev->private_data = dev;
@@ -259,10 +274,12 @@ evpl_io_uring_open_device(
     if (S_ISBLK(st.st_mode)) {
         uint64_t bytes;
         if (ioctl(dev->fd, BLKGETSIZE64, &bytes) < 0) {
+            err = errno;
             close(dev->fd);
             evpl_free(dev);
             evpl_free(bdev);
-            return NULL;
+            complete(evpl, NULL, err, ctx);
+            return;
         }
         bdev->size = bytes;
     } else {
@@ -271,7 +288,7 @@ evpl_io_uring_open_device(
 
     bdev->max_request_size = 4 * 1024 * 1024;
 
-    return bdev;
+    complete(evpl, bdev, 0, ctx);
 } /* evpl_io_uring_open_device */
 
 struct evpl_block_protocol evpl_block_protocol_io_uring = {

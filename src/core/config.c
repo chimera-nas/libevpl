@@ -72,6 +72,9 @@ evpl_global_config_init(void)
     config->libaio_enabled     = 1;
     config->libaio_max_pending = 256;
 
+    config->spdk_enabled   = 1;
+    config->slab_alignment = config->page_size;
+
     config->preallocate_slabs   = 0;
     config->preallocate_threads = 0;
 
@@ -101,6 +104,10 @@ evpl_global_config_free(struct evpl_global_config *config)
 
     if (config->tls_cipher_list) {
         evpl_free(config->tls_cipher_list);
+    }
+
+    if (config->spdk_sock_impl) {
+        evpl_free(config->spdk_sock_impl);
     }
 
     evpl_free(config);
@@ -333,6 +340,22 @@ evpl_thread_config_set_wait_ms(
 } /* evpl_thread_config_set_wait_ms */
 
 SYMBOL_EXPORT void
+evpl_thread_config_set_name(
+    struct evpl_thread_config *config,
+    const char                *name)
+{
+    snprintf(config->name, sizeof(config->name), "%s", name);
+} /* evpl_thread_config_set_name */
+
+SYMBOL_EXPORT void
+evpl_thread_config_set_spdk_cpumask(
+    struct evpl_thread_config *config,
+    const char                *cpumask)
+{
+    snprintf(config->spdk_cpumask, sizeof(config->spdk_cpumask), "%s", cpumask);
+} /* evpl_thread_config_set_spdk_cpumask */
+
+SYMBOL_EXPORT void
 evpl_global_config_set_slab_size(
     struct evpl_global_config *config,
     uint64_t                   size)
@@ -515,6 +538,26 @@ evpl_global_config_set_libaio_max_pending(
 {
     config->libaio_max_pending = max_pending;
 } /* evpl_global_config_set_libaio_max_pending */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_spdk_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->spdk_enabled = enabled;
+} /* evpl_global_config_set_spdk_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_spdk_sock_impl(
+    struct evpl_global_config *config,
+    const char                *impl_name)
+{
+    if (config->spdk_sock_impl) {
+        evpl_free(config->spdk_sock_impl);
+    }
+
+    config->spdk_sock_impl = impl_name ? strdup(impl_name) : NULL;
+} /* evpl_global_config_set_spdk_sock_impl */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_hf_time_mode(

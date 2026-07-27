@@ -30,16 +30,31 @@ evpl_event_user_callback(
 } /* evpl_event_user_callback */
 
 
+/*
+ * Open a doorbell's wakeup fd without registering it on an evpl.  Callable
+ * from any thread; a later evpl_add_doorbell_opened() on the owning thread
+ * attaches it to the loop.  Rings issued between open and add are retained
+ * (eventfd counter / pipe buffer) and delivered on the first dispatch after
+ * add.
+ */
 SYMBOL_EXPORT void
-evpl_add_doorbell(
+evpl_doorbell_open(struct evpl_doorbell *doorbell)
+{
+    evpl_core_abort_if(evpl_wakeup_open(&doorbell->wakeup) < 0,
+                       "evpl_doorbell_open: wakeup open failed");
+} /* evpl_doorbell_open */
+
+/*
+ * Register a doorbell whose wakeup was already opened with
+ * evpl_doorbell_open().  Must run on the evpl's own thread.
+ */
+SYMBOL_EXPORT void
+evpl_add_doorbell_opened(
     struct evpl             *evpl,
     struct evpl_doorbell    *doorbell,
     evpl_doorbell_callback_t callback)
 {
     struct evpl_event *event = &doorbell->event;
-
-    evpl_core_abort_if(evpl_wakeup_open(&doorbell->wakeup) < 0,
-                       "evpl_add_doorbell: wakeup open failed");
 
     evpl_add_event(evpl, event, doorbell->wakeup.rfd,
                    evpl_event_user_callback, NULL, NULL);
@@ -48,7 +63,18 @@ evpl_add_doorbell(
 
     doorbell->callback = callback;
 
-} /* evpl_add_event_user */
+} /* evpl_add_doorbell_opened */
+
+SYMBOL_EXPORT void
+evpl_add_doorbell(
+    struct evpl             *evpl,
+    struct evpl_doorbell    *doorbell,
+    evpl_doorbell_callback_t callback)
+{
+    evpl_doorbell_open(doorbell);
+
+    evpl_add_doorbell_opened(evpl, doorbell, callback);
+} /* evpl_add_doorbell */
 
 SYMBOL_EXPORT void
 evpl_remove_doorbell(

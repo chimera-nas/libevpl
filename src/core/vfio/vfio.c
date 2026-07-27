@@ -1782,7 +1782,11 @@ evpl_vfio_open_queue(
 } /* evpl_vfio_open_queue */
 
 static void
-evpl_vfio_close_device(struct evpl_block_device *bdev)
+evpl_vfio_close_device(
+    struct evpl                 *evpl,
+    struct evpl_block_device    *bdev,
+    evpl_block_device_complete_t complete,
+    void                        *ctx)
 {
     struct evpl_vfio_device *dev = bdev->private_data;
     struct evpl_vfio_queue  *queue, *tmp;
@@ -1838,13 +1842,18 @@ evpl_vfio_close_device(struct evpl_block_device *bdev)
 
     evpl_free(dev);
     evpl_free(bdev);
+
+    complete(evpl, NULL, 0, ctx);
 } /* evpl_vfio_close_device */
 
 
-static struct evpl_block_device *
+static void
 evpl_vfio_open_device(
-    const char *uri,
-    void       *private_data)
+    struct evpl                 *evpl,
+    const char                  *uri,
+    void                        *private_data,
+    evpl_block_device_complete_t complete,
+    void                        *ctx)
 {
     struct evpl_vfio_shared      *vfio = private_data;
     struct evpl_block_device     *bdev;
@@ -1967,7 +1976,7 @@ evpl_vfio_open_device(
 
     evpl_vfio_free(dev->vfio, inquiry_mr);
 
-    return bdev;
+    complete(evpl, bdev, 0, ctx);
 } /* evpl_vfio_open_device */
 
 struct evpl_framework      evpl_framework_vfio = {

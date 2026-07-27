@@ -16,6 +16,13 @@ macro(unit_test module test_name)
 
     target_link_libraries(${module}_${test_name} evpl pthread)
 
+    # test_common.h embeds the SPDK mini-reactor harness when SPDK support is
+    # compiled in (for EVPL_TEST_CORE_MECH=spdk), so test binaries need the
+    # SPDK libraries on their own link line.
+    if (HAVE_SPDK)
+        target_link_libraries(${module}_${test_name} ${SPDK_LINK_TARGETS})
+    endif()
+
     list(GET sources 0 first_source)
 
     if(LIBEVPL_NETNS_TESTING)
@@ -43,6 +50,10 @@ macro(unit_test_all_mechs module test_name)
     add_executable(${module}_${test_name} ${sources})
 
     target_link_libraries(${module}_${test_name} evpl pthread)
+
+    if (HAVE_SPDK)
+        target_link_libraries(${module}_${test_name} ${SPDK_LINK_TARGETS})
+    endif()
 
     list(GET sources 0 first_source)
 
@@ -89,6 +100,63 @@ macro(unit_test_bin_all_mechs module test_name binary_name)
                 ENVIRONMENT "TEST_FILE=${test_file};EVPL_TEST_CORE_MECH=${mech}")
         endif()
     endforeach()
+endmacro()
+
+# Like unit_test_all_mechs, but additionally registers an
+# EVPL_TEST_CORE_MECH=spdk instance.  Only for tests that are fully
+# evpl_thread/callback driven (no evpl_run or manual pumping from the main
+# thread): under spdk the harness boots a mini reactor pool and every evpl
+# thread runs as an spdk_thread in guest mode.  LeakSanitizer is disabled for
+# the spdk instance (DPDK EAL keeps process-lifetime allocations).
+macro(unit_test_all_mechs_spdk module test_name)
+
+    unit_test_all_mechs(${module} ${test_name} ${ARGN})
+
+    if (HAVE_SPDK)
+        set(sources ${ARGN})
+        list(GET sources 0 first_source)
+        set(_test libevpl/${module}/${test_name}_spdk)
+
+        if(LIBEVPL_NETNS_TESTING)
+            add_test(NAME ${_test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
+
+            set_tests_properties(${_test} PROPERTIES
+                ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source};EVPL_TEST_CORE_MECH=spdk;ASAN_OPTIONS=detect_leaks=0")
+        else()
+            add_test(NAME ${_test} COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
+
+            set_tests_properties(${_test} PROPERTIES
+                RESOURCE_LOCK evpl_net
+                ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source};EVPL_TEST_CORE_MECH=spdk;ASAN_OPTIONS=detect_leaks=0")
+        endif()
+    endif()
+
+endmacro()
+
+# Prebuilt-binary counterpart of unit_test_all_mechs_spdk.
+macro(unit_test_bin_all_mechs_spdk module test_name binary_name)
+
+    unit_test_bin_all_mechs(${module} ${test_name} ${binary_name} ${ARGN})
+
+    if (HAVE_SPDK)
+        set(_test libevpl/${module}/${test_name}_spdk)
+
+        get_target_property(test_file ${binary_name} TEST_FILE)
+
+        if(LIBEVPL_NETNS_TESTING)
+            add_test(NAME ${_test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${TEST_BIN}/${binary_name} ${ARGN})
+
+            set_tests_properties(${_test} PROPERTIES
+                ENVIRONMENT "TEST_FILE=${test_file};EVPL_TEST_CORE_MECH=spdk;ASAN_OPTIONS=detect_leaks=0")
+        else()
+            add_test(NAME ${_test} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
+
+            set_tests_properties(${_test} PROPERTIES
+                RESOURCE_LOCK evpl_net
+                ENVIRONMENT "TEST_FILE=${test_file};EVPL_TEST_CORE_MECH=spdk;ASAN_OPTIONS=detect_leaks=0")
+        endif()
+    endif()
+
 endmacro()
 
 macro(unit_test_bin module test_name binary_name)

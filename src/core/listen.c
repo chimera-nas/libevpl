@@ -130,11 +130,10 @@ evpl_listener_init(
 {
     struct evpl_listener *listener = private_data;
 
-    evpl_add_doorbell(evpl, &listener->doorbell, evpl_listener_callback);
-
-    __sync_synchronize();
-
-    listener->running = 1;
+    /* The doorbell wakeup was opened by evpl_listener_create before the
+     * thread existed, so rings issued before this registration are retained
+     * and dispatched on the first loop pass. */
+    evpl_add_doorbell_opened(evpl, &listener->doorbell, evpl_listener_callback);
 
     return listener;
 
@@ -149,6 +148,13 @@ evpl_listener_create(void)
 
     listener = evpl_zalloc(sizeof(*listener));
 
+    /* Open the doorbell before the worker exists so evpl_listen can ring it
+     * immediately; the worker registers it on its own evpl in
+     * evpl_listener_init and picks up any retained rings.  No readiness wait
+     * is needed, which also keeps this callable in SPDK guest mode where the
+     * worker may share a reactor with the caller. */
+    evpl_doorbell_open(&listener->doorbell);
+
     listener->thread = evpl_thread_create(NULL, evpl_listener_init, NULL, listener);
 
     listener->max_binds = 64;
@@ -156,10 +162,6 @@ evpl_listener_create(void)
 
     listener->max_attached = 64;
     listener->attached     = evpl_calloc(listener->max_attached, sizeof(struct evpl_listener_binding *));
-
-    while (!listener->running) {
-        __sync_synchronize();
-    }
 
     return listener;
 } /* evpl_listener_create */
