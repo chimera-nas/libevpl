@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdio.h>
+#include <unistd.h>
 
 #include "evpl/evpl.h"
 #include "tests/test_common.h"
 
+static volatile int      test_done;
 static int               oneshot_fired;
 static int               rearm_fired;
 static int               periodic_fired;
@@ -36,8 +38,8 @@ rearm_cb(
     }
 } /* rearm_cb */
 
-/* Drives the loop: fires every 1ms and stops the loop once enough time has
- * passed for the one-shots to have fired and to prove they do not refire. */
+/* Fires every 1ms and signals completion once enough time has passed for the
+ * one-shots to have fired and to prove they do not refire. */
 static void
 periodic_cb(
     struct evpl       *evpl,
@@ -45,29 +47,51 @@ periodic_cb(
 {
     periodic_fired++;
     if (periodic_fired >= 10) {
-        evpl_stop(evpl);
+        test_done = 1;
     }
 } /* periodic_cb */
+
+static void *
+timer_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    evpl_add_oneshot_timer(evpl, &oneshot, oneshot_cb, 1000);   /* 1 ms */
+    evpl_add_oneshot_timer(evpl, &rearm_timer, rearm_cb, 1000);
+    evpl_add_timer(evpl, &periodic, periodic_cb, 1000);         /* 1 ms periodic */
+
+    return private_data;
+} /* timer_thread_init */
+
+static void
+timer_thread_shutdown(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    /* Removing an already-fired one-shot must be a harmless no-op. */
+    evpl_remove_timer(evpl, &oneshot);
+    evpl_remove_timer(evpl, &rearm_timer);
+    evpl_remove_timer(evpl, &periodic);
+} /* timer_thread_shutdown */
 
 int
 main(
     int   argc,
     char *argv[])
 {
-    struct evpl *evpl;
+    struct evpl_thread *thread;
 
     /* Selects the core mechanism from EVPL_TEST_CORE_MECH so ctest can run
      * this against every mechanism compiled in -- the timer deadline drives
      * the core wait timeout, which each mechanism converts differently. */
     test_evpl_config();
 
-    evpl = evpl_create(NULL);
+    thread = evpl_thread_create(NULL, timer_thread_init,
+                                timer_thread_shutdown, NULL);
 
-    evpl_add_oneshot_timer(evpl, &oneshot, oneshot_cb, 1000);   /* 1 ms */
-    evpl_add_oneshot_timer(evpl, &rearm_timer, rearm_cb, 1000);
-    evpl_add_timer(evpl, &periodic, periodic_cb, 1000);         /* 1 ms periodic */
-
-    evpl_run(evpl);
+    while (!test_done) {
+        usleep(1000);
+    }
 
     /* By the time the periodic timer has fired 10 times (~10ms), the plain
      * one-shot must have fired exactly once and the re-armed one-shot exactly
@@ -87,12 +111,7 @@ main(
         return 1;
     }
 
-    /* Removing an already-fired one-shot must be a harmless no-op. */
-    evpl_remove_timer(evpl, &oneshot);
-    evpl_remove_timer(evpl, &rearm_timer);
-    evpl_remove_timer(evpl, &periodic);
-
-    evpl_destroy(evpl);
+    evpl_thread_destroy(thread);
 
     printf("oneshot timer test passed\n");
     return 0;

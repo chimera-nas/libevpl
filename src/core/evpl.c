@@ -108,6 +108,17 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_shared->config = config;
 
+#ifdef HAVE_SPDK
+    /* Raised before the allocator exists so every slab ever built satisfies
+     * spdk_mem_register: 2 MiB covers all SPDK releases (v25.09 itself only
+     * needs 4 KiB).  Costs a few KiB of padding when SPDK goes unused. */
+    if (config->spdk_enabled) {
+        config->slab_alignment = 2 * 1024 * 1024;
+        config->slab_size      = (config->slab_size + (2 * 1024 * 1024 - 1)) &
+            ~(uint64_t) (2 * 1024 * 1024 - 1);
+    }
+#endif /* ifdef HAVE_SPDK */
+
     if (evpl_shared->config->hf_time_mode == 2) {
         /* Deetect if nonstop_tsc is supported, enable iff so */
 
@@ -256,6 +267,22 @@ evpl_shared_init(struct evpl_global_config *config)
     }
 
 #endif /* ifdef HAVE_XLIO */
+
+#ifdef HAVE_SPDK
+    if (config->spdk_enabled) {
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_SPDK,
+                            &evpl_framework_spdk);
+
+        /* Registered whenever SPDK support is enabled; both fail loudly at
+         * open/connect/listen when the evpl is not running under
+         * EVPL_CORE_MECH_SPDK, rather than being invisible here. */
+        evpl_protocol_init(evpl_shared, EVPL_STREAM_SPDK_TCP,
+                           &evpl_spdk_tcp);
+
+        evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_SPDK_BDEV,
+                                 &evpl_block_protocol_spdk_bdev);
+    }
+#endif /* ifdef HAVE_SPDK */
 
 } /* evpl_shared_init */
 
@@ -441,6 +468,17 @@ evpl_create(struct evpl_thread_config *config)
      * compares it without converting on every iteration. */
     evpl->spin_ticks = evpl_ns_to_ticks(evpl->config.spin_ns);
 
+#ifdef HAVE_SPDK
+    /* Lazy attach: the first SPDK-mode evpl_create is the earliest point the
+     * guest-mode contract guarantees a live host env.  Attaching registers
+     * every existing slab with spdk_mem_register (and future slabs register
+     * as they are built), making evpl buffers DMA-safe for host SPDK I/O. */
+    if (evpl_shared->config->core_mech == EVPL_CORE_MECH_SPDK &&
+        evpl_shared->framework[EVPL_FRAMEWORK_SPDK]) {
+        evpl_attach_framework_shared(EVPL_FRAMEWORK_SPDK);
+    }
+#endif /* ifdef HAVE_SPDK */
+
     evpl_core_init(&evpl->core, 64);
 
     evpl->running = 1;
@@ -456,7 +494,7 @@ evpl_create(struct evpl_thread_config *config)
     return evpl;
 } /* evpl_init */
 
-SYMBOL_EXPORT FORCE_INLINE void
+SYMBOL_EXPORT FORCE_INLINE int
 evpl_continue(struct evpl *evpl)
 {
     struct evpl_event    *event;
@@ -466,11 +504,15 @@ evpl_continue(struct evpl *evpl)
     struct evpl_timer    *timer;
     int                   i, n;
     int                   msecs = evpl->config.wait_ms;
+    int                   work  = 0;
     uint64_t              elapsed;
     int64_t               remain;
     uint64_t              now_ticks;
+    uint64_t              poll_activity;
 
     if (evpl->poll_mode && evpl->poll_iterations < evpl->config.poll_iterations) {
+
+        poll_activity = evpl->activity;
 
         for (i = 0; i < evpl->num_poll; ++i) {
             poll = &evpl->poll[i];
@@ -478,6 +520,8 @@ evpl_continue(struct evpl *evpl)
         }
 
         evpl->poll_iterations++;
+
+        work += (int) (evpl->activity - poll_activity);
 
     } else {
 
@@ -511,6 +555,8 @@ evpl_continue(struct evpl *evpl)
                     evpl_pop_timer(evpl);
                     evpl_timer_insert(evpl, timer);
                 }
+
+                work++;
 
             } while (evpl->num_timers);
         }
@@ -570,6 +616,10 @@ evpl_continue(struct evpl *evpl)
             evpl->loop_hooks.post_wait(evpl, evpl->loop_hooks.private_data);
         }
 
+        if (n > 0) {
+            work += n;
+        }
+
         if (evpl->pending_close_binds && n == 0) {
             struct evpl_bind *next;
 
@@ -596,15 +646,18 @@ evpl_continue(struct evpl *evpl)
 
         if ((event->flags & EVPL_READ_READY) == EVPL_READ_READY) {
             event->read_callback(evpl, event);
+            work++;
         }
 
         if ((event->flags & EVPL_WRITE_READY) ==
             EVPL_WRITE_READY) {
             event->write_callback(evpl, event);
+            work++;
         }
 
         if ((event->flags & EVPL_ERROR) == EVPL_ERROR) {
             event->error_callback(evpl, event);
+            work++;
         }
 
         if ((event->flags & EVPL_READ_READY) != EVPL_READ_READY &&
@@ -633,12 +686,15 @@ evpl_continue(struct evpl *evpl)
         deferral->armed = 0;
 
         deferral->callback(evpl, deferral->private_data);
+
+        work++;
     }
 
     if (evpl->loop_hooks.iteration_end) {
         evpl->loop_hooks.iteration_end(evpl, evpl->loop_hooks.private_data);
     }
 
+    return work;
 } /* evpl_continue */
 
 SYMBOL_EXPORT void
@@ -677,6 +733,11 @@ evpl_get_hf_monotonic_time(
 SYMBOL_EXPORT void
 evpl_run(struct evpl *evpl)
 {
+    evpl_core_abort_if(evpl->core.ops->flags & EVPL_CORE_OPS_EXTERNAL_LOOP,
+                       "evpl_run: core mechanism '%s' is pumped by an external "
+                       "loop; evpl_run() must not be called",
+                       evpl->core.ops->name);
+
     while (evpl->running) {
         evpl_continue(evpl);
     }
@@ -700,6 +761,11 @@ evpl_stop(struct evpl *evpl)
     ssize_t len;
     int     err;
 
+    evpl_core_abort_if(evpl->core.ops->flags & EVPL_CORE_OPS_EXTERNAL_LOOP,
+                       "evpl_stop: core mechanism '%s' is pumped by an external "
+                       "loop; there is no evpl_run() loop to stop",
+                       evpl->core.ops->name);
+
     evpl_core_assert(evpl->running);
 
     evpl->running = 0;
@@ -715,9 +781,31 @@ evpl_stop(struct evpl *evpl)
                        evpl->run_wakeup.wfd, len, err, strerror(err));
 } /* evpl_stop */
 
+/*
+ * Wake this evpl so its next pump re-evaluates pending work.  Required when
+ * code sharing the thread outside of an evpl callback (e.g. another SPDK
+ * poller on the same spdk_thread) mutates evpl state such as queuing a send:
+ * under an external-loop mechanism the host loop may otherwise sleep without
+ * knowing the evpl has work.  Safe from any thread; idempotent.
+ */
+SYMBOL_EXPORT void
+evpl_kick(struct evpl *evpl)
+{
+    ssize_t len;
+    int     err;
+
+    len = evpl_wakeup_signal(&evpl->run_wakeup);
+
+    err = errno;
+
+    evpl_core_abort_if(len != sizeof(uint64_t),
+                       "evpl_kick: wakeup signal (fd %d) failed: len=%zd errno=%d (%s)",
+                       evpl->run_wakeup.wfd, len, err, strerror(err));
+} /* evpl_kick */
+
 
 void
-evpl_destroy_close_bind(struct evpl *evpl)
+evpl_close_all_binds(struct evpl *evpl)
 {
     struct evpl_bind *bind;
 
@@ -726,9 +814,21 @@ evpl_destroy_close_bind(struct evpl *evpl)
     {
         evpl_close(evpl, bind);
     }
+} /* evpl_close_all_binds */
+
+int
+evpl_has_pending_binds(struct evpl *evpl)
+{
+    return evpl->binds != NULL || evpl->pending_close_binds != NULL;
+} /* evpl_has_pending_binds */
+
+void
+evpl_destroy_close_bind(struct evpl *evpl)
+{
+    evpl_close_all_binds(evpl);
 
     /* Pump events until we have no pending close binds */
-    while (evpl->binds || evpl->pending_close_binds) {
+    while (evpl_has_pending_binds(evpl)) {
         evpl_continue(evpl);
     }
 

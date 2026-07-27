@@ -18,7 +18,8 @@ enum evpl_framework_id {
     EVPL_FRAMEWORK_TLS      = 4,
     EVPL_FRAMEWORK_TCP_RDMA = 5,
     EVPL_FRAMEWORK_LIBAIO   = 6,
-    EVPL_NUM_FRAMEWORK      = 7
+    EVPL_FRAMEWORK_SPDK     = 7,
+    EVPL_NUM_FRAMEWORK      = 8
 };
 
 enum evpl_protocol_id {
@@ -31,7 +32,8 @@ enum evpl_protocol_id {
     EVPL_STREAM_RDMACM_RC    = 6,
     EVPL_STREAM_SOCKET_TLS   = 7,
     EVPL_DATAGRAM_TCP_RDMA   = 8,
-    EVPL_NUM_PROTO           = 9
+    EVPL_STREAM_SPDK_TCP     = 9,
+    EVPL_NUM_PROTO           = 10
 };
 
 enum evpl_block_protocol_id {
@@ -39,7 +41,8 @@ enum evpl_block_protocol_id {
     EVPL_BLOCK_PROTOCOL_VFIO          = 1,
     EVPL_BLOCK_PROTOCOL_LIBAIO        = 2,
     EVPL_BLOCK_PROTOCOL_IO_URING_NVME = 3,
-    EVPL_NUM_BLOCK_PROTOCOL           = 4
+    EVPL_BLOCK_PROTOCOL_SPDK_BDEV     = 4,
+    EVPL_NUM_BLOCK_PROTOCOL           = 5
 };
 
 struct evpl;
@@ -69,10 +72,27 @@ evpl_get_hf_monotonic_time(
 void evpl_destroy(
     struct evpl *evpl);
 
-void evpl_continue(
+/*
+ * Run exactly one iteration of the event loop.  Returns an approximate count
+ * of work items handled this pass (timers fired, events dispatched, deferrals
+ * run, poll-callback activity); 0 means the pass was idle.  External loops
+ * embedding evpl (e.g. an SPDK reactor poller) use the return value to report
+ * busy/idle to their own scheduler.
+ */
+int evpl_continue(
     struct evpl *evpl);
 
 void evpl_run(
+    struct evpl *evpl);
+
+/*
+ * Wake this evpl so its next pump re-evaluates pending work.  Required when
+ * code sharing the thread outside of an evpl callback (e.g. another SPDK
+ * poller on the same spdk_thread) mutates evpl state such as queuing a send;
+ * without it an external host loop may sleep without knowing the evpl has
+ * work.  Safe from any thread; idempotent.
+ */
+void evpl_kick(
     struct evpl *evpl);
 
 typedef void (*evpl_loop_callback_t)(

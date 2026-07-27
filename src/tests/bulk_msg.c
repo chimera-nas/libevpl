@@ -1,11 +1,10 @@
-// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+// SPDX-FileCopyrightText: 2024 - 2026 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -18,17 +17,44 @@ const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
 
-
 struct client_state {
-    int          inflight;
-    int          depth;
-    int          sent;
-    int          recv;
-    int          niters;
-    uint32_t     value;
-    struct evpl *server_evpl;
+    volatile int          done;
+    int                   inflight;
+    int                   depth;
+    int                   sent;
+    int                   recv;
+    int                   niters;
+    uint32_t              value;
+    struct evpl_endpoint *server_ep;
+    struct evpl_endpoint *client_ep;
 };
 
+/* Keep the send window full; called from the init callback and again from
+ * the SENT notifications as the window drains.  Like the original manual
+ * pump, the test completes when everything has been SENT -- datagrams are
+ * unreliable, so completion must not depend on every echo arriving. */
+static void
+client_fill_window(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct client_state *state)
+{
+    while (state->inflight < state->depth &&
+           state->sent < state->niters) {
+
+        evpl_sendtoep(evpl, bind, state->server_ep, &state->value,
+                      sizeof(state->value));
+
+        state->sent++;
+        state->inflight++;
+
+        state->value++;
+    }
+
+    if (state->sent == state->niters) {
+        state->done = 1;
+    }
+} /* client_fill_window */
 
 void
 client_callback(
@@ -44,6 +70,8 @@ client_callback(
             evpl_test_info("sent %u msgs %u bytes", notify->sent.msgs,
                            notify->sent.bytes);
             state->inflight -= notify->sent.msgs;
+
+            client_fill_window(evpl, bind, state);
             break;
         case EVPL_NOTIFY_RECV_MSG:
 
@@ -60,49 +88,22 @@ client_callback(
 
 } /* client_callback */
 
-void *
-client_thread(void *arg)
+static void *
+client_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
 {
-    struct evpl          *evpl;
-    struct evpl_endpoint *me, *server;
-    struct evpl_bind     *bind;
-    struct client_state  *state = arg;
+    struct client_state *state = private_data;
+    struct evpl_bind    *bind;
 
-    evpl = evpl_create(NULL);
-
-    me     = evpl_endpoint_create(address, port + 1);
-    server = evpl_endpoint_create(address, port);
-
-    bind = evpl_bind(evpl, proto, me, client_callback, state);
+    bind = evpl_bind(evpl, proto, state->client_ep, client_callback, state);
 
     evpl_bind_request_send_notifications(evpl, bind);
 
-    while (state->sent < state->niters) {
+    client_fill_window(evpl, bind, state);
 
-        while (state->inflight < state->depth &&
-               state->sent < state->niters) {
-
-            evpl_sendtoep(evpl, bind, server, &state->value,
-                          sizeof(state->value));
-
-            state->sent++;
-            state->inflight++;
-
-            state->value++;
-
-        }
-
-        evpl_continue(evpl);
-    }
-
-    evpl_test_debug("client completed iterations");
-
-    evpl_stop(state->server_evpl);
-
-    evpl_destroy(evpl);
-
-    return NULL;
-} /* client_thread */
+    return private_data;
+} /* client_thread_init */
 
 void
 server_callback(
@@ -128,16 +129,28 @@ server_callback(
 
 } /* server_callback */
 
+static void *
+server_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct client_state *state = private_data;
+
+    evpl_bind(evpl, proto, state->server_ep, server_callback,
+              state->client_ep);
+
+    return private_data;
+} /* server_thread_init */
+
 int
 main(
     int   argc,
     char *argv[])
 {
-    pthread_t             thr;
-    struct evpl          *evpl;
-    struct evpl_endpoint *me, *client;
-    int                   rc, opt;
-    struct client_state   state = {
+    struct evpl_thread *server_thread;
+    struct evpl_thread *client_thread;
+    int                 rc, opt;
+    struct client_state state = {
         .inflight = 0,
         .depth    = 100,
         .sent     = 0,
@@ -171,23 +184,22 @@ main(
         } /* switch */
     }
 
+    state.server_ep = evpl_endpoint_create(address, port);
+    state.client_ep = evpl_endpoint_create(address, port + 1);
 
-    evpl = evpl_create(NULL);
+    /* evpl_thread_create blocks until the init callback ran, so the server
+     * bind exists before the client's first burst. */
+    server_thread = evpl_thread_create(NULL, server_thread_init, NULL, &state);
+    client_thread = evpl_thread_create(NULL, client_thread_init, NULL, &state);
 
-    state.server_evpl = evpl;
+    while (!state.done) {
+        usleep(1000);
+    }
 
-    me     = evpl_endpoint_create(address, port);
-    client = evpl_endpoint_create(address, port + 1);
+    evpl_test_debug("client completed iterations");
 
-    evpl_bind(evpl, proto, me, server_callback, client);
-
-    pthread_create(&thr, NULL, client_thread, &state);
-
-    evpl_run(evpl);
-
-    pthread_join(thr, NULL);
-
-    evpl_destroy(evpl);
+    evpl_thread_destroy(client_thread);
+    evpl_thread_destroy(server_thread);
 
     return 0;
 } /* main */

@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -47,11 +46,10 @@ struct server_state {
     struct evpl_iovec rdma_buffer;
     int               rdma_buffer_valid;
     int               phase;
-    int               complete;
+    volatile int      complete;
 };
 
 struct client_state {
-    struct evpl      *server_evpl;
     struct evpl      *evpl;
     struct evpl_bind *bind;
     struct evpl_iovec local_buffer;
@@ -62,9 +60,12 @@ struct client_state {
     int               phase;
     int               read_complete;
     int               write_complete;
-    int               complete;
+    volatile int      complete;
     int               passed;
 };
+
+static struct evpl_listener         *listener;
+static struct evpl_listener_binding *server_binding;
 
 int
 test_segment_callback(
@@ -226,40 +227,35 @@ client_callback(
     } /* switch */
 } /* client_callback */
 
-void *
-client_thread(void *arg)
+static void *
+client_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
 {
-    struct evpl          *evpl;
+    struct client_state  *state = private_data;
     struct evpl_endpoint *server;
-    struct evpl_bind     *bind;
-    struct client_state  *state = arg;
 
-    evpl        = evpl_create(NULL);
     state->evpl = evpl;
 
     server = evpl_endpoint_create(address, port);
 
-    bind = evpl_connect(evpl, proto, NULL, server, client_callback,
-                        test_segment_callback, state);
+    state->bind = evpl_connect(evpl, proto, NULL, server, client_callback,
+                               test_segment_callback, state);
 
-    state->bind = bind;
+    return private_data;
+} /* client_thread_init */
 
-    while (!state->complete) {
-        evpl_continue(evpl);
-    }
-
-    evpl_test_info("Client completed");
-
-    evpl_stop(state->server_evpl);
+static void
+client_thread_shutdown(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct client_state *state = private_data;
 
     if (state->local_buffer_valid) {
-        evpl_iovec_release(state->evpl, &state->local_buffer);
+        evpl_iovec_release(evpl, &state->local_buffer);
     }
-
-    evpl_destroy(evpl);
-
-    return NULL;
-} /* client_thread */
+} /* client_thread_shutdown */
 
 void
 server_callback(
@@ -356,19 +352,46 @@ accept_callback(
     *conn_private_data = private_data;
 } /* accept_callback */
 
+static void *
+server_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct server_state *state = private_data;
+
+    state->evpl = evpl;
+
+    server_binding = evpl_listener_attach(evpl, listener, accept_callback,
+                                          state);
+
+    return private_data;
+} /* server_thread_init */
+
+static void
+server_thread_shutdown(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct server_state *state = private_data;
+
+    evpl_listener_detach(evpl, server_binding);
+
+    if (state->rdma_buffer_valid) {
+        evpl_iovec_release(evpl, &state->rdma_buffer);
+    }
+} /* server_thread_shutdown */
+
 int
 main(
     int   argc,
     char *argv[])
 {
-    pthread_t                     thr;
-    struct evpl                  *evpl;
-    struct evpl_endpoint         *me;
-    struct evpl_listener         *listener;
-    struct evpl_listener_binding *binding;
-    int                           rc, opt;
-    struct server_state           server_state = { 0 };
-    struct client_state           client_state = { 0 };
+    struct evpl_thread   *server_thread;
+    struct evpl_thread   *client_thread;
+    struct evpl_endpoint *me;
+    int                   rc, opt;
+    struct server_state   server_state = { 0 };
+    struct client_state   client_state = { 0 };
 
     test_evpl_config();
 
@@ -395,34 +418,31 @@ main(
         } /* switch */
     }
 
-    evpl = evpl_create(NULL);
-
-    server_state.evpl        = evpl;
-    client_state.server_evpl = evpl;
-
     me = evpl_endpoint_create("0.0.0.0", port);
 
     listener = evpl_listener_create();
 
-    binding = evpl_listener_attach(evpl, listener, accept_callback, &server_state);
+    /* Blocks until the binding is attached on the server thread. */
+    server_thread = evpl_thread_create(NULL, server_thread_init,
+                                       server_thread_shutdown, &server_state);
 
     evpl_listen(listener, proto, me);
 
-    pthread_create(&thr, NULL, client_thread, &client_state);
+    client_thread = evpl_thread_create(NULL, client_thread_init,
+                                       client_thread_shutdown, &client_state);
 
-    evpl_run(evpl);
-
-    pthread_join(thr, NULL);
-
-    evpl_listener_detach(evpl, binding);
-
-    evpl_listener_destroy(listener);
-
-    if (server_state.rdma_buffer_valid) {
-        evpl_iovec_release(evpl, &server_state.rdma_buffer);
+    /* Gate on the client only: on a failure path the server never receives
+    * MSG_TYPE_COMPLETE, and the client outcome decides the test anyway. */
+    while (!client_state.complete) {
+        usleep(1000);
     }
 
-    evpl_destroy(evpl);
+    evpl_test_info("Client completed");
+
+    evpl_thread_destroy(client_thread);
+    evpl_thread_destroy(server_thread);
+
+    evpl_listener_destroy(listener);
 
     return client_state.passed ? 0 : 1;
 } /* main */

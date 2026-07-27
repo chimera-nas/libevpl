@@ -7,7 +7,7 @@
  *
  * libevpl's send path never fragments outbound replies, so a
  * libevpl-on-libevpl client cannot exercise the new code. This test
- * runs a libevpl HELLO_PROGRAM server on a pump thread and drives it
+ * runs a libevpl HELLO_PROGRAM server on an evpl thread and drives it
  * from the main thread with a hand-rolled TCP client that splits one
  * RPC CALL across multiple record-mark fragments.
  */
@@ -17,7 +17,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
-#include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -35,10 +34,11 @@ static enum evpl_protocol_id proto = EVPL_STREAM_SOCKET_TCP;
 static int                   port  = 8000;
 
 struct server_ctx {
-    struct HELLO_V1 prog;
-    struct evpl    *evpl;
-    volatile int    ready;
-    volatile int    received_count;
+    struct HELLO_V1           prog;
+    struct evpl_rpc2_program *programs[1];
+    struct evpl_rpc2_server  *server;
+    struct evpl_rpc2_thread  *thread;
+    volatile int              received_count;
 };
 
 static void
@@ -78,47 +78,28 @@ server_recv_greet(
 } /* server_recv_greet */
 
 static void *
-server_pump(void *arg)
+server_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
 {
-    struct server_ctx        *ctx = arg;
-    struct evpl              *evpl;
-    struct evpl_rpc2_server  *server;
-    struct evpl_rpc2_thread  *thread;
-    struct evpl_endpoint     *endpoint;
-    struct evpl_rpc2_program *programs[1];
+    struct server_ctx *ctx = private_data;
 
-    evpl = evpl_create(NULL);
+    ctx->thread = evpl_rpc2_thread_init(evpl, ctx->programs, 1, NULL, NULL);
+    evpl_rpc2_server_attach(ctx->thread, ctx->server, ctx);
 
-    HELLO_V1_init(&ctx->prog);
-    ctx->prog.recv_call_GREET = server_recv_greet;
-    programs[0]               = &ctx->prog.rpc2;
+    return private_data;
+} /* server_thread_init */
 
-    server   = evpl_rpc2_server_init(programs, 1);
-    endpoint = evpl_endpoint_create("0.0.0.0", port);
-    evpl_rpc2_server_start(server, proto, endpoint);
+static void
+server_thread_shutdown(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct server_ctx *ctx = private_data;
 
-    thread = evpl_rpc2_thread_init(evpl, programs, 1, NULL, NULL);
-    evpl_rpc2_server_attach(thread, server, ctx);
-
-    /* Publish evpl so the main thread can signal evpl_stop. The
-     * store must be visible before ctx->ready, so use a barrier. */
-    ctx->evpl = evpl;
-    __sync_synchronize();
-    ctx->ready = 1;
-
-    /* evpl_run blocks on epoll until evpl_stop writes the eventfd
-     * doorbell. A plain `while (!stop) evpl_continue(...)` deadlocks
-     * because epoll_wait has no wakeup when stop is set from another
-     * thread. */
-    evpl_run(evpl);
-
-    evpl_rpc2_server_stop(server);
-    evpl_rpc2_server_detach(thread, server);
-    evpl_rpc2_thread_destroy(thread);
-    evpl_rpc2_server_destroy(server);
-    evpl_destroy(evpl);
-    return NULL;
-} /* server_pump */
+    evpl_rpc2_server_detach(ctx->thread, ctx->server);
+    evpl_rpc2_thread_destroy(ctx->thread);
+} /* server_thread_shutdown */
 
 /*
  * Hand-marshal a HELLO_PROGRAM GREET CALL into a flat buffer (no
@@ -308,10 +289,11 @@ main(
     int   argc,
     char *argv[])
 {
-    struct server_ctx ctx = { 0 };
-    pthread_t         pump;
-    int               opt, rc;
-    int               i;
+    struct server_ctx     ctx = { 0 };
+    struct evpl_thread   *server_thread;
+    struct evpl_endpoint *endpoint;
+    int                   opt, rc;
+    int                   i;
 
     test_evpl_config();
 
@@ -336,12 +318,20 @@ main(
         return 0;
     }
 
-    rc = pthread_create(&pump, NULL, server_pump, &ctx);
-    evpl_test_abort_if(rc != 0, "pthread_create: %d", rc);
+    HELLO_V1_init(&ctx.prog);
+    ctx.prog.recv_call_GREET = server_recv_greet;
+    ctx.programs[0]          = &ctx.prog.rpc2;
 
-    while (!ctx.ready) {
-        usleep(1000);
-    }
+    /* Server start (which listens, a blocking operation) runs on this plain
+     * pthread; the rpc2 worker runs on an evpl thread, whose init callback
+     * attaches it to the server.  evpl_thread_create returns only after the
+     * init callback ran, so the server is ready when it returns. */
+    ctx.server = evpl_rpc2_server_init(ctx.programs, 1);
+    endpoint   = evpl_endpoint_create("0.0.0.0", port);
+    evpl_rpc2_server_start(ctx.server, proto, endpoint);
+
+    server_thread = evpl_thread_create(NULL, server_thread_init,
+                                       server_thread_shutdown, &ctx);
 
     /* Sub-test 1: 3-way fragmented CALL. */
     test_fragmented_call(3, 0x11111111);
@@ -363,8 +353,11 @@ main(
                        "server processed %d calls, expected 3",
                        ctx.received_count);
 
-    evpl_stop(ctx.evpl);
-    pthread_join(pump, NULL);
+    evpl_rpc2_server_stop(ctx.server);
+
+    evpl_thread_destroy(server_thread);
+
+    evpl_rpc2_server_destroy(ctx.server);
 
     printf("Test PASSED\n");
     return 0;

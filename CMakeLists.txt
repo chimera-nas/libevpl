@@ -8,6 +8,7 @@ option(IO_URING_ENABLED "Enable io_uring support" ON)
 option(IO_URING_NVME_ENABLED "Enable the io_uring NVMe uring_cmd block backend (auto-detected when ON; set OFF to force-disable, e.g. under the clang static analyzer)" ON)
 option(REQUIRE_NETNS_TESTS "Fail configure if network namespace tests cannot be enabled" OFF)
 set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES=required, NO=disabled)")
+set(SPDK_ENABLED "" CACHE STRING "Enable SPDK support (empty=autodetect, YES=required, NO=disabled)")
 option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 project(libevpl LANGUAGES C)
@@ -220,6 +221,55 @@ else()
     message(STATUS "xlio library not found.")
 endif()
 
+# SPDK guest-mode integration (EVPL_CORE_MECH_SPDK + spdk_mem_register memory
+# framework).  Detected via pkg-config against SPDK shared libraries
+# (./configure --with-shared); static SPDK is not supported.  SPDK is Linux
+# only and the mechanism composes with epoll, so both are required when found.
+if(NOT SPDK_ENABLED STREQUAL "NO" AND NOT SPDK_ENABLED STREQUAL "OFF")
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SPDK IMPORTED_TARGET GLOBAL
+                          spdk_bdev spdk_sock spdk_sock_posix
+                          spdk_thread spdk_env_dpdk spdk_util spdk_log)
+    endif()
+    if(SPDK_FOUND)
+        message(STATUS "SPDK found via pkg-config")
+        add_definitions(-DHAVE_SPDK)
+        set(HAVE_SPDK 1)
+        # --no-as-needed: DPDK driver libraries (librte_mempool_ring et al.)
+        # and SPDK module libraries (sock impls, bdev modules) register
+        # themselves via constructors and are referenced by no symbol, so the
+        # default --as-needed link drops them and their functionality is
+        # silently absent at runtime.
+        set(SPDK_LINK_TARGETS "-Wl,--no-as-needed" PkgConfig::SPDK)
+
+        # SPDK's shared libspdk_util leaves ISA-L symbols undefined (SPDK
+        # normally links ISA-L statically into applications), so link ISA-L
+        # explicitly when its pkg-config -- installed by SPDK's own build --
+        # is present.
+        pkg_check_modules(ISAL IMPORTED_TARGET GLOBAL libisal libisal_crypto)
+        if(ISAL_FOUND)
+            list(APPEND SPDK_LINK_TARGETS PkgConfig::ISAL)
+        endif()
+
+        # Test-only modules: subsystem JSON bring-up (spdk_init) and the bdev
+        # subsystem registration constructors (spdk_event_bdev), used by the
+        # SPDK bdev tests to create a malloc bdev without the app framework.
+        pkg_check_modules(SPDK_INIT IMPORTED_TARGET GLOBAL
+                          spdk_init spdk_event_bdev)
+        if(SPDK_INIT_FOUND)
+            set(SPDK_TEST_LINK_TARGETS PkgConfig::SPDK_INIT)
+        endif()
+    else()
+        if(SPDK_ENABLED STREQUAL "YES" OR SPDK_ENABLED STREQUAL "ON")
+            message(FATAL_ERROR "SPDK required but not found.")
+        endif()
+        message(STATUS "SPDK not found.")
+    endif()
+else()
+    message(STATUS "SPDK disabled")
+endif()
+
 # OpenSSL backs the TLS protocol.  macOS ships no OpenSSL/LibreSSL headers or
 # linkable stubs in the SDK, so this resolves to a Homebrew openssl@3 (found
 # via the prefixes added above) -- find_package is used rather than a bare
@@ -272,6 +322,14 @@ endif()
 
 if(NOT EVPL_MECHANISMS)
     message(FATAL_ERROR "No supported event core mechanism found on ${CMAKE_SYSTEM_NAME}")
+endif()
+
+# The SPDK mechanism delegates its fd handling to the epoll backend.  SPDK is
+# deliberately NOT appended to EVPL_MECHANISMS: that list replicates generic
+# tests which pump evpl from a plain pthread and cannot run in guest mode;
+# SPDK coverage comes from dedicated tests under src/core/spdk/tests.
+if(HAVE_SPDK AND NOT EVPL_HAVE_EPOLL)
+    message(FATAL_ERROR "SPDK support requires the epoll core mechanism")
 endif()
 
 message(STATUS "Event core mechanisms: ${EVPL_MECHANISMS} (default: ${EVPL_MECH})")

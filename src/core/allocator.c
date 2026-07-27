@@ -295,7 +295,7 @@ evpl_allocator_build_slab(
     } else {
 
         slab->data = evpl_valloc(evpl_shared->config->slab_size,
-                                 evpl_shared->config->page_size);
+                                 evpl_shared->config->slab_alignment);
 
     }
 

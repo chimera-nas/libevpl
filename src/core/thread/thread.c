@@ -14,6 +14,7 @@
 #include "core/macros.h"
 #include "core/wakeup.h"
 #include "core/pthread_util.h"
+#include "core/thread/thread_internal.h"
 
 extern struct evpl_shared *evpl_shared;
 
@@ -33,31 +34,6 @@ extern struct evpl_shared *evpl_shared;
 
 #define evpl_thread_abort_if(cond, ...) \
         evpl_abort_if(cond, "thread", __FILE__, __LINE__, __VA_ARGS__)
-
-struct evpl_thread {
-    pthread_t                       thread;
-    pthread_mutex_t                 lock;
-    pthread_cond_t                  cond;
-    int                             ready;
-    /* Stop signal.  Owned by evpl_thread (this struct outlives the worker's
-     * evpl, since it is freed only after pthread_join), so evpl_thread_destroy
-     * can stop the worker by writing this fd without ever dereferencing the
-     * worker's evpl -- which the worker creates, runs, and destroys entirely on
-     * its own thread.  The event is registered on the worker's evpl and its
-     * handler clears running from the worker thread. */
-    struct evpl_wakeup              stop_wakeup;
-    struct evpl_event               stop_event;
-    struct evpl_thread_config      *config;
-    struct evpl                    *evpl;
-    evpl_thread_init_callback_t     init_callback;
-    evpl_thread_shutdown_callback_t shutdown_callback;
-    void                           *private_data;
-};
-
-struct evpl_threadpool {
-    struct evpl_thread **threads;
-    int                  nthreads;
-};
 
 /*
  * Read handler for a thread's stop wakeup, registered on the worker's own evpl.
@@ -133,6 +109,13 @@ evpl_thread_create(
 
     __evpl_init();
 
+#ifdef HAVE_SPDK
+    if (evpl_shared->config->core_mech == EVPL_CORE_MECH_SPDK) {
+        return evpl_thread_create_spdk(config, init_function,
+                                       shutdown_function, private_data);
+    }
+#endif /* ifdef HAVE_SPDK */
+
     evpl_thread = evpl_zalloc(sizeof(*evpl_thread));
 
     evpl_thread->config            = config;
@@ -169,6 +152,13 @@ SYMBOL_EXPORT void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
     ssize_t len;
+
+#ifdef HAVE_SPDK
+    if (evpl_thread->spdk_mode) {
+        evpl_thread_destroy_spdk(evpl_thread);
+        return;
+    }
+#endif /* ifdef HAVE_SPDK */
 
     /* Signal stop via our own fd (never touch the worker's evpl, which the
      * worker frees on its own thread); the worker's stop_event handler clears

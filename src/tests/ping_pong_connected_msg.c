@@ -1,11 +1,10 @@
-// SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
+// SPDX-FileCopyrightText: 2024 - 2026 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -13,14 +12,16 @@
 #include "evpl/evpl.h"
 #include "test_common.h"
 
-enum evpl_protocol_id proto       = EVPL_DATAGRAM_SOCKET_UDP;
-const char            localhost[] = "127.0.0.1";
-const char           *address     = localhost;
-int                   port        = 8000;
+enum evpl_protocol_id                proto       = EVPL_DATAGRAM_SOCKET_UDP;
+const char                           localhost[] = "127.0.0.1";
+const char                          *address     = localhost;
+int                                  port        = 8000;
 
+static struct evpl_listener         *listener;
+static struct evpl_listener_binding *server_binding;
 
 struct client_state {
-    struct evpl *server_evpl;
+    volatile int done;
     int          inflight;
     int          depth;
     int          sent;
@@ -38,6 +39,28 @@ test_segment_callback(
     return sizeof(uint32_t);
 } /* test_segment_callback */
 
+/* Keep the send window full; called from the init callback and again from
+ * the receive notifications as the window drains. */
+static void
+client_fill_window(
+    struct evpl         *evpl,
+    struct evpl_bind    *bind,
+    struct client_state *state)
+{
+    while (state->inflight < state->depth &&
+           state->sent < state->niters) {
+
+        evpl_send(evpl, bind, &state->value, sizeof(state->value));
+
+        state->inflight++;
+        state->sent++;
+
+        evpl_test_debug("client sending value %u sent %u recv %u",
+                        state->value, state->sent, state->recv);
+
+        state->value++;
+    }
+} /* client_fill_window */
 
 void
 client_callback(
@@ -60,56 +83,35 @@ client_callback(
 
             evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
 
+            if (state->recv == state->niters) {
+                state->done = 1;
+            } else {
+                client_fill_window(evpl, bind, state);
+            }
+
             break;
     } /* switch */
 
 } /* client_callback */
 
-void *
-client_thread(void *arg)
+static void *
+client_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
 {
-    struct evpl          *evpl;
+    struct client_state  *state = private_data;
     struct evpl_endpoint *server;
     struct evpl_bind     *bind;
-    struct client_state  *state = arg;
-
-    evpl = evpl_create(NULL);
 
     server = evpl_endpoint_create(address, port);
 
     bind = evpl_connect(evpl, proto, NULL, server, client_callback,
                         test_segment_callback, state);
 
-    while (state->recv != state->niters) {
+    client_fill_window(evpl, bind, state);
 
-        while (state->inflight < state->depth &&
-               state->sent < state->niters) {
-
-            evpl_send(evpl, bind, &state->value, sizeof(state->value));
-
-            state->inflight++;
-            state->sent++;
-
-            evpl_test_debug("client sending value %u sent %u recv %u",
-                            state->value, state->sent, state->recv);
-
-            state->value++;
-        }
-
-        evpl_test_debug("client continue sent %u recv %u",
-                        state->sent, state->recv);
-
-        evpl_continue(evpl);
-    }
-
-    evpl_test_debug("client completed iterations");
-
-    evpl_stop(state->server_evpl);
-
-    evpl_destroy(evpl);
-
-    return NULL;
-} /* client_thread */
+    return private_data;
+} /* client_thread_init */
 
 void
 server_callback(
@@ -150,18 +152,35 @@ accept_callback(
     *conn_private_data = private_data;
 } /* accept_callback */
 
+static void *
+server_thread_init(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    server_binding = evpl_listener_attach(evpl, listener, accept_callback,
+                                          private_data);
+
+    return private_data;
+} /* server_thread_init */
+
+static void
+server_thread_shutdown(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    evpl_listener_detach(evpl, server_binding);
+} /* server_thread_shutdown */
+
 int
 main(
     int   argc,
     char *argv[])
 {
-    pthread_t                     thr;
-    struct evpl                  *evpl;
-    struct evpl_endpoint         *me;
-    struct evpl_listener         *listener;
-    struct evpl_listener_binding *binding;
-    int                           rc, opt;
-    struct client_state           state = {
+    struct evpl_thread   *server_thread;
+    struct evpl_thread   *client_thread;
+    struct evpl_endpoint *me;
+    int                   rc, opt;
+    struct client_state   state = {
         .inflight = 0,
         .depth    = 100,
         .sent     = 0,
@@ -195,29 +214,28 @@ main(
         } /* switch */
     }
 
-    evpl = evpl_create(NULL);
-
-    state.server_evpl = evpl;
-
     me = evpl_endpoint_create("0.0.0.0", port);
 
     listener = evpl_listener_create();
 
-    binding = evpl_listener_attach(evpl, listener, accept_callback, &state);
+    /* Blocks until the binding is attached on the server thread. */
+    server_thread = evpl_thread_create(NULL, server_thread_init,
+                                       server_thread_shutdown, &state);
 
     evpl_listen(listener, proto, me);
 
-    pthread_create(&thr, NULL, client_thread, &state);
+    client_thread = evpl_thread_create(NULL, client_thread_init, NULL, &state);
 
-    evpl_run(evpl);
+    while (!state.done) {
+        usleep(1000);
+    }
 
-    pthread_join(thr, NULL);
+    evpl_test_debug("client completed iterations");
 
-    evpl_listener_detach(evpl, binding);
+    evpl_thread_destroy(client_thread);
+    evpl_thread_destroy(server_thread);
 
     evpl_listener_destroy(listener);
-
-    evpl_destroy(evpl);
 
     return 0;
 } /* main */
