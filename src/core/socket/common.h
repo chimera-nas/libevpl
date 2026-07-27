@@ -109,6 +109,16 @@ evpl_socket_init(
     evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
                              errno));
 
+#ifdef SO_NOSIGPIPE
+    /* macOS/BSD have no MSG_NOSIGNAL; suppress SIGPIPE at the socket level so a
+    * write to a peer that has gone away returns EPIPE instead of a signal.
+    * (SIGPIPE is also ignored process-wide, so this is belt-and-suspenders.) */
+    {
+        int one = 1;
+        setsockopt(s->fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+    }
+#endif /* ifdef SO_NOSIGPIPE */
+
 } /* evpl_socket_init */
 
 static inline void

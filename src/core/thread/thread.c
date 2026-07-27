@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <pthread.h>
-#include <sys/eventfd.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
@@ -13,6 +12,7 @@
 #include "core/evpl_shared.h"
 #include "core/event_fn.h"
 #include "core/macros.h"
+#include "core/wakeup.h"
 #include "core/pthread_util.h"
 
 extern struct evpl_shared *evpl_shared;
@@ -45,7 +45,7 @@ struct evpl_thread {
      * worker's evpl -- which the worker creates, runs, and destroys entirely on
      * its own thread.  The event is registered on the worker's evpl and its
      * handler clears running from the worker thread. */
-    int                             stop_eventfd;
+    struct evpl_wakeup              stop_wakeup;
     struct evpl_event               stop_event;
     struct evpl_thread_config      *config;
     struct evpl                    *evpl;
@@ -60,7 +60,7 @@ struct evpl_threadpool {
 };
 
 /*
- * Read handler for a thread's stop_eventfd, registered on the worker's own evpl.
+ * Read handler for a thread's stop wakeup, registered on the worker's own evpl.
  * Runs on the worker thread, so it clears running directly (the same thread
  * evpl_run() reads it on); the loop exits on its next iteration.  Direct
  * assignment rather than evpl_stop() so it is idempotent if signaled twice.
@@ -70,14 +70,7 @@ evpl_thread_event(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    uint64_t word;
-    ssize_t  rc;
-
-    do {
-        rc = read(event->fd, &word, sizeof(word));
-    } while (rc < 0 && errno == EINTR);
-
-    if (rc != sizeof(word)) {
+    if (evpl_wakeup_drain(event->fd) < 0) {
         evpl_event_mark_unreadable(evpl, event);
     }
 
@@ -98,7 +91,7 @@ evpl_thread_function(void *ptr)
      * a write from evpl_thread_destroy wakes us and clears running on this
      * thread.  Done before signaling ready so the event is always live by the
      * time a destroyer can run. */
-    evpl_add_event(evpl, &evpl_thread->stop_event, evpl_thread->stop_eventfd,
+    evpl_add_event(evpl, &evpl_thread->stop_event, evpl_thread->stop_wakeup.rfd,
                    evpl_thread_event, NULL, NULL);
     evpl_event_read_interest(evpl, &evpl_thread->stop_event);
 
@@ -147,9 +140,8 @@ evpl_thread_create(
     evpl_thread->shutdown_callback = shutdown_function;
     evpl_thread->private_data      = private_data;
 
-    evpl_thread->stop_eventfd = eventfd(0, EFD_NONBLOCK);
-    evpl_thread_abort_if(evpl_thread->stop_eventfd < 0,
-                         "evpl_thread_create: eventfd failed");
+    evpl_thread_abort_if(evpl_wakeup_open(&evpl_thread->stop_wakeup) < 0,
+                         "evpl_thread_create: wakeup open failed");
 
     pthread_mutex_init(&evpl_thread->lock, NULL);
     pthread_cond_init(&evpl_thread->cond, NULL);
@@ -176,23 +168,20 @@ evpl_thread_create(
 SYMBOL_EXPORT void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
-    uint64_t value = 1;
-    ssize_t  len;
+    ssize_t len;
 
     /* Signal stop via our own fd (never touch the worker's evpl, which the
      * worker frees on its own thread); the worker's stop_event handler clears
      * running.  Then join and only then close the fd. */
-    do {
-        len = write(evpl_thread->stop_eventfd, &value, sizeof(value));
-    } while (len < 0 && errno == EINTR);
+    len = evpl_wakeup_signal(&evpl_thread->stop_wakeup);
 
-    evpl_thread_abort_if(len != sizeof(value),
-                         "evpl_thread_destroy: write to stop_eventfd failed: "
+    evpl_thread_abort_if(len != sizeof(uint64_t),
+                         "evpl_thread_destroy: stop wakeup signal failed: "
                          "len=%zd errno=%d (%s)", len, errno, strerror(errno));
 
     pthread_join(evpl_thread->thread, NULL);
 
-    close(evpl_thread->stop_eventfd);
+    evpl_wakeup_close(&evpl_thread->stop_wakeup);
 
     evpl_free(evpl_thread);
 } /* evpl_thread_destroy */

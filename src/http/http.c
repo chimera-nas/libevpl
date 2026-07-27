@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 
 #include "http_internal.h"
 #include "core/tls/tls.h"
@@ -855,7 +856,7 @@ evpl_http_server_send_headers(
     }
 
     if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %lu\r\n", request->response_length);
+        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %" PRIu64 "\r\n", request->response_length);
     } else {
         rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Transfer-Encoding: chunked\r\n");
     }
@@ -898,7 +899,7 @@ evpl_http_client_send_headers(
     if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) {
         rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Transfer-Encoding: chunked\r\n");
     } else {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %lu\r\n", request->response_length);
+        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %" PRIu64 "\r\n", request->response_length);
     }
 
     rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "\r\n");
@@ -945,7 +946,7 @@ evpl_http_send_body(
 
             niov = evpl_iovec_alloc(evpl, 64, 0, 1, 0, &iov);
 
-            chunk_hdr_len = snprintf(iov.data, 64, "%lx\r\n", chunk_length);
+            chunk_hdr_len = snprintf(iov.data, 64, "%" PRIx64 "\r\n", chunk_length);
 
             evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 

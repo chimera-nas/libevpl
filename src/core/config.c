@@ -19,6 +19,8 @@ evpl_global_config_init(void)
 {
     struct evpl_global_config *config = evpl_zalloc(sizeof(*config));
 
+    config->core_mech = EVPL_CORE_MECH_DEFAULT;
+
     config->thread_default.poll_mode       = 1;
     config->thread_default.poll_iterations = 1000;
     config->thread_default.spin_ns         = 1000000UL;
@@ -126,6 +128,14 @@ evpl_global_config_release(struct evpl_global_config *config)
 
     pthread_mutex_unlock(&evpl_shared->lock);
 } /* evpl_release_config */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_core_mech(
+    struct evpl_global_config *config,
+    enum evpl_core_mech        mech)
+{
+    config->core_mech = mech;
+} /* evpl_global_config_set_core_mech */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_buffer_size(

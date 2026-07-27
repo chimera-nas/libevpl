@@ -6,7 +6,9 @@
 #include <pthread.h>
 #include <string.h>
 #include <sys/mman.h>
+#ifdef __linux__
 #include <linux/memfd.h>
+#endif /* ifdef __linux__ */
 #include <unistd.h>
 #include <time.h>
 #include <utlist.h>
@@ -249,9 +251,20 @@ evpl_allocator_build_slab(
      */
     hugepages = allocator->hugepages;
 
+#ifndef MAP_HUGETLB
+    /* Platforms without hugetlb mmap support (e.g. macOS) always use base
+     * pages via evpl_valloc.  huge_pages defaults off, so this only matters if
+     * an embedder explicitly enabled it on such a platform. */
+    hugepages            = 0;
+    allocator->hugepages = 0;
+#endif /* ifndef MAP_HUGETLB */
+
+#ifdef MAP_HUGETLB
  again:
+#endif /* ifdef MAP_HUGETLB */
 
     if (hugepages) {
+#ifdef MAP_HUGETLB
         uint64_t huge_page_size = evpl_shared->config->huge_page_size;
         int      flags          = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB;
 
@@ -278,6 +291,7 @@ evpl_allocator_build_slab(
         }
 
         slab->hugepages = 1;
+#endif /* ifdef MAP_HUGETLB */
     } else {
 
         slab->data = evpl_valloc(evpl_shared->config->slab_size,

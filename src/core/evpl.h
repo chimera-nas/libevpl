@@ -10,14 +10,11 @@
 #define EVPL_INTERNAL 1
 #include "event.h"
 #include "doorbell.h"
+#include "wakeup.h"
 #include "evpl/evpl.h"
 
 
-#if EVPL_MECH == epoll
-#include "core/epoll.h"
-#else /* if EVPL_MECH == epoll */
-#error No EVPL_MECH
-#endif /* if EVPL_MECH == epoll */
+#include "core/core.h"
 
 struct evpl_thread_config {
     int          poll_mode;
@@ -30,6 +27,8 @@ struct evpl_thread_config {
 struct evpl_global_config {
 
     struct evpl_thread_config thread_default;
+
+    unsigned int              core_mech;
 
     unsigned int              hf_time_mode;
     unsigned int              max_pending;
@@ -105,7 +104,7 @@ struct evpl {
     int                           num_poll;
     int                           max_poll;
 
-    int                           eventfd;
+    struct evpl_wakeup            run_wakeup;
     int                           running;
     struct evpl_event             run_event;
 

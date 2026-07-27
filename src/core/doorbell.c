@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#include <sys/eventfd.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
 #include <utlist.h>
 
 #include "doorbell.h"
+#include "wakeup.h"
 #include "evpl/evpl.h"
 #include "macros.h"
 #include "logging.h"
@@ -21,14 +21,7 @@ evpl_event_user_callback(
 {
     struct evpl_doorbell *doorbell = container_of(event, struct evpl_doorbell, event);
 
-    uint64_t              word;
-    ssize_t               len;
-
-    do {
-        len = read(event->fd, &word, sizeof(word));
-    } while (len < 0 && errno == EINTR);
-
-    if (len != sizeof(word)) {
+    if (evpl_wakeup_drain(event->fd) < 0) {
         evpl_event_mark_unreadable(evpl, event);
         return;
     }
@@ -45,7 +38,10 @@ evpl_add_doorbell(
 {
     struct evpl_event *event = &doorbell->event;
 
-    evpl_add_event(evpl, event, eventfd(0, EFD_NONBLOCK),
+    evpl_core_abort_if(evpl_wakeup_open(&doorbell->wakeup) < 0,
+                       "evpl_add_doorbell: wakeup open failed");
+
+    evpl_add_event(evpl, event, doorbell->wakeup.rfd,
                    evpl_event_user_callback, NULL, NULL);
 
     evpl_event_read_interest(evpl, event);
@@ -61,7 +57,7 @@ evpl_remove_doorbell(
 {
     evpl_remove_event(evpl, &doorbell->event);
 
-    close(doorbell->event.fd);
+    evpl_wakeup_close(&doorbell->wakeup);
 } /* evpl_remove_doorbell */
 
 SYMBOL_EXPORT int
@@ -73,17 +69,14 @@ evpl_doorbell_fd(struct evpl_doorbell *doorbell)
 SYMBOL_EXPORT void
 evpl_ring_doorbell(struct evpl_doorbell *doorbell)
 {
-    uint64_t word = 1;
-    ssize_t  len;
-    int      err;
+    ssize_t len;
+    int     err;
 
-    do {
-        len = write(doorbell->event.fd, &word, sizeof(word));
-    } while (len < 0 && errno == EINTR);
+    len = evpl_wakeup_signal(&doorbell->wakeup);
 
     err = errno;
 
-    evpl_core_abort_if(len != sizeof(word),
-                       "failed to write to doorbell fd %d: len=%zd errno=%d (%s)",
-                       doorbell->event.fd, len, err, strerror(err));
+    evpl_core_abort_if(len != sizeof(uint64_t),
+                       "failed to ring doorbell (fd %d): len=%zd errno=%d (%s)",
+                       doorbell->wakeup.wfd, len, err, strerror(err));
 } /* evpl_ring_doorbell */

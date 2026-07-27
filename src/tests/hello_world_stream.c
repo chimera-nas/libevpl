@@ -28,7 +28,7 @@ client_callback(
     struct evpl_notify *notify,
     void               *private_data)
 {
-    char buffer[hellolen];
+    char buffer[sizeof(hello)];
     int  length, *run = private_data;
 
     switch (notify->notify_type) {
@@ -83,7 +83,7 @@ server_callback(
     struct evpl_notify *notify,
     void               *private_data)
 {
-    char buffer[hellolen];
+    char buffer[sizeof(hello)];
     int  length, *run = private_data;
 
     switch (notify->notify_type) {

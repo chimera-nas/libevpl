@@ -18,15 +18,21 @@ enable_testing()
 # Tests run inside `ip netns` for isolation, which needs CAP_NET_ADMIN.
 # A previous probe (e.g. by a parent project) may have already populated
 # LIBEVPL_NETNS_TESTING in the cache; otherwise do a fresh probe.
+# `ip netns` is Linux-only, so on other platforms (macOS) skip the probe and
+# fall back to serialized, non-isolated test execution (see src/CMakeLists.txt).
 if(NOT DEFINED LIBEVPL_NETNS_TESTING)
-    execute_process(
-        COMMAND bash -c "set -e; n=libevpl_netns_probe_$$; ip netns add \"$n\"; ip netns delete \"$n\""
-        RESULT_VARIABLE LIBEVPL_NETNS_PROBE_RESULT
-        OUTPUT_QUIET
-        ERROR_QUIET
-    )
-    if(LIBEVPL_NETNS_PROBE_RESULT EQUAL 0)
-        set(LIBEVPL_NETNS_TESTING TRUE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        execute_process(
+            COMMAND bash -c "set -e; n=libevpl_netns_probe_$$; ip netns add \"$n\"; ip netns delete \"$n\""
+            RESULT_VARIABLE LIBEVPL_NETNS_PROBE_RESULT
+            OUTPUT_QUIET
+            ERROR_QUIET
+        )
+        if(LIBEVPL_NETNS_PROBE_RESULT EQUAL 0)
+            set(LIBEVPL_NETNS_TESTING TRUE)
+        else()
+            set(LIBEVPL_NETNS_TESTING FALSE)
+        endif()
     else()
         set(LIBEVPL_NETNS_TESTING FALSE)
     endif()
@@ -57,6 +63,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(EVPL_MECH epoll)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(EVPL_MECH kqueue)
+
+    # Homebrew keeps keg-only libraries (openssl@3) and headers (uthash's
+    # utlist.h) outside the default search paths.  Add the common Homebrew
+    # prefixes so find_library/find_path and the compiler locate them.
+    if(EXISTS /opt/homebrew)
+        set(HOMEBREW_PREFIX /opt/homebrew)
+    else()
+        set(HOMEBREW_PREFIX /usr/local)
+    endif()
+
+    list(APPEND CMAKE_PREFIX_PATH
+        ${HOMEBREW_PREFIX}
+        ${HOMEBREW_PREFIX}/opt/openssl@3
+        ${HOMEBREW_PREFIX}/opt/nghttp2)
+
+    include_directories(${HOMEBREW_PREFIX}/include)
+    link_directories(${HOMEBREW_PREFIX}/lib)
 else()
     message(FATAL_ERROR "Unsupported build platform ${CMAKE_SYSTEM_NAME}")
 endif()
@@ -197,6 +220,17 @@ else()
     message(STATUS "xlio library not found.")
 endif()
 
+# OpenSSL backs the TLS protocol.  macOS ships no OpenSSL/LibreSSL headers or
+# linkable stubs in the SDK, so this resolves to a Homebrew openssl@3 (found
+# via the prefixes added above) -- find_package is used rather than a bare
+# -lssl because that formula is keg-only and lives outside the default paths.
+find_package(OpenSSL REQUIRED)
+
+message(STATUS "OpenSSL ${OPENSSL_VERSION}: ${OPENSSL_SSL_LIBRARY}")
+
+set(HAVE_TLS 1)
+add_definitions(-DHAVE_TLS)
+
 find_library(NGHTTP2_LIB NAMES nghttp2)
 find_path(NGHTTP2_INCLUDE_DIR NAMES nghttp2/nghttp2.h)
 
@@ -210,7 +244,39 @@ else()
     message(STATUS "nghttp2 library not found; HTTP/2 support disabled.")
 endif()
 
-add_definitions(-g -Wall -Werror -Wno-unused-function -DEVPL_MECH=${EVPL_MECH})
+# Detect every event-loop core mechanism this platform supports.  All of the
+# supported ones are compiled in unconditionally and selected at runtime via
+# evpl_global_config_set_core_mech(); epoll/kqueue remain the platform
+# defaults, with select available everywhere as a portable fallback.
+include(CheckIncludeFile)
+check_include_file("sys/epoll.h"  EVPL_HAVE_EPOLL)
+check_include_file("sys/event.h"  EVPL_HAVE_KQUEUE)
+check_include_file("sys/select.h" EVPL_HAVE_SELECT)
+
+set(EVPL_MECHANISMS)
+
+if(EVPL_HAVE_EPOLL)
+    add_definitions(-DEVPL_HAVE_EPOLL)
+    list(APPEND EVPL_MECHANISMS epoll)
+endif()
+
+if(EVPL_HAVE_KQUEUE)
+    add_definitions(-DEVPL_HAVE_KQUEUE)
+    list(APPEND EVPL_MECHANISMS kqueue)
+endif()
+
+if(EVPL_HAVE_SELECT)
+    add_definitions(-DEVPL_HAVE_SELECT)
+    list(APPEND EVPL_MECHANISMS select)
+endif()
+
+if(NOT EVPL_MECHANISMS)
+    message(FATAL_ERROR "No supported event core mechanism found on ${CMAKE_SYSTEM_NAME}")
+endif()
+
+message(STATUS "Event core mechanisms: ${EVPL_MECHANISMS} (default: ${EVPL_MECH})")
+
+add_definitions(-g -Wall -Werror -Wno-unused-function)
 add_definitions(-fvisibility=hidden)
 
 set(LIBEVPL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})

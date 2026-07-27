@@ -13,9 +13,30 @@
 struct evpl_global_config;
 struct evpl_thread_config;
 
+/*
+ * Event-loop core mechanism.  Every mechanism supported on the build platform
+ * is compiled in and selectable at runtime: epoll on Linux, kqueue on macOS
+ * and the BSDs, and select on both as a portable fallback.
+ *
+ * EVPL_CORE_MECH_DEFAULT picks the platform default -- epoll on Linux, kqueue
+ * on macOS -- and always succeeds.  Requesting a mechanism that is not
+ * available on the running platform (e.g. epoll on macOS) aborts at
+ * evpl_init().
+ */
+enum evpl_core_mech {
+    EVPL_CORE_MECH_DEFAULT = 0,   /* platform default (epoll/kqueue) */
+    EVPL_CORE_MECH_EPOLL   = 1,
+    EVPL_CORE_MECH_KQUEUE  = 2,
+    EVPL_CORE_MECH_SELECT  = 3,
+};
+
 struct evpl_global_config *
 evpl_global_config_init(
     void);
+
+void evpl_global_config_set_core_mech(
+    struct evpl_global_config *config,
+    enum evpl_core_mech        mech);
 
 void evpl_global_config_release(
     struct evpl_global_config *config);
