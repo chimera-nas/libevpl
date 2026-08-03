@@ -764,12 +764,21 @@ evpl_http_event(
              * partially-parsed request (current_request, e.g. one allocated on
              * a final read that returned EOF) and any received requests whose
              * response has not yet completed (pending_requests). Otherwise
-             * tearing down the connection leaks them. */
-            if (http_conn->current_request) {
+             * tearing down the connection leaks them.
+             *
+             * On a client connection the two overlap: current_request is set
+             * to the head of pending_requests while a response is being parsed
+             * and only leaves that list once the response completes, so
+             * freeing it here as well would put the same request on the
+             * agent's free list twice.  On a server connection they are always
+             * disjoint (a request moves to pending_requests exactly when
+             * current_request is cleared). */
+            if (http_conn->current_request &&
+                http_conn->current_request != http_conn->pending_requests) {
                 evpl_http_request_free(http_conn->agent,
                                        http_conn->current_request);
-                http_conn->current_request = NULL;
             }
+            http_conn->current_request = NULL;
 
             /* Walk and free the whole list directly rather than DL_DELETE per
              * element: there is no need to keep the list consistent while
