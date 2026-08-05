@@ -689,16 +689,36 @@ evpl_http2_submit_request(struct evpl_http_request *request)
     nva[nvlen].flags    = NGHTTP2_NV_FLAG_NONE;
     nvlen++;
 
+    /* HTTP/2 requires every pseudo-header (those starting with ':') to precede
+     * the regular headers, so resolve Host -> :authority and emit it here,
+     * before the request-header loop below.  Emitting it afterwards produces a
+     * pseudo-header after a regular one, which the peer rejects (the stream is
+     * reset and the request silently never arrives). */
     DL_FOREACH(request->request_headers, header)
     {
         evpl_http2_lower(header->name);
 
         if (strcmp(header->name, "host") == 0) {
             authority = header->value;
-            continue;
+            break;
         }
+    }
 
-        if (evpl_http2_hop_by_hop(header->name) ||
+    if (authority) {
+        nva[nvlen].name     = (uint8_t *) ":authority";
+        nva[nvlen].namelen  = 10;
+        nva[nvlen].value    = (uint8_t *) authority;
+        nva[nvlen].valuelen = strlen(authority);
+        nva[nvlen].flags    = NGHTTP2_NV_FLAG_NONE;
+        nvlen++;
+    }
+
+    DL_FOREACH(request->request_headers, header)
+    {
+        evpl_http2_lower(header->name);
+
+        if (strcmp(header->name, "host") == 0 ||
+            evpl_http2_hop_by_hop(header->name) ||
             strcmp(header->name, "content-length") == 0) {
             continue;
         }
@@ -711,15 +731,6 @@ evpl_http2_submit_request(struct evpl_http_request *request)
         nva[nvlen].namelen  = strlen(header->name);
         nva[nvlen].value    = (uint8_t *) header->value;
         nva[nvlen].valuelen = strlen(header->value);
-        nva[nvlen].flags    = NGHTTP2_NV_FLAG_NONE;
-        nvlen++;
-    }
-
-    if (authority) {
-        nva[nvlen].name     = (uint8_t *) ":authority";
-        nva[nvlen].namelen  = 10;
-        nva[nvlen].value    = (uint8_t *) authority;
-        nva[nvlen].valuelen = strlen(authority);
         nva[nvlen].flags    = NGHTTP2_NV_FLAG_NONE;
         nvlen++;
     }
