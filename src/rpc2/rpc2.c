@@ -2031,8 +2031,8 @@ evpl_rpc2_recv_msg(
     struct evpl_iovec               *hdr_iov, *req_iov;
     int                              hdr_niov, req_niov;
     int                              i, rc, offset, rdma, request_length;
-    int                              prog_exported;
-    uint32_t                         vers_low, vers_high;
+    int                              prog_exported, can_deny;
+    uint32_t                         vers_low, vers_high, deny_xid;
     struct xdr_read_list            *read_list;
     struct xdr_write_list           *write_list;
     struct evpl_iovec               *segment_iov;
@@ -2133,16 +2133,58 @@ evpl_rpc2_recv_msg(
     rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, &msg->dbuf);
 
     if (rc < 0) {
-        /* Truncated / undecodable RPC header (RFC 5531 §8): the call header
-         * could not be fully decoded.  Reusing the negative return as a byte
-         * offset below drives a negative-offset, over-length iovec clone, so
-         * release every reference acquired so far and drop the connection
-         * instead. */
+        /* Truncated / undecodable RPC header (RFC 5531 §8).  Reusing the
+         * negative return as a byte offset below would drive a
+         * negative-offset, over-length iovec clone, so nothing further may be
+         * parsed out of this message.
+         *
+         * The xid and mtype are the first two fields of every RPC message and
+         * sit at fixed offsets, ahead of the credential and verifier that are
+         * the usual reason the rest fails to decode.  When they are present
+         * and identify a CALL, the call can still be answered: RFC 5531
+         * rejects a credential the server cannot accept with MSG_DENIED /
+         * AUTH_ERROR, and answering leaves the peer able to tell rejection
+         * from a network fault -- closing the connection does not.  Only when
+         * even that much is unreadable is there nothing to address a reply
+         * to, and the connection is dropped. */
+        deny_xid = 0;
+        can_deny = 0;
+
+        if (hdr_niov > 0 && hdr_iov[0].length >= 2 * sizeof(uint32_t)) {
+            const uint32_t *words = hdr_iov[0].data;
+
+            if (rpc2_ntoh32(words[1]) == CALL) {
+                deny_xid = rpc2_ntoh32(words[0]);
+                can_deny = 1;
+            }
+        }
+
         evpl_iovecs_release_internal(evpl, hdr_iov, hdr_niov);
         evpl_iovecs_release_internal(evpl, iovec, niov);
         if (!rdma && offset == 0) {
             evpl_free(iovec);
         }
+
+        if (can_deny) {
+            evpl_rpc2_debug("rpc2 call xid %u has an undecodable header; "
+                            "rejecting with AUTH_BADCRED", deny_xid);
+
+            request      = evpl_rpc2_request_alloc(thread);
+            request->msg = msg;
+
+            request->m_inflight = thread->m_inflight[EVPL_RPC2_ROLE_SERVER];
+            prometheus_gauge_add(request->m_inflight, 1);
+
+            request->conn         = rpc2_conn;
+            request->bind         = bind;
+            request->xid          = deny_xid;
+            request->encoding.xid = deny_xid;
+            prometheus_stopwatch_start(&request->timestamp);
+
+            evpl_rpc2_send_reply_denied(evpl, request, AUTH_BADCRED);
+            return;
+        }
+
         evpl_rpc2_msg_free(thread, msg);
         evpl_close(evpl, bind);
         return;
