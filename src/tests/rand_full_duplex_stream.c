@@ -204,6 +204,10 @@ main(
         } /* switch */
     }
 
+    /* A local transport names one socket that both ends must agree on, so
+     * normalize here rather than at each endpoint. */
+    address = test_address(proto, address, argv[0]);
+
     srand(time(NULL));
 
     for (i = 0; i < 2; ++i) {

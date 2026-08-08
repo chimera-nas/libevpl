@@ -31,7 +31,8 @@ enum evpl_protocol_id {
     EVPL_STREAM_RDMACM_RC    = 6,
     EVPL_STREAM_SOCKET_TLS   = 7,
     EVPL_DATAGRAM_TCP_RDMA   = 8,
-    EVPL_NUM_PROTO           = 9
+    EVPL_STREAM_SOCKET_UNIX  = 9,
+    EVPL_NUM_PROTO           = 10
 };
 
 enum evpl_block_protocol_id {
@@ -108,7 +109,19 @@ int evpl_protocol_lookup(
     enum evpl_protocol_id *id,
     const char            *name);
 
+/* 1 iff the protocol is registered and available in this build/config.  An
+ * unavailable protocol reports 0 from every predicate below, so this is how a
+ * caller distinguishes "not a stream" from "not built". */
+int evpl_protocol_available(
+    enum evpl_protocol_id protocol);
+
 int evpl_protocol_is_stream(
+    enum evpl_protocol_id protocol);
+
+/* 1 iff the protocol names peers by a local socket path rather than by
+ * network address and port, and therefore requires an endpoint created by
+ * evpl_endpoint_create_local(). */
+int evpl_protocol_is_local(
     enum evpl_protocol_id protocol);
 
 struct evpl_config *

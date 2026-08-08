@@ -97,6 +97,11 @@ struct evpl_protocol {
     /* 1 iff supports RDMA read/write */
     unsigned int           rdma;
 
+    /* 1 iff peers are named by a local socket path or abstract name (AF_UNIX)
+     * rather than by network address and port.  Endpoints and protocols must
+     * agree on this: see evpl_endpoint_check_protocol(). */
+    unsigned int           local;
+
     /* human readable name for protocol, no spaces */
     const char            *name;
 

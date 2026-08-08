@@ -207,6 +207,11 @@ void evpl_finish(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 
+/* Size a buffer passed to evpl_bind_get_local_address() or
+ * evpl_bind_get_remote_address() to at least this and no representable
+ * address is truncated.  The longest form is an AF_UNIX path. */
+#define EVPL_ADDRESS_STRLEN 128
+
 void evpl_bind_get_local_address(
     struct evpl_bind *bind,
     char             *str,

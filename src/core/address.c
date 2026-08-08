@@ -26,6 +26,10 @@ evpl_address_init(
 {
     struct evpl_address *ea = evpl_address_alloc();
 
+    evpl_core_abort_if(addrlen > sizeof(ea->sa),
+                       "evpl_address_init: addrlen %u exceeds %zu",
+                       addrlen, sizeof(ea->sa));
+
     ea->addrlen = addrlen;
     memcpy(ea->addr, addr, addrlen);
 

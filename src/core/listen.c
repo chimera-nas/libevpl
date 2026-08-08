@@ -10,6 +10,8 @@
 
 #include "core/bind.h"
 #include "core/macros.h"
+#include "core/logging.h"
+#include "core/endpoint.h"
 #include "core/evpl_shared.h"
 #include "core/evpl.h"
 
@@ -273,8 +275,27 @@ evpl_listen(
     struct evpl_endpoint *endpoint)
 {
     struct evpl_listen_request *request;
+    struct evpl_protocol       *protocol = evpl_shared->protocol[protocol_id];
+    struct evpl_address        *address;
 
-    if (!evpl_shared->protocol[protocol_id]) {
+    if (!protocol) {
+        return -1;
+    }
+
+    if (unlikely(evpl_endpoint_check_protocol(endpoint, protocol) < 0)) {
+        evpl_core_error(
+            "evpl_listen: protocol %s cannot be used with %s endpoint '%s'",
+            protocol->name,
+            endpoint->kind == EVPL_ENDPOINT_LOCAL ? "local-path" : "network",
+            endpoint->address);
+        return -1;
+    }
+
+    address = evpl_endpoint_resolve(endpoint);
+
+    if (unlikely(!address)) {
+        evpl_core_error("evpl_listen: failed to resolve '%s'",
+                        endpoint->address);
         return -1;
     }
 
@@ -284,7 +305,7 @@ evpl_listen(
     pthread_cond_init(&request->cond, NULL);
 
     request->protocol_id = protocol_id;
-    request->address     = evpl_endpoint_resolve(endpoint);
+    request->address     = address;
 
     pthread_mutex_lock(&EvplListenerLock);
     DL_APPEND(listener->requests, request);

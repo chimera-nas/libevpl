@@ -163,6 +163,10 @@ main(
         } /* switch */
     }
 
+    /* A local transport names one socket that both ends must agree on, so
+     * normalize here rather than at each endpoint. */
+    address = test_address(proto, address, argv[0]);
+
     evpl = evpl_create(NULL);
 
     ep = evpl_endpoint_create(address, port);
