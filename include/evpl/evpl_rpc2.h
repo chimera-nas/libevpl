@@ -131,6 +131,21 @@ evpl_rpc2_thread_destroy(
     struct evpl_rpc2_thread *thread);
 
 /*
+ * Maximum size of a single RPC message, counted across every fragment of a
+ * record.  A record mark claiming more than this is refused at the framing
+ * layer and the connection is closed, so an unauthenticated peer cannot make
+ * the transport buffer on its terms.  Defaults to 4 MiB; pass 0 to restore
+ * the default.  Process-wide, and intended to be set before serving begins.
+ */
+void
+evpl_rpc2_set_max_message_size(
+    uint32_t bytes);
+
+uint32_t
+evpl_rpc2_get_max_message_size(
+    void);
+
+/*
  * Get the client dbuf from a thread for use by client call marshalling.
  */
 void *

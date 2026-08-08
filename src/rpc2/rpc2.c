@@ -117,6 +117,12 @@ struct evpl_rpc2_request {
     void                                 *reply_verf_data;
     uint32_t                              reply_verf_len;
     uint32_t                              reply_verf_flavor;
+
+    /* Supported version range reported with a PROG_MISMATCH reply.  RFC 5531
+     * requires the accepted-reply body for that status to carry the range the
+     * server does export, so a client can retry within it. */
+    uint32_t                              mismatch_low;
+    uint32_t                              mismatch_high;
 };
 
 /*
@@ -237,8 +243,15 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
         request = evpl_zalloc(sizeof(*request));
     }
 
-    request->thread                      = thread;
-    request->m_inflight                  = NULL;
+    request->thread     = thread;
+    request->m_inflight = NULL;
+    /* Requests are recycled, and the early error paths -- bad RPC version,
+     * unknown program, unknown procedure, rejected credential -- reply before
+     * either of these is assigned.  Without a reset they would carry whatever
+     * the previous user of this struct left behind, and the reply path would
+     * charge its latency sample to an unrelated procedure's histogram. */
+    request->program                     = NULL;
+    request->metric                      = NULL;
     request->rdma_credits                = 1;
     request->dbg_reply_sent              = 0;
     request->pending_reads               = 0;
@@ -324,13 +337,43 @@ rpc2_ntoh32(uint32_t value)
 #endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
 } /* rpc2_ntoh32 */
 
+/*
+ * Ceiling on one RPC message, counted over every fragment of a record.
+ *
+ * The record mark is unauthenticated input: a peer can claim any length it
+ * likes before sending a byte of it.  Without a ceiling the transport will
+ * keep buffering whatever the claim asks for, so a single connection can be
+ * made to consume memory without bound.  Capping it means an oversized claim
+ * is refused at the framing layer, before anything is allocated for it.
+ *
+ * 4 MiB is comfortably above realistic RPC traffic -- NFS rsize/wsize is
+ * typically 1 MiB and the payload for a large READ/WRITE travels in RDMA
+ * chunks rather than inline -- while staying small enough that the worst case
+ * per connection is bounded.  Adjust with evpl_rpc2_set_max_message_size().
+ */
+#define EVPL_RPC2_DEFAULT_MAX_MSG_SIZE (4u * 1024u * 1024u)
+
+static uint32_t evpl_rpc2_max_msg_size = EVPL_RPC2_DEFAULT_MAX_MSG_SIZE;
+
+SYMBOL_EXPORT void
+evpl_rpc2_set_max_message_size(uint32_t bytes)
+{
+    evpl_rpc2_max_msg_size = bytes ? bytes : EVPL_RPC2_DEFAULT_MAX_MSG_SIZE;
+} /* evpl_rpc2_set_max_message_size */
+
+SYMBOL_EXPORT uint32_t
+evpl_rpc2_get_max_message_size(void)
+{
+    return evpl_rpc2_max_msg_size;
+} /* evpl_rpc2_get_max_message_size */
+
 static int
 rpc2_segment_callback(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     void             *private_data)
 {
-    uint32_t hdr;
+    uint32_t hdr, frag_len;
     int      length;
 
     length = evpl_peek(evpl, bind, &hdr, sizeof(hdr));
@@ -339,16 +382,27 @@ rpc2_segment_callback(
         return 0;
     }
 
-    hdr = rpc2_ntoh32(hdr);
+    hdr      = rpc2_ntoh32(hdr);
+    frag_len = hdr & 0x7FFFFFFF;
+
+    /* Refuse an oversized fragment here, before the transport starts
+     * accumulating bytes for it.  A negative return asks the transport to
+     * close the connection: there is no way to answer a peer whose framing we
+     * do not trust, and continuing would mean buffering on its terms. */
+    if (unlikely(frag_len > evpl_rpc2_max_msg_size)) {
+        evpl_rpc2_error(
+            "rpc2 record mark claims %u bytes, above the %u byte maximum; closing",
+            frag_len, evpl_rpc2_max_msg_size);
+        return -1;
+    }
 
     /* Deliver one TCP record-mark fragment (4-byte mark + payload).
      * Multi-fragment reassembly is performed in evpl_rpc2_recv_msg. */
-    return (hdr & 0x7FFFFFFF) + 4;
+    return (int) frag_len + 4;
 } /* rpc2_segment_callback */
 
-/* Cap on a single reassembled RPC message (DoS guard). Well above
- * realistic NFS COMPOUND sizes (typical rsize/wsize <= 1 MiB). */
-#define EVPL_RPC2_MAX_REASM_LENGTH (16u * 1024u * 1024u)
+/* Cap on a single reassembled RPC message, applied across fragments. */
+#define EVPL_RPC2_MAX_REASM_LENGTH (evpl_rpc2_max_msg_size)
 
 #define EVPL_RPC2_REASM_INIT_CAP   8
 
@@ -667,6 +721,15 @@ evpl_rpc2_send_reply(
             rpc_reply.body.rbody.areply.verf.flavor = AUTH_NONE;
         }
         rpc_reply.body.rbody.areply.reply_data.stat = error_stat;
+
+        /* PROG_MISMATCH is the one accepted-reply status whose body carries
+         * data.  The generated marshaller emits mismatch_info for this arm
+         * unconditionally, so it must be filled in or the reply ships
+         * whatever the stack held. */
+        if (error_stat == PROG_MISMATCH) {
+            rpc_reply.body.rbody.areply.reply_data.info.low  = request->mismatch_low;
+            rpc_reply.body.rbody.areply.reply_data.info.high = request->mismatch_high;
+        }
 
         /* Integrity service (krb5i): reframe the proc results as
          * rpc_gss_integ_data before the RPC header is prepended.  Non-RDMA
@@ -2016,6 +2079,8 @@ evpl_rpc2_recv_msg(
     struct evpl_iovec               *hdr_iov, *req_iov;
     int                              hdr_niov, req_niov;
     int                              i, rc, offset, rdma, request_length;
+    int                              prog_exported, can_deny;
+    uint32_t                         vers_low, vers_high, deny_xid;
     struct xdr_read_list            *read_list;
     struct xdr_write_list           *write_list;
     struct evpl_iovec               *segment_iov;
@@ -2116,16 +2181,58 @@ evpl_rpc2_recv_msg(
     rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, &msg->dbuf);
 
     if (rc < 0) {
-        /* Truncated / undecodable RPC header (RFC 5531 §8): the call header
-         * could not be fully decoded.  Reusing the negative return as a byte
-         * offset below drives a negative-offset, over-length iovec clone, so
-         * release every reference acquired so far and drop the connection
-         * instead. */
+        /* Truncated / undecodable RPC header (RFC 5531 §8).  Reusing the
+         * negative return as a byte offset below would drive a
+         * negative-offset, over-length iovec clone, so nothing further may be
+         * parsed out of this message.
+         *
+         * The xid and mtype are the first two fields of every RPC message and
+         * sit at fixed offsets, ahead of the credential and verifier that are
+         * the usual reason the rest fails to decode.  When they are present
+         * and identify a CALL, the call can still be answered: RFC 5531
+         * rejects a credential the server cannot accept with MSG_DENIED /
+         * AUTH_ERROR, and answering leaves the peer able to tell rejection
+         * from a network fault -- closing the connection does not.  Only when
+         * even that much is unreadable is there nothing to address a reply
+         * to, and the connection is dropped. */
+        deny_xid = 0;
+        can_deny = 0;
+
+        if (hdr_niov > 0 && hdr_iov[0].length >= 2 * sizeof(uint32_t)) {
+            const uint32_t *words = hdr_iov[0].data;
+
+            if (rpc2_ntoh32(words[1]) == CALL) {
+                deny_xid = rpc2_ntoh32(words[0]);
+                can_deny = 1;
+            }
+        }
+
         evpl_iovecs_release_internal(evpl, hdr_iov, hdr_niov);
         evpl_iovecs_release_internal(evpl, iovec, niov);
         if (!rdma && offset == 0) {
             evpl_free(iovec);
         }
+
+        if (can_deny) {
+            evpl_rpc2_debug("rpc2 call xid %u has an undecodable header; "
+                            "rejecting with AUTH_BADCRED", deny_xid);
+
+            request      = evpl_rpc2_request_alloc(thread);
+            request->msg = msg;
+
+            request->m_inflight = thread->m_inflight[EVPL_RPC2_ROLE_SERVER];
+            prometheus_gauge_add(request->m_inflight, 1);
+
+            request->conn         = rpc2_conn;
+            request->bind         = bind;
+            request->xid          = deny_xid;
+            request->encoding.xid = deny_xid;
+            prometheus_stopwatch_start(&request->timestamp);
+
+            evpl_rpc2_send_reply_denied(evpl, request, AUTH_BADCRED);
+            return;
+        }
+
         evpl_rpc2_msg_free(thread, msg);
         evpl_close(evpl, bind);
         return;
@@ -2365,26 +2472,62 @@ evpl_rpc2_recv_msg(
                 }
             }
 
+            /* Look for an exact (program, version) match, and while scanning
+             * note whether the program number is exported at all and over
+             * what version range.  RFC 5531 distinguishes the two failures: a
+             * program we do not export is PROG_UNAVAIL, while a program we do
+             * export at other versions is PROG_MISMATCH carrying the range.
+             * Clients use that difference to decide between downgrading and
+             * giving up. */
             request->program = NULL;
+            prog_exported    = 0;
+            vers_low         = UINT32_MAX;
+            vers_high        = 0;
 
             for (i = 0; i < rpc2_conn->num_server_programs; i++) {
                 program = rpc2_conn->server_programs[i];
 
-                if (program->program == rpc_msg.body.cbody.prog &&
-                    program->version == rpc_msg.body.cbody.vers) {
+                if (program->program != rpc_msg.body.cbody.prog) {
+                    continue;
+                }
 
+                prog_exported = 1;
+
+                if (program->version < vers_low) {
+                    vers_low = program->version;
+                }
+
+                if (program->version > vers_high) {
+                    vers_high = program->version;
+                }
+
+                if (program->version == rpc_msg.body.cbody.vers) {
                     request->program = program;
                     break;
                 }
             }
 
             if (unlikely(!request->program)) {
-                evpl_rpc2_debug(
-                    "rpc2 received call for unknown program %u vers %u",
-                    rpc_msg.body.cbody.prog,
-                    rpc_msg.body.cbody.vers);
+                if (prog_exported) {
+                    evpl_rpc2_debug(
+                        "rpc2 received call for program %u at unsupported vers %u (supported %u-%u)",
+                        rpc_msg.body.cbody.prog,
+                        rpc_msg.body.cbody.vers,
+                        vers_low,
+                        vers_high);
 
-                evpl_rpc2_send_reply_error(evpl, request, PROG_MISMATCH);
+                    request->mismatch_low  = vers_low;
+                    request->mismatch_high = vers_high;
+
+                    evpl_rpc2_send_reply_error(evpl, request, PROG_MISMATCH);
+                } else {
+                    evpl_rpc2_debug(
+                        "rpc2 received call for unexported program %u vers %u",
+                        rpc_msg.body.cbody.prog,
+                        rpc_msg.body.cbody.vers);
+
+                    evpl_rpc2_send_reply_error(evpl, request, PROG_UNAVAIL);
+                }
                 return;
             }
 

@@ -118,14 +118,20 @@ evpl_socket_tcp_read(
 
             length = bind->segment_callback(evpl, bind, bind->private_data);
 
-            if (length == 0 ||
-                evpl_iovec_ring_bytes(&bind->iovec_recv) < length) {
-                break;
-            }
-
+            /* A negative length is the segment callback's request to drop
+             * the connection (an unparseable or oversized frame).  This test
+             * must precede the ring-bytes comparison: that comparison
+             * promotes the signed length to the unsigned type of
+             * evpl_iovec_ring_bytes, so a negative value compares as huge and
+             * would break out of the loop before ever reaching this check. */
             if (unlikely(length < 0)) {
                 evpl_close(evpl, bind);
                 goto out;
+            }
+
+            if (length == 0 ||
+                evpl_iovec_ring_bytes(&bind->iovec_recv) < (uint64_t) length) {
+                break;
             }
 
             niov = evpl_iovec_ring_copyv(evpl, iovec, &bind->iovec_recv,

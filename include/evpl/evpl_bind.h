@@ -45,6 +45,19 @@ typedef void (*evpl_notify_callback_t)(
 
 #define EVPL_SEND_FLAG_TAKE_REF  0x01
 
+/*
+ * Framing callback for a stream transport: inspect what has been buffered so
+ * far (evpl_peek) and report how the next message is delimited.
+ *
+ *   > 0  the length of the next complete message, including whatever framing
+ *        header the protocol uses.  Delivered once that many bytes arrive.
+ *   == 0 no complete message is available yet -- typically the length prefix
+ *        itself has not fully arrived.  The connection is left alone and the
+ *        callback is polled again as more data lands.
+ *   < 0  the framing is unusable and the connection must be closed.  Use this
+ *        for a length that cannot be honoured, not for "need more data": a
+ *        peer can otherwise make the transport buffer on its terms.
+ */
 typedef int (*evpl_segment_callback_t)(
     struct evpl      *evpl,
     struct evpl_bind *bind,
