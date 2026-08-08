@@ -117,6 +117,12 @@ struct evpl_rpc2_request {
     void                                 *reply_verf_data;
     uint32_t                              reply_verf_len;
     uint32_t                              reply_verf_flavor;
+
+    /* Supported version range reported with a PROG_MISMATCH reply.  RFC 5531
+     * requires the accepted-reply body for that status to carry the range the
+     * server does export, so a client can retry within it. */
+    uint32_t                              mismatch_low;
+    uint32_t                              mismatch_high;
 };
 
 /*
@@ -667,6 +673,15 @@ evpl_rpc2_send_reply(
             rpc_reply.body.rbody.areply.verf.flavor = AUTH_NONE;
         }
         rpc_reply.body.rbody.areply.reply_data.stat = error_stat;
+
+        /* PROG_MISMATCH is the one accepted-reply status whose body carries
+         * data.  The generated marshaller emits mismatch_info for this arm
+         * unconditionally, so it must be filled in or the reply ships
+         * whatever the stack held. */
+        if (error_stat == PROG_MISMATCH) {
+            rpc_reply.body.rbody.areply.reply_data.info.low  = request->mismatch_low;
+            rpc_reply.body.rbody.areply.reply_data.info.high = request->mismatch_high;
+        }
 
         /* Integrity service (krb5i): reframe the proc results as
          * rpc_gss_integ_data before the RPC header is prepended.  Non-RDMA
@@ -2016,6 +2031,8 @@ evpl_rpc2_recv_msg(
     struct evpl_iovec               *hdr_iov, *req_iov;
     int                              hdr_niov, req_niov;
     int                              i, rc, offset, rdma, request_length;
+    int                              prog_exported;
+    uint32_t                         vers_low, vers_high;
     struct xdr_read_list            *read_list;
     struct xdr_write_list           *write_list;
     struct evpl_iovec               *segment_iov;
@@ -2365,26 +2382,62 @@ evpl_rpc2_recv_msg(
                 }
             }
 
+            /* Look for an exact (program, version) match, and while scanning
+             * note whether the program number is exported at all and over
+             * what version range.  RFC 5531 distinguishes the two failures: a
+             * program we do not export is PROG_UNAVAIL, while a program we do
+             * export at other versions is PROG_MISMATCH carrying the range.
+             * Clients use that difference to decide between downgrading and
+             * giving up. */
             request->program = NULL;
+            prog_exported    = 0;
+            vers_low         = UINT32_MAX;
+            vers_high        = 0;
 
             for (i = 0; i < rpc2_conn->num_server_programs; i++) {
                 program = rpc2_conn->server_programs[i];
 
-                if (program->program == rpc_msg.body.cbody.prog &&
-                    program->version == rpc_msg.body.cbody.vers) {
+                if (program->program != rpc_msg.body.cbody.prog) {
+                    continue;
+                }
 
+                prog_exported = 1;
+
+                if (program->version < vers_low) {
+                    vers_low = program->version;
+                }
+
+                if (program->version > vers_high) {
+                    vers_high = program->version;
+                }
+
+                if (program->version == rpc_msg.body.cbody.vers) {
                     request->program = program;
                     break;
                 }
             }
 
             if (unlikely(!request->program)) {
-                evpl_rpc2_debug(
-                    "rpc2 received call for unknown program %u vers %u",
-                    rpc_msg.body.cbody.prog,
-                    rpc_msg.body.cbody.vers);
+                if (prog_exported) {
+                    evpl_rpc2_debug(
+                        "rpc2 received call for program %u at unsupported vers %u (supported %u-%u)",
+                        rpc_msg.body.cbody.prog,
+                        rpc_msg.body.cbody.vers,
+                        vers_low,
+                        vers_high);
 
-                evpl_rpc2_send_reply_error(evpl, request, PROG_MISMATCH);
+                    request->mismatch_low  = vers_low;
+                    request->mismatch_high = vers_high;
+
+                    evpl_rpc2_send_reply_error(evpl, request, PROG_MISMATCH);
+                } else {
+                    evpl_rpc2_debug(
+                        "rpc2 received call for unexported program %u vers %u",
+                        rpc_msg.body.cbody.prog,
+                        rpc_msg.body.cbody.vers);
+
+                    evpl_rpc2_send_reply_error(evpl, request, PROG_UNAVAIL);
+                }
                 return;
             }
 
