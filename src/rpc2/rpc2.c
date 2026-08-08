@@ -2640,8 +2640,18 @@ evpl_rpc2_event(
             DL_DELETE(rpc2_thread->conns, rpc2_conn);
             HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_request, tmp)
             {
+                struct evpl_rpc2_verf verf = { .data = NULL, .len = 0 };
+
                 HASH_DELETE(hh, rpc2_conn->pending_calls, rpc2_request);
-                evpl_rpc2_request_free(rpc2_conn->thread, rpc2_request);
+
+                /* No reply can arrive for these now, so complete each caller
+                 * with EVPL_RPC2_REPLY_CONN_LOST instead of freeing the
+                 * request behind its back -- a callback that never runs leaves
+                 * the caller waiting forever on a call that is already dead.
+                 * handle_reply releases the request once the callback returns.
+                 */
+                evpl_rpc2_client_handle_reply(rpc2_request, &verf, NULL, 0, 0,
+                                              EVPL_RPC2_REPLY_CONN_LOST);
             }
             if (rpc2_conn->thread->notify_callback) {
                 rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_DISCONNECTED;
