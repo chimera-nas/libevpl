@@ -45,7 +45,7 @@
  *
  *  - A payload cannot simply be handed to the peer thread.  A default iovec is
  *    thread-local: its refcount is non-atomic and its buffer is freed to the
- *    releasing thread's list.  See evpl_inproc_share_payloads().
+ *    releasing thread's list.  See evpl_inproc_share_message().
  *
  *  - RDMA read and write never touch the queues at all.  They are one-sided
  *    operations, and in one address space that means the initiator does the
