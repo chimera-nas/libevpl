@@ -386,44 +386,69 @@ evpl_accept_tcp(
 
 } /* evpl_accept_tcp */
 
-void
+int
 evpl_socket_tcp_listen(
     struct evpl      *evpl,
     struct evpl_bind *listen_bind)
 {
     struct evpl_socket *s = evpl_bind_private(listen_bind);
+    char                addr_str[80];
     int                 rc;
     const int           yes = 1;
 
     s->fd = socket(listen_bind->local->addr->sa_family, SOCK_STREAM, 0);
 
-    evpl_socket_abort_if(s->fd < 0, "Failed to create tcp listen socket: %s",
-                         strerror(errno));
+    if (s->fd < 0) {
+        evpl_socket_error("Failed to create tcp listen socket: %s",
+                          strerror(errno));
+        return -1;
+    }
 
     rc = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
 
-    evpl_socket_abort_if(rc < 0, "Failed to set socket options: %s", strerror(
-                             errno));
+    if (rc < 0) {
+        evpl_socket_error("Failed to set socket options: %s", strerror(errno));
+        goto fail;
+    }
 
     rc = bind(s->fd, listen_bind->local->addr, listen_bind->local->addrlen);
 
-    evpl_socket_abort_if(rc < 0, "Failed to bind listen socket: %s", strerror(
-                             errno));
+    if (rc < 0) {
+        evpl_address_get_address(listen_bind->local, addr_str, sizeof(addr_str));
+        evpl_socket_error("Failed to bind listen socket to %s: %s",
+                          addr_str, strerror(errno));
+        goto fail;
+    }
 
     rc = fcntl(s->fd, F_SETFL, fcntl(s->fd, F_GETFL, 0) | O_NONBLOCK);
 
-    evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s", strerror(
-                             errno));
+    if (rc < 0) {
+        evpl_socket_error("Failed to set socket flags: %s", strerror(errno));
+        goto fail;
+    }
 
     rc = listen(s->fd, evpl_shared->config->max_pending);
 
-    evpl_socket_fatal_if(rc, "Failed to listen on listener fd");
+    if (rc < 0) {
+        evpl_socket_error("Failed to listen on listener fd: %s",
+                          strerror(errno));
+        goto fail;
+    }
 
     evpl_add_event(evpl, &s->event, s->fd,
                    evpl_accept_tcp, NULL, NULL);
 
     evpl_event_read_interest(evpl, &s->event);
 
+    return 0;
+
+ fail:
+
+    close(s->fd);
+
+    s->fd = -1;
+
+    return -1;
 } /* evpl_socket_tcp_listen */
 
 struct evpl_protocol evpl_socket_tcp = {

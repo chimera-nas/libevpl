@@ -310,6 +310,31 @@ evpl_bind_destroy(
     DL_PREPEND(evpl->free_binds, bind);
 } /* evpl_bind_destroy */
 
+void
+evpl_bind_abort(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    /* Discards a bind that never became live, i.e. one whose protocol failed
+     * to establish it.  Unlike evpl_bind_destroy() there is no connection to
+     * report as disconnected and nothing on the pending-close list, so the
+     * bind just gives up its addresses and returns to the freelist.  The
+     * protocol is responsible for having released its own resources before
+     * reporting failure. */
+    if (bind->local) {
+        evpl_address_release(bind->local);
+        bind->local = NULL;
+    }
+
+    if (bind->remote) {
+        evpl_address_release(bind->remote);
+        bind->remote = NULL;
+    }
+
+    DL_DELETE(evpl->binds, bind);
+    DL_PREPEND(evpl->free_binds, bind);
+} /* evpl_bind_abort */
+
 SYMBOL_EXPORT void
 evpl_bind_get_local_address(
     struct evpl_bind *bind,

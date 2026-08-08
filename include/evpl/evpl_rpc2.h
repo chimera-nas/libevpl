@@ -157,7 +157,9 @@ evpl_rpc2_server_init(
     struct evpl_rpc2_program **programs,
     int                        nprograms);
 
-void
+/* Begin serving on endpoint.  Returns 0, or -1 if the listen could not be
+ * established -- see evpl_listen(). */
+int
 evpl_rpc2_server_start(
     struct evpl_rpc2_server *server,
     int                      protocol,

@@ -131,7 +131,10 @@ server_function(void *ptr)
 
     server = evpl_http_attach(agent, listener, server_dispatch, NULL);
 
-    evpl_listen(listener, TEST_PROTOCOL, endpoint);
+    if (evpl_listen(listener, TEST_PROTOCOL, endpoint)) {
+        fprintf(stderr, "failed to listen\n");
+        exit(1);
+    }
 
     __sync_synchronize();
 

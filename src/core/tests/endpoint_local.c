@@ -84,7 +84,7 @@ main(
     struct evpl                  *evpl;
     struct evpl_listener         *listener;
     struct evpl_listener_binding *binding;
-    struct evpl_endpoint         *ep, *abstract_ep, *inet_ep;
+    struct evpl_endpoint         *ep, *abstract_ep, *inet_ep, *ep_denied;
     struct evpl_bind             *conn;
     enum evpl_protocol_id         proto;
     char                          path[EVPL_ADDRESS_STRLEN + 32];
@@ -196,6 +196,32 @@ main(
           strncmp(server_local_trunc, "unix:/t", 7) == 0,
           "long path truncates safely to '%s'", server_local_trunc);
 
+    /* --- a backend listen failure is reported, not fatal --- */
+
+    /* The socket is already bound and live above, and the stale-socket probe
+     * will find a listener answering on it, so it must refuse rather than
+     * displace it -- and must say so by returning rather than aborting. */
+    CHECK(evpl_listen(listener, EVPL_STREAM_SOCKET_UNIX, ep) == -1,
+          "listen on an address already in use returns -1");
+
+    /* A directory nobody may write to: bind() fails with EACCES. */
+    ep_denied = evpl_endpoint_create_local("/proc/evpl-denied.sock");
+    CHECK(ep_denied != NULL, "endpoint on an unwritable directory created");
+    CHECK(evpl_listen(listener, EVPL_STREAM_SOCKET_UNIX, ep_denied) == -1,
+          "listen on an unwritable directory returns -1");
+
+    /* Having survived both, the process must still be able to serve. */
+    got_conn = 0;
+    conn     = evpl_connect(evpl, EVPL_STREAM_SOCKET_UNIX, NULL, ep,
+                            client_callback, NULL, NULL);
+    CHECK(conn != NULL, "still accepting connections after failed listens");
+
+    for (i = 0; i < 1000000 && !got_conn; i++) {
+        evpl_continue(evpl);
+    }
+
+    CHECK(got_conn, "listener still live after failed listens");
+
     evpl_listener_detach(evpl, binding);
     evpl_listener_destroy(listener);
     evpl_destroy(evpl);
@@ -203,6 +229,7 @@ main(
     evpl_endpoint_close(ep);
     evpl_endpoint_close(abstract_ep);
     evpl_endpoint_close(inet_ep);
+    evpl_endpoint_close(ep_denied);
 
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 

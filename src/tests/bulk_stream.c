@@ -217,7 +217,8 @@ main(
 
     binding = evpl_listener_attach(evpl, listener, accept_callback, &state);
 
-    evpl_listen(listener, proto, me);
+    evpl_test_abort_if(evpl_listen(listener, proto, me),
+                       "failed to listen");
 
     pthread_create(&thr, NULL, client_thread, &state);
 

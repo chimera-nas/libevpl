@@ -2817,13 +2817,13 @@ evpl_rpc2_server_init(
     return server;
 } /* evpl_rpc2_listen */
 
-SYMBOL_EXPORT void
+SYMBOL_EXPORT int
 evpl_rpc2_server_start(
     struct evpl_rpc2_server *server,
     int                      protocol,
     struct evpl_endpoint    *endpoint)
 {
-    evpl_listen(
+    return evpl_listen(
         server->listener,
         protocol,
         endpoint);

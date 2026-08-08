@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -103,7 +104,10 @@ server_function(void *ptr)
 
     server = evpl_http_attach(agent, listener, server_dispatch, NULL);
 
-    evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
+    if (evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint)) {
+        fprintf(stderr, "failed to listen\n");
+        exit(1);
+    }
 
     __sync_synchronize();
 

@@ -159,6 +159,10 @@ struct evpl_listen_request {
     pthread_mutex_t             lock;
     pthread_cond_t              cond;
     int                         complete;
+    /* Result of the protocol's listen callback, carried back to the thread
+     * blocked in evpl_listen().  The bind happens on the listener thread, so
+     * this is the only channel a backend failure has. */
+    int                         status;
     struct evpl_address        *address;
     struct evpl_listen_request *prev;
     struct evpl_listen_request *next;

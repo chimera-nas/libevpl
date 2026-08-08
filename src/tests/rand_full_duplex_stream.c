@@ -145,7 +145,8 @@ client_thread(void *arg)
     binding = evpl_listener_attach(evpl, listener, accept_callback, state);
 
     if (state->index == 0) {
-        evpl_listen(listener, proto, ep);
+        evpl_test_abort_if(evpl_listen(listener, proto, ep),
+                           "failed to listen");
     } else {
         evpl_connect(evpl, proto, NULL, ep, client_callback, NULL, state);
     }

@@ -505,7 +505,7 @@ evpl_io_uring_tcp_accept_callback(
 
 } /* evpl_accept_tcp */
 
-static void
+static int
 evpl_io_uring_tcp_listen(
     struct evpl      *evpl,
     struct evpl_bind *listen_bind)
@@ -514,29 +514,47 @@ evpl_io_uring_tcp_listen(
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
     struct evpl_io_uring_request *req;
     struct io_uring_sqe          *sqe;
+    char                          addr_str[80];
     int                           rc;
     const int                     yes = 1;
 
     s->fd = socket(listen_bind->local->addr->sa_family, SOCK_STREAM, 0);
 
-    evpl_io_uring_abort_if(s->fd < 0, "Failed to create tcp listen socket: %s",
-                           strerror(errno));
+    if (s->fd < 0) {
+        evpl_io_uring_error("Failed to create tcp listen socket: %s",
+                            strerror(errno));
+        return -1;
+    }
 
     rc = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
 
-    evpl_io_uring_abort_if(rc < 0, "Failed to set socket options: %s", strerror(
-                               errno));
+    if (rc < 0) {
+        evpl_io_uring_error("Failed to set socket options: %s",
+                            strerror(errno));
+        goto fail;
+    }
 
     rc = bind(s->fd, listen_bind->local->addr, listen_bind->local->addrlen);
 
-    evpl_io_uring_abort_if(rc < 0, "Failed to bind listen socket: %s", strerror(
-                               errno));
+    if (rc < 0) {
+        evpl_address_get_address(listen_bind->local, addr_str, sizeof(addr_str));
+        evpl_io_uring_error("Failed to bind listen socket to %s: %s",
+                            addr_str, strerror(errno));
+        goto fail;
+    }
 
-    evpl_io_uring_setup_socket(evpl, ctx, s, 1);
-
+    /* Ordered ahead of setup_socket so that every failure above is a plain
+     * close of our own fd.  setup_socket consumes a send group id and tops up
+     * the shared recv ring, which is not worth unwinding. */
     rc = listen(s->fd, evpl_shared->config->max_pending);
 
-    evpl_io_uring_fatal_if(rc, "Failed to listen on listener fd");
+    if (rc < 0) {
+        evpl_io_uring_error("Failed to listen on listener fd: %s",
+                            strerror(errno));
+        goto fail;
+    }
+
+    evpl_io_uring_setup_socket(evpl, ctx, s, 1);
 
     req = evpl_io_uring_request_alloc(ctx, EVPL_IO_URING_REQ_TCP);
 
@@ -552,6 +570,15 @@ evpl_io_uring_tcp_listen(
 
     evpl_defer(evpl, &ctx->flush);
 
+    return 0;
+
+ fail:
+
+    close(s->fd);
+
+    s->fd = -1;
+
+    return -1;
 } /* evpl_io_uring_tcp_listen */
 
 static void

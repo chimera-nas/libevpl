@@ -111,7 +111,7 @@ evpl_socket_unix_clear_stale(
     return unlink(path) == 0;
 } /* evpl_socket_unix_clear_stale */
 
-static void
+static int
 evpl_socket_unix_listen(
     struct evpl      *evpl,
     struct evpl_bind *listen_bind)
@@ -124,14 +124,19 @@ evpl_socket_unix_listen(
 
     sun = (struct sockaddr_un *) listen_bind->local->addr;
 
+    /* The core rejects an endpoint/protocol mismatch before it reaches a
+     * backend, so this really is a should-never-happen. */
     evpl_socket_abort_if(sun->sun_family != AF_UNIX,
                          "STREAM_SOCKET_UNIX requires a local endpoint, see "
                          "evpl_endpoint_create_local()");
 
     s->fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
-    evpl_socket_abort_if(s->fd < 0, "Failed to create unix listen socket: %s",
-                         strerror(errno));
+    if (s->fd < 0) {
+        evpl_socket_error("Failed to create unix listen socket: %s",
+                          strerror(errno));
+        return -1;
+    }
 
     rc = bind(s->fd, listen_bind->local->addr, listen_bind->local->addrlen);
 
@@ -146,12 +151,18 @@ evpl_socket_unix_listen(
         rc = bind(s->fd, listen_bind->local->addr, listen_bind->local->addrlen);
     }
 
-    evpl_socket_abort_if(rc < 0, "Failed to bind unix listen socket '%s': %s",
-                         sun->sun_path, strerror(errno));
+    if (rc < 0) {
+        evpl_socket_error("Failed to bind unix listen socket '%s': %s",
+                          sun->sun_path[0] ? sun->sun_path : "(abstract)",
+                          strerror(errno));
+        goto fail;
+    }
 
-    /* Remember the name so pending_close can remove it.  Only a pathname
-     * socket has anything to remove; an abstract name vanishes with the last
-     * reference to the socket. */
+    /* Remember the name so teardown can remove it.  Only a pathname socket
+     * has anything to remove; an abstract name vanishes with the last
+     * reference to the socket.  Recorded as soon as bind() succeeds, so that
+     * a later failure below unlinks the entry we just created rather than
+     * leaving it behind to block the next start. */
     if (sun->sun_path[0] != '\0') {
         pathlen = strnlen(sun->sun_path, sizeof(su->unlink_path) - 1);
 
@@ -162,18 +173,38 @@ evpl_socket_unix_listen(
 
     rc = fcntl(s->fd, F_SETFL, fcntl(s->fd, F_GETFL, 0) | O_NONBLOCK);
 
-    evpl_socket_abort_if(rc < 0, "Failed to set socket flags: %s",
-                         strerror(errno));
+    if (rc < 0) {
+        evpl_socket_error("Failed to set socket flags: %s", strerror(errno));
+        goto fail;
+    }
 
     rc = listen(s->fd, evpl_shared->config->max_pending);
 
-    evpl_socket_fatal_if(rc, "Failed to listen on listener fd");
+    if (rc < 0) {
+        evpl_socket_error("Failed to listen on listener fd: %s",
+                          strerror(errno));
+        goto fail;
+    }
 
     evpl_add_event(evpl, &s->event, s->fd,
                    evpl_accept_tcp, NULL, NULL);
 
     evpl_event_read_interest(evpl, &s->event);
 
+    return 0;
+
+ fail:
+
+    if (su->unlink_path[0]) {
+        unlink(su->unlink_path);
+        su->unlink_path[0] = '\0';
+    }
+
+    close(s->fd);
+
+    s->fd = -1;
+
+    return -1;
 } /* evpl_socket_unix_listen */
 
 static void

@@ -1282,13 +1282,14 @@ evpl_rdmacm_attach(
     evpl_free(accepted_id);
 } /* evpl_rdmacm_attach */
 
-void
+int
 evpl_rdmacm_listen(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
     struct evpl_rdmacm    *rdmacm;
     struct evpl_rdmacm_id *rdmacm_id = evpl_bind_private(bind);
+    char                   addr_str[80];
     int                    rc;
 
     rdmacm_id->stream         = bind->protocol->stream;
@@ -1303,14 +1304,36 @@ evpl_rdmacm_listen(
 
     rc = rdma_create_id(rdmacm->event_channel, &rdmacm_id->id, rdmacm_id, RDMA_PS_TCP);
 
-    evpl_rdmacm_abort_if(rc, "rdma_create_id listen error %s", strerror(rc));
+    if (rc) {
+        evpl_rdmacm_error("rdma_create_id listen error %s", strerror(rc));
+        return -1;
+    }
 
     rc = rdma_bind_addr(rdmacm_id->id, bind->local->addr);
 
-    evpl_rdmacm_abort_if(rc, "Failed to bind to address: %s", strerror(errno));
+    if (rc) {
+        evpl_address_get_address(bind->local, addr_str, sizeof(addr_str));
+        evpl_rdmacm_error("Failed to bind to address %s: %s",
+                          addr_str, strerror(errno));
+        goto fail;
+    }
 
-    rdma_listen(rdmacm_id->id, 1024);
+    rc = rdma_listen(rdmacm_id->id, 1024);
 
+    if (rc) {
+        evpl_rdmacm_error("Failed to listen on cm id: %s", strerror(errno));
+        goto fail;
+    }
+
+    return 0;
+
+ fail:
+
+    rdma_destroy_id(rdmacm_id->id);
+
+    rdmacm_id->id = NULL;
+
+    return -1;
 } /* evpl_rdmacm_listen */
 
 void
