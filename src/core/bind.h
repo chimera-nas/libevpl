@@ -65,6 +65,12 @@ evpl_bind_destroy(
     struct evpl      *evpl,
     struct evpl_bind *bond);
 
+/* Release a bind whose protocol never brought it up.  See bind.c. */
+void
+evpl_bind_abort(
+    struct evpl      *evpl,
+    struct evpl_bind *bind);
+
 
 #define evpl_bind_private(bind) ((void *) ((bind) + 1))
 #define evpl_private2bind(ptr)  (((struct evpl_bind *) (ptr)) - 1)

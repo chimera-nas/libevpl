@@ -10,6 +10,8 @@
 
 #include "core/bind.h"
 #include "core/macros.h"
+#include "core/logging.h"
+#include "core/endpoint.h"
 #include "core/evpl_shared.h"
 #include "core/evpl.h"
 
@@ -91,13 +93,26 @@ evpl_listener_callback(
                                  request->address,
                                  NULL);
 
-        evpl_core_abort_if(!bind->protocol->listen,
-                           "evpl_listen called with non-connection oriented protocol");
-
         bind->accept_callback = evpl_listener_accept;
         bind->private_data    = listener;
 
-        bind->protocol->listen(evpl, bind);
+        request->status = bind->protocol->listen(evpl, bind);
+
+        if (unlikely(request->status)) {
+            /* The backend has already released whatever it managed to
+             * acquire, so the bind is inert and never became visible to the
+             * caller; hand it straight back rather than routing it through
+             * the close path, which would report a disconnect for a
+             * connection that never existed. */
+            evpl_bind_abort(evpl, bind);
+
+            pthread_mutex_lock(&request->lock);
+            request->complete = 1;
+            pthread_cond_signal(&request->cond);
+            pthread_mutex_unlock(&request->lock);
+
+            continue;
+        }
 
         if (listener->num_binds >= listener->max_binds) {
             listener->max_binds *= 2;
@@ -273,8 +288,34 @@ evpl_listen(
     struct evpl_endpoint *endpoint)
 {
     struct evpl_listen_request *request;
+    struct evpl_protocol       *protocol = evpl_shared->protocol[protocol_id];
+    struct evpl_address        *address;
+    int                         status;
 
-    if (!evpl_shared->protocol[protocol_id]) {
+    if (!protocol) {
+        return -1;
+    }
+
+    if (unlikely(!protocol->listen)) {
+        evpl_core_error("evpl_listen: protocol %s is not connection oriented",
+                        protocol->name);
+        return -1;
+    }
+
+    if (unlikely(evpl_endpoint_check_protocol(endpoint, protocol) < 0)) {
+        evpl_core_error(
+            "evpl_listen: protocol %s cannot be used with %s endpoint '%s'",
+            protocol->name,
+            endpoint->kind == EVPL_ENDPOINT_LOCAL ? "local-path" : "network",
+            endpoint->address);
+        return -1;
+    }
+
+    address = evpl_endpoint_resolve(endpoint);
+
+    if (unlikely(!address)) {
+        evpl_core_error("evpl_listen: failed to resolve '%s'",
+                        endpoint->address);
         return -1;
     }
 
@@ -284,7 +325,7 @@ evpl_listen(
     pthread_cond_init(&request->cond, NULL);
 
     request->protocol_id = protocol_id;
-    request->address     = evpl_endpoint_resolve(endpoint);
+    request->address     = address;
 
     pthread_mutex_lock(&EvplListenerLock);
     DL_APPEND(listener->requests, request);
@@ -300,8 +341,10 @@ evpl_listen(
 
     pthread_mutex_unlock(&request->lock);
 
+    status = request->status;
+
     evpl_free(request);
 
-    return 0;
+    return status;
 
 } /* evpl_listen */

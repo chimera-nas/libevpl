@@ -259,7 +259,7 @@ evpl_xlio_tcp_connect(
 
 } /* evpl_xlio_tcp_connect */
 
-void
+int
 evpl_xlio_tcp_listen(
     struct evpl      *evpl,
     struct evpl_bind *listen_bind)
@@ -267,6 +267,7 @@ evpl_xlio_tcp_listen(
     struct evpl_xlio        *xlio;
     struct evpl_xlio_socket *s = evpl_bind_private(listen_bind);
     struct xlio_socket_attr  sock_attr;
+    char                     addr_str[80];
     int                      rc, yes = 1;
 
     s->evpl = evpl;
@@ -281,28 +282,50 @@ evpl_xlio_tcp_listen(
 
     rc = xlio->extra->xlio_socket_create(&sock_attr, &s->socket);
 
-    evpl_xlio_abort_if(rc, "Failed to create tcp listen socket: %s",
-                       strerror(errno));
+    if (rc) {
+        evpl_xlio_error("Failed to create tcp listen socket: %s",
+                        strerror(errno));
+        return -1;
+    }
 
     rc = xlio->extra->xlio_socket_setsockopt(
         s->socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
-    evpl_xlio_abort_if(rc < 0, "Failed to set SO_REUSEADDR");
+    if (rc < 0) {
+        evpl_xlio_error("Failed to set SO_REUSEADDR");
+        goto fail;
+    }
 
     rc = xlio->extra->xlio_socket_bind(
         s->socket, listen_bind->local->addr, listen_bind->local->addrlen);
 
-    evpl_xlio_abort_if(rc < 0, "Failed to bind listen socket: %s", strerror(
-                           errno));
+    if (rc < 0) {
+        evpl_address_get_address(listen_bind->local, addr_str, sizeof(addr_str));
+        evpl_xlio_error("Failed to bind listen socket to %s: %s",
+                        addr_str, strerror(errno));
+        goto fail;
+    }
 
     rc = xlio->extra->xlio_socket_listen(s->socket);
 
-    evpl_xlio_fatal_if(rc < 0, "Failed to listen on listener fd");
+    if (rc < 0) {
+        evpl_xlio_error("Failed to listen on listener fd: %s", strerror(errno));
+        goto fail;
+    }
 
     evpl_xlio_socket_init(evpl, xlio, s, 1, 0,
                           evpl_xlio_tcp_read,
                           evpl_xlio_tcp_write);
 
+    return 0;
+
+ fail:
+
+    xlio->extra->xlio_socket_destroy(s->socket);
+
+    s->socket = 0;
+
+    return -1;
 } /* evpl_xlio_tcp_listen */
 
 void

@@ -1041,17 +1041,23 @@ evpl_tls_attach(
 
 } /* evpl_tls_attach */
 
-void
+int
 evpl_tls_listen(
     struct evpl      *evpl,
     struct evpl_bind *listen_bind)
 {
     struct evpl_tls *t = evpl_bind_private(listen_bind);
+    char             addr_str[80];
     int              rc;
     const int        yes = 1;
 
     t->fd = socket(listen_bind->local->addr->sa_family, SOCK_STREAM, 0);
-    evpl_tls_abort_if(t->fd < 0, "Failed to create tcp listen socket: %s", strerror(errno));
+
+    if (t->fd < 0) {
+        evpl_tls_error("Failed to create tcp listen socket: %s",
+                       strerror(errno));
+        return -1;
+    }
 
     /* Matches the plain TCP listen path: without SO_REUSEADDR a listener
      * cannot rebind an address still held in TIME_WAIT by a recently closed
@@ -1061,12 +1067,32 @@ evpl_tls_listen(
     evpl_tls_abort_if(rc < 0, "Failed to set socket options: %s", strerror(errno));
 
     rc = bind(t->fd, listen_bind->local->addr, listen_bind->local->addrlen);
-    evpl_tls_abort_if(rc < 0, "Failed to bind listen socket: %s", strerror(errno));
+
+    if (rc < 0) {
+        evpl_address_get_address(listen_bind->local, addr_str, sizeof(addr_str));
+        evpl_tls_error("Failed to bind listen socket to %s: %s",
+                       addr_str, strerror(errno));
+        goto fail;
+    }
 
     rc = listen(t->fd, evpl_shared->config->max_pending);
-    evpl_tls_fatal_if(rc, "Failed to listen on listener fd");
+
+    if (rc < 0) {
+        evpl_tls_error("Failed to listen on listener fd: %s", strerror(errno));
+        goto fail;
+    }
 
     evpl_tls_init(evpl, t, t->fd, 1, 1);
+
+    return 0;
+
+ fail:
+
+    close(t->fd);
+
+    t->fd = -1;
+
+    return -1;
 } /* evpl_tls_listen */
 
 void

@@ -109,6 +109,61 @@ macro(unit_test_bin module test_name binary_name)
     endif()
 endmacro()
 
+# Directory for test sockets, inside the build tree so a run leaves nothing
+# behind in /tmp and two build trees cannot collide.  Deliberately short:
+# sun_path is only 108 bytes, and the tests append a pid-stamped filename.
+set(EVPL_TEST_SOCKET_DIR ${CMAKE_BINARY_DIR}/tsock)
+file(MAKE_DIRECTORY ${EVPL_TEST_SOCKET_DIR})
+
+# Register a test that needs no network stack -- today that means one
+# addressed purely by AF_UNIX socket name.
+#
+# The netns wrapper exists so that tests hardcoding a loopback port can run
+# concurrently without colliding, and the evpl_net resource lock serializes
+# them where namespaces are unavailable.  A test addressed by socket name
+# needs neither: it takes its name from EVPL_TEST_SOCKET_DIR plus its own pid,
+# so it is already unique, and creating a namespace for it would cost
+# CAP_NET_ADMIN and buy nothing.  These therefore register directly and run
+# fully in parallel, including where namespaces are unavailable.
+#
+# Registered once per event-loop mechanism, like the network variants.
+macro(unit_test_local module test_name)
+
+    set(sources ${ARGN})
+
+    add_executable(${module}_${test_name} ${sources})
+
+    target_link_libraries(${module}_${test_name} evpl pthread)
+
+    list(GET sources 0 first_source)
+
+    foreach(mech ${EVPL_MECHANISMS})
+        set(_test libevpl/${module}/${test_name}_${mech})
+
+        add_test(NAME ${_test} COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
+
+        set_tests_properties(${_test} PROPERTIES
+            ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source};EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR}")
+    endforeach()
+
+endmacro()
+
+# As unit_test_local, but for a prebuilt binary from src/tests.
+macro(unit_test_bin_local module test_name binary_name)
+
+    foreach(mech ${EVPL_MECHANISMS})
+        set(_test libevpl/${module}/${test_name}_${mech})
+
+        get_target_property(test_file ${binary_name} TEST_FILE)
+
+        add_test(NAME ${_test} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
+
+        set_tests_properties(${_test} PROPERTIES
+            ENVIRONMENT "TEST_FILE=${test_file};EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR}")
+    endforeach()
+
+endmacro()
+
 macro(unit_test_xdr module test_name xdr_file)
     set(sources ${ARGN})
 

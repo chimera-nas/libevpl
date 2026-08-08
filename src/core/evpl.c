@@ -62,6 +62,7 @@
 #include "socket/udp.h"
 #include "socket/tcp.h"
 #include "socket/tcp_rdma.h"
+#include "socket/unix_stream.h"
 
 #ifdef HAVE_TLS
 #include "tls/tls.h"
@@ -182,6 +183,9 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TCP,
                        &evpl_socket_tcp);
+
+    evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_UNIX,
+                       &evpl_socket_unix_stream);
 
 #ifdef HAVE_TLS
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TLS,

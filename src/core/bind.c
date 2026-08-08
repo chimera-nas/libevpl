@@ -5,8 +5,10 @@
 #include <utlist.h>
 
 #include "core/macros.h"
+#include "core/logging.h"
 #include "core/evpl_shared.h"
 #include "core/bind.h"
+#include "core/endpoint.h"
 #include "core/evpl.h"
 
 SYMBOL_EXPORT struct evpl_bind *
@@ -21,6 +23,7 @@ evpl_connect(
 {
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
+    struct evpl_address  *local    = NULL, *remote;
 
     if (!protocol) {
         return NULL;
@@ -29,9 +32,48 @@ evpl_connect(
     evpl_core_abort_if(!protocol->connect,
                        "Called evpl_connect with non-connection oriented protocol");
 
-    bind = evpl_bind_prepare(evpl, protocol,
-                             local_endpoint ? evpl_endpoint_resolve(local_endpoint) : NULL,
-                             evpl_endpoint_resolve(remote_endpoint));
+    /* A recoverable error rather than an abort: the address usually comes
+     * from configuration, so a mismatch is bad input, not a bug.  Left
+     * unchecked it surfaces far downstream -- the backend derives the socket
+     * domain from sa_family, so socket() and connect() both succeed and it
+     * dies later on a setsockopt the wrong family does not support. */
+    if (unlikely(evpl_endpoint_check_protocol(remote_endpoint, protocol) < 0)) {
+        evpl_core_error(
+            "evpl_connect: protocol %s cannot be used with %s endpoint '%s'",
+            protocol->name,
+            remote_endpoint->kind == EVPL_ENDPOINT_LOCAL ? "local-path" : "network",
+            remote_endpoint->address);
+        return NULL;
+    }
+
+    remote = evpl_endpoint_resolve(remote_endpoint);
+
+    if (unlikely(!remote)) {
+        evpl_core_error("evpl_connect: failed to resolve '%s'",
+                        remote_endpoint->address);
+        return NULL;
+    }
+
+    if (local_endpoint) {
+        if (unlikely(evpl_endpoint_check_protocol(local_endpoint, protocol) < 0)) {
+            evpl_core_error(
+                "evpl_connect: local endpoint '%s' does not match protocol %s",
+                local_endpoint->address, protocol->name);
+            evpl_address_release(remote);
+            return NULL;
+        }
+
+        local = evpl_endpoint_resolve(local_endpoint);
+
+        if (unlikely(!local)) {
+            evpl_core_error("evpl_connect: failed to resolve local '%s'",
+                            local_endpoint->address);
+            evpl_address_release(remote);
+            return NULL;
+        }
+    }
+
+    bind                   = evpl_bind_prepare(evpl, protocol, local, remote);
     bind->notify_callback  = notify_callback;
     bind->segment_callback = segment_callback;
     bind->private_data     = private_data;
@@ -51,11 +93,32 @@ evpl_bind(
 {
     struct evpl_bind     *bind;
     struct evpl_protocol *protocol = evpl_shared->protocol[protocol_id];
+    struct evpl_address  *local;
+
+    if (!protocol) {
+        return NULL;
+    }
 
     evpl_core_abort_if(!protocol->bind,
                        "Called evpl_bind with connection oriented protocol");
 
-    bind = evpl_bind_prepare(evpl, protocol, evpl_endpoint_resolve(endpoint), NULL);
+    if (unlikely(evpl_endpoint_check_protocol(endpoint, protocol) < 0)) {
+        evpl_core_error(
+            "evpl_bind: protocol %s cannot be used with %s endpoint '%s'",
+            protocol->name,
+            endpoint->kind == EVPL_ENDPOINT_LOCAL ? "local-path" : "network",
+            endpoint->address);
+        return NULL;
+    }
+
+    local = evpl_endpoint_resolve(endpoint);
+
+    if (unlikely(!local)) {
+        evpl_core_error("evpl_bind: failed to resolve '%s'", endpoint->address);
+        return NULL;
+    }
+
+    bind = evpl_bind_prepare(evpl, protocol, local, NULL);
 
     bind->notify_callback  = callback;
     bind->segment_callback = NULL;
@@ -246,6 +309,31 @@ evpl_bind_destroy(
     DL_DELETE(evpl->pending_close_binds, bind);
     DL_PREPEND(evpl->free_binds, bind);
 } /* evpl_bind_destroy */
+
+void
+evpl_bind_abort(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    /* Discards a bind that never became live, i.e. one whose protocol failed
+     * to establish it.  Unlike evpl_bind_destroy() there is no connection to
+     * report as disconnected and nothing on the pending-close list, so the
+     * bind just gives up its addresses and returns to the freelist.  The
+     * protocol is responsible for having released its own resources before
+     * reporting failure. */
+    if (bind->local) {
+        evpl_address_release(bind->local);
+        bind->local = NULL;
+    }
+
+    if (bind->remote) {
+        evpl_address_release(bind->remote);
+        bind->remote = NULL;
+    }
+
+    DL_DELETE(evpl->binds, bind);
+    DL_PREPEND(evpl->free_binds, bind);
+} /* evpl_bind_abort */
 
 SYMBOL_EXPORT void
 evpl_bind_get_local_address(

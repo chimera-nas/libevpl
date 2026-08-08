@@ -44,7 +44,7 @@ endif()
 
 set(BACKEND_LIBDEPS)
 
-set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/tcp_rdma.c socket/tcp_rdma.h)
+set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/tcp_rdma.c socket/tcp_rdma.h socket/unix_stream.c socket/unix_stream.h)
 add_subdirectory(socket)
 
 # TLS is available wherever OpenSSL is (HAVE_TLS is set at the top level).  Its

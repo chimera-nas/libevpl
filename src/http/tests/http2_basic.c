@@ -94,7 +94,10 @@ server_function(void *ptr)
     listener = evpl_listener_create();
     server   = evpl_http_attach(agent, listener, server_dispatch, NULL);
 
-    evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
+    if (evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint)) {
+        fprintf(stderr, "failed to listen\n");
+        exit(1);
+    }
 
     __sync_synchronize();
     server_ctx->run = 1;

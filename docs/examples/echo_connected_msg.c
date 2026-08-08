@@ -120,7 +120,10 @@ server_thread(void *arg)
     binding = evpl_listener_attach(evpl, listener, accept_callback, state);
 
     /* Start listening for incoming connections */
-    evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
+    if (evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint)) {
+        fprintf(stderr, "failed to listen\n");
+        exit(1);
+    }
 
     printf("[Server] Listening on port 8000\n");
 

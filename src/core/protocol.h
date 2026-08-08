@@ -97,6 +97,11 @@ struct evpl_protocol {
     /* 1 iff supports RDMA read/write */
     unsigned int           rdma;
 
+    /* 1 iff peers are named by a local socket path or abstract name (AF_UNIX)
+     * rather than by network address and port.  Endpoints and protocols must
+     * agree on this: see evpl_endpoint_check_protocol(). */
+    unsigned int           local;
+
     /* human readable name for protocol, no spaces */
     const char            *name;
 
@@ -139,7 +144,15 @@ struct evpl_protocol {
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
-    void                   (*listen)(
+    /* Begin listening for connections.  Returns 0 on success, or -1 if the
+     * listen could not be established -- an address already in use, a
+     * permission problem, a resource limit.  Those are operating conditions
+     * rather than programming errors, so they are reported back through
+     * evpl_listen() rather than being fatal.
+     *
+     * On failure the backend must leave nothing behind: no open descriptor,
+     * no registered event, and no filesystem object it created. */
+    int                    (*listen)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 

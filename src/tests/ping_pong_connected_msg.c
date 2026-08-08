@@ -195,17 +195,22 @@ main(
         } /* switch */
     }
 
+    /* A local transport names one socket that both ends must agree on, so
+     * normalize here rather than at each endpoint. */
+    address = test_address(proto, address, argv[0]);
+
     evpl = evpl_create(NULL);
 
     state.server_evpl = evpl;
 
-    me = evpl_endpoint_create("0.0.0.0", port);
+    me = evpl_endpoint_create(test_listen_address(address), port);
 
     listener = evpl_listener_create();
 
     binding = evpl_listener_attach(evpl, listener, accept_callback, &state);
 
-    evpl_listen(listener, proto, me);
+    evpl_test_abort_if(evpl_listen(listener, proto, me),
+                       "failed to listen");
 
     pthread_create(&thr, NULL, client_thread, &state);
 
