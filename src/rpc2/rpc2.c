@@ -1880,7 +1880,14 @@ evpl_rpc2_gss_handle_call(
             pthread_mutex_unlock(&evpl_rpc2_gss_lock);
             evpl_rpc2_debug("rpcsec_gss: integrity UNWRAP failed proc=%u seq=%u "
                             "reqlen=%d", cred.proc, cred.seq, *request_length_p);
-            evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+            /* RFC 2203 sec 5.3.3.4.2 separates the two integrity failures.  A
+             * bad *header* verifier means the caller is not authenticated and
+             * is denied above; a bad checksum over the *call arguments* (or a
+             * databody seq_num that contradicts the header, sec 5.3.2.2) means
+             * the caller is known but its arguments are unusable, which is
+             * MSG_ACCEPTED with GARBAGE_ARGS.  Denying here instead would make
+             * a client tear down and re-establish a context that is fine. */
+            evpl_rpc2_send_reply_error(evpl, request, GARBAGE_ARGS);
             return 0;
         }
     }
