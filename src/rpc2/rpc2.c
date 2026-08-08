@@ -243,8 +243,8 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
         request = evpl_zalloc(sizeof(*request));
     }
 
-    request->thread                      = thread;
-    request->m_inflight                  = NULL;
+    request->thread     = thread;
+    request->m_inflight = NULL;
     /* Requests are recycled, and the early error paths -- bad RPC version,
      * unknown program, unknown procedure, rejected credential -- reply before
      * either of these is assigned.  Without a reset they would carry whatever
@@ -337,13 +337,43 @@ rpc2_ntoh32(uint32_t value)
 #endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
 } /* rpc2_ntoh32 */
 
+/*
+ * Ceiling on one RPC message, counted over every fragment of a record.
+ *
+ * The record mark is unauthenticated input: a peer can claim any length it
+ * likes before sending a byte of it.  Without a ceiling the transport will
+ * keep buffering whatever the claim asks for, so a single connection can be
+ * made to consume memory without bound.  Capping it means an oversized claim
+ * is refused at the framing layer, before anything is allocated for it.
+ *
+ * 4 MiB is comfortably above realistic RPC traffic -- NFS rsize/wsize is
+ * typically 1 MiB and the payload for a large READ/WRITE travels in RDMA
+ * chunks rather than inline -- while staying small enough that the worst case
+ * per connection is bounded.  Adjust with evpl_rpc2_set_max_message_size().
+ */
+#define EVPL_RPC2_DEFAULT_MAX_MSG_SIZE (4u * 1024u * 1024u)
+
+static uint32_t evpl_rpc2_max_msg_size = EVPL_RPC2_DEFAULT_MAX_MSG_SIZE;
+
+SYMBOL_EXPORT void
+evpl_rpc2_set_max_message_size(uint32_t bytes)
+{
+    evpl_rpc2_max_msg_size = bytes ? bytes : EVPL_RPC2_DEFAULT_MAX_MSG_SIZE;
+} /* evpl_rpc2_set_max_message_size */
+
+SYMBOL_EXPORT uint32_t
+evpl_rpc2_get_max_message_size(void)
+{
+    return evpl_rpc2_max_msg_size;
+} /* evpl_rpc2_get_max_message_size */
+
 static int
 rpc2_segment_callback(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     void             *private_data)
 {
-    uint32_t hdr;
+    uint32_t hdr, frag_len;
     int      length;
 
     length = evpl_peek(evpl, bind, &hdr, sizeof(hdr));
@@ -352,16 +382,27 @@ rpc2_segment_callback(
         return 0;
     }
 
-    hdr = rpc2_ntoh32(hdr);
+    hdr      = rpc2_ntoh32(hdr);
+    frag_len = hdr & 0x7FFFFFFF;
+
+    /* Refuse an oversized fragment here, before the transport starts
+     * accumulating bytes for it.  A negative return asks the transport to
+     * close the connection: there is no way to answer a peer whose framing we
+     * do not trust, and continuing would mean buffering on its terms. */
+    if (unlikely(frag_len > evpl_rpc2_max_msg_size)) {
+        evpl_rpc2_error(
+            "rpc2 record mark claims %u bytes, above the %u byte maximum; closing",
+            frag_len, evpl_rpc2_max_msg_size);
+        return -1;
+    }
 
     /* Deliver one TCP record-mark fragment (4-byte mark + payload).
      * Multi-fragment reassembly is performed in evpl_rpc2_recv_msg. */
-    return (hdr & 0x7FFFFFFF) + 4;
+    return (int) frag_len + 4;
 } /* rpc2_segment_callback */
 
-/* Cap on a single reassembled RPC message (DoS guard). Well above
- * realistic NFS COMPOUND sizes (typical rsize/wsize <= 1 MiB). */
-#define EVPL_RPC2_MAX_REASM_LENGTH (16u * 1024u * 1024u)
+/* Cap on a single reassembled RPC message, applied across fragments. */
+#define EVPL_RPC2_MAX_REASM_LENGTH (evpl_rpc2_max_msg_size)
 
 #define EVPL_RPC2_REASM_INIT_CAP   8
 
