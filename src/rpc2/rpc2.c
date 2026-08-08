@@ -245,6 +245,13 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
 
     request->thread                      = thread;
     request->m_inflight                  = NULL;
+    /* Requests are recycled, and the early error paths -- bad RPC version,
+     * unknown program, unknown procedure, rejected credential -- reply before
+     * either of these is assigned.  Without a reset they would carry whatever
+     * the previous user of this struct left behind, and the reply path would
+     * charge its latency sample to an unrelated procedure's histogram. */
+    request->program                     = NULL;
+    request->metric                      = NULL;
     request->rdma_credits                = 1;
     request->dbg_reply_sent              = 0;
     request->pending_reads               = 0;
