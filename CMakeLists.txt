@@ -98,6 +98,23 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_definitions(-O3)
 endif()
 
+# Coverage build: clang source-based code coverage, instrumenting every TU.
+# The matching merge/report step lives in etc/coverage-report.sh, driven by the
+# Makefile's test_coverage target.  Kept deliberately parallel to the same
+# build type in the parent chimera project so a report can be read the same way
+# from either side; running it here narrows the picture to libevpl alone, with
+# its own test suite as the workload.
+if(CMAKE_BUILD_TYPE STREQUAL "Coverage")
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "Coverage build requires clang for source-based coverage "
+            "(re-run with -DCMAKE_C_COMPILER=clang; the Makefile does this for you).")
+    endif()
+    message(STATUS "Enabling clang source-based code coverage")
+    add_definitions(-O0 -fprofile-instr-generate -fcoverage-mapping -DEVPL_COVERAGE=1)
+    add_link_options(-fprofile-instr-generate -fcoverage-mapping)
+endif()
+
 if(EVPL_IOVEC_PROFILE)
     message(STATUS "Enabling retained-iovec stack profiling")
     add_definitions(-DEVPL_IOVEC_PROFILE=1)
