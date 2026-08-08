@@ -1778,21 +1778,12 @@ evpl_rpc2_gss_handle_call(
                                       *request_length_p);
             return 0;
 
+        /* RFC 2203 sec 5.4: a DESTROY is an ordinary authenticated call.  It
+         * shares the DATA path below so that the context handle, the header
+         * MIC and the sequence number are all verified before anything is
+         * retired -- destroying on the strength of a handle alone would let
+         * any peer that can guess one retire another client's context. */
         case RPCSEC_GSS_DESTROY:
-            handle = 0;
-            if (cred.handle_len == sizeof(handle)) {
-                memcpy(&handle, cred.handle, sizeof(handle));
-            }
-            pthread_mutex_lock(&evpl_rpc2_gss_lock);
-            ctx = evpl_rpc2_gss_ctx_lookup(handle);
-            if (ctx) {
-                evpl_rpc2_gss_ctx_destroy(thread, ctx);
-            }
-            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
-            /* Acknowledge with an empty successful reply. */
-            evpl_rpc2_send_reply_error(evpl, request, SUCCESS);
-            return 0;
-
         case RPCSEC_GSS_DATA:
             break;
 
@@ -1857,6 +1848,29 @@ evpl_rpc2_gss_handle_call(
         return 0;
     }
 
+    /* Pre-compute the reply verifier: a GSS MIC over the request seq_num.
+     * Computed here, ahead of any work on the body, because a DESTROY has no
+     * body but its reply still carries this verifier. */
+    seq_be = rpc2_hton32(cred.seq);
+    if (thread->gss_provider->get_mic(thread->gss_provider_arg, ctx->gss_ctx,
+                                      &seq_be, sizeof(seq_be),
+                                      &mic, &mic_len) == 0) {
+        request->reply_verf_data   = mic;
+        request->reply_verf_len    = mic_len;
+        request->reply_verf_flavor = RPCSEC_GSS;
+    }
+
+    /* RFC 2203 sec 5.4: now that the caller has proved it holds the context,
+     * retire it and acknowledge with an empty successful reply.  A DESTROY
+     * carries no arguments, so there is nothing to unwrap even under
+     * integrity. */
+    if (cred.proc == RPCSEC_GSS_DESTROY) {
+        evpl_rpc2_gss_ctx_destroy(thread, ctx);
+        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_rpc2_send_reply_error(evpl, request, SUCCESS);
+        return 0;
+    }
+
     /* For integrity, unwrap rpc_gss_integ_data -> inner proc args (verifies the
      * databody checksum + embedded seq).  The reply is wrapped symmetrically in
      * evpl_rpc2_send_reply, keyed on request->gss_service. */
@@ -1869,16 +1883,6 @@ evpl_rpc2_gss_handle_call(
             evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
             return 0;
         }
-    }
-
-    /* Pre-compute the reply verifier: a GSS MIC over the request seq_num. */
-    seq_be = rpc2_hton32(cred.seq);
-    if (thread->gss_provider->get_mic(thread->gss_provider_arg, ctx->gss_ctx,
-                                      &seq_be, sizeof(seq_be),
-                                      &mic, &mic_len) == 0) {
-        request->reply_verf_data   = mic;
-        request->reply_verf_len    = mic_len;
-        request->reply_verf_flavor = RPCSEC_GSS;
     }
 
     /* Copy out the principal so the request never dereferences the context
