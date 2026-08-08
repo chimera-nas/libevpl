@@ -20,6 +20,26 @@
  */
 #define EVPL_RPC2_REPLY_DECODE_ERROR (-1)
 
+/*
+ * Status passed to a client reply callback when the peer refused the call
+ * outright: an RFC 5531 MSG_DENIED reply, or a reply_stat that is neither
+ * MSG_ACCEPTED nor MSG_DENIED.  There are no results in either case, so the
+ * reply argument is NULL (or zero for a by-value reply).
+ *
+ * A call the peer accepted but did not run -- MSG_ACCEPTED with an accept_stat
+ * other than SUCCESS -- is reported as that accept_stat instead, which is
+ * positive and so distinguishable from the codes here.
+ */
+#define EVPL_RPC2_REPLY_DENIED       (-2)
+
+/*
+ * Status passed to a client reply callback when the connection was lost before
+ * a reply arrived.  Every call still outstanding on a connection is completed
+ * with this when it goes down, so that a caller is never left waiting on a
+ * completion that can no longer happen.
+ */
+#define EVPL_RPC2_REPLY_CONN_LOST    (-3)
+
 #include <pthread.h>
 struct prometheus_histogram_instance;
 
@@ -124,6 +144,7 @@ struct evpl_rpc2_program {
         xdr_iovec                   *iov,
         int                          niov,
         int                          length,
+        int                          status,
         void                        *callback_fn,
         void                        *callback_private_data);
 

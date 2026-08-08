@@ -2009,7 +2009,8 @@ evpl_rpc2_client_handle_reply(
     const struct evpl_rpc2_verf *verf,
     struct evpl_iovec           *reply_iov,
     int                          reply_niov,
-    int                          reply_length)
+    int                          reply_length,
+    int                          status)
 {
     struct evpl_rpc2_thread *thread = request->thread;
     struct evpl_rpc2_conn   *conn   = request->conn;
@@ -2046,6 +2047,7 @@ evpl_rpc2_client_handle_reply(
                                                   request->proc,
                                                   &request->read_chunk,
                                                   verf, reply_iov, reply_niov, reply_length,
+                                                  status,
                                                   request->callback,
                                                   request->callback_arg);
 
@@ -2583,7 +2585,8 @@ evpl_rpc2_recv_msg(
             }
             request->msg = msg;
 
-            evpl_rpc2_client_handle_reply(request, &verf, req_iov, req_niov, request_length);
+            evpl_rpc2_client_handle_reply(request, &verf, req_iov, req_niov,
+                                          request_length, 0);
         }
         break;
         default:
