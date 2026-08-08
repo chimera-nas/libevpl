@@ -69,5 +69,13 @@ evpl_protocol_is_local(enum evpl_protocol_id id)
 {
     struct evpl_protocol *protocol = evpl_protocol_get(id);
 
-    return protocol ? (int) protocol->local : 0;
+    return protocol && protocol->endpoint_kind == EVPL_ENDPOINT_LOCAL;
 } /* evpl_protocol_is_local */
+
+SYMBOL_EXPORT int
+evpl_protocol_is_inproc(enum evpl_protocol_id id)
+{
+    struct evpl_protocol *protocol = evpl_protocol_get(id);
+
+    return protocol && protocol->endpoint_kind == EVPL_ENDPOINT_INPROC;
+} /* evpl_protocol_is_inproc */

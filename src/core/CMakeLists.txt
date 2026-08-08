@@ -48,6 +48,10 @@ set(BACKEND_LIBDEPS)
 set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/tcp_rdma.c socket/tcp_rdma.h socket/unix_stream.c socket/unix_stream.h)
 add_subdirectory(socket)
 
+# Thread-to-thread transport.  No kernel facility, so unconditional.
+set(CORE_SRC ${CORE_SRC} inproc/inproc.c inproc/inproc.h)
+add_subdirectory(inproc)
+
 # TLS is available wherever OpenSSL is (HAVE_TLS is set at the top level).  Its
 # kTLS zero-copy path is Linux-only; on other platforms BIO_get_ktls_*() simply
 # reports unavailable and the normal SSL_read/SSL_write path is used.

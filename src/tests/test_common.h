@@ -58,14 +58,16 @@ test_evpl_config(void)
 /*
  * Endpoint helpers for the protocol-parameterized tests.
  *
- * A local (AF_UNIX) transport has no wildcard bind address and no port: both
- * ends must name the same socket.  The IP convention of listening on 0.0.0.0
- * while dialing 127.0.0.1 has no analogue, so each test normalizes its
- * `address` global through test_address() once, right after getopt, and
- * derives the listen address from test_listen_address().
+ * A name-addressed transport -- AF_UNIX, or inproc -- has no wildcard bind
+ * address and no port: both ends must name the same thing.  The IP convention
+ * of listening on 0.0.0.0 while dialing 127.0.0.1 has no analogue, so each
+ * test normalizes its `address` global through test_address() once, right
+ * after getopt, and derives the listen address from test_listen_address().
  *
  * For IP protocols both are identities and behavior is unchanged.
  */
+
+#define TEST_INPROC_PREFIX "inproc://"
 
 static char test_path_buf[108];
 
@@ -75,10 +77,30 @@ test_address_is_local(const char *address)
     return address && (address[0] == '/' || address[0] == '@');
 } /* test_address_is_local */
 
+static inline int
+test_address_is_inproc(const char *address)
+{
+    return address && strncmp(address, TEST_INPROC_PREFIX,
+                              sizeof(TEST_INPROC_PREFIX) - 1) == 0;
+} /* test_address_is_inproc */
+
+/* 1 iff the address names its peer directly, so there is no wildcard form a
+ * server could bind instead. */
+static inline int
+test_address_is_named(const char *address)
+{
+    return test_address_is_local(address) || test_address_is_inproc(address);
+} /* test_address_is_named */
+
 /*
  * Resolve the effective address for this run.
  *
  * IP protocols: returned unchanged (-a, else 127.0.0.1).
+ *
+ * Inproc: a fully specified "inproc://name" wins, otherwise a name is
+ * generated.  The registry behind these names is private to the process, so
+ * uniqueness is not actually required -- two concurrent test binaries could
+ * both use the same name -- but a distinct one keeps logs readable.
  *
  * Local protocols: a fully specified -a name wins.  "-a @" asks for an
  * abstract socket with a generated name; anything else generates a pathname
@@ -100,12 +122,13 @@ test_address(
     const char *dir, *base, *slash;
     int         len;
 
-    if (!evpl_protocol_is_local(proto)) {
+    if (!evpl_protocol_is_local(proto) && !evpl_protocol_is_inproc(proto)) {
         return address;
     }
 
     /* A name the caller fully specified; use it as given. */
-    if (test_address_is_local(address) && address[1]) {
+    if (test_address_is_inproc(address) ||
+        (test_address_is_local(address) && address[1])) {
         return address;
     }
 
@@ -114,6 +137,12 @@ test_address(
 
     if (slash) {
         base = slash + 1;
+    }
+
+    if (evpl_protocol_is_inproc(proto)) {
+        snprintf(test_path_buf, sizeof(test_path_buf),
+                 TEST_INPROC_PREFIX "%.32s-%d", base, (int) getpid());
+        return test_path_buf;
     }
 
     /* "-a @" means "an abstract socket, name it for me".  Abstract names live
@@ -154,13 +183,14 @@ test_address(
     return test_path_buf;
 } /* test_address */
 
-/* The address a server should bind.  For IP that is the wildcard; a local
- * transport has no wildcard, so it is the socket name itself.
+/* The address a server should bind.  For IP that is the wildcard; a
+ * name-addressed transport has no wildcard, so it is the name itself.
  *
  * The endpoint itself still comes from plain evpl_endpoint_create(), which
- * recognizes a leading '/' or '@' as a local socket name. */
+ * recognizes a leading '/' or '@' as a local socket name and an "inproc://"
+ * prefix as an in-process one. */
 static inline const char *
 test_listen_address(const char *address)
 {
-    return test_address_is_local(address) ? address : "0.0.0.0";
+    return test_address_is_named(address) ? address : "0.0.0.0";
 } /* test_listen_address */

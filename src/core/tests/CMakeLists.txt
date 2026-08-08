@@ -22,3 +22,7 @@ unit_test_all_mechs(core timer_oneshot timer_oneshot.c)
 
 # Local (AF_UNIX) endpoints: addressed by socket name, so no namespace needed.
 unit_test_local(core endpoint_local endpoint_local.c)
+
+# In-process endpoints: named through a registry private to the process, so
+# nothing outside it is shared and no namespace is needed either.
+unit_test_local(core endpoint_inproc endpoint_inproc.c)

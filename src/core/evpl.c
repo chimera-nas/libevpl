@@ -63,6 +63,7 @@
 #include "socket/tcp.h"
 #include "socket/tcp_rdma.h"
 #include "socket/unix_stream.h"
+#include "inproc/inproc.h"
 
 #ifdef HAVE_TLS
 #include "tls/tls.h"
@@ -200,6 +201,17 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
                        &evpl_tcp_rdma_datagram);
+
+    /* Needs no kernel facility of any kind, so like the socket protocols it is
+     * always present rather than gated on a build option. */
+    evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_INPROC,
+                        &evpl_framework_inproc);
+
+    evpl_protocol_init(evpl_shared, EVPL_STREAM_INPROC,
+                       &evpl_inproc_stream);
+
+    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_INPROC,
+                       &evpl_inproc_datagram);
 
 #ifdef HAVE_IO_URING
     if (config->io_uring_enabled) {

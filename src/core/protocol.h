@@ -82,31 +82,51 @@ struct evpl_framework {
 
 
 /*
+ * How a peer is named.  Both an endpoint and a protocol carry one of these and
+ * they must agree -- see evpl_endpoint_check_protocol() in core/endpoint.h,
+ * which is where the endpoint side lives.  Defined here rather than there
+ * because struct evpl_protocol below needs it and protocol.h is the header of
+ * the two that can be included on its own.
+ */
+enum evpl_endpoint_kind {
+    /* Hostname or IP literal plus port, resolved via getaddrinfo.  Zero so
+     * that a zalloc'd endpoint, and a protocol that does not mention the
+     * field, are both network-addressed by default. */
+    EVPL_ENDPOINT_INET   = 0,
+    /* AF_UNIX socket, named by a filesystem path, or by an abstract name if
+     * the stored address begins with '@'. */
+    EVPL_ENDPOINT_LOCAL  = 1,
+    /* A name private to this process, "inproc://name".  Resolved through the
+     * inproc registry rather than any kernel namespace, so two processes may
+     * hold the same name without colliding. */
+    EVPL_ENDPOINT_INPROC = 2
+};
+
+/*
  * API for network/fabric protocols
  */
 struct evpl_protocol {
     /* unique ID number for each protocol */
-    unsigned int           id;
+    unsigned int            id;
 
     /* 1 iff connection oriented protocol */
-    unsigned int           connected;
+    unsigned int            connected;
 
     /* 1 iff stream oriented protocol */
-    unsigned int           stream;
+    unsigned int            stream;
 
     /* 1 iff supports RDMA read/write */
-    unsigned int           rdma;
+    unsigned int            rdma;
 
-    /* 1 iff peers are named by a local socket path or abstract name (AF_UNIX)
-     * rather than by network address and port.  Endpoints and protocols must
-     * agree on this: see evpl_endpoint_check_protocol(). */
-    unsigned int           local;
+    /* How this protocol names a peer.  EVPL_ENDPOINT_INET is zero, so a
+    * protocol that does not mention this field is network-addressed. */
+    enum evpl_endpoint_kind endpoint_kind;
 
     /* human readable name for protocol, no spaces */
-    const char            *name;
+    const char             *name;
 
     /* pointer to associated framework, or NULL if no framework */
-    struct evpl_framework *framework;
+    struct evpl_framework  *framework;
 
     /*
      * Callbacks needed for all protocols
@@ -116,7 +136,7 @@ struct evpl_protocol {
      * backend should close the connection as soon as practical
      * and emit a notification that it  has been disconnected
      */
-    void                   (*pending_close)(
+    void                    (*pending_close)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
@@ -126,12 +146,12 @@ struct evpl_protocol {
      * a disconnect notification has been emitted
      */
 
-    void                   (*close)(
+    void                    (*close)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
     /* Called when new data is available to be written */
-    void                   (*flush)(
+    void                    (*flush)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
@@ -140,7 +160,7 @@ struct evpl_protocol {
      * Callbacks for connection-oriented protocols
      */
 
-    void                   (*connect)(
+    void                    (*connect)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
@@ -152,12 +172,12 @@ struct evpl_protocol {
      *
      * On failure the backend must leave nothing behind: no open descriptor,
      * no registered event, and no filesystem object it created. */
-    int                    (*listen)(
+    int                     (*listen)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
     /* Called to attach an accepted connection to an evpl context */
-    void                   (*attach)(
+    void                    (*attach)(
         struct evpl      *evpl,
         struct evpl_bind *bind,
         void             *accepted);
@@ -166,7 +186,7 @@ struct evpl_protocol {
      * Callbacks for non-connection-oriented protocols
      */
 
-    void                   (*bind)(
+    void                    (*bind)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 };

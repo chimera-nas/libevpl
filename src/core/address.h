@@ -7,11 +7,39 @@
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <arpa/inet.h>
 #include <sys/un.h>
 #include <stdatomic.h>
 
 #include "core/evpl_shared.h"
+
+/*
+ * Private address family for the in-process transport.
+ *
+ * An inproc peer is a thread, not anything the kernel knows about, so there is
+ * no real family to borrow.  This value is well above AF_MAX so it can never
+ * be confused with one, and an EVPL_AF_INPROC sockaddr is never passed to a
+ * syscall -- it exists only to let struct evpl_address carry an inproc name
+ * through the same plumbing as every other peer address.
+ */
+#define EVPL_AF_INPROC       0x4950  /* 'IP' */
+
+/* Longest inproc name including its NUL.  Matched to sun_path so the two
+ * name-addressed transports have the same budget, and small enough that the
+ * rendered form still fits EVPL_ADDRESS_STRLEN. */
+#define EVPL_INPROC_NAME_MAX 108
+
+struct evpl_sockaddr_inproc {
+    sa_family_t family;
+    uint16_t    pad;
+    /* Distinguishes the two ends and successive connections to one name: 0 for
+     * a listener, a nonzero serial for a connection.  The analogue of an
+     * ephemeral port -- without it two concurrent connections to the same name
+     * would be indistinguishable in a log. */
+    uint32_t    id;
+    char        name[EVPL_INPROC_NAME_MAX];
+};
 
 struct evpl_address {
     struct sockaddr        *addr;
@@ -65,12 +93,13 @@ evpl_address_get_address(
     char                *str,
     int                  len)
 {
-    struct sockaddr     *sa;
-    struct sockaddr_in  *sin;
-    struct sockaddr_in6 *sin6;
-    struct sockaddr_un  *sun;
-    char                 addr_str[INET6_ADDRSTRLEN];
-    int                  pathlen;
+    struct sockaddr             *sa;
+    struct sockaddr_in          *sin;
+    struct sockaddr_in6         *sin6;
+    struct sockaddr_un          *sun;
+    struct evpl_sockaddr_inproc *sinp;
+    char                         addr_str[INET6_ADDRSTRLEN];
+    int                          pathlen;
 
     if (address == NULL) {
         snprintf(str, len, "(NULL)");
@@ -116,6 +145,23 @@ evpl_address_get_address(
                 snprintf(str, len, "unix:%.*s",
                          (int) strnlen(sun->sun_path, (size_t) pathlen),
                          sun->sun_path);
+            }
+            break;
+
+        case EVPL_AF_INPROC:
+            sinp = (struct evpl_sockaddr_inproc *) sa;
+
+            /* Bounded by strnlen rather than trusting the name to be
+             * terminated, for the same reason as the pathname case above. */
+            if (sinp->id) {
+                snprintf(str, len, "inproc:%.*s#%u",
+                         (int) strnlen(sinp->name, sizeof(sinp->name)),
+                         sinp->name, sinp->id);
+            } else {
+                /* A listener, which has no connection serial. */
+                snprintf(str, len, "inproc:%.*s",
+                         (int) strnlen(sinp->name, sizeof(sinp->name)),
+                         sinp->name);
             }
             break;
 
