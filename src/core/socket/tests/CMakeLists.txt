@@ -27,21 +27,24 @@ unit_test_bin_all_mechs(socket rdma_ops_tcp_rdma rdma_ops -r DATAGRAM_TCP_RDMA)
 # datagram tests are omitted because STREAM_SOCKET_UNIX has no .bind op, and
 # rdma_ops needs one-sided RDMA.
 #
-# Each test derives its own socket path from its binary name and pid (see
-# test_address() in src/tests/test_common.h), so they stay collision-free
-# under `ctest -j` without a per-test -a argument.
-unit_test_bin_all_mechs(unix hello_world_stream_unix hello_world_stream -r STREAM_SOCKET_UNIX)
-unit_test_bin_all_mechs(unix hello_world_connected_msg_unix hello_world_connected_msg -r STREAM_SOCKET_UNIX)
+# Registered with unit_test_bin_local: these are addressed by socket name
+# rather than by port, so they need no network namespace and contend with
+# nothing.  Each derives its own name from EVPL_TEST_SOCKET_DIR and its pid
+# (see test_address() in src/tests/test_common.h), so they run fully in
+# parallel and also run where CAP_NET_ADMIN is unavailable.
+unit_test_bin_local(unix hello_world_stream_unix hello_world_stream -r STREAM_SOCKET_UNIX)
+unit_test_bin_local(unix hello_world_connected_msg_unix hello_world_connected_msg -r STREAM_SOCKET_UNIX)
 
-unit_test_bin_all_mechs(unix ping_pong_stream_unix ping_pong_stream -r STREAM_SOCKET_UNIX)
-unit_test_bin_all_mechs(unix ping_pong_msg_unix ping_pong_connected_msg -r STREAM_SOCKET_UNIX)
+unit_test_bin_local(unix ping_pong_stream_unix ping_pong_stream -r STREAM_SOCKET_UNIX)
+unit_test_bin_local(unix ping_pong_msg_unix ping_pong_connected_msg -r STREAM_SOCKET_UNIX)
 
-unit_test_bin_all_mechs(unix bulk_msg_unix bulk_connected_msg -r STREAM_SOCKET_UNIX)
-unit_test_bin_all_mechs(unix bulk_stream_unix bulk_stream -r STREAM_SOCKET_UNIX)
+unit_test_bin_local(unix bulk_msg_unix bulk_connected_msg -r STREAM_SOCKET_UNIX)
+unit_test_bin_local(unix bulk_stream_unix bulk_stream -r STREAM_SOCKET_UNIX)
 
-unit_test_bin_all_mechs(unix rand_full_duplex_stream_unix rand_full_duplex_stream -r STREAM_SOCKET_UNIX)
+unit_test_bin_local(unix rand_full_duplex_stream_unix rand_full_duplex_stream -r STREAM_SOCKET_UNIX)
 
 # Abstract namespace: no filesystem object, so nothing to unlink and nothing a
-# crash can leave stale.
-unit_test_bin_all_mechs(unix hello_world_stream_unix_abstract hello_world_stream -r STREAM_SOCKET_UNIX -a @evpl-test-hws)
-unit_test_bin_all_mechs(unix ping_pong_stream_unix_abstract ping_pong_stream -r STREAM_SOCKET_UNIX -a @evpl-test-pps)
+# crash can leave stale.  "-a @" asks the harness to generate a unique
+# abstract name, which is what keeps these parallel-safe without a namespace.
+unit_test_bin_local(unix hello_world_stream_unix_abstract hello_world_stream -r STREAM_SOCKET_UNIX -a @)
+unit_test_bin_local(unix ping_pong_stream_unix_abstract ping_pong_stream -r STREAM_SOCKET_UNIX -a @)

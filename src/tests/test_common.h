@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <errno.h>
 
 #include "evpl/evpl.h"
 
@@ -77,12 +80,16 @@ test_address_is_local(const char *address)
  *
  * IP protocols: returned unchanged (-a, else 127.0.0.1).
  *
- * Local protocols: an explicit -a path wins; otherwise synthesize a
- * per-binary, per-process path under TMPDIR.  A network namespace does not
- * isolate the filesystem, so unlike ports these names are shared across every
- * concurrently running test -- the binary name and pid are what keep
- * `ctest -j` collision-free, and they also guarantee a socket left behind by
- * a crashed run is never reused.
+ * Local protocols: a fully specified -a name wins.  "-a @" asks for an
+ * abstract socket with a generated name; anything else generates a pathname
+ * socket under EVPL_TEST_SOCKET_DIR (the build tree, set by ctest), falling
+ * back to TMPDIR.
+ *
+ * Either way the generated name carries the binary name and pid, which is
+ * what makes these tests safe to run concurrently without a network
+ * namespace: a namespace isolates ports, but the socket name is what needs to
+ * be unique here.  The pid also guarantees a socket left behind by a crashed
+ * run is never reused.
  */
 static inline const char *
 test_address(
@@ -90,17 +97,16 @@ test_address(
     const char           *address,
     const char           *argv0)
 {
-    const char *tmpdir, *base, *slash;
+    const char *dir, *base, *slash;
     int         len;
 
-    if (!evpl_protocol_is_local(proto) || test_address_is_local(address)) {
+    if (!evpl_protocol_is_local(proto)) {
         return address;
     }
 
-    tmpdir = getenv("TMPDIR");
-
-    if (!tmpdir || tmpdir[0] != '/') {
-        tmpdir = "/tmp";
+    /* A name the caller fully specified; use it as given. */
+    if (test_address_is_local(address) && address[1]) {
+        return address;
     }
 
     base  = argv0 ? argv0 : "evpl";
@@ -110,10 +116,35 @@ test_address(
         base = slash + 1;
     }
 
-    len = snprintf(test_path_buf, sizeof(test_path_buf),
-                   "%s/evpl-%.32s-%d.sock", tmpdir, base, (int) getpid());
+    /* "-a @" means "an abstract socket, name it for me".  Abstract names live
+     * outside the filesystem, so there is no directory to place them in. */
+    if (address && address[0] == '@') {
+        snprintf(test_path_buf, sizeof(test_path_buf), "@evpl-%.32s-%d",
+                 base, (int) getpid());
+        return test_path_buf;
+    }
 
-    /* sun_path is only 108 bytes, so a long TMPDIR would truncate into a
+    dir = getenv("EVPL_TEST_SOCKET_DIR");
+
+    if (!dir || dir[0] != '/') {
+        dir = getenv("TMPDIR");
+    }
+
+    if (!dir || dir[0] != '/') {
+        dir = "/tmp";
+    }
+
+    /* Created here rather than relied upon from the build: ctest points this
+     * at the build tree, which a clean removes, and the directory is only
+     * ever needed at run time. */
+    if (mkdir(dir, 0700) && errno != EEXIST) {
+        dir = "/tmp";
+    }
+
+    len = snprintf(test_path_buf, sizeof(test_path_buf),
+                   "%s/evpl-%.32s-%d.sock", dir, base, (int) getpid());
+
+    /* sun_path is only 108 bytes, so a deep build tree would truncate into a
      * nonsensical path; fall back to /tmp rather than guess. */
     if (len < 0 || (size_t) len >= sizeof(test_path_buf)) {
         snprintf(test_path_buf, sizeof(test_path_buf), "/tmp/evpl-%.32s-%d.sock",

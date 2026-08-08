@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include "evpl/evpl.h"
@@ -22,7 +23,7 @@ static int  failures;
 static char server_local[EVPL_ADDRESS_STRLEN];
 static char server_remote[EVPL_ADDRESS_STRLEN];
 static char server_local_trunc[8];
-static int  got_conn;
+static int  conn_count;
 
 #define CHECK(cond, ...) \
         do { \
@@ -52,7 +53,7 @@ server_callback(
     evpl_bind_get_local_address(bind, server_local_trunc,
                                 sizeof(server_local_trunc));
 
-    got_conn = 1;
+    conn_count++;
 } /* server_callback */
 
 static void
@@ -76,6 +77,18 @@ client_callback(
 {
 } /* client_callback */
 
+/* evpl_continue() blocks until something happens -- wait_ms defaults to -1 --
+ * so only ever pump waiting for an event that is genuinely on its way. */
+static void
+wait_for_conns(
+    struct evpl *evpl,
+    int          target)
+{
+    while (conn_count < target) {
+        evpl_continue(evpl);
+    }
+} /* wait_for_conns */
+
 int
 main(
     int   argc,
@@ -88,13 +101,20 @@ main(
     struct evpl_bind             *conn;
     enum evpl_protocol_id         proto;
     char                          path[EVPL_ADDRESS_STRLEN + 32];
-    char                          sockpath[64];
-    int                           rc, i;
+    char                          sockpath[96];
+    const char                   *dir;
+    int                           rc;
 
     evpl_init(NULL);
 
-    snprintf(sockpath, sizeof(sockpath), "/tmp/evpl-endpoint-local-%d.sock",
-             (int) getpid());
+    dir = getenv("EVPL_TEST_SOCKET_DIR");
+
+    if (!dir || dir[0] != '/') {
+        dir = "/tmp";
+    }
+
+    snprintf(sockpath, sizeof(sockpath), "%s/evpl-endpoint-local-%d.sock",
+             dir, (int) getpid());
 
     /* --- rejected forms --- */
     CHECK(evpl_endpoint_create_local("relative/path") == NULL,
@@ -177,11 +197,8 @@ main(
                         client_callback, NULL, NULL);
     CHECK(conn != NULL, "connect(UNIX, local endpoint) succeeds");
 
-    for (i = 0; i < 1000000 && !got_conn; i++) {
-        evpl_continue(evpl);
-    }
-
-    CHECK(got_conn, "server observed the connection");
+    wait_for_conns(evpl, 1);
+    CHECK(conn_count == 1, "server observed the connection");
 
     snprintf(path, sizeof(path), "unix:%s", sockpath);
     CHECK(strcmp(server_local, path) == 0,
@@ -193,7 +210,7 @@ main(
           "unbound peer renders as '%s'", server_remote);
 
     CHECK(strlen(server_local_trunc) == sizeof(server_local_trunc) - 1 &&
-          strncmp(server_local_trunc, "unix:/t", 7) == 0,
+          strncmp(server_local_trunc, path, sizeof(server_local_trunc) - 1) == 0,
           "long path truncates safely to '%s'", server_local_trunc);
 
     /* --- a backend listen failure is reported, not fatal --- */
@@ -204,6 +221,12 @@ main(
     CHECK(evpl_listen(listener, EVPL_STREAM_SOCKET_UNIX, ep) == -1,
           "listen on an address already in use returns -1");
 
+    /* That check went through the stale-socket probe, which establishes a
+     * real connection to prove someone is listening.  The server therefore
+     * sees a connect it did not ask for; drain it so the accepted socket is
+     * attached and freed rather than left in flight at teardown. */
+    wait_for_conns(evpl, 2);
+
     /* A directory nobody may write to: bind() fails with EACCES. */
     ep_denied = evpl_endpoint_create_local("/proc/evpl-denied.sock");
     CHECK(ep_denied != NULL, "endpoint on an unwritable directory created");
@@ -211,16 +234,12 @@ main(
           "listen on an unwritable directory returns -1");
 
     /* Having survived both, the process must still be able to serve. */
-    got_conn = 0;
-    conn     = evpl_connect(evpl, EVPL_STREAM_SOCKET_UNIX, NULL, ep,
-                            client_callback, NULL, NULL);
+    conn = evpl_connect(evpl, EVPL_STREAM_SOCKET_UNIX, NULL, ep,
+                        client_callback, NULL, NULL);
     CHECK(conn != NULL, "still accepting connections after failed listens");
 
-    for (i = 0; i < 1000000 && !got_conn; i++) {
-        evpl_continue(evpl);
-    }
-
-    CHECK(got_conn, "listener still live after failed listens");
+    wait_for_conns(evpl, 3);
+    CHECK(conn_count == 3, "listener still live after failed listens");
 
     evpl_listener_detach(evpl, binding);
     evpl_listener_destroy(listener);

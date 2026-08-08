@@ -20,5 +20,5 @@ unit_test(core unused_config unused_config.c)
 unit_test(core tls_cipher_config tls_cipher_config.c)
 unit_test_all_mechs(core timer_oneshot timer_oneshot.c)
 
-# Local (AF_UNIX) endpoints.
-unit_test_all_mechs(core endpoint_local endpoint_local.c)
+# Local (AF_UNIX) endpoints: addressed by socket name, so no namespace needed.
+unit_test_local(core endpoint_local endpoint_local.c)
