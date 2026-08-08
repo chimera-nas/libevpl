@@ -85,12 +85,11 @@ struct evpl_inproc_queue {
     struct evpl_dgram_ring dgram;
 
     /* The consumer's doorbell, or NULL.  A pointer rather than the doorbell
-     * itself because evpl_remove_event() does not scrub evpl->active_events:
-     * an event that fired in the current loop iteration is still referenced
-     * there after it is removed, so its storage has to outlive removal.  Every
-     * socket backend gets that for free by living in the bind's private area,
-     * which evpl_bind_prepare() recycles rather than frees -- so this points
-     * there too, and never into this (heap-freed) channel.
+     * itself, so that it lives in the consuming bind's private area alongside
+     * every other backend's event rather than in this shared, heap-freed
+     * channel -- the doorbell is owned by one thread's event loop, and putting
+     * it in memory the peer also reaches only invites confusion about who may
+     * retire it.
      *
      * doorbell_valid is what makes the producer's ring safe: both sides touch
      * it under this lock, and the consumer clears it before calling
@@ -99,12 +98,12 @@ struct evpl_inproc_queue {
      * which is what lets a send that arrives before the accept has run simply
      * skip the wakeup -- evpl_inproc_attach() drains once unconditionally to
      * pick it up. */
-    struct evpl_doorbell *doorbell;
-    int                   doorbell_valid;
+    struct evpl_doorbell  *doorbell;
+    int                    doorbell_valid;
 
     /* Rung and not yet drained.  Suppresses the wakeup on every message after
      * the first, so a busy producer pays one eventfd write per batch. */
-    int                   notified;
+    int                    notified;
 };
 
 struct evpl_inproc_channel {
