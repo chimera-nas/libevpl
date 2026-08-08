@@ -2560,6 +2560,7 @@ evpl_rpc2_recv_msg(
         {
             /* AUTH_SHORT is not implemented - pass empty verifier */
             struct evpl_rpc2_verf verf = { .data = NULL, .len = 0 };
+            int                   reply_status;
 
             /* Find request by xid */
             HASH_FIND(hh, rpc2_conn->pending_calls, &rpc_msg.xid, sizeof(rpc_msg.xid), request);
@@ -2585,8 +2586,25 @@ evpl_rpc2_recv_msg(
             }
             request->msg = msg;
 
+            /* RFC 5531 sec 9: procedure results follow only on MSG_ACCEPTED
+             * with accept_stat SUCCESS.  Every other reply -- MSG_DENIED, an
+             * accept_stat the server set to report that it did not run the
+             * call, or a reply_stat that is neither -- carries no results, so
+             * whatever bytes follow must not be decoded as though they were.
+             * Handing them to the caller as a successful reply would report a
+             * refusal as a success and pass off the refuser's payload as the
+             * procedure's own output. */
+            if (rpc_msg.body.rbody.stat == MSG_ACCEPTED) {
+                reply_status = rpc_msg.body.rbody.areply.reply_data.stat;
+                if (reply_status == SUCCESS) {
+                    reply_status = 0;
+                }
+            } else {
+                reply_status = EVPL_RPC2_REPLY_DENIED;
+            }
+
             evpl_rpc2_client_handle_reply(request, &verf, req_iov, req_niov,
-                                          request_length, 0);
+                                          request_length, reply_status);
         }
         break;
         default:
