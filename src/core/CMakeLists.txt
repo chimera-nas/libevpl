@@ -9,6 +9,7 @@ set(CORE_SRC
     iovec_profile.c
     config.c
     protocol.c
+    rdma_mr.c
     address.c
     endpoint.c
     bind.c

@@ -21,6 +21,7 @@
 #include "core/protocol.h"
 #include "core/event_fn.h"
 #include "core/evpl.h"
+#include "core/rdma_mr.h"
 #include "core/socket/common.h"
 #include "core/socket/tcp.h"
 #include "core/socket/tcp_rdma.h"
@@ -48,26 +49,6 @@ struct tcp_rdma_header {
     uint64_t remote_address;
     uint64_t id;
 } __attribute__((packed));
-
-/*
- * Memory registration structures using direct lookup table.
- * The rkey is simply the index in the table.
- * We expect few MRs since memory is registered in large chunks (1GB+).
- */
-#define TCP_RDMA_MR_TABLE_INITIAL_SIZE 1024
-
-struct tcp_rdma_mr {
-    void    *base;
-    size_t   size;
-    uint32_t rkey;   /* Table index, stored for get_rdma_address lookup */
-};
-
-struct tcp_rdma_mr_table {
-    struct tcp_rdma_mr **entries;  /* Array of pointers, NULL = unused slot */
-    uint32_t             size;     /* Current table size (power of 2) */
-    uint32_t             next_rkey; /* Next rkey to allocate (slots not reused) */
-    pthread_mutex_t      lock;
-};
 
 /*
  * Pending operation tracking using a ring buffer.
@@ -109,7 +90,7 @@ struct evpl_tcp_rdma_socket {
  * Global and per-thread framework state
  */
 struct evpl_tcp_rdma_global {
-    struct tcp_rdma_mr_table mr_table;
+    struct evpl_rdma_mr_table mr_table;
 };
 
 struct evpl_tcp_rdma {
@@ -132,47 +113,8 @@ void evpl_tcp_rdma_flush(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 
-/*
- * Memory registration functions - direct table lookup by rkey (index)
- */
-static struct tcp_rdma_mr *
-tcp_rdma_mr_lookup(
-    struct evpl_tcp_rdma_global *global,
-    uint32_t                     rkey)
-{
-    struct tcp_rdma_mr *mr = NULL;
-
-    pthread_mutex_lock(&global->mr_table.lock);
-    if (rkey < global->mr_table.size) {
-        mr = global->mr_table.entries[rkey];
-    }
-    pthread_mutex_unlock(&global->mr_table.lock);
-
-    return mr;
-} /* tcp_rdma_mr_lookup */
-
-static int
-tcp_rdma_validate_access(
-    struct evpl_tcp_rdma_global *global,
-    uint32_t                     rkey,
-    uint64_t                     address,
-    uint32_t                     length,
-    void                       **out_ptr)
-{
-    struct tcp_rdma_mr *mr = tcp_rdma_mr_lookup(global, rkey);
-
-    if (!mr) {
-        return -EINVAL;
-    }
-
-    if (address < (uint64_t) mr->base ||
-        address + length > (uint64_t) mr->base + mr->size) {
-        return -EINVAL;
-    }
-
-    *out_ptr = (void *) address;
-    return 0;
-} /* tcp_rdma_validate_access */
+#define tcp_rdma_validate_access(global, rkey, address, length, out_ptr) \
+        evpl_rdma_mr_validate(&(global)->mr_table, rkey, address, length, out_ptr)
 
 /*
  * Pending operation ring buffer management
@@ -1284,11 +1226,7 @@ tcp_rdma_init(void)
 {
     struct evpl_tcp_rdma_global *global = evpl_zalloc(sizeof(*global));
 
-    pthread_mutex_init(&global->mr_table.lock, NULL);
-    global->mr_table.size      = TCP_RDMA_MR_TABLE_INITIAL_SIZE;
-    global->mr_table.next_rkey = 1;  /* Start at 1, 0 is reserved */
-    global->mr_table.entries   = evpl_zalloc(
-        global->mr_table.size * sizeof(struct tcp_rdma_mr *));
+    evpl_rdma_mr_table_init(&global->mr_table);
 
     return global;
 } /* tcp_rdma_init */
@@ -1297,17 +1235,9 @@ static void
 tcp_rdma_cleanup(void *private_data)
 {
     struct evpl_tcp_rdma_global *global = private_data;
-    uint32_t                     i;
 
-    /* Only need to check up to next_rkey since slots are not reused */
-    for (i = 1; i < global->mr_table.next_rkey; i++) {
-        if (global->mr_table.entries[i]) {
-            evpl_free(global->mr_table.entries[i]);
-        }
-    }
+    evpl_rdma_mr_table_cleanup(&global->mr_table);
 
-    evpl_free(global->mr_table.entries);
-    pthread_mutex_destroy(&global->mr_table.lock);
     evpl_free(global);
 } /* tcp_rdma_cleanup */
 
@@ -1332,25 +1262,6 @@ tcp_rdma_destroy(
     evpl_free(private_data);
 } /* tcp_rdma_destroy */
 
-/*
- * Resize the MR table to the next power of two.
- * Called with lock held.
- */
-static void
-tcp_rdma_mr_table_resize(struct tcp_rdma_mr_table *table)
-{
-    uint32_t             new_size = table->size << 1;
-    struct tcp_rdma_mr **new_entries;
-
-    new_entries = evpl_zalloc(new_size * sizeof(struct tcp_rdma_mr *));
-    memcpy(new_entries, table->entries,
-           table->size * sizeof(struct tcp_rdma_mr *));
-
-    evpl_free(table->entries);
-    table->entries = new_entries;
-    table->size    = new_size;
-} /* tcp_rdma_mr_table_resize */
-
 static void *
 tcp_rdma_register_memory(
     void *buffer,
@@ -1359,35 +1270,9 @@ tcp_rdma_register_memory(
     void *framework_private)
 {
     struct evpl_tcp_rdma_global *global = framework_private;
-    struct tcp_rdma_mr          *mr;
-    uint32_t                     rkey;
 
-    if (buffer_private) {
-        /* Already registered */
-        return buffer_private;
-    }
-
-    mr       = evpl_zalloc(sizeof(*mr));
-    mr->base = buffer;
-    mr->size = size;
-
-    pthread_mutex_lock(&global->mr_table.lock);
-
-    /* Allocate next rkey (slots are not reused since we only
-     * unregister memory on process shutdown) */
-    rkey = global->mr_table.next_rkey++;
-
-    /* Resize table if needed */
-    if (rkey >= global->mr_table.size) {
-        tcp_rdma_mr_table_resize(&global->mr_table);
-    }
-
-    mr->rkey                       = rkey;
-    global->mr_table.entries[rkey] = mr;
-
-    pthread_mutex_unlock(&global->mr_table.lock);
-
-    return mr;
+    return evpl_rdma_mr_register(&global->mr_table, buffer, size,
+                                 buffer_private);
 } /* tcp_rdma_register_memory */
 
 static void
@@ -1395,19 +1280,9 @@ tcp_rdma_unregister_memory(
     void *buffer_private,
     void *framework_private)
 {
-    struct tcp_rdma_mr          *mr     = buffer_private;
     struct evpl_tcp_rdma_global *global = framework_private;
 
-    pthread_mutex_lock(&global->mr_table.lock);
-
-    /* Clear the table entry (direct lookup via rkey) */
-    if (mr->rkey < global->mr_table.size) {
-        global->mr_table.entries[mr->rkey] = NULL;
-    }
-
-    pthread_mutex_unlock(&global->mr_table.lock);
-
-    evpl_free(mr);
+    evpl_rdma_mr_unregister(&global->mr_table, buffer_private);
 } /* tcp_rdma_unregister_memory */
 
 static void
@@ -1417,8 +1292,8 @@ tcp_rdma_get_rdma_address(
     uint32_t          *r_key,
     uint64_t          *r_address)
 {
-    struct tcp_rdma_mr *mr = evpl_memory_framework_private(iov,
-                                                           EVPL_FRAMEWORK_TCP_RDMA);
+    struct evpl_rdma_mr *mr = evpl_memory_framework_private(iov,
+                                                            EVPL_FRAMEWORK_TCP_RDMA);
 
     if (mr) {
         *r_key     = mr->rkey;
