@@ -872,9 +872,8 @@ evpl_rpc2_send_reply(
                     segment_niov = evpl_rpc2_iovec_cursor_move(&write_cursor, &request->msg->dbuf, &segment_iov,
                                                                target->length);
 
-                    if (unlikely(segment_niov < 0)) {
-                        evpl_rpc2_abort("Failed to move segment iovec");
-                    }
+                    evpl_rpc2_abort_if(segment_niov < 0,
+                                       "Failed to move segment iovec");
 
                     evpl_rdma_write(evpl, request->bind,
                                     target->handle, target->offset,
@@ -1012,9 +1011,8 @@ evpl_rpc2_send_reply(
             segment_niov = evpl_rpc2_iovec_cursor_move(&reply_cursor, &request->msg->dbuf, &reply_segment_iov,
                                                        reply_chunk.target[i].length);
 
-            if (unlikely(segment_niov < 0)) {
-                evpl_rpc2_abort("Failed to move reply segment iovec");
-            }
+            evpl_rpc2_abort_if(segment_niov < 0,
+                               "Failed to move reply segment iovec");
 
             evpl_rdma_write(evpl, request->bind,
                             reply_chunk.target[i].handle,
@@ -1674,13 +1672,13 @@ evpl_rpc2_gss_send_init_res(
     p    = body;
     end  = (uint8_t *) iov.data + iov.length;
 
-    if (evpl_rpc2_gss_wr_opaque(&p, end, &ctx->handle, sizeof(ctx->handle)) ||
+    evpl_rpc2_abort_if(
+        evpl_rpc2_gss_wr_opaque(&p, end, &ctx->handle, sizeof(ctx->handle)) ||
         evpl_rpc2_gss_wr_u32(&p, end, gss_major) ||
         evpl_rpc2_gss_wr_u32(&p, end, 0 /* gss_minor */) ||
         evpl_rpc2_gss_wr_u32(&p, end, RPCSEC_GSS_SEQ_WINDOW) ||
-        evpl_rpc2_gss_wr_opaque(&p, end, token, token_len)) {
-        evpl_rpc2_abort("Failed to marshall rpc_gss_init_res");
-    }
+        evpl_rpc2_gss_wr_opaque(&p, end, token, token_len),
+        "Failed to marshall rpc_gss_init_res");
 
     body_len = p - body;
 
@@ -2174,9 +2172,7 @@ evpl_rpc2_client_handle_reply(
 
     request->read_chunk.niov = 0;
 
-    if (unlikely(error)) {
-        evpl_rpc2_abort("Failed to dispatch rpc2 reply: %d", error);
-    }
+    evpl_rpc2_abort_if(error, "Failed to dispatch rpc2 reply: %d", error);
 
     evpl_rpc2_request_free(thread, request);
 } /* evpl_rpc2_client_handle_reply */
