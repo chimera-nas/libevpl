@@ -148,7 +148,6 @@ struct evpl_rpc2_program {
         void                        *callback_fn,
         void                        *callback_private_data);
 
-
     int                                  (*send_reply_dispatch)(
         struct evpl                 *evpl,
         struct evpl_rpc2_encoding   *encoding,
@@ -169,6 +168,13 @@ struct evpl_rpc2_program {
  * RDMA and only when niov == 1 (a single contiguous, RDMA-registered buffer);
  * otherwise an internal chunk is allocated.  max_rdma_write_chunk still gives
  * the advertised chunk length.
+ *
+ * max_rdma_reply_chunk (0 to omit) advertises an RFC 8166 Reply chunk of that
+ * size: storage for the whole RPC reply message, which the responder may use
+ * instead of sending the reply inline.  Size it for the entire reply, header
+ * and all, not just the payload -- a responder handed a chunk too small for
+ * the reply declines it and answers inline.  Only honored over RDMA; the
+ * buffer is libevpl's and is released with the request.
  */
 int
 evpl_rpc2_call(

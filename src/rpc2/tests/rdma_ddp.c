@@ -22,12 +22,21 @@ static enum evpl_protocol_id proto = EVPL_STREAM_SOCKET_TCP;
 static int                   port  = 8002;
 
 /* Test data sizes */
-#define READ_SIZE   4096
-#define WRITE_SIZE  4096
-#define REDUCE_SIZE 8192    /* Large enough to trigger reply chunk */
+#define READ_SIZE         4096
+#define WRITE_SIZE        4096
+#define REDUCE_SIZE       8192 /* Large enough to trigger reply chunk */
+
+/*
+ * A reply chunk has to hold the whole RPC reply message -- the RPC header and
+ * the other result fields as well as the payload -- so advertising exactly the
+ * payload size leaves it a few dozen bytes short and the responder declines it
+ * and answers inline instead.  The headroom is what makes these two calls
+ * actually travel in a reply chunk.
+ */
+#define REPLY_CHUNK_SLACK 512
 
 /* Test data buffer */
-static char                  test_data[REDUCE_SIZE];
+static char test_data[REDUCE_SIZE];
 
 /* Test state */
 struct test_state {
@@ -438,7 +447,8 @@ main(
     read_req.offset = 0;
     read_req.count  = READ_SIZE;
     /* Enable DDP: ddp=1, no write chunk, reply chunk of READ_SIZE */
-    prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, NULL, 0, READ_SIZE,
+    prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, NULL, 0,
+                        READ_SIZE + REPLY_CHUNK_SLACK,
                         client_recv_reply_read, &state);
 
     /* Test 2: WRITE operation - uses write chunk for DDP */
@@ -458,7 +468,8 @@ main(
     evpl_test_info("Client sending REDUCE request");
     reduce_req.response_size = REDUCE_SIZE;
     /* Enable DDP: ddp=1, no write chunk, reply chunk of REDUCE_SIZE */
-    prog.send_call_REDUCE(&prog.rpc2, evpl, conn, NULL, &reduce_req, 1, 0, NULL, 0, REDUCE_SIZE,
+    prog.send_call_REDUCE(&prog.rpc2, evpl, conn, NULL, &reduce_req, 1, 0, NULL, 0,
+                          REDUCE_SIZE + REPLY_CHUNK_SLACK,
                           client_recv_reply_reduce, &state);
 
     /* Wait for all replies */
@@ -497,7 +508,8 @@ main(
         state.read_done = 0;
         read_req.offset = 0;
         read_req.count  = READ_SIZE;
-        prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, NULL, 0, READ_SIZE,
+        prog.send_call_READ(&prog.rpc2, evpl, conn, NULL, &read_req, 1, 0, NULL, 0,
+                            READ_SIZE + REPLY_CHUNK_SLACK,
                             client_recv_reply_read, &state);
         while (!state.read_done) {
             evpl_continue(evpl);
