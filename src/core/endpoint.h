@@ -10,22 +10,18 @@
 #include "core/address.h"
 
 
-enum evpl_endpoint_kind {
-    /* Hostname or IP literal plus port, resolved via getaddrinfo.  Zero so
-     * that a zalloc'd endpoint is an inet endpoint by default. */
-    EVPL_ENDPOINT_INET  = 0,
-    /* AF_UNIX socket, named by a filesystem path, or by an abstract name if
-     * the stored address begins with '@'. */
-    EVPL_ENDPOINT_LOCAL = 1
-};
+/* enum evpl_endpoint_kind is defined in core/protocol.h, which this header
+ * pulls in via address.h -> evpl_shared.h: struct evpl_protocol needs it too,
+ * and protocol.h is the one of the two that can be included on its own. */
 
 /*
- * address holds the hostname or IP literal for an inet endpoint, and the path
- * or "@name" exactly as supplied for a local one; the sockaddr_un is derived
- * from it at resolve time.  256 bytes is larger than sun_path (108), so a
- * valid local address can never be truncated here -- an over-long path is
- * rejected at create time rather than silently shortened.  port is zero for a
- * local endpoint.
+ * address holds the hostname or IP literal for an inet endpoint, the path or
+ * "@name" exactly as supplied for a local one, and the full "inproc://name"
+ * for an in-process one; the sockaddr is derived from it at resolve time.
+ * 256 bytes is larger than sun_path (108) and than an inproc name, so a valid
+ * address can never be truncated here -- an over-long one is rejected at
+ * create time rather than silently shortened.  port is zero for anything but
+ * an inet endpoint.
  */
 struct evpl_endpoint {
     char                  address[256];
@@ -38,17 +34,31 @@ struct evpl_endpoint {
     struct evpl_endpoint *next;
 };
 
+/* Human-readable name for a kind, for diagnostics. */
+static inline const char *
+evpl_endpoint_kind_name(enum evpl_endpoint_kind kind)
+{
+    switch (kind) {
+        case EVPL_ENDPOINT_LOCAL:
+            return "local-path";
+        case EVPL_ENDPOINT_INPROC:
+            return "in-process";
+        default:
+            return "network";
+    } /* switch */
+} /* evpl_endpoint_kind_name */
+
 struct evpl_address *
 evpl_endpoint_resolve(
     struct evpl_endpoint *endpoint);
 
-/* 0 if endpoint may be used with protocol, -1 otherwise.  A local endpoint
- * requires a local protocol and vice versa. */
+/* 0 if endpoint may be used with protocol, -1 otherwise.  How a peer is named
+ * is a property of both, and they have to agree: a socket path means nothing
+ * to TCP and a host/port means nothing to AF_UNIX. */
 static inline int
 evpl_endpoint_check_protocol(
     const struct evpl_endpoint *endpoint,
     const struct evpl_protocol *protocol)
 {
-    return ((endpoint->kind == EVPL_ENDPOINT_LOCAL) == (protocol->local != 0))
-           ? 0 : -1;
+    return endpoint->kind == protocol->endpoint_kind ? 0 : -1;
 } /* evpl_endpoint_check_protocol */

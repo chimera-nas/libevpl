@@ -156,7 +156,7 @@ main(
     server = evpl_rpc2_server_init(programs, 1);
 
     /* Create endpoint */
-    endpoint = evpl_endpoint_create("0.0.0.0", port);
+    endpoint = evpl_endpoint_create(test_address(proto, "0.0.0.0", argv[0]), port);
 
     /* Start listening */
     evpl_rpc2_server_start(server, proto, endpoint);

@@ -395,12 +395,16 @@ main(
         } /* switch */
     }
 
+    /* A name-addressed transport has no wildcard to listen on, so both ends
+     * must agree on one name; normalize here rather than at each endpoint. */
+    address = test_address(proto, address, argv[0]);
+
     evpl = evpl_create(NULL);
 
     server_state.evpl        = evpl;
     client_state.server_evpl = evpl;
 
-    me = evpl_endpoint_create("0.0.0.0", port);
+    me = evpl_endpoint_create(test_listen_address(address), port);
 
     listener = evpl_listener_create();
 

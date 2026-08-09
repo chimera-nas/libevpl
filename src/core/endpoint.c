@@ -20,7 +20,12 @@
 #include "core/evpl_shared.h"
 #include "core/evpl.h"
 
-#define EVPL_UNIX_PATH_MAX sizeof(((struct sockaddr_un *) 0)->sun_path)
+#define EVPL_UNIX_PATH_MAX     sizeof(((struct sockaddr_un *) 0)->sun_path)
+
+/* Scheme introducing an in-process name.  No hostname or IP literal can
+* contain ':' or '/', so this is unambiguous against an inet address. */
+#define EVPL_INPROC_PREFIX     "inproc://"
+#define EVPL_INPROC_PREFIX_LEN (sizeof(EVPL_INPROC_PREFIX) - 1)
 
 static void
 evpl_endpoint_register(struct evpl_endpoint *ep)
@@ -99,6 +104,59 @@ evpl_endpoint_create_local(const char *path)
     return evpl_endpoint_alloc_local(path);
 } /* evpl_endpoint_create_local */
 
+/* Validate an in-process name and build an endpoint for it, or return NULL.
+ * name is the bare name, without the "inproc://" scheme.  Shared by
+ * evpl_endpoint_create_inproc() and the inproc branch of
+ * evpl_endpoint_create(). */
+static struct evpl_endpoint *
+evpl_endpoint_alloc_inproc(const char *name)
+{
+    struct evpl_endpoint *ep;
+    size_t                len;
+
+    if (unlikely(!name)) {
+        evpl_core_error("inproc endpoint: NULL name");
+        return NULL;
+    }
+
+    len = strlen(name);
+
+    if (unlikely(len == 0)) {
+        evpl_core_error("inproc endpoint: empty name");
+        return NULL;
+    }
+
+    /* The name is stored NUL terminated inside a fixed field, so the budget is
+     * one less than the field.  Reject rather than truncate: a shortened name
+     * is a different endpoint. */
+    if (unlikely(len + 1 > EVPL_INPROC_NAME_MAX)) {
+        evpl_core_error("inproc endpoint: '%s' is %zu bytes, max is %zu",
+                        name, len, EVPL_INPROC_NAME_MAX - 1);
+        return NULL;
+    }
+
+    ep = evpl_zalloc(sizeof(*ep));
+
+    ep->kind = EVPL_ENDPOINT_INPROC;
+    ep->port = 0;
+
+    /* Stored with the scheme so evpl_endpoint_address() round-trips through
+     * evpl_endpoint_create(). */
+    snprintf(ep->address, sizeof(ep->address), EVPL_INPROC_PREFIX "%s", name);
+
+    evpl_endpoint_register(ep);
+
+    return ep;
+} /* evpl_endpoint_alloc_inproc */
+
+SYMBOL_EXPORT struct evpl_endpoint *
+evpl_endpoint_create_inproc(const char *name)
+{
+    __evpl_init();
+
+    return evpl_endpoint_alloc_inproc(name);
+} /* evpl_endpoint_create_inproc */
+
 SYMBOL_EXPORT struct evpl_endpoint *
 evpl_endpoint_create(
     const char *address,
@@ -117,6 +175,12 @@ evpl_endpoint_create(
         return evpl_endpoint_alloc_local(address);
     }
 
+    /* Likewise for "inproc://": ':' and '/' cannot appear in a hostname. */
+    if (unlikely(strncmp(address, EVPL_INPROC_PREFIX,
+                         EVPL_INPROC_PREFIX_LEN) == 0)) {
+        return evpl_endpoint_alloc_inproc(address + EVPL_INPROC_PREFIX_LEN);
+    }
+
     ep = evpl_zalloc(sizeof(*ep));
 
     ep->kind = EVPL_ENDPOINT_INET;
@@ -133,6 +197,19 @@ evpl_endpoint_is_local(const struct evpl_endpoint *ep)
 {
     return ep->kind == EVPL_ENDPOINT_LOCAL;
 } /* evpl_endpoint_is_local */
+
+SYMBOL_EXPORT int
+evpl_endpoint_is_inproc(const struct evpl_endpoint *ep)
+{
+    return ep->kind == EVPL_ENDPOINT_INPROC;
+} /* evpl_endpoint_is_inproc */
+
+/* The bare name, without the "inproc://" scheme the endpoint stores it with. */
+static inline const char *
+evpl_endpoint_inproc_name(const struct evpl_endpoint *ep)
+{
+    return ep->address + EVPL_INPROC_PREFIX_LEN;
+} /* evpl_endpoint_inproc_name */
 
 SYMBOL_EXPORT void
 evpl_endpoint_close(struct evpl_endpoint *endpoint)
@@ -202,6 +279,31 @@ evpl_endpoint_resolve_local(struct evpl_endpoint *endpoint)
 } /* evpl_endpoint_resolve_local */
 
 /*
+ * Build the EVPL_AF_INPROC sockaddr for an in-process endpoint.  Called with
+ * the endpoint write lock held.  Returns a +1 referenced address, or NULL.
+ *
+ * This is the listener form: id is left 0.  A connection's addresses are
+ * derived from it by the inproc backend, which stamps in the serial.
+ */
+static struct evpl_address *
+evpl_endpoint_resolve_inproc(struct evpl_endpoint *endpoint)
+{
+    struct evpl_sockaddr_inproc sinp;
+    const char                 *name = evpl_endpoint_inproc_name(endpoint);
+
+    memset(&sinp, 0, sizeof(sinp));
+
+    sinp.family = EVPL_AF_INPROC;
+    sinp.id     = 0;
+
+    /* Length was checked at create time, so this cannot truncate; the memset
+     * supplies the terminator. */
+    memcpy(sinp.name, name, strlen(name));
+
+    return evpl_address_init((struct sockaddr *) &sinp, sizeof(sinp));
+} /* evpl_endpoint_resolve_inproc */
+
+/*
  * Resolve a hostname/IP endpoint via getaddrinfo.  Called with the endpoint
  * write lock held.  Returns a +1 referenced address, or NULL.
  */
@@ -268,9 +370,10 @@ evpl_endpoint_age_ms(
 } /* evpl_endpoint_age_ms */
 
 /*
- * A local endpoint's sockaddr is a pure function of its immutable path, so it
- * is resolved once and never expires; resolve_timeout_ms exists to pick up DNS
- * changes and has no analogue for a path.
+ * A local or in-process endpoint's sockaddr is a pure function of its
+ * immutable name, so it is resolved once and never expires;
+ * resolve_timeout_ms exists to pick up DNS changes and has no analogue for a
+ * path or a registry key.
  */
 static inline int
 evpl_endpoint_cache_valid(
@@ -281,7 +384,7 @@ evpl_endpoint_cache_valid(
         return 0;
     }
 
-    if (endpoint->kind == EVPL_ENDPOINT_LOCAL) {
+    if (endpoint->kind != EVPL_ENDPOINT_INET) {
         return 1;
     }
 
@@ -319,11 +422,17 @@ evpl_endpoint_resolve(struct evpl_endpoint *endpoint)
         return addr;
     }
 
-    if (endpoint->kind == EVPL_ENDPOINT_LOCAL) {
-        addr = evpl_endpoint_resolve_local(endpoint);
-    } else {
-        addr = evpl_endpoint_resolve_inet(endpoint);
-    }
+    switch (endpoint->kind) {
+        case EVPL_ENDPOINT_LOCAL:
+            addr = evpl_endpoint_resolve_local(endpoint);
+            break;
+        case EVPL_ENDPOINT_INPROC:
+            addr = evpl_endpoint_resolve_inproc(endpoint);
+            break;
+        default:
+            addr = evpl_endpoint_resolve_inet(endpoint);
+            break;
+    } /* switch */
 
     if (unlikely(!addr)) {
         /* Leave any previously cached address in place.  Releasing it up

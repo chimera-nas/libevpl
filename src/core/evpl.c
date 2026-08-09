@@ -63,6 +63,7 @@
 #include "socket/tcp.h"
 #include "socket/tcp_rdma.h"
 #include "socket/unix_stream.h"
+#include "inproc/inproc.h"
 
 #ifdef HAVE_TLS
 #include "tls/tls.h"
@@ -200,6 +201,17 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
                        &evpl_tcp_rdma_datagram);
+
+    /* Needs no kernel facility of any kind, so like the socket protocols it is
+     * always present rather than gated on a build option. */
+    evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_INPROC,
+                        &evpl_framework_inproc);
+
+    evpl_protocol_init(evpl_shared, EVPL_STREAM_INPROC,
+                       &evpl_inproc_stream);
+
+    evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_INPROC,
+                       &evpl_inproc_datagram);
 
 #ifdef HAVE_IO_URING
     if (config->io_uring_enabled) {
@@ -598,17 +610,50 @@ evpl_continue(struct evpl *evpl)
     for (i = 0; i < evpl->num_active_events;) {
         event = evpl->active_events[i];
 
+        /* Vacated by evpl_remove_event() -- either earlier in this pass, or
+         * from a callback this loop has just made.  Compacting happens here
+         * rather than there because this is the one place that knows where the
+         * cursor is. */
+        if (unlikely(!event)) {
+            if (i + 1 < evpl->num_active_events) {
+                evpl->active_events[i] =
+                    evpl->active_events[evpl->num_active_events - 1];
+            }
+            --evpl->num_active_events;
+            continue;
+        }
+
+        /*
+         * A callback is allowed to remove the very event being dispatched, and
+         * to free whatever that event is embedded in along with it.
+         * evpl_remove_event() vacates the slot, so a slot that no longer holds
+         * this event means `event` is gone and must not be touched again --
+         * including by the next readiness test.  Hence the check after every
+         * callback rather than once at the end.
+         */
         if ((event->flags & EVPL_READ_READY) == EVPL_READ_READY) {
             event->read_callback(evpl, event);
+
+            if (unlikely(evpl->active_events[i] != event)) {
+                continue;
+            }
         }
 
         if ((event->flags & EVPL_WRITE_READY) ==
             EVPL_WRITE_READY) {
             event->write_callback(evpl, event);
+
+            if (unlikely(evpl->active_events[i] != event)) {
+                continue;
+            }
         }
 
         if ((event->flags & EVPL_ERROR) == EVPL_ERROR) {
             event->error_callback(evpl, event);
+
+            if (unlikely(evpl->active_events[i] != event)) {
+                continue;
+            }
         }
 
         if ((event->flags & EVPL_READ_READY) != EVPL_READ_READY &&
@@ -876,7 +921,38 @@ evpl_remove_event(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
+    int i;
+
     evpl_core_assert(evpl == event->owner);
+
+    /*
+     * Drop any reference the dispatch loop still holds.  An event that became
+     * active earlier in this same evpl_continue() pass is still listed in
+     * active_events, and the loop dereferences it again once the callbacks
+     * return -- harmless while every event lives in storage the library
+     * recycles rather than frees (a bind's private area, which goes on a
+     * freelist), but a use-after-free for anything else.  That includes a
+     * caller-allocated doorbell retired through the public
+     * evpl_remove_doorbell(), where the caller reasonably expects the struct to
+     * be theirs again afterwards.
+     *
+     * The slot is nulled rather than compacted away.  The loop vacates a slot
+     * by swapping its last entry down into it without advancing the cursor, so
+     * shifting anything from above the cursor to below it here would make the
+     * loop skip that entry -- and a skipped entry keeps EVPL_ACTIVE set, which
+     * stops evpl_event_mark_readable() and friends from ever queueing it
+     * again.  A NULL is index-stable; the loop compacts it away at its own
+     * cursor.
+     */
+    if (event->flags & EVPL_ACTIVE) {
+        for (i = 0; i < evpl->num_active_events; ++i) {
+            if (evpl->active_events[i] == event) {
+                evpl->active_events[i] = NULL;
+            }
+        }
+
+        event->flags &= ~EVPL_ACTIVE;
+    }
 
     evpl_core_remove(&evpl->core, event);
     evpl->num_events--;

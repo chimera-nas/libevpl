@@ -45,11 +45,35 @@ struct evpl_endpoint *
 evpl_endpoint_create_local(
     const char *path);
 
+/*
+ * Create an endpoint naming a peer thread inside this process.
+ *
+ * name is a bare name -- "backend", not "inproc://backend"; at most 107 bytes.
+ * It is resolved through a registry private to this process, so it is subject
+ * to no kernel namespace at all: two processes may each own the same name, and
+ * there is nothing for a crash to leave behind.
+ *
+ * The listening and connecting ends must be different evpl contexts, or the
+ * same one -- both work.
+ *
+ * Endpoints created here may only be used with protocols for which
+ * evpl_protocol_is_inproc() is true.
+ *
+ * Returns NULL if the name is empty or too long.
+ */
+struct evpl_endpoint *
+evpl_endpoint_create_inproc(
+    const char *name);
+
 void evpl_endpoint_close(
     struct evpl_endpoint *endpoint);
 
 /* 1 iff this endpoint names a local (AF_UNIX) socket. */
 int evpl_endpoint_is_local(
+    const struct evpl_endpoint *ep);
+
+/* 1 iff this endpoint names a peer thread inside this process. */
+int evpl_endpoint_is_inproc(
     const struct evpl_endpoint *ep);
 
 const char *

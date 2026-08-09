@@ -26,6 +26,14 @@ evpl_add_doorbell(
     struct evpl_doorbell    *doorbell,
     evpl_doorbell_callback_t callback);
 
+/*
+ * Retire a doorbell.  Must be called on the thread that added it, and before
+ * that thread's evpl is destroyed.
+ *
+ * Once this returns the library holds no further reference to the doorbell, so
+ * the caller may free the storage it lives in -- including from inside the
+ * doorbell's own callback.
+ */
 void
 evpl_remove_doorbell(
     struct evpl          *evpl,

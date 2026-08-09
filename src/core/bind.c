@@ -41,7 +41,7 @@ evpl_connect(
         evpl_core_error(
             "evpl_connect: protocol %s cannot be used with %s endpoint '%s'",
             protocol->name,
-            remote_endpoint->kind == EVPL_ENDPOINT_LOCAL ? "local-path" : "network",
+            evpl_endpoint_kind_name(remote_endpoint->kind),
             remote_endpoint->address);
         return NULL;
     }
@@ -106,7 +106,7 @@ evpl_bind(
         evpl_core_error(
             "evpl_bind: protocol %s cannot be used with %s endpoint '%s'",
             protocol->name,
-            endpoint->kind == EVPL_ENDPOINT_LOCAL ? "local-path" : "network",
+            evpl_endpoint_kind_name(endpoint->kind),
             endpoint->address);
         return NULL;
     }

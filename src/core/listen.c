@@ -306,7 +306,7 @@ evpl_listen(
         evpl_core_error(
             "evpl_listen: protocol %s cannot be used with %s endpoint '%s'",
             protocol->name,
-            endpoint->kind == EVPL_ENDPOINT_LOCAL ? "local-path" : "network",
+            evpl_endpoint_kind_name(endpoint->kind),
             endpoint->address);
         return -1;
     }

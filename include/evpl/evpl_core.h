@@ -18,7 +18,8 @@ enum evpl_framework_id {
     EVPL_FRAMEWORK_TLS      = 4,
     EVPL_FRAMEWORK_TCP_RDMA = 5,
     EVPL_FRAMEWORK_LIBAIO   = 6,
-    EVPL_NUM_FRAMEWORK      = 7
+    EVPL_FRAMEWORK_INPROC   = 7,
+    EVPL_NUM_FRAMEWORK      = 8
 };
 
 enum evpl_protocol_id {
@@ -32,7 +33,9 @@ enum evpl_protocol_id {
     EVPL_STREAM_SOCKET_TLS   = 7,
     EVPL_DATAGRAM_TCP_RDMA   = 8,
     EVPL_STREAM_SOCKET_UNIX  = 9,
-    EVPL_NUM_PROTO           = 10
+    EVPL_STREAM_INPROC       = 10,
+    EVPL_DATAGRAM_INPROC     = 11,
+    EVPL_NUM_PROTO           = 12
 };
 
 enum evpl_block_protocol_id {
@@ -122,6 +125,13 @@ int evpl_protocol_is_stream(
  * network address and port, and therefore requires an endpoint created by
  * evpl_endpoint_create_local(). */
 int evpl_protocol_is_local(
+    enum evpl_protocol_id protocol);
+
+/* 1 iff the protocol reaches a peer thread inside this process rather than any
+ * kernel transport, and therefore requires an endpoint created by
+ * evpl_endpoint_create_inproc().  Such a name is private to the process: two
+ * processes may use the same one without colliding. */
+int evpl_protocol_is_inproc(
     enum evpl_protocol_id protocol);
 
 struct evpl_config *

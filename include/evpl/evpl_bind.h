@@ -209,7 +209,8 @@ void evpl_finish(
 
 /* Size a buffer passed to evpl_bind_get_local_address() or
  * evpl_bind_get_remote_address() to at least this and no representable
- * address is truncated.  The longest form is an AF_UNIX path. */
+ * address is truncated.  The longest form is an inproc connection,
+ * "inproc:" + a 107-byte name + "#" + a 10-digit serial. */
 #define EVPL_ADDRESS_STRLEN 128
 
 void evpl_bind_get_local_address(
