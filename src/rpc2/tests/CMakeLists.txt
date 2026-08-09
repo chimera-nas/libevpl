@@ -218,6 +218,51 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
         endforeach()
     endforeach()
 
+    # -----------------------------------------------------------------------
+    # The same idea inverted: a hostile server driving libevpl's *client*.
+    #
+    # conformance.c can only reach the client's outbound path, because the
+    # replies it sees come from a real libevpl server and are therefore always
+    # well formed.  conformance_client.c is a raw socket pretending to be a
+    # server, so the reply bytes are chosen by the test; its model and case
+    # table are separate from the server-side ones.
+    #
+    # It reuses hello_world.x unmodified -- the reply defects live in the RPC
+    # envelope and in the framing, so a one-procedure program reaches all of
+    # them and keeps the hand-built bytes readable.
+    # -----------------------------------------------------------------------
+
+    set(CLIENT_CASES ${QUINT_WORK_DIR}/client_cases.h)
+
+    add_custom_command(
+        OUTPUT ${CLIENT_CASES}
+        COMMAND ${QUINT_SRC_DIR}/generate_client_cases.sh
+                ${QUINT_EXECUTABLE} ${PYTHON3_EXECUTABLE}
+                ${QUINT_SRC_DIR} ${QUINT_WORK_DIR} ${CLIENT_CASES}
+        DEPENDS ${QUINT_SRC_DIR}/client.qnt
+                ${QUINT_SRC_DIR}/itf_to_client_cases.py
+                ${QUINT_SRC_DIR}/generate_client_cases.sh
+        COMMENT "Generating RPC2 client reply cases from the Quint model"
+        VERBATIM)
+
+    add_custom_target(client_cases DEPENDS ${CLIENT_CASES})
+
+    unit_test_rpc2(conformance_client hello_world.x conformance_client.c)
+    target_sources(evpl_rpc2_conformance_client PRIVATE ${CLIENT_CASES})
+    target_include_directories(evpl_rpc2_conformance_client
+                               PRIVATE ${QUINT_WORK_DIR})
+
+    unit_test_rpc2_instance(conformance_client STREAM_SOCKET_TCP 8106)
+
+    # A hundred cases, a handful of which deliberately wait out a reply
+    # deadline to prove no callback arrives -- more than the 10s the macro
+    # grants by default.
+    foreach(mech ${EVPL_MECHANISMS})
+        set_tests_properties(
+            libevpl/rpc2/conformance_client_STREAM_SOCKET_TCP_${mech}
+            PROPERTIES TIMEOUT 120)
+    endforeach()
+
     # The models checking themselves: scenario tests plus a random-simulation
     # pass against their invariants.  Separate from generation so that a broken
     # specification is a failing test rather than a failing build.
@@ -225,6 +270,20 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
              COMMAND ${QUINT_SRC_DIR}/check_models.sh
                      ${QUINT_EXECUTABLE} ${QUINT_SRC_DIR})
     set_tests_properties(libevpl/rpc2/quint_model PROPERTIES
+                         LABELS "quint" TIMEOUT 120)
+
+    # The client model checks itself the same way.  Registered directly rather
+    # than through check_models.sh so that the server-side script stays the
+    # server-side script.
+    add_test(NAME libevpl/rpc2/quint_client_model
+             COMMAND ${QUINT_EXECUTABLE} test ${QUINT_SRC_DIR}/client.qnt)
+    set_tests_properties(libevpl/rpc2/quint_client_model PROPERTIES
+                         LABELS "quint" TIMEOUT 120)
+
+    add_test(NAME libevpl/rpc2/quint_client_invariants
+             COMMAND ${QUINT_EXECUTABLE} run ${QUINT_SRC_DIR}/client.qnt
+                     --invariant=safety --max-samples=500 --max-steps=50)
+    set_tests_properties(libevpl/rpc2/quint_client_invariants PROPERTIES
                          LABELS "quint" TIMEOUT 120)
 
     message(STATUS "RPC2 conformance test enabled (quint: ${QUINT_EXECUTABLE})")
