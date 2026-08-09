@@ -40,6 +40,17 @@
  */
 #define EVPL_RPC2_REPLY_CONN_LOST    (-3)
 
+/*
+ * Status passed to a client reply callback when the peer answered with an
+ * RPC-over-RDMA RDMA_ERROR (RFC 8166 sec 4.5) rather than an RPC reply: the
+ * transport could not carry the call, so it never ran.  Distinct from
+ * EVPL_RPC2_REPLY_DENIED, which means the call reached the RPC layer and was
+ * refused there, and from CONN_LOST, which leaves the connection unusable --
+ * here the connection is fine and the caller may retry, typically by offering
+ * a larger chunk.
+ */
+#define EVPL_RPC2_REPLY_RDMA_ERROR   (-4)
+
 #include <pthread.h>
 struct prometheus_histogram_instance;
 
@@ -147,6 +158,7 @@ struct evpl_rpc2_program {
         int                          status,
         void                        *callback_fn,
         void                        *callback_private_data);
+
 
     int                                  (*send_reply_dispatch)(
         struct evpl                 *evpl,

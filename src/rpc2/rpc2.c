@@ -620,6 +620,79 @@ evpl_rpc2_reassemble(
     return 1;
 } /* evpl_rpc2_reassemble */
 
+/*
+ * The only RPC-over-RDMA version this implementation speaks (RFC 8166).  Kept
+ * as a name because it appears in three places that must agree: the version
+ * stamped on every outbound transport header, the check applied to every
+ * inbound one, and the range reported in an ERR_VERS reply.
+ */
+#define EVPL_RPC2_RDMA_VERSION 1
+
+/*
+ * Send an RDMA_ERROR transport message (RFC 8166 sec 4.5).
+ *
+ * This is the only reply a Responder can make when the request cannot be
+ * answered at the transport layer at all -- either its version is one we do
+ * not speak, or the chunks it offered cannot carry the Reply.  There is no RPC
+ * message in it: the body is the error code, and for ERR_VERS the range of
+ * versions we do support, so the Requester can retry rather than guess.
+ *
+ * Sent directly rather than through evpl_rpc2_send_reply, which builds an RPC
+ * reply around a request: here there may be no request (a header we could not
+ * use), and by definition no RPC-level answer to give.
+ */
+static void
+evpl_rpc2_send_rdma_error(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    uint32_t          xid,
+    uint32_t          credit,
+    rpc_rdma_errcode  err)
+{
+    struct rdma_msg   rdma_msg;
+    struct evpl_iovec iov, out_iov;
+    int               len, niov, out_niov = 0;
+
+    memset(&rdma_msg, 0, sizeof(rdma_msg));
+
+    rdma_msg.rdma_xid       = xid;
+    rdma_msg.rdma_vers      = EVPL_RPC2_RDMA_VERSION;
+    rdma_msg.rdma_credit    = credit ? credit : 1;
+    rdma_msg.rdma_body.proc = RDMA_ERROR;
+
+    rdma_msg.rdma_body.rdma_error.err = err;
+
+    if (err == ERR_VERS) {
+        /* RFC 8166 sec 4.5: "the Responder MUST return the range of versions
+         * it supports", so a Requester speaking a different version learns
+         * what to fall back to instead of retrying blind. */
+        rdma_msg.rdma_body.rdma_error.range.rdma_vers_low  = EVPL_RPC2_RDMA_VERSION;
+        rdma_msg.rdma_body.rdma_error.range.rdma_vers_high = EVPL_RPC2_RDMA_VERSION;
+    }
+
+    len = marshall_length_rdma_msg(&rdma_msg);
+
+    niov = evpl_iovec_alloc(evpl, len, 0, 1, 0, &iov);
+
+    if (unlikely(niov != 1)) {
+        evpl_rpc2_error("rpc2 failed to allocate an RDMA_ERROR message");
+        return;
+    }
+
+    marshall_rdma_msg(&rdma_msg, &iov, &out_iov, &out_niov, NULL, 0);
+
+    if (out_niov > 0) {
+        evpl_iovec_release_internal(evpl, &out_iov);
+    }
+
+    evpl_iovec_set_length(&iov, len);
+
+    /* TAKE_REF hands our reference to the send ring, as everywhere else in
+     * rpc2 -- without it the send clones and this iovec's reference stays
+     * ours to drop, which is a leak per error message. */
+    evpl_sendv(evpl, bind, &iov, 1, len, EVPL_SEND_FLAG_TAKE_REF);
+} /* evpl_rpc2_send_rdma_error */
+
 static void
 evpl_rpc2_dispatch_reply(
     struct evpl              *evpl,
@@ -799,8 +872,9 @@ evpl_rpc2_send_reply(
                     segment_niov = evpl_rpc2_iovec_cursor_move(&write_cursor, &request->msg->dbuf, &segment_iov,
                                                                target->length);
 
-                    evpl_rpc2_abort_if(segment_niov < 0,
-                                       "Failed to move segment iovec");
+                    if (unlikely(segment_niov < 0)) {
+                        evpl_rpc2_abort("Failed to move segment iovec");
+                    }
 
                     evpl_rdma_write(evpl, request->bind,
                                     target->handle, target->offset,
@@ -824,14 +898,27 @@ evpl_rpc2_send_reply(
                 reply_chunk_cap += reply_chunk.target[i].length;
             }
 
-            /* RFC 8166 sec 4.5 calls for RDMA_ERROR / ERR_CHUNK when the
-             * Reply does not fit the chunk the Requester offered.  libevpl
-             * does not implement RDMA_ERROR, so the Reply chunk is left unused
-             * instead and the Reply goes inline -- the same thing that happens
-             * for a Requester that offered no chunk at all, and in any case
-             * better than shipping a Reply short by exactly the overflow. */
+            /* RFC 8166 sec 4.5: a Reply chunk too small to hold the Reply is
+             * ERR_CHUNK.  Telling the Requester is what lets it retry with a
+             * chunk that fits; silently falling back to an inline Reply would
+             * work once but leave it offering the same short chunk forever,
+             * and truncating would be worse still. */
             if (reply_chunk_len > 512 &&
-                (uint32_t) reply_chunk_len <= reply_chunk_cap) {
+                (uint32_t) reply_chunk_len > reply_chunk_cap) {
+                evpl_rpc2_error(
+                    "rpc2 reply of %d bytes exceeds the %u-byte reply chunk offered; ERR_CHUNK",
+                    reply_chunk_len, reply_chunk_cap);
+
+                evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
+
+                evpl_rpc2_send_rdma_error(evpl, request->bind, request->xid,
+                                          request->rdma_credits, ERR_CHUNK);
+
+                evpl_rpc2_request_free(request->thread, request);
+                return 0;
+            }
+
+            if (reply_chunk_len > 512) {
                 reduce = 1;
 
                 rdma_msg.rdma_body.proc                  = RDMA_NOMSG;
@@ -925,8 +1012,9 @@ evpl_rpc2_send_reply(
             segment_niov = evpl_rpc2_iovec_cursor_move(&reply_cursor, &request->msg->dbuf, &reply_segment_iov,
                                                        reply_chunk.target[i].length);
 
-            evpl_rpc2_abort_if(segment_niov < 0,
-                               "Failed to move reply segment iovec");
+            if (unlikely(segment_niov < 0)) {
+                evpl_rpc2_abort("Failed to move reply segment iovec");
+            }
 
             evpl_rdma_write(evpl, request->bind,
                             reply_chunk.target[i].handle,
@@ -1586,13 +1674,13 @@ evpl_rpc2_gss_send_init_res(
     p    = body;
     end  = (uint8_t *) iov.data + iov.length;
 
-    evpl_rpc2_abort_if(
-        evpl_rpc2_gss_wr_opaque(&p, end, &ctx->handle, sizeof(ctx->handle)) ||
+    if (evpl_rpc2_gss_wr_opaque(&p, end, &ctx->handle, sizeof(ctx->handle)) ||
         evpl_rpc2_gss_wr_u32(&p, end, gss_major) ||
         evpl_rpc2_gss_wr_u32(&p, end, 0 /* gss_minor */) ||
         evpl_rpc2_gss_wr_u32(&p, end, RPCSEC_GSS_SEQ_WINDOW) ||
-        evpl_rpc2_gss_wr_opaque(&p, end, token, token_len),
-        "Failed to marshall rpc_gss_init_res");
+        evpl_rpc2_gss_wr_opaque(&p, end, token, token_len)) {
+        evpl_rpc2_abort("Failed to marshall rpc_gss_init_res");
+    }
 
     body_len = p - body;
 
@@ -2086,11 +2174,58 @@ evpl_rpc2_client_handle_reply(
 
     request->read_chunk.niov = 0;
 
-    evpl_rpc2_abort_if(error, "Failed to dispatch rpc2 reply: %d", error);
+    if (unlikely(error)) {
+        evpl_rpc2_abort("Failed to dispatch rpc2 reply: %d", error);
+    }
 
     evpl_rpc2_request_free(thread, request);
 } /* evpl_rpc2_client_handle_reply */
 
+/*
+ * Handle an inbound RDMA_ERROR (RFC 8166 sec 4.5).
+ *
+ * Errors flow Responder -> Requester, so this normally arrives on a client
+ * with a call outstanding under the reported xid.  Fail exactly that call: the
+ * transport refused it, so no RPC reply is coming, and a caller that is not
+ * told would wait for one forever.
+ *
+ * An xid we do not recognise is dropped in silence, for the same reason a
+ * stray reply is (see the REPLY path): there is nothing to fail, and the
+ * connection remains perfectly usable.  A server receiving one of these is a
+ * peer confused about which end it is, and is likewise not worth a teardown.
+ */
+static void
+evpl_rpc2_rdma_error_received(
+    struct evpl           *evpl,
+    struct evpl_rpc2_conn *rpc2_conn,
+    const struct rdma_msg *rdma_msg)
+{
+    struct evpl_rpc2_request *request;
+    struct evpl_rpc2_verf     verf = { .data = NULL, .len = 0 };
+    uint32_t                  xid  = rdma_msg->rdma_xid;
+
+    if (rdma_msg->rdma_body.rdma_error.err == ERR_VERS) {
+        evpl_rpc2_error(
+            "rpc2 peer rejected our RPC-over-RDMA version; it supports %u-%u",
+            rdma_msg->rdma_body.rdma_error.range.rdma_vers_low,
+            rdma_msg->rdma_body.rdma_error.range.rdma_vers_high);
+    } else {
+        evpl_rpc2_error("rpc2 peer reported a chunk error (ERR_CHUNK) for xid %u",
+                        xid);
+    }
+
+    HASH_FIND(hh, rpc2_conn->pending_calls, &xid, sizeof(xid), request);
+
+    if (!request) {
+        evpl_rpc2_debug("rpc2 dropping RDMA_ERROR for unknown call %u", xid);
+        return;
+    }
+
+    HASH_DELETE(hh, rpc2_conn->pending_calls, request);
+
+    evpl_rpc2_client_handle_reply(request, &verf, NULL, 0, 0,
+                                  EVPL_RPC2_REPLY_RDMA_ERROR);
+} /* evpl_rpc2_rdma_error_received */
 
 /*
  * Consume an RDMA_NOMSG reply by swapping the delivered payload for the Reply
@@ -2218,6 +2353,35 @@ evpl_rpc2_recv_msg(
                                      niov,
                                      NULL,
                                      &msg->dbuf);
+
+        /* RFC 8166 sec 4.5: a header whose version we do not speak cannot be
+         * interpreted beyond its first three fields, whose position is fixed
+         * for all versions.  Answer with the range we do support and stop --
+         * parsing the body under our own version's rules would be reading a
+         * layout the peer never sent. */
+        if (unlikely(rdma_msg.rdma_vers != EVPL_RPC2_RDMA_VERSION)) {
+            evpl_rpc2_error("rpc2 received RPC-over-RDMA version %u, expected %u",
+                            rdma_msg.rdma_vers, EVPL_RPC2_RDMA_VERSION);
+
+            evpl_rpc2_send_rdma_error(evpl, bind, rdma_msg.rdma_xid,
+                                      rdma_msg.rdma_credit, ERR_VERS);
+
+            evpl_rpc2_msg_free(thread, msg);
+            evpl_iovecs_release_internal(evpl, iovec, niov);
+            return;
+        }
+
+        /* An RDMA_ERROR is the peer telling us our own request was unusable at
+         * the transport layer, so there is no RPC reply coming for this xid.
+         * Complete the caller rather than leaving it waiting: this is exactly
+         * the "no reply can arrive" case the disconnect path handles, minus
+         * the disconnect -- the connection stays up and usable. */
+        if (unlikely(rdma_msg.rdma_body.proc == RDMA_ERROR)) {
+            evpl_rpc2_rdma_error_received(evpl, rpc2_conn, &rdma_msg);
+            evpl_rpc2_msg_free(thread, msg);
+            evpl_iovecs_release_internal(evpl, iovec, niov);
+            return;
+        }
 
         if (rdma_msg.rdma_body.proc == RDMA_NOMSG) {
             /* RFC 8166 sec 4.3.3: the Responder placed the whole RPC Reply
