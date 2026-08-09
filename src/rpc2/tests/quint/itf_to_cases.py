@@ -236,9 +236,14 @@ def main():
     defects = collect_defects(defect_paths)
 
     o = []
+    # The header written into the GENERATED file.  Fenced off because reuse
+    # otherwise reads these string literals as this script's own license tags
+    # and fails to parse the trailing quote as part of the expression.
+    # REUSE-IgnoreStart
     o.append("/* SPDX-FileCopyrightText: 2026 Ben Jarvis")
     o.append(" *")
     o.append(" * SPDX-License-Identifier: LGPL-2.1-only")
+    # REUSE-IgnoreEnd
     o.append(" *")
     o.append(" * GENERATED FILE -- DO NOT EDIT.")
     o.append(" *")
