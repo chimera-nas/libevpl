@@ -130,6 +130,17 @@ void evpl_global_config_set_max_num_iovec(
     struct evpl_global_config *config,
     unsigned int               max);
 
+/*
+ * Maximum size of a single RPC2 message, counted across every fragment of a
+ * record.  A record mark claiming more than this is refused at the framing
+ * layer and the connection is closed, so an unauthenticated peer cannot make
+ * the transport buffer on its terms.  Defaults to 4 MiB; pass 0 to restore
+ * the default.
+ */
+void evpl_global_config_set_rpc2_max_message_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
 void evpl_global_config_set_iovec_ring_size(
     struct evpl_global_config *config,
     unsigned int               size);

@@ -41,6 +41,7 @@ evpl_global_config_init(void)
     config->max_datagram_size      = 65536;
     config->max_datagram_batch     = 16;
     config->resolve_timeout_ms     = 5000;
+    config->rpc2_max_message_size  = EVPL_DEFAULT_RPC2_MAX_MESSAGE_SIZE;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 
@@ -347,6 +348,21 @@ evpl_global_config_set_max_num_iovec(
 {
     config->max_num_iovec = max;
 } /* evpl_global_config_set_max_num_iovec */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rpc2_max_message_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->rpc2_max_message_size = size ?
+        size : EVPL_DEFAULT_RPC2_MAX_MESSAGE_SIZE;
+} /* evpl_global_config_set_rpc2_max_message_size */
+
+SYMBOL_EXPORT unsigned int
+evpl_config_rpc2_max_message_size(void)
+{
+    return evpl_shared->config->rpc2_max_message_size;
+} /* evpl_config_rpc2_max_message_size */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_iovec_ring_size(

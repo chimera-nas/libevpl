@@ -40,6 +40,17 @@
  */
 #define EVPL_RPC2_REPLY_CONN_LOST    (-3)
 
+/*
+ * Status passed to a client reply callback when the peer answered with an
+ * RPC-over-RDMA RDMA_ERROR (RFC 8166 sec 4.5) rather than an RPC reply: the
+ * transport could not carry the call, so it never ran.  Distinct from
+ * EVPL_RPC2_REPLY_DENIED, which means the call reached the RPC layer and was
+ * refused there, and from CONN_LOST, which leaves the connection unusable --
+ * here the connection is fine and the caller may retry, typically by offering
+ * a larger chunk.
+ */
+#define EVPL_RPC2_REPLY_RDMA_ERROR   (-4)
+
 #include <pthread.h>
 struct prometheus_histogram_instance;
 
@@ -169,6 +180,13 @@ struct evpl_rpc2_program {
  * RDMA and only when niov == 1 (a single contiguous, RDMA-registered buffer);
  * otherwise an internal chunk is allocated.  max_rdma_write_chunk still gives
  * the advertised chunk length.
+ *
+ * max_rdma_reply_chunk (0 to omit) advertises an RFC 8166 Reply chunk of that
+ * size: storage for the whole RPC reply message, which the responder may use
+ * instead of sending the reply inline.  Size it for the entire reply, header
+ * and all, not just the payload -- a responder handed a chunk too small for
+ * the reply declines it and answers inline.  Only honored over RDMA; the
+ * buffer is libevpl's and is released with the request.
  */
 int
 evpl_rpc2_call(
