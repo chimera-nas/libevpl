@@ -1778,21 +1778,12 @@ evpl_rpc2_gss_handle_call(
                                       *request_length_p);
             return 0;
 
+        /* RFC 2203 sec 5.4: a DESTROY is an ordinary authenticated call.  It
+         * shares the DATA path below so that the context handle, the header
+         * MIC and the sequence number are all verified before anything is
+         * retired -- destroying on the strength of a handle alone would let
+         * any peer that can guess one retire another client's context. */
         case RPCSEC_GSS_DESTROY:
-            handle = 0;
-            if (cred.handle_len == sizeof(handle)) {
-                memcpy(&handle, cred.handle, sizeof(handle));
-            }
-            pthread_mutex_lock(&evpl_rpc2_gss_lock);
-            ctx = evpl_rpc2_gss_ctx_lookup(handle);
-            if (ctx) {
-                evpl_rpc2_gss_ctx_destroy(thread, ctx);
-            }
-            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
-            /* Acknowledge with an empty successful reply. */
-            evpl_rpc2_send_reply_error(evpl, request, SUCCESS);
-            return 0;
-
         case RPCSEC_GSS_DATA:
             break;
 
@@ -1857,6 +1848,29 @@ evpl_rpc2_gss_handle_call(
         return 0;
     }
 
+    /* Pre-compute the reply verifier: a GSS MIC over the request seq_num.
+     * Computed here, ahead of any work on the body, because a DESTROY has no
+     * body but its reply still carries this verifier. */
+    seq_be = rpc2_hton32(cred.seq);
+    if (thread->gss_provider->get_mic(thread->gss_provider_arg, ctx->gss_ctx,
+                                      &seq_be, sizeof(seq_be),
+                                      &mic, &mic_len) == 0) {
+        request->reply_verf_data   = mic;
+        request->reply_verf_len    = mic_len;
+        request->reply_verf_flavor = RPCSEC_GSS;
+    }
+
+    /* RFC 2203 sec 5.4: now that the caller has proved it holds the context,
+     * retire it and acknowledge with an empty successful reply.  A DESTROY
+     * carries no arguments, so there is nothing to unwrap even under
+     * integrity. */
+    if (cred.proc == RPCSEC_GSS_DESTROY) {
+        evpl_rpc2_gss_ctx_destroy(thread, ctx);
+        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_rpc2_send_reply_error(evpl, request, SUCCESS);
+        return 0;
+    }
+
     /* For integrity, unwrap rpc_gss_integ_data -> inner proc args (verifies the
      * databody checksum + embedded seq).  The reply is wrapped symmetrically in
      * evpl_rpc2_send_reply, keyed on request->gss_service. */
@@ -1866,19 +1880,16 @@ evpl_rpc2_gss_handle_call(
             pthread_mutex_unlock(&evpl_rpc2_gss_lock);
             evpl_rpc2_debug("rpcsec_gss: integrity UNWRAP failed proc=%u seq=%u "
                             "reqlen=%d", cred.proc, cred.seq, *request_length_p);
-            evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
+            /* RFC 2203 sec 5.3.3.4.2 separates the two integrity failures.  A
+             * bad *header* verifier means the caller is not authenticated and
+             * is denied above; a bad checksum over the *call arguments* (or a
+             * databody seq_num that contradicts the header, sec 5.3.2.2) means
+             * the caller is known but its arguments are unusable, which is
+             * MSG_ACCEPTED with GARBAGE_ARGS.  Denying here instead would make
+             * a client tear down and re-establish a context that is fine. */
+            evpl_rpc2_send_reply_error(evpl, request, GARBAGE_ARGS);
             return 0;
         }
-    }
-
-    /* Pre-compute the reply verifier: a GSS MIC over the request seq_num. */
-    seq_be = rpc2_hton32(cred.seq);
-    if (thread->gss_provider->get_mic(thread->gss_provider_arg, ctx->gss_ctx,
-                                      &seq_be, sizeof(seq_be),
-                                      &mic, &mic_len) == 0) {
-        request->reply_verf_data   = mic;
-        request->reply_verf_len    = mic_len;
-        request->reply_verf_flavor = RPCSEC_GSS;
     }
 
     /* Copy out the principal so the request never dereferences the context
@@ -2009,7 +2020,8 @@ evpl_rpc2_client_handle_reply(
     const struct evpl_rpc2_verf *verf,
     struct evpl_iovec           *reply_iov,
     int                          reply_niov,
-    int                          reply_length)
+    int                          reply_length,
+    int                          status)
 {
     struct evpl_rpc2_thread *thread = request->thread;
     struct evpl_rpc2_conn   *conn   = request->conn;
@@ -2046,6 +2058,7 @@ evpl_rpc2_client_handle_reply(
                                                   request->proc,
                                                   &request->read_chunk,
                                                   verf, reply_iov, reply_niov, reply_length,
+                                                  status,
                                                   request->callback,
                                                   request->callback_arg);
 
@@ -2558,6 +2571,7 @@ evpl_rpc2_recv_msg(
         {
             /* AUTH_SHORT is not implemented - pass empty verifier */
             struct evpl_rpc2_verf verf = { .data = NULL, .len = 0 };
+            int                   reply_status;
 
             /* Find request by xid */
             HASH_FIND(hh, rpc2_conn->pending_calls, &rpc_msg.xid, sizeof(rpc_msg.xid), request);
@@ -2583,7 +2597,25 @@ evpl_rpc2_recv_msg(
             }
             request->msg = msg;
 
-            evpl_rpc2_client_handle_reply(request, &verf, req_iov, req_niov, request_length);
+            /* RFC 5531 sec 9: procedure results follow only on MSG_ACCEPTED
+             * with accept_stat SUCCESS.  Every other reply -- MSG_DENIED, an
+             * accept_stat the server set to report that it did not run the
+             * call, or a reply_stat that is neither -- carries no results, so
+             * whatever bytes follow must not be decoded as though they were.
+             * Handing them to the caller as a successful reply would report a
+             * refusal as a success and pass off the refuser's payload as the
+             * procedure's own output. */
+            if (rpc_msg.body.rbody.stat == MSG_ACCEPTED) {
+                reply_status = rpc_msg.body.rbody.areply.reply_data.stat;
+                if (reply_status == SUCCESS) {
+                    reply_status = 0;
+                }
+            } else {
+                reply_status = EVPL_RPC2_REPLY_DENIED;
+            }
+
+            evpl_rpc2_client_handle_reply(request, &verf, req_iov, req_niov,
+                                          request_length, reply_status);
         }
         break;
         default:
@@ -2619,8 +2651,18 @@ evpl_rpc2_event(
             DL_DELETE(rpc2_thread->conns, rpc2_conn);
             HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_request, tmp)
             {
+                struct evpl_rpc2_verf verf = { .data = NULL, .len = 0 };
+
                 HASH_DELETE(hh, rpc2_conn->pending_calls, rpc2_request);
-                evpl_rpc2_request_free(rpc2_conn->thread, rpc2_request);
+
+                /* No reply can arrive for these now, so complete each caller
+                 * with EVPL_RPC2_REPLY_CONN_LOST instead of freeing the
+                 * request behind its back -- a callback that never runs leaves
+                 * the caller waiting forever on a call that is already dead.
+                 * handle_reply releases the request once the callback returns.
+                 */
+                evpl_rpc2_client_handle_reply(rpc2_request, &verf, NULL, 0, 0,
+                                              EVPL_RPC2_REPLY_CONN_LOST);
             }
             if (rpc2_conn->thread->notify_callback) {
                 rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_DISCONNECTED;
