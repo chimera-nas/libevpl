@@ -337,35 +337,6 @@ rpc2_ntoh32(uint32_t value)
 #endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
 } /* rpc2_ntoh32 */
 
-/*
- * Ceiling on one RPC message, counted over every fragment of a record.
- *
- * The record mark is unauthenticated input: a peer can claim any length it
- * likes before sending a byte of it.  Without a ceiling the transport will
- * keep buffering whatever the claim asks for, so a single connection can be
- * made to consume memory without bound.  Capping it means an oversized claim
- * is refused at the framing layer, before anything is allocated for it.
- *
- * 4 MiB is comfortably above realistic RPC traffic -- NFS rsize/wsize is
- * typically 1 MiB and the payload for a large READ/WRITE travels in RDMA
- * chunks rather than inline -- while staying small enough that the worst case
- * per connection is bounded.  Adjust with evpl_rpc2_set_max_message_size().
- */
-#define EVPL_RPC2_DEFAULT_MAX_MSG_SIZE (4u * 1024u * 1024u)
-
-static uint32_t evpl_rpc2_max_msg_size = EVPL_RPC2_DEFAULT_MAX_MSG_SIZE;
-
-SYMBOL_EXPORT void
-evpl_rpc2_set_max_message_size(uint32_t bytes)
-{
-    evpl_rpc2_max_msg_size = bytes ? bytes : EVPL_RPC2_DEFAULT_MAX_MSG_SIZE;
-} /* evpl_rpc2_set_max_message_size */
-
-SYMBOL_EXPORT uint32_t
-evpl_rpc2_get_max_message_size(void)
-{
-    return evpl_rpc2_max_msg_size;
-} /* evpl_rpc2_get_max_message_size */
 
 static int
 rpc2_segment_callback(
@@ -389,10 +360,10 @@ rpc2_segment_callback(
      * accumulating bytes for it.  A negative return asks the transport to
      * close the connection: there is no way to answer a peer whose framing we
      * do not trust, and continuing would mean buffering on its terms. */
-    if (unlikely(frag_len > evpl_rpc2_max_msg_size)) {
+    if (unlikely(frag_len > evpl_config_rpc2_max_message_size())) {
         evpl_rpc2_error(
             "rpc2 record mark claims %u bytes, above the %u byte maximum; closing",
-            frag_len, evpl_rpc2_max_msg_size);
+            frag_len, evpl_config_rpc2_max_message_size());
         return -1;
     }
 
@@ -401,8 +372,9 @@ rpc2_segment_callback(
     return (int) frag_len + 4;
 } /* rpc2_segment_callback */
 
-/* Cap on a single reassembled RPC message, applied across fragments. */
-#define EVPL_RPC2_MAX_REASM_LENGTH (evpl_rpc2_max_msg_size)
+/* Cap on a single reassembled RPC message, applied across fragments.  Set with
+ * evpl_global_config_set_rpc2_max_message_size(). */
+#define EVPL_RPC2_MAX_REASM_LENGTH (evpl_config_rpc2_max_message_size())
 
 #define EVPL_RPC2_REASM_INIT_CAP   8
 

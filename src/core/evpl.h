@@ -24,6 +24,34 @@ struct evpl_thread_config {
 
 };
 
+/*
+ * Default ceiling on one RPC2 message, counted over every fragment of a record.
+ *
+ * The record mark is unauthenticated input: a peer can claim any length it
+ * likes before sending a byte of it.  Without a ceiling the transport keeps
+ * buffering whatever the claim asks for, so a single connection can be made to
+ * consume memory without bound.  Capping it means an oversized claim is refused
+ * at the framing layer, before anything is allocated for it.
+ *
+ * 4 MiB is comfortably above realistic RPC traffic -- NFS rsize/wsize is
+ * typically 1 MiB, and the payload for a large READ/WRITE travels in RDMA
+ * chunks rather than inline -- while staying small enough that the worst case
+ * per connection is bounded.
+ */
+#define EVPL_DEFAULT_RPC2_MAX_MESSAGE_SIZE (4U * 1024U * 1024U)
+
+/*
+ * Read the configured RPC2 message ceiling.
+ *
+ * rpc2 builds as its own shared object and so cannot reach the evpl_shared
+ * global directly; this is the exported accessor it uses.  Internal rather
+ * than public API: the value is set through
+ * evpl_global_config_set_rpc2_max_message_size() like every other knob.
+ */
+unsigned int
+evpl_config_rpc2_max_message_size(
+    void);
+
 struct evpl_global_config {
 
     struct evpl_thread_config thread_default;
@@ -73,6 +101,8 @@ struct evpl_global_config {
 
     unsigned int              preallocate_slabs;
     unsigned int              preallocate_threads;
+
+    unsigned int              rpc2_max_message_size;
 
     char                     *tls_cert_file;
     char                     *tls_key_file;
