@@ -66,11 +66,12 @@ macro(unit_test_rpc2_instance test_name protocol port)
     endforeach()
 endmacro()
 
-# As unit_test_rpc2_instance, but for the in-process transport, which touches
-# no kernel transport at all and so needs neither a namespace nor the shared
-# port lock.  The port argument is accepted and ignored: an inproc peer is
-# named, not addressed.
-macro(unit_test_rpc2_instance_inproc test_name protocol)
+# As unit_test_rpc2_instance, but for a transport that names its peer rather
+# than addressing it -- AF_UNIX or inproc.  Neither contends for a port, so
+# neither needs a network namespace or the shared "evpl_net" lock, and both run
+# fully in parallel including where CAP_NET_ADMIN is unavailable.  The port
+# argument is accepted and ignored; the name comes from test_address().
+macro(unit_test_rpc2_instance_named test_name protocol)
     foreach(mech ${EVPL_MECHANISMS})
         set(_test libevpl/rpc2/${test_name}_${protocol}_${mech})
 
@@ -78,7 +79,7 @@ macro(unit_test_rpc2_instance_inproc test_name protocol)
                  COMMAND ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p 0)
 
         set_tests_properties(${_test} PROPERTIES
-            ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=${mech}"
+            ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR}"
             TIMEOUT 10)
     endforeach()
 endmacro()
@@ -101,16 +102,26 @@ unit_test_rpc2_instance(hello_world DATAGRAM_TCP_RDMA 8200)
 unit_test_rpc2_instance(builtin_bool DATAGRAM_TCP_RDMA 8201)
 unit_test_rpc2_instance(rdma_ddp DATAGRAM_TCP_RDMA 8202)
 
+# AF_UNIX.  rpc2 is transport-agnostic above the bind, so these mirror the
+# STREAM_SOCKET_TCP set exactly; rdma_ddp is included for the same reason it is
+# registered for TCP, to cover the path where the transport reports no RDMA and
+# the chunks fall back to being carried inline.
+unit_test_rpc2_instance_named(hello_world STREAM_SOCKET_UNIX)
+unit_test_rpc2_instance_named(builtin_bool STREAM_SOCKET_UNIX)
+unit_test_rpc2_instance_named(rdma_ddp STREAM_SOCKET_UNIX)
+
 # In-process transport.  DATAGRAM_INPROC is the point of the exercise: it puts
 # rpc2's RDMA/DDP path under test with no RDMA hardware, and without
 # TCP_RDMA's request/reply emulation standing in for one-sided operations.
 # STREAM_INPROC covers the same programs over rpc2's stream framing instead.
 #
-# multifrag is absent deliberately: it hand-writes malformed RPC fragments into
-# its own AF_INET socket, and an inproc peer has no descriptor to write to.
-unit_test_rpc2_instance_inproc(hello_world DATAGRAM_INPROC)
-unit_test_rpc2_instance_inproc(builtin_bool DATAGRAM_INPROC)
-unit_test_rpc2_instance_inproc(rdma_ddp DATAGRAM_INPROC)
+# multifrag is absent from both deliberately: it hand-writes malformed RPC
+# fragments into its own AF_INET socket, and neither transport gives it a
+# descriptor to write to.
+unit_test_rpc2_instance_named(hello_world DATAGRAM_INPROC)
+unit_test_rpc2_instance_named(builtin_bool DATAGRAM_INPROC)
+unit_test_rpc2_instance_named(rdma_ddp DATAGRAM_INPROC)
 
-unit_test_rpc2_instance_inproc(hello_world STREAM_INPROC)
-unit_test_rpc2_instance_inproc(builtin_bool STREAM_INPROC)
+unit_test_rpc2_instance_named(hello_world STREAM_INPROC)
+unit_test_rpc2_instance_named(builtin_bool STREAM_INPROC)
+unit_test_rpc2_instance_named(rdma_ddp STREAM_INPROC)
