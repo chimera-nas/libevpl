@@ -27,7 +27,12 @@ RUN apt-get -y update && \
     libssl-dev openssl clangd uthash-dev libnuma-dev && \
     gem install jekyll bundler && \
     bundler install && \
-    npm install -g @anthropic-ai/claude-code
+    npm install -g @anthropic-ai/claude-code && \
+    # Quint drives the RPC2 conformance test: cmake detects it and generates
+    # that test's cases from the models at build time, so the version is pinned
+    # -- trace generation is seeded and reproducible for a given release, but
+    # different releases may sample the state space differently.
+    npm install -g @informalsystems/quint@0.32.0
 
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8

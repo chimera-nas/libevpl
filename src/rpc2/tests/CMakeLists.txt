@@ -125,3 +125,169 @@ unit_test_rpc2_instance_named(rdma_ddp DATAGRAM_INPROC)
 unit_test_rpc2_instance_named(hello_world STREAM_INPROC)
 unit_test_rpc2_instance_named(builtin_bool STREAM_INPROC)
 unit_test_rpc2_instance_named(rdma_ddp STREAM_INPROC)
+
+# ---------------------------------------------------------------------------
+# Model-based XDR/RPC2 conformance test
+#
+# The cases this test runs are generated from the Quint models in quint/ by a
+# build step, so the traces and the resulting case table are build artifacts
+# under the build tree rather than checked-in files that could drift from the
+# models they came from.  That makes quint a build dependency, so the whole
+# test is registered only when quint and python3 are both present; without
+# them the rest of the suite builds and runs as normal.
+# ---------------------------------------------------------------------------
+
+find_program(QUINT_EXECUTABLE quint)
+find_program(PYTHON3_EXECUTABLE NAMES python3 python)
+
+if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
+    set(QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
+    set(QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
+    set(CONFORMANCE_CASES ${QUINT_WORK_DIR}/conformance_cases.h)
+
+    add_custom_command(
+        OUTPUT ${CONFORMANCE_CASES}
+        COMMAND ${QUINT_SRC_DIR}/generate_cases.sh
+                ${QUINT_EXECUTABLE} ${PYTHON3_EXECUTABLE}
+                ${QUINT_SRC_DIR} ${QUINT_WORK_DIR} ${CONFORMANCE_CASES}
+        DEPENDS ${QUINT_SRC_DIR}/values.qnt
+                ${QUINT_SRC_DIR}/defects.qnt
+                ${QUINT_SRC_DIR}/itf_to_cases.py
+                ${QUINT_SRC_DIR}/generate_cases.sh
+        COMMENT "Generating RPC2 conformance cases from the Quint models"
+        VERBATIM)
+
+    add_custom_target(conformance_cases DEPENDS ${CONFORMANCE_CASES})
+
+    unit_test_rpc2(conformance conformance.x conformance.c gss_stub.c)
+    target_link_libraries(evpl_rpc2_conformance m)
+    target_sources(evpl_rpc2_conformance PRIVATE ${CONFORMANCE_CASES})
+
+    # The ERR_VERS check builds an RPC-over-RDMA transport header by hand, so
+    # it needs the rpcrdma1 codec.  Compiled into the test rather than linked
+    # from libevpl_rpc2 (which does not export it): a conformance test that
+    # encoded with the same code it is checking would pass on any pair of
+    # matching bugs.
+    # Generated code, so it gets the same exemptions unit_test_rpc2 applies to
+    # the XDR it generates itself.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_BINARY_DIR}/../rpcrdma1_xdr.c PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused;-Wno-format-truncation"
+    )
+
+    target_sources(evpl_rpc2_conformance PRIVATE
+                   ${CMAKE_CURRENT_BINARY_DIR}/../rpcrdma1_xdr.c)
+    target_include_directories(evpl_rpc2_conformance PRIVATE
+                               ${CMAKE_CURRENT_BINARY_DIR}/..)
+    target_include_directories(evpl_rpc2_conformance PRIVATE ${QUINT_WORK_DIR})
+
+    unit_test_rpc2_instance(conformance STREAM_SOCKET_TCP 8104)
+
+    # Also over RDMA-on-TCP: that transport needs no RDMA hardware or verbs but
+    # does carry the RPC-over-RDMA framing, so it reaches the chunk-negotiation
+    # and rdma_msg paths in rpc2.c that the stream transport never touches.  The
+    # raw-socket defect phase self-skips there (record marking is stream-only).
+    unit_test_rpc2_instance(conformance DATAGRAM_TCP_RDMA 8205)
+
+    # The same models over the name-addressed transports.  Neither contends for
+    # a port, so neither needs a network namespace or the shared lock: the
+    # socket name test_address() derives carries the pid and lives under the
+    # build tree, which is what makes these safe to run concurrently.
+    #
+    # AF_UNIX is a stream transport with a descriptor of its own, so it runs
+    # the raw-socket defect phase too -- record marking is a property of the
+    # framing, not of the address family, so the whole defect matrix applies.
+    unit_test_rpc2_instance_named(conformance STREAM_SOCKET_UNIX)
+
+    # Inproc, both ways round: DATAGRAM_INPROC reports RDMA and so exercises
+    # the chunk and rdma_msg paths with no hardware and none of TCP_RDMA's
+    # emulation in the way, while STREAM_INPROC covers the same models over
+    # rpc2's stream framing.  Neither has a descriptor the defect phase could
+    # write to, so both self-skip it.
+    unit_test_rpc2_instance_named(conformance DATAGRAM_INPROC)
+    unit_test_rpc2_instance_named(conformance STREAM_INPROC)
+
+    # Several hundred RPCs per run, plus a raw-socket defect matrix in which a
+    # few cases deliberately wait out a reply timeout -- more than the 10s the
+    # macro grants by default.
+    foreach(proto STREAM_SOCKET_TCP DATAGRAM_TCP_RDMA STREAM_SOCKET_UNIX
+            DATAGRAM_INPROC STREAM_INPROC)
+        foreach(mech ${EVPL_MECHANISMS})
+            set_tests_properties(libevpl/rpc2/conformance_${proto}_${mech}
+                                 PROPERTIES TIMEOUT 120)
+        endforeach()
+    endforeach()
+
+    # -----------------------------------------------------------------------
+    # The same idea inverted: a hostile server driving libevpl's *client*.
+    #
+    # conformance.c can only reach the client's outbound path, because the
+    # replies it sees come from a real libevpl server and are therefore always
+    # well formed.  conformance_client.c is a raw socket pretending to be a
+    # server, so the reply bytes are chosen by the test; its model and case
+    # table are separate from the server-side ones.
+    #
+    # It reuses hello_world.x unmodified -- the reply defects live in the RPC
+    # envelope and in the framing, so a one-procedure program reaches all of
+    # them and keeps the hand-built bytes readable.
+    # -----------------------------------------------------------------------
+
+    set(CLIENT_CASES ${QUINT_WORK_DIR}/client_cases.h)
+
+    add_custom_command(
+        OUTPUT ${CLIENT_CASES}
+        COMMAND ${QUINT_SRC_DIR}/generate_client_cases.sh
+                ${QUINT_EXECUTABLE} ${PYTHON3_EXECUTABLE}
+                ${QUINT_SRC_DIR} ${QUINT_WORK_DIR} ${CLIENT_CASES}
+        DEPENDS ${QUINT_SRC_DIR}/client.qnt
+                ${QUINT_SRC_DIR}/itf_to_client_cases.py
+                ${QUINT_SRC_DIR}/generate_client_cases.sh
+        COMMENT "Generating RPC2 client reply cases from the Quint model"
+        VERBATIM)
+
+    add_custom_target(client_cases DEPENDS ${CLIENT_CASES})
+
+    unit_test_rpc2(conformance_client hello_world.x conformance_client.c)
+    target_sources(evpl_rpc2_conformance_client PRIVATE ${CLIENT_CASES})
+    target_include_directories(evpl_rpc2_conformance_client
+                               PRIVATE ${QUINT_WORK_DIR})
+
+    unit_test_rpc2_instance(conformance_client STREAM_SOCKET_TCP 8106)
+
+    # A hundred cases, a handful of which deliberately wait out a reply
+    # deadline to prove no callback arrives -- more than the 10s the macro
+    # grants by default.
+    foreach(mech ${EVPL_MECHANISMS})
+        set_tests_properties(
+            libevpl/rpc2/conformance_client_STREAM_SOCKET_TCP_${mech}
+            PROPERTIES TIMEOUT 120)
+    endforeach()
+
+    # The models checking themselves: scenario tests plus a random-simulation
+    # pass against their invariants.  Separate from generation so that a broken
+    # specification is a failing test rather than a failing build.
+    add_test(NAME libevpl/rpc2/quint_model
+             COMMAND ${QUINT_SRC_DIR}/check_models.sh
+                     ${QUINT_EXECUTABLE} ${QUINT_SRC_DIR})
+    set_tests_properties(libevpl/rpc2/quint_model PROPERTIES
+                         LABELS "quint" TIMEOUT 120)
+
+    # The client model checks itself the same way.  Registered directly rather
+    # than through check_models.sh so that the server-side script stays the
+    # server-side script.
+    add_test(NAME libevpl/rpc2/quint_client_model
+             COMMAND ${QUINT_EXECUTABLE} test ${QUINT_SRC_DIR}/client.qnt)
+    set_tests_properties(libevpl/rpc2/quint_client_model PROPERTIES
+                         LABELS "quint" TIMEOUT 120)
+
+    add_test(NAME libevpl/rpc2/quint_client_invariants
+             COMMAND ${QUINT_EXECUTABLE} run ${QUINT_SRC_DIR}/client.qnt
+                     --invariant=safety --max-samples=500 --max-steps=50)
+    set_tests_properties(libevpl/rpc2/quint_client_invariants PROPERTIES
+                         LABELS "quint" TIMEOUT 120)
+
+    message(STATUS "RPC2 conformance test enabled (quint: ${QUINT_EXECUTABLE})")
+else()
+    message(STATUS
+        "RPC2 conformance test disabled (needs quint and python3 on PATH)")
+endif()
