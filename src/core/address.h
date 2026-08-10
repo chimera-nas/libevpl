@@ -89,21 +89,25 @@ void
 evpl_address_release(
     struct evpl_address *address);
 
+/* Per-address private state is indexed by framework id: release-time
+ * iterates framework_private[] by framework id to find the owning
+ * framework's release_address callback (see evpl_address_release).
+ */
 static inline void *
 evpl_address_private(
-    struct evpl_address  *address,
-    enum evpl_protocol_id protocol)
+    struct evpl_address   *address,
+    enum evpl_framework_id framework)
 {
-    return address->framework_private[protocol];
+    return address->framework_private[framework];
 } // evpl_address_private
 
 static inline void
 evpl_address_set_private(
-    struct evpl_address  *address,
-    enum evpl_protocol_id protocol,
-    void                 *private_data)
+    struct evpl_address   *address,
+    enum evpl_framework_id framework,
+    void                  *private_data)
 {
-    address->framework_private[protocol] = private_data;
+    address->framework_private[framework] = private_data;
 } // evpl_address_set_private
 
 static inline void

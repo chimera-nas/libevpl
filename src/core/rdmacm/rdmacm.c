@@ -432,7 +432,7 @@ evpl_rdmacm_event_callback(
                 ah->qkey    = cm_event->param.ud.qkey;
 
                 evpl_address_set_private(rdmacm_id->resolve_addr,
-                                         bind->protocol->id,  ah);
+                                         EVPL_FRAMEWORK_RDMACM, ah);
 
                 evpl_address_release(rdmacm_id->resolve_addr);
                 rdmacm_id->resolve_addr = NULL;
@@ -1569,7 +1569,7 @@ evpl_rdmacm_flush_datagram(
         dgram = evpl_dgram_ring_waist(&bind->dgram_send);
 
         if (rdmacm_id->ud) {
-            ah = evpl_address_private(dgram->addr, bind->protocol->id);
+            ah = evpl_address_private(dgram->addr, EVPL_FRAMEWORK_RDMACM);
 
             if (!ah) {
                 if (!rdmacm_id->resolve_addr) {
@@ -1664,7 +1664,7 @@ evpl_rdmacm_flush_datagram(
         }
 
         if (rdmacm_id->ud) {
-            ah = evpl_address_private(dgram->addr, bind->protocol->id);
+            ah = evpl_address_private(dgram->addr, EVPL_FRAMEWORK_RDMACM);
 
             ibv_wr_set_ud_addr(qp, ah->ahset[rdmacm_id->devindex],
                                ah->qp_num, ah->qkey);
