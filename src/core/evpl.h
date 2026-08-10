@@ -91,6 +91,20 @@ struct evpl_global_config {
 
     unsigned int              xlio_enabled;
 
+    unsigned int              libfabric_enabled;
+    char                     *libfabric_provider;
+    unsigned int              libfabric_cq_size;
+    unsigned int              libfabric_tx_size;
+    unsigned int              libfabric_rq_size;
+    unsigned int              libfabric_rq_batch;
+    unsigned int              libfabric_inject_max;
+    unsigned int              libfabric_datagram_size_override;
+    /* externally provided libfabric objects (see evpl/evpl_libfabric.h);
+     * opaque here so this header carries no libfabric dependency */
+    void                     *libfabric_external_fabric;
+    void                     *libfabric_external_domain;
+    const void               *libfabric_external_info;
+
     unsigned int              vfio_enabled;
 
     unsigned int              libaio_enabled;

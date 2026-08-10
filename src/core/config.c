@@ -76,6 +76,15 @@ evpl_global_config_init(void)
 
     config->xlio_enabled = 1;
 
+    config->libfabric_enabled                = 1;
+    config->libfabric_provider               = NULL;
+    config->libfabric_cq_size                = 8192;
+    config->libfabric_tx_size                = 256;
+    config->libfabric_rq_size                = 256;
+    config->libfabric_rq_batch               = 16;
+    config->libfabric_inject_max             = 0;
+    config->libfabric_datagram_size_override = 0;
+
     config->vfio_enabled = 1;
 
     config->libaio_enabled     = 1;
@@ -112,6 +121,10 @@ evpl_global_config_free(struct evpl_global_config *config)
 
     if (config->tls_cipher_list) {
         evpl_free(config->tls_cipher_list);
+    }
+
+    if (config->libfabric_provider) {
+        evpl_free(config->libfabric_provider);
     }
 
     evpl_free(config);
@@ -527,6 +540,74 @@ evpl_global_config_set_rdmacm_rnr_retry_count(
 {
     config->rdmacm_rnr_retry_count = retry_count;
 } /* evpl_global_config_set_rdmacm_rnr_retry_count */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->libfabric_enabled = enabled;
+} /* evpl_global_config_set_libfabric_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_provider(
+    struct evpl_global_config *config,
+    const char                *provider)
+{
+    if (config->libfabric_provider) {
+        evpl_free(config->libfabric_provider);
+    }
+
+    config->libfabric_provider = provider ? strdup(provider) : NULL;
+} /* evpl_global_config_set_libfabric_provider */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_cq_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->libfabric_cq_size = size;
+} /* evpl_global_config_set_libfabric_cq_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_tx_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->libfabric_tx_size = size;
+} /* evpl_global_config_set_libfabric_tx_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_rq_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->libfabric_rq_size = size;
+} /* evpl_global_config_set_libfabric_rq_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_rq_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch)
+{
+    config->libfabric_rq_batch = batch;
+} /* evpl_global_config_set_libfabric_rq_batch */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_inject_max(
+    struct evpl_global_config *config,
+    unsigned int               max)
+{
+    config->libfabric_inject_max = max;
+} /* evpl_global_config_set_libfabric_inject_max */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_datagram_size_override(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->libfabric_datagram_size_override = size;
+} /* evpl_global_config_set_libfabric_datagram_size_override */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_xlio_enabled(
