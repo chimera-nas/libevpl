@@ -47,6 +47,10 @@
 #include "rdmacm/rdmacm.h"
 #endif /* ifdef HAVE_RDMACM */
 
+#ifdef HAVE_LIBFABRIC
+#include "libfabric/libfabric.h"
+#endif /* ifdef HAVE_LIBFABRIC */
+
 #ifdef HAVE_VFIO
 #include "vfio/vfio.h"
 #endif /* ifdef HAVE_VFIO */
@@ -301,6 +305,19 @@ evpl_shared_init(struct evpl_global_config *config)
                            &evpl_rdmacm_ud_datagram);
     }
 #endif /* ifdef HAVE_RDMACM */
+
+#ifdef HAVE_LIBFABRIC
+    if (config->libfabric_enabled) {
+        evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_LIBFABRIC,
+                            &evpl_framework_libfabric);
+        evpl_protocol_init(evpl_shared, EVPL_STREAM_LIBFABRIC_MSG,
+                           &evpl_libfabric_msg_stream);
+        evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_LIBFABRIC_MSG,
+                           &evpl_libfabric_msg_datagram);
+        evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_LIBFABRIC_RDM,
+                           &evpl_libfabric_rdm_datagram);
+    }
+#endif /* ifdef HAVE_LIBFABRIC */
 
 #ifdef HAVE_VFIO
     if (config->vfio_enabled) {

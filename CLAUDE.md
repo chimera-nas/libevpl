@@ -46,6 +46,7 @@ src/
 ├── core/           # Core event loop, protocol abstraction
 │   ├── socket/     # Traditional TCP/UDP
 │   ├── rdmacm/     # RDMA CM (RC/UD)
+│   ├── libfabric/  # libfabric (OFI) transports (MSG stream/datagram, RDM)
 │   ├── xlio/       # NVIDIA XLIO acceleration
 │   └── io_uring/   # io_uring support
 ├── http/           # HTTP client/server
