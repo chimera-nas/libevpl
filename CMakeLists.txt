@@ -296,6 +296,22 @@ message(STATUS "Event core mechanisms: ${EVPL_MECHANISMS} (default: ${EVPL_MECH}
 add_definitions(-g -Wall -Werror -Wno-unused-function)
 add_definitions(-fvisibility=hidden)
 
+# Warnings to waive on xdrzcc-generated sources, which are held to the same
+# -Werror as hand-written code: the emitted code carries helpers a given .x
+# does not use, and its dumpers snprintf() into fixed buffers where truncation
+# is the intent.
+#
+# -Wno-format-truncation is a GCC spelling with no clang equivalent.  clang
+# does not reject an unknown -Wno-* on sight -- it holds the complaint back and
+# only raises it if some other diagnostic fires -- so a build can pass with the
+# flag present and still fail the moment anything else warns, which is what
+# happened on macOS.  Offer it only where it exists.
+set(EVPL_XDR_WARNING_FLAGS "-Wno-unused")
+
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    list(APPEND EVPL_XDR_WARNING_FLAGS "-Wno-format-truncation")
+endif()
+
 set(LIBEVPL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 include_directories(3rdparty)

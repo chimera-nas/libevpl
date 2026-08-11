@@ -18,21 +18,40 @@
  * Private address family for the in-process transport.
  *
  * An inproc peer is a thread, not anything the kernel knows about, so there is
- * no real family to borrow.  This value is well above AF_MAX so it can never
- * be confused with one, and an EVPL_AF_INPROC sockaddr is never passed to a
+ * no real family to borrow.  This value is above AF_MAX so it can never be
+ * confused with one, and an EVPL_AF_INPROC sockaddr is never passed to a
  * syscall -- it exists only to let struct evpl_address carry an inproc name
  * through the same plumbing as every other peer address.
+ *
+ * It has to fit sa_family_t, which is where the original 0x4950 ('IP') came
+ * unstuck: that is fine in Linux's 16-bit sa_family_t, but Darwin's is 8 bits,
+ * so the value truncated to 80 and switching on it did not even compile.  0xF0
+ * clears AF_MAX on both (mid-40s on Linux, low-40s on Darwin) with room to
+ * spare, and fits a byte.
  */
-#define EVPL_AF_INPROC       0x4950  /* 'IP' */
+#define EVPL_AF_INPROC       0xF0
 
 /* Longest inproc name including its NUL.  Matched to sun_path so the two
  * name-addressed transports have the same budget, and small enough that the
  * rendered form still fits EVPL_ADDRESS_STRLEN. */
 #define EVPL_INPROC_NAME_MAX 108
 
+/*
+ * Laid out to alias struct sockaddr's leading fields, since that is how the
+ * family is read back -- evpl_address hands this to code that casts to struct
+ * sockaddr and switches on sa_family.  The BSDs put a length byte first and
+ * the family second, so the header differs by platform and this has to follow
+ * it; on Linux the family is simply first.
+ */
 struct evpl_sockaddr_inproc {
+#ifdef __APPLE__
+    uint8_t     len;
+    uint8_t     family;
+    uint16_t    pad;
+#else  /* ifdef __APPLE__ */
     sa_family_t family;
     uint16_t    pad;
+#endif  /* ifdef __APPLE__ */
     /* Distinguishes the two ends and successive connections to one name: 0 for
      * a listener, a nonzero serial for a connection.  The analogue of an
      * ephemeral port -- without it two concurrent connections to the same name
@@ -126,19 +145,32 @@ evpl_address_get_address(
             pathlen = (int) address->addrlen -
                 (int) offsetof(struct sockaddr_un, sun_path);
 
-            if (pathlen <= 0) {
-                /* An unbound peer.  Unix clients are typically not bound to
-                 * any name, so accept() and getsockname() hand back an
-                 * addrlen of exactly sizeof(sa_family_t) with an empty
-                 * sun_path.  This is the ordinary case for the remote end of
-                 * an accepted connection, not an error. */
-                snprintf(str, len, "unix:*");
-            } else if (sun->sun_path[0] == '\0') {
-                /* Abstract namespace.  The name is the remaining pathlen - 1
-                 * bytes and is not NUL terminated, so it needs an explicit
-                 * precision. */
+#ifdef __linux__
+            /* Abstract namespace.  The name is the remaining pathlen - 1
+             * bytes and is not NUL terminated, so it needs an explicit
+             * precision.
+             *
+             * Tested before the unbound case, and only on Linux, because the
+             * abstract namespace is a Linux extension: a leading NUL there
+             * introduces a name, but on the BSDs it only ever means the socket
+             * has none.  Rendering that as an abstract name would turn every
+             * unbound BSD peer into "unix:@". */
+            if (pathlen > 0 && sun->sun_path[0] == '\0') {
                 snprintf(str, len, "unix:@%.*s", pathlen - 1,
                          sun->sun_path + 1);
+                break;
+            }
+#endif /* ifdef __linux__ */
+
+            if (pathlen <= 0 || sun->sun_path[0] == '\0') {
+                /* An unbound peer.  Unix clients are typically not bound to
+                 * any name, so accept() and getsockname() hand back either an
+                 * addrlen of exactly sizeof(sa_family_t) with an empty
+                 * sun_path, or -- on the BSDs, which pad the address out --
+                 * a sun_path that simply starts with a NUL.  This is the
+                 * ordinary case for the remote end of an accepted connection,
+                 * not an error. */
+                snprintf(str, len, "unix:*");
             } else {
                 /* Pathname socket.  Bound by strnlen rather than trusting an
                  * addrlen that came from the kernel via a peer. */

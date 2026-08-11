@@ -79,7 +79,7 @@ evpl_socket_unix_clear_stale(
     const char            *path)
 {
     struct stat st;
-    int         fd, rc;
+    int         fd, rc, flags;
 
     /* Never unlink something that is not a socket: a typo in an endpoint path
      * must not delete a user's file. */
@@ -87,9 +87,19 @@ evpl_socket_unix_clear_stale(
         return 0;
     }
 
-    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
     if (fd < 0) {
+        return 0;
+    }
+
+    /* Non-blocking, for the reason the connect() result check below spells
+     * out.  Set with fcntl() rather than by passing SOCK_NONBLOCK to socket(),
+     * which is a Linux extension the BSDs do not have. */
+    flags = fcntl(fd, F_GETFL, 0);
+
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd);
         return 0;
     }
 

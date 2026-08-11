@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Ben Jarvis
+#
+# SPDX-License-Identifier: Unlicense
+
+ARG DOCKER_MIRROR=""
+FROM ${DOCKER_MIRROR}rockylinux/rockylinux:9
+
+RUN dnf install -y epel-release && \
+    dnf config-manager --set-enabled crb
+
+# The Rocky counterpart of the Ubuntu image: toolchain, the libraries the CMake
+# feature probes look for, the headers libevpl includes directly, and iproute2
+# for the network-namespace test isolation.  Everything chimera needs for a NAS
+# stack -- rocksdb, samba, krb5, S3 -- is absent, since libevpl needs none of it.
+RUN dnf -y update && \
+    dnf -y --allowerasing install \
+    gcc gcc-c++ clang clang-tools-extra clang-analyzer llvm libasan \
+    cmake ninja-build ccache git flex bison pkgconfig \
+    uncrustify ca-certificates curl iproute \
+    openssl-devel openssl \
+    liburing-devel libaio-devel rdma-core-devel numactl-devel libunwind-devel \
+    libnghttp2-devel libcurl-devel protobuf-c-devel protobuf-c-compiler \
+    uthash-devel libuuid-devel && \
+    dnf clean all

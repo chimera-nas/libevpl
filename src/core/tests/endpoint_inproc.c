@@ -140,9 +140,24 @@ main(
     enum evpl_protocol_id         proto;
     char                          name[160];
     char                          expect[EVPL_ADDRESS_STRLEN];
+    char                          sockpath[96];
+    const char                   *dir;
     int                           rc;
 
     evpl_init(NULL);
+
+    /* Scoped to this build tree and this process even though the endpoint
+     * below is never bound: concurrent runs share the machine, so a socket
+     * name that is not unique per run is a conflict waiting to happen the
+     * moment someone binds it. */
+    dir = getenv("EVPL_TEST_SOCKET_DIR");
+
+    if (!dir || dir[0] != '/') {
+        dir = "/tmp";
+    }
+
+    snprintf(sockpath, sizeof(sockpath), "%s/evpl-endpoint-inproc-%d.sock",
+             dir, (int) getpid());
 
     /* --- rejected forms --- */
     CHECK(evpl_endpoint_create_inproc(NULL) == NULL, "NULL name rejected");
@@ -174,7 +189,10 @@ main(
     CHECK(inet_ep && !evpl_endpoint_is_inproc(inet_ep),
           "create('127.0.0.1') stays inet");
 
-    local_ep = evpl_endpoint_create_local("@endpoint-inproc-unix");
+    /* A pathname rather than an abstract name: this only has to be some local
+     * endpoint that is not inproc, so there is no reason to reach for the one
+     * form of it that is Linux-only. */
+    local_ep = evpl_endpoint_create_local(sockpath);
     CHECK(local_ep && !evpl_endpoint_is_inproc(local_ep),
           "an AF_UNIX endpoint is not in-process");
 

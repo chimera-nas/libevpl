@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Ben Jarvis
+#
+# SPDX-License-Identifier: Unlicense
+
+ARG DOCKER_MIRROR=""
+FROM ${DOCKER_MIRROR}ubuntu:24.04
+ARG APT_MIRROR=""
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN if [ -n "$APT_MIRROR" ]; then \
+    echo "deb $APT_MIRROR noble main universe" > /etc/apt/sources.list.d/local-mirror.list && \
+    echo "deb $APT_MIRROR noble-updates main universe" >> /etc/apt/sources.list.d/local-mirror.list && \
+    echo "deb $APT_MIRROR noble-security main universe" >> /etc/apt/sources.list.d/local-mirror.list && \
+    rm -f /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+
+# libevpl needs a good deal less than a full NAS stack: no rocksdb, no samba or
+# krb5, no S3, no jansson/xxhash/urcu.  What is here is the toolchain, the
+# handful of libraries the CMake feature probes look for (uring, aio, rdmacm,
+# numa, unwind, nghttp2, protobuf-c for the tracing submodule), the headers it
+# includes directly (uthash), and iproute2, without which the network-namespace
+# test isolation cannot be set up and most of the suite self-disables.
+RUN apt-get -y update && \
+    apt-get -y --no-install-recommends upgrade && \
+    apt-get -y --no-install-recommends install \
+    gcc g++ clang clang-tools llvm libclang-rt-dev \
+    cmake ninja-build ccache git flex bison build-essential pkg-config \
+    uncrustify ca-certificates curl iproute2 \
+    libssl-dev openssl \
+    liburing-dev libaio-dev librdmacm-dev libnuma-dev libunwind-dev \
+    libnghttp2-dev libcurl4-openssl-dev libprotobuf-c-dev protobuf-c-compiler \
+    uthash-dev uuid-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*

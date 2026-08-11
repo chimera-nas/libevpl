@@ -1,0 +1,370 @@
+# SPDX-FileCopyrightText: 2026 Ben Jarvis
+#
+# SPDX-License-Identifier: Unlicense
+
+name: Build and Test
+
+# Unlike chimera, libevpl does not use a merge queue, so the matrix runs on the
+# pull request itself and again on push to main.  It can afford to: the whole
+# suite is a couple of hundred fast tests rather than a multi-hour NAS
+# integration run, so there is no reason to defer it to a queue.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+# Two phases rather than chimera's three.  chimera compiles, ships the build
+# tree to a Nexus scratch repo, and pulls it back down in sharded test jobs,
+# because its suite takes long enough to be worth splitting.  libevpl's runs in
+# seconds, so compiling and testing in the same job is both simpler and faster
+# than moving a build tree across the network to save nothing.
+#
+#   1. Build    container images                (build-<image>)
+#   2. Test      compile + ctest                 (test)
+#      Analyze   scan-build                      (static-analysis)
+#      macOS     compile + ctest, hosted runner  (macos)
+#
+# Cancel superseded runs on a branch: a PR that is pushed to twice does not
+# need the first matrix to finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Same self-hosted infrastructure chimera uses: an internal registry for the
+  # images, an apt mirror, and a shared ccache backend.  The ccache URL carries
+  # upload credentials and so lives in a repository secret; without it the build
+  # still works, just local-only.
+  DEV_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-dev
+  U26_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26
+  U24_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24
+  U22_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22
+  R9_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-rocky9
+  R10_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-rocky10
+  APT_MIRROR: http://repository.mdh.quantum.com/repository/pkgs/ubuntu
+  DOCKER_MIRROR: repository.mdh.quantum.com/
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Phase 1: container images.
+  #
+  # One job per image so they build in parallel.  amd64 and arm64 for the
+  # devcontainer, amd64 only for the distro images -- the distros exist to check
+  # that libevpl builds against the library versions they ship, which is not
+  # architecture-specific, while the devcontainer is where the tests actually
+  # run on both.
+  # ---------------------------------------------------------------------------
+  build-devcontainer:
+    name: Build devcontainer ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: arc-amd64
+            arch: amd64
+          - platform: linux/arm64
+            runner: arc-arm64
+            arch: arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push devcontainer image
+        uses: docker/build-push-action@v6
+        with:
+          # docs/, not .devcontainer/: the Dockerfile ADDs the Gemfile that the
+          # docs build needs, and that lives under docs/.  devcontainer.json
+          # says the same thing with "context": "../docs".
+          context: docs
+          file: .devcontainer/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ env.DEV_IMAGE_TAG_PREFIX }}:${{ github.sha }}-${{ matrix.arch }}
+          build-args: |
+            DOCKER_MIRROR=${{ env.DOCKER_MIRROR }}
+            APT_MIRROR=${{ env.APT_MIRROR }}
+          cache-from: type=registry,ref=${{ env.DEV_IMAGE_TAG_PREFIX }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.DEV_IMAGE_TAG_PREFIX }}:buildcache-${{ matrix.arch }},mode=max
+
+  build-distro:
+    name: Build ${{ matrix.image_name }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image_name: ubuntu26, dockerfile: Dockerfile.ubuntu26.04, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", platform: linux/amd64, runner: arc-amd64, arch: amd64 }
+          - { image_name: ubuntu24, dockerfile: Dockerfile.ubuntu24.04, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", platform: linux/amd64, runner: arc-amd64, arch: amd64 }
+          - { image_name: ubuntu22, dockerfile: Dockerfile.ubuntu22.04, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", platform: linux/amd64, runner: arc-amd64, arch: amd64 }
+          - { image_name: rocky9,   dockerfile: Dockerfile.rocky9,      tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9",   platform: linux/amd64, runner: arc-amd64, arch: amd64 }
+          - { image_name: rocky10,  dockerfile: Dockerfile.rocky10,     tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10",  platform: linux/amd64, runner: arc-amd64, arch: amd64 }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.image_name }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ matrix.tag_prefix }}:${{ github.sha }}-${{ matrix.arch }}
+          build-args: |
+            DOCKER_MIRROR=${{ env.DOCKER_MIRROR }}
+            APT_MIRROR=${{ env.APT_MIRROR }}
+          cache-from: type=registry,ref=${{ matrix.tag_prefix }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ matrix.tag_prefix }}:buildcache-${{ matrix.arch }},mode=max
+
+  # ---------------------------------------------------------------------------
+  # Phase 2: compile and run the suite, in one job per image/arch/build type.
+  #
+  # --privileged because the tests put each network-listening case in its own
+  # network namespace; REQUIRE_NETNS_TESTS=ON makes configure fail rather than
+  # quietly fall back to the shared-port path if that isolation is unavailable,
+  # which would otherwise turn a broken runner into a green run.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
+    needs: [build-devcontainer, build-distro]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          - { image_name: ubuntu26, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: ubuntu26, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          - { image_name: ubuntu24, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: ubuntu24, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          - { image_name: ubuntu22, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "-DIO_URING_ENABLED=OFF" }
+          - { image_name: ubuntu22, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "-DIO_URING_ENABLED=OFF" }
+          - { image_name: rocky9, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: rocky9, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          - { image_name: rocky10, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: rocky10, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          # The devcontainer is the one image tested on both architectures.
+          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: arm64, runner: arc-arm64, build_type: Release , cmake_extra: "" }
+          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: arm64, runner: arc-arm64, build_type: Debug , cmake_extra: "" }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Configure, build and test inside the container
+        run: |
+          mkdir -p "${{ github.workspace }}/ctest-results"
+          docker run --rm --privileged \
+            -e CCACHE_DIR=/build/ccache \
+            -e CCACHE_REMOTE_STORAGE="${{ secrets.CCACHE_REMOTE_STORAGE }}" \
+            -v "${{ github.workspace }}:/workspace" \
+            -v /build \
+            -w /build \
+            ${{ matrix.tag_prefix }}:${{ github.sha }}-${{ matrix.arch }} \
+            bash -euxc '
+              cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+                    -DREQUIRE_NETNS_TESTS=ON ${{ matrix.cmake_extra }} /workspace
+              ninja
+              ccache --show-stats || true
+              rc=0
+              ctest --output-on-failure --test-output-size-failed 65536 \
+                    --timeout 300 -j "$(nproc)" \
+                    --output-junit /workspace/ctest-results/results.xml || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                echo "ctest reported failures; rerunning them to tell a flake from a real failure"
+                if ctest --rerun-failed --output-on-failure \
+                         --test-output-size-failed 65536 --timeout 300; then
+                  echo "rerun passed: treating as flaky"
+                  cp /build/Testing/Temporary/LastTestsFailed.log /workspace/flaky-rescued.log
+                  rc=0
+                else
+                  echo "rerun still failing: real failure"
+                fi
+              fi
+              exit $rc'
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ctest-junit-${{ matrix.image_name }}-${{ matrix.arch }}-${{ matrix.build_type }}
+          path: ctest-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # A rescued flake is not a failure, but it should not vanish either --
+      # the artifact is what makes it reviewable after the fact.
+      - name: Upload flaky-test marker
+        if: ${{ hashFiles('flaky-rescued.log') != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: flaky-marker-${{ matrix.image_name }}-${{ matrix.arch }}-${{ matrix.build_type }}
+          path: flaky-rescued.log
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # clang static analysis.
+  #
+  # libevpl had none of this until chimera's analysis of its own tree -- which
+  # includes ext/libevpl -- started failing on a libevpl test file.  Running it
+  # here catches that at source instead of in a downstream bump.
+  # ---------------------------------------------------------------------------
+  static-analysis:
+    name: Analyze ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
+    needs: [build-devcontainer]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: arc-amd64, build_type: Release, image_name: devcontainer }
+          - { arch: amd64, runner: arc-amd64, build_type: Debug,   image_name: devcontainer }
+          - { arch: arm64, runner: arc-arm64, build_type: Release, image_name: devcontainer }
+          - { arch: arm64, runner: arc-arm64, build_type: Debug,   image_name: devcontainer }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # IO_URING_NVME_ENABLED=OFF matches chimera, and is what that option's
+      # own help text recommends: the NVMe uring_cmd path sends the analyzer
+      # into liburing's inline functions, where it reports a null dereference
+      # in the system header -- not actionable, and not ours.
+      - name: Perform clang static analysis
+        id: static-analysis
+        run: |
+          set -o pipefail
+          mkdir -p "${{ github.workspace }}/scan-report"
+          docker run --rm --privileged \
+            -v "${{ github.workspace }}:/workspace" \
+            -v "${{ github.workspace }}/scan-report:/scan-report" \
+            -v /build \
+            -w /build \
+            ${{ env.DEV_IMAGE_TAG_PREFIX }}:${{ github.sha }}-${{ matrix.arch }} \
+            bash -euxc '\
+              scan-build --status-bugs -o /scan-report \
+              sh -c "cmake -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} -D IO_URING_NVME_ENABLED=OFF -B /build -S /workspace -G Ninja && ninja -C /build"' \
+            2>&1 | tee "${{ github.workspace }}/scan-report/scan-build-output.txt"
+
+      - name: Upload static analysis report
+        if: ${{ failure() && steps.static-analysis.outcome == 'failure' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: scan-report-${{ matrix.image_name }}-${{ matrix.arch }}-${{ matrix.build_type }}
+          path: scan-report/
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # macOS, on a GitHub-hosted runner.
+  #
+  # libevpl builds on Darwin with kqueue where Linux uses epoll, and the CMake
+  # already knows where Homebrew keeps keg-only openssl and the uthash headers.
+  # Nothing here is containerised, and none of the Linux-only backends (io_uring,
+  # rdmacm, xlio) exist, so this covers the kqueue core and the portable paths
+  # above it -- which is exactly the part nothing else in this matrix exercises.
+  # ---------------------------------------------------------------------------
+  macos:
+    name: Test macOS ${{ matrix.build_type }}
+    runs-on: macos-14
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew update
+          # openssl@3 and nghttp2 are keg-only; CMakeLists.txt already adds the
+          # Homebrew prefixes for them.  uthash is headers only.
+          brew install cmake ninja ccache openssl@3 nghttp2 uthash protobuf-c
+
+      - name: Configure and build
+        run: |
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+                -S "${{ github.workspace }}" -B "${{ runner.temp }}/build"
+          ninja -C "${{ runner.temp }}/build"
+
+      # No REQUIRE_NETNS_TESTS here: network namespaces are a Linux feature, so
+      # the suite falls back to its serialised shared-port path on Darwin.
+      - name: Test
+        run: |
+          cd "${{ runner.temp }}/build"
+          mkdir -p "${{ github.workspace }}/ctest-results"
+          rc=0
+          ctest --output-on-failure --test-output-size-failed 65536 \
+                --timeout 300 -j "$(sysctl -n hw.ncpu)" \
+                --output-junit "${{ github.workspace }}/ctest-results/results.xml" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "ctest reported failures; rerunning them to tell a flake from a real failure"
+            if ctest --rerun-failed --output-on-failure --timeout 300; then
+              echo "rerun passed: treating as flaky"
+              rc=0
+            else
+              echo "rerun still failing: real failure"
+            fi
+          fi
+          exit $rc
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ctest-junit-macos-${{ matrix.build_type }}
+          path: ctest-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # One job to require in branch protection, so the set of matrix legs can
+  # change without editing the protection rule.  It fails if any dependency
+  # failed or was cancelled -- `needs.*.result` rather than success(), so a
+  # skipped-but-not-run leg cannot pass for the wrong reason.
+  # ---------------------------------------------------------------------------
+  ci-complete:
+    name: CI complete
+    if: always()
+    needs: [test, static-analysis, macos]
+    runs-on: arc-small
+    steps:
+      - name: Check matrix results
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "dependency results: ${results}"
+          for r in ${results}; do
+            if [ "$r" != "success" ]; then
+              echo "a required job did not succeed"
+              exit 1
+            fi
+          done
