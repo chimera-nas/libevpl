@@ -23,7 +23,7 @@ macro(unit_test_rpc2 test_name xdr_file)
     )
 
     set_source_files_properties(
-        ${XDR_C} PROPERTIES COMPILE_OPTIONS "-Wno-unused;-Wno-format-truncation"
+        ${XDR_C} PROPERTIES COMPILE_OPTIONS "${EVPL_XDR_WARNING_FLAGS}"
     )
 
     include_directories(${CMAKE_CURRENT_BINARY_DIR})
@@ -172,7 +172,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # the XDR it generates itself.
     set_source_files_properties(
         ${CMAKE_CURRENT_BINARY_DIR}/../rpcrdma1_xdr.c PROPERTIES
-        COMPILE_OPTIONS "-Wno-unused;-Wno-format-truncation"
+        COMPILE_OPTIONS "${EVPL_XDR_WARNING_FLAGS}"
     )
 
     target_sources(evpl_rpc2_conformance PRIVATE
