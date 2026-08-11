@@ -37,12 +37,23 @@
 #include <getopt.h>
 #include <math.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/un.h>
 #include <stddef.h>
+
+/* The raw-socket helpers below drive a peer directly, without going through
+ * libevpl, so they have to handle the same portability wrinkles it does:
+ * SOCK_NONBLOCK and MSG_NOSIGNAL are Linux extensions, and the BSDs spell them
+ * as an fcntl() and the SO_NOSIGPIPE socket option.  This harness is only
+ * registered where quint is present, which today means Linux, but keeping it
+ * portable leaves that a property of the toolchain rather than of the code. */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif /* ifndef MSG_NOSIGNAL */
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"
@@ -2064,6 +2075,28 @@ defect_applies(
     } /* switch */
 } /* defect_applies */
 
+/* Non-blocking, and no SIGPIPE when the peer goes away.  See the MSG_NOSIGNAL
+ * note at the top for why this is not just SOCK_NONBLOCK. */
+static int
+raw_socket_prepare(int fd)
+{
+    int flags;
+
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif /* ifdef SO_NOSIGPIPE */
+
+    flags = fcntl(fd, F_GETFL, 0);
+
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        return -1;
+    }
+
+    return 0;
+} /* raw_socket_prepare */
+
 static int
 connect_raw(void)
 {
@@ -2105,8 +2138,13 @@ connect_raw(void)
         len                 = sizeof(*in);
     }
 
-    fd = socket(family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    fd = socket(family, SOCK_STREAM, 0);
     if (fd < 0) {
+        return -1;
+    }
+
+    if (raw_socket_prepare(fd) < 0) {
+        close(fd);
         return -1;
     }
 
