@@ -145,19 +145,32 @@ evpl_address_get_address(
             pathlen = (int) address->addrlen -
                 (int) offsetof(struct sockaddr_un, sun_path);
 
-            if (pathlen <= 0) {
-                /* An unbound peer.  Unix clients are typically not bound to
-                 * any name, so accept() and getsockname() hand back an
-                 * addrlen of exactly sizeof(sa_family_t) with an empty
-                 * sun_path.  This is the ordinary case for the remote end of
-                 * an accepted connection, not an error. */
-                snprintf(str, len, "unix:*");
-            } else if (sun->sun_path[0] == '\0') {
-                /* Abstract namespace.  The name is the remaining pathlen - 1
-                 * bytes and is not NUL terminated, so it needs an explicit
-                 * precision. */
+#ifdef __linux__
+            /* Abstract namespace.  The name is the remaining pathlen - 1
+             * bytes and is not NUL terminated, so it needs an explicit
+             * precision.
+             *
+             * Tested before the unbound case, and only on Linux, because the
+             * abstract namespace is a Linux extension: a leading NUL there
+             * introduces a name, but on the BSDs it only ever means the socket
+             * has none.  Rendering that as an abstract name would turn every
+             * unbound BSD peer into "unix:@". */
+            if (pathlen > 0 && sun->sun_path[0] == '\0') {
                 snprintf(str, len, "unix:@%.*s", pathlen - 1,
                          sun->sun_path + 1);
+                break;
+            }
+#endif /* ifdef __linux__ */
+
+            if (pathlen <= 0 || sun->sun_path[0] == '\0') {
+                /* An unbound peer.  Unix clients are typically not bound to
+                 * any name, so accept() and getsockname() hand back either an
+                 * addrlen of exactly sizeof(sa_family_t) with an empty
+                 * sun_path, or -- on the BSDs, which pad the address out --
+                 * a sun_path that simply starts with a NUL.  This is the
+                 * ordinary case for the remote end of an accepted connection,
+                 * not an error. */
+                snprintf(str, len, "unix:*");
             } else {
                 /* Pathname socket.  Bound by strnlen rather than trusting an
                  * addrlen that came from the kernel via a peer. */
