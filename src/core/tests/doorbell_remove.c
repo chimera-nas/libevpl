@@ -68,25 +68,33 @@ pair_callback(
     struct evpl          *evpl,
     struct evpl_doorbell *doorbell)
 {
-    int i;
+    struct evpl_doorbell *other = NULL;
+    int                   i;
 
     pair_fired++;
 
+    /* Empty the array before releasing anything.  Freeing straight out of
+     * pair[] and then looping over it again reads a slot that an earlier
+     * iteration may already have released -- harmless here, since the two
+     * slots hold distinct allocations, but nothing local says so, and it is
+     * exactly the shape a use-after-free takes. */
     for (i = 0; i < 2; ++i) {
         if (pair[i] && pair[i] != doorbell) {
-            evpl_remove_doorbell(evpl, pair[i]);
-            free(pair[i]);
-            pair[i] = NULL;
+            other = pair[i];
         }
+        pair[i] = NULL;
     }
 
-    for (i = 0; i < 2; ++i) {
-        if (pair[i] == doorbell) {
-            evpl_remove_doorbell(evpl, doorbell);
-            free(doorbell);
-            pair[i] = NULL;
-        }
+    /* The other one first, then this one: retiring an entry the dispatch loop
+     * has yet to reach and one it is sitting on are the two orders this case
+     * exists to cover. */
+    if (other) {
+        evpl_remove_doorbell(evpl, other);
+        free(other);
     }
+
+    evpl_remove_doorbell(evpl, doorbell);
+    free(doorbell);
 } /* pair_callback */
 
 static void
