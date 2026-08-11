@@ -353,7 +353,7 @@ jobs:
     steps:
       - name: Check matrix results
         run: |
-          results='${{ join(needs.*.result, " ") }}'
+          results='${{ join(needs.*.result, ' ') }}'
           echo "dependency results: ${results}"
           for r in ${results}; do
             if [ "$r" != "success" ]; then
