@@ -29,6 +29,6 @@ RUN apt-get -y update && \
     libssl-dev openssl \
     liburing-dev libaio-dev librdmacm-dev libnuma-dev libunwind-dev \
     libnghttp2-dev libcurl4-openssl-dev libprotobuf-c-dev protobuf-c-compiler \
-    uthash-dev && \
+    uthash-dev uuid-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*

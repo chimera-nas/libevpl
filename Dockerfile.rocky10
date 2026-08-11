@@ -20,5 +20,5 @@ RUN dnf -y update && \
     openssl-devel openssl \
     liburing-devel libaio-devel rdma-core-devel numactl-devel libunwind-devel \
     libnghttp2-devel libcurl-devel protobuf-c-devel protobuf-c-compiler \
-    uthash-devel && \
+    uthash-devel libuuid-devel && \
     dnf clean all
