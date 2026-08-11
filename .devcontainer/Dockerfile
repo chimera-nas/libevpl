@@ -2,9 +2,20 @@
 #
 # SPDX-License-Identifier: Unlicense
 
-FROM ubuntu:24.04
+ARG DOCKER_MIRROR=""
+FROM ${DOCKER_MIRROR}ubuntu:24.04
+ARG APT_MIRROR=""
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# CI points these at an internal registry and apt mirror; both default empty so
+# a plain "docker build" of this devcontainer still pulls from upstream.
+RUN if [ -n "$APT_MIRROR" ]; then \
+    echo "deb $APT_MIRROR noble main universe" > /etc/apt/sources.list.d/local-mirror.list && \
+    echo "deb $APT_MIRROR noble-updates main universe" >> /etc/apt/sources.list.d/local-mirror.list && \
+    echo "deb $APT_MIRROR noble-security main universe" >> /etc/apt/sources.list.d/local-mirror.list && \
+    rm -f /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
 
 ADD Gemfile Gemfile
 ADD Gemfile.lock Gemfile.lock
