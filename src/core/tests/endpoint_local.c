@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/un.h>
 
 #include "evpl/evpl.h"
 
@@ -97,12 +98,19 @@ main(
     struct evpl                  *evpl;
     struct evpl_listener         *listener;
     struct evpl_listener_binding *binding;
-    struct evpl_endpoint         *ep, *abstract_ep, *inet_ep, *ep_denied;
+    struct evpl_endpoint         *ep, *inet_ep, *ep_denied;
+
+#ifdef __linux__
+    struct evpl_endpoint         *abstract_ep;
+    char                          abstractname[64];
+#endif /* ifdef __linux__ */
     struct evpl_bind             *conn;
     enum evpl_protocol_id         proto;
     char                          path[EVPL_ADDRESS_STRLEN + 32];
     char                          sockpath[96];
+    char                          deniedpath[96];
     const char                   *dir;
+    size_t                        pathmax;
     int                           rc;
 
     evpl_init(NULL);
@@ -123,32 +131,38 @@ main(
     CHECK(evpl_endpoint_create_local("nohost") == NULL, "bare name rejected");
     CHECK(evpl_endpoint_create("/", 0) == NULL, "bare '/' rejected");
 
-    /* sun_path is 108 bytes.  A pathname socket spends one on its trailing
-     * NUL, so 107 is the longest that fits and 108 must be refused rather
-     * than truncated into a different socket. */
+    /* A pathname socket spends one byte of sun_path on its trailing NUL, so
+     * one short of sun_path is the longest that fits, and sun_path itself has
+     * to be refused rather than truncated into a different socket.  That size
+     * is 108 bytes on Linux and 104 on the BSDs, so take it from the header
+     * rather than writing either number down here. */
+    pathmax = sizeof(((struct sockaddr_un *) 0)->sun_path);
+
     memset(path, 'x', sizeof(path));
-    path[0]   = '/';
-    path[108] = '\0';
+    path[0]       = '/';
+    path[pathmax] = '\0';
     CHECK(evpl_endpoint_create_local(path) == NULL,
-          "108-byte path rejected");
+          "%zu-byte path rejected", pathmax);
 
-    path[107] = '\0';
-    ep        = evpl_endpoint_create_local(path);
-    CHECK(ep != NULL, "107-byte path accepted");
+    path[pathmax - 1] = '\0';
+    ep                = evpl_endpoint_create_local(path);
+    CHECK(ep != NULL, "%zu-byte path accepted", pathmax - 1);
     if (ep) {
         evpl_endpoint_close(ep);
     }
 
+#ifdef __linux__
     /* An abstract name spends its byte on the leading NUL instead, so the
-     * whole 108 is usable. */
+     * whole of sun_path is usable.  Only Linux has abstract names at all. */
     memset(path, 'y', sizeof(path));
-    path[0]   = '@';
-    path[108] = '\0';
-    ep        = evpl_endpoint_create_local(path);
-    CHECK(ep != NULL, "108-byte abstract name accepted");
+    path[0]       = '@';
+    path[pathmax] = '\0';
+    ep            = evpl_endpoint_create_local(path);
+    CHECK(ep != NULL, "%zu-byte abstract name accepted", pathmax);
     if (ep) {
         evpl_endpoint_close(ep);
     }
+#endif /* ifdef __linux__ */
 
     /* --- protocol predicates --- */
     CHECK(evpl_protocol_available(EVPL_STREAM_SOCKET_UNIX) == 1,
@@ -167,9 +181,14 @@ main(
     ep = evpl_endpoint_create(sockpath, 0);
     CHECK(ep && evpl_endpoint_is_local(ep), "create('/path') detects local");
 
-    abstract_ep = evpl_endpoint_create("@evpl-endpoint-local", 0);
+#ifdef __linux__
+    snprintf(abstractname, sizeof(abstractname), "@evpl-endpoint-local-%d",
+             (int) getpid());
+
+    abstract_ep = evpl_endpoint_create(abstractname, 0);
     CHECK(abstract_ep && evpl_endpoint_is_local(abstract_ep),
           "create('@name') detects local");
+#endif /* ifdef __linux__ */
 
     inet_ep = evpl_endpoint_create("127.0.0.1", 8299);
     CHECK(inet_ep && !evpl_endpoint_is_local(inet_ep),
@@ -227,8 +246,19 @@ main(
      * attached and freed rather than left in flight at teardown. */
     wait_for_conns(evpl, 2);
 
-    /* A directory nobody may write to: bind() fails with EACCES. */
-    ep_denied = evpl_endpoint_create_local("/proc/evpl-denied.sock");
+    /* A directory nobody may write to, so bind() fails instead of creating a
+     * socket.  /proc denies even root, which is what the containers this runs
+     * in usually are; on Darwin /System is read-only under SIP for the same
+     * reason. */
+#ifdef __linux__
+    snprintf(deniedpath, sizeof(deniedpath), "/proc/evpl-denied-%d.sock",
+             (int) getpid());
+#else  /* ifdef __linux__ */
+    snprintf(deniedpath, sizeof(deniedpath), "/System/evpl-denied-%d.sock",
+             (int) getpid());
+#endif /* ifdef __linux__ */
+
+    ep_denied = evpl_endpoint_create_local(deniedpath);
     CHECK(ep_denied != NULL, "endpoint on an unwritable directory created");
     CHECK(evpl_listen(listener, EVPL_STREAM_SOCKET_UNIX, ep_denied) == -1,
           "listen on an unwritable directory returns -1");
@@ -246,7 +276,9 @@ main(
     evpl_destroy(evpl);
 
     evpl_endpoint_close(ep);
+#ifdef __linux__
     evpl_endpoint_close(abstract_ep);
+#endif /* ifdef __linux__ */
     evpl_endpoint_close(inet_ep);
     evpl_endpoint_close(ep_denied);
 

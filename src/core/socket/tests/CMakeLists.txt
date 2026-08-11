@@ -46,5 +46,11 @@ unit_test_bin_local(unix rand_full_duplex_stream_unix rand_full_duplex_stream -r
 # Abstract namespace: no filesystem object, so nothing to unlink and nothing a
 # crash can leave stale.  "-a @" asks the harness to generate a unique
 # abstract name, which is what keeps these parallel-safe without a namespace.
-unit_test_bin_local(unix hello_world_stream_unix_abstract hello_world_stream -r STREAM_SOCKET_UNIX -a @)
-unit_test_bin_local(unix ping_pong_stream_unix_abstract ping_pong_stream -r STREAM_SOCKET_UNIX -a @)
+#
+# The abstract namespace is a Linux extension -- evpl_endpoint_create_local()
+# refuses an '@' name everywhere else -- so there is nothing for these to test
+# on other platforms.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    unit_test_bin_local(unix hello_world_stream_unix_abstract hello_world_stream -r STREAM_SOCKET_UNIX -a @)
+    unit_test_bin_local(unix ping_pong_stream_unix_abstract ping_pong_stream -r STREAM_SOCKET_UNIX -a @)
+endif()
