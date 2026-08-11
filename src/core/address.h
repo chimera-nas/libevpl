@@ -18,21 +18,40 @@
  * Private address family for the in-process transport.
  *
  * An inproc peer is a thread, not anything the kernel knows about, so there is
- * no real family to borrow.  This value is well above AF_MAX so it can never
- * be confused with one, and an EVPL_AF_INPROC sockaddr is never passed to a
+ * no real family to borrow.  This value is above AF_MAX so it can never be
+ * confused with one, and an EVPL_AF_INPROC sockaddr is never passed to a
  * syscall -- it exists only to let struct evpl_address carry an inproc name
  * through the same plumbing as every other peer address.
+ *
+ * It has to fit sa_family_t, which is where the original 0x4950 ('IP') came
+ * unstuck: that is fine in Linux's 16-bit sa_family_t, but Darwin's is 8 bits,
+ * so the value truncated to 80 and switching on it did not even compile.  0xF0
+ * clears AF_MAX on both (mid-40s on Linux, low-40s on Darwin) with room to
+ * spare, and fits a byte.
  */
-#define EVPL_AF_INPROC       0x4950  /* 'IP' */
+#define EVPL_AF_INPROC       0xF0
 
 /* Longest inproc name including its NUL.  Matched to sun_path so the two
  * name-addressed transports have the same budget, and small enough that the
  * rendered form still fits EVPL_ADDRESS_STRLEN. */
 #define EVPL_INPROC_NAME_MAX 108
 
+/*
+ * Laid out to alias struct sockaddr's leading fields, since that is how the
+ * family is read back -- evpl_address hands this to code that casts to struct
+ * sockaddr and switches on sa_family.  The BSDs put a length byte first and
+ * the family second, so the header differs by platform and this has to follow
+ * it; on Linux the family is simply first.
+ */
 struct evpl_sockaddr_inproc {
+#ifdef __APPLE__
+    uint8_t     len;
+    uint8_t     family;
+    uint16_t    pad;
+#else  /* ifdef __APPLE__ */
     sa_family_t family;
     uint16_t    pad;
+#endif  /* ifdef __APPLE__ */
     /* Distinguishes the two ends and successive connections to one name: 0 for
      * a listener, a nonzero serial for a connection.  The analogue of an
      * ephemeral port -- without it two concurrent connections to the same name

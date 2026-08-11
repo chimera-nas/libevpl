@@ -203,7 +203,12 @@ evpl_inproc_address_alloc(
     memset(&sinp, 0, sizeof(sinp));
 
     sinp.family = EVPL_AF_INPROC;
-    sinp.id     = id;
+#ifdef __APPLE__
+    /* The BSD length byte; nothing here reaches a syscall, but the field is
+     * part of the layout being aliased, so it should say what it means. */
+    sinp.len = sizeof(sinp);
+#endif /* ifdef __APPLE__ */
+    sinp.id = id;
 
     /* Bounded copy rather than strncpy: the terminator comes from the memset,
     * and strncpy(dst, src, sizeof - 1) trips -Wstringop-truncation at -O3. */
@@ -794,7 +799,7 @@ evpl_inproc_accept(
     struct evpl_inproc_listener *listener    = ib->listener;
     struct evpl_inproc_global   *global      = evpl_inproc_global(evpl);
     struct evpl_bind            *listen_bind = evpl_private2bind(ib);
-    struct evpl_inproc_pending  *pending, *tmp, *list;
+    struct evpl_inproc_pending  *pending, *list;
 
     pthread_mutex_lock(&global->lock);
     list              = listener->pending;
@@ -808,9 +813,14 @@ evpl_inproc_accept(
      * EvplListenerLock already held and takes the registry lock.  Taking them
      * in this order too would close the cycle.
      */
-    DL_FOREACH_SAFE(list, pending, tmp)
-    {
-        DL_DELETE(list, pending);
+    /* The list was detached under the lock above, so it is private to this
+     * call and every entry is consumed.  Walk the next chain rather than
+     * unlinking each entry from a head nothing will consult again: DL_DELETE
+     * touches head->prev when it removes the tail, which the analyzer cannot
+     * prove is non-NULL here, and the unlink buys nothing either way. */
+    while (list) {
+        pending = list;
+        list    = list->next;
 
         /* The remote address reference passes to the accepting bind. */
         listen_bind->accept_callback(evpl, listen_bind, pending->remote,
@@ -993,7 +1003,7 @@ evpl_inproc_pending_close(
     struct evpl_inproc_listener *listener = ib->listener;
     struct evpl_inproc_global   *global;
     struct evpl_inproc_queue    *q;
-    struct evpl_inproc_pending  *pending, *tmp, *list;
+    struct evpl_inproc_pending  *pending, *list;
     struct evpl_dgram           *fin;
 
     if (listener) {
@@ -1012,9 +1022,11 @@ evpl_inproc_pending_close(
          * and about to ring a doorbell we are about to close. */
         evpl_remove_doorbell(evpl, &ib->doorbell);
 
-        DL_FOREACH_SAFE(list, pending, tmp)
-        {
-            DL_DELETE(list, pending);
+        /* Same as in evpl_inproc_accept: a detached list, consumed whole. */
+        while (list) {
+            pending = list;
+            list    = list->next;
+
             evpl_inproc_pending_discard(evpl, pending);
         }
 

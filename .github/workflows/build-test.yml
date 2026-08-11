@@ -151,21 +151,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: amd64, runner: arc-amd64, build_type: Release }
-          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: amd64, runner: arc-amd64, build_type: Debug }
-          - { image_name: ubuntu26, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", arch: amd64, runner: arc-amd64, build_type: Release }
-          - { image_name: ubuntu26, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", arch: amd64, runner: arc-amd64, build_type: Debug }
-          - { image_name: ubuntu24, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", arch: amd64, runner: arc-amd64, build_type: Release }
-          - { image_name: ubuntu24, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", arch: amd64, runner: arc-amd64, build_type: Debug }
-          - { image_name: ubuntu22, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", arch: amd64, runner: arc-amd64, build_type: Release }
-          - { image_name: ubuntu22, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", arch: amd64, runner: arc-amd64, build_type: Debug }
-          - { image_name: rocky9, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9", arch: amd64, runner: arc-amd64, build_type: Release }
-          - { image_name: rocky9, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9", arch: amd64, runner: arc-amd64, build_type: Debug }
-          - { image_name: rocky10, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10", arch: amd64, runner: arc-amd64, build_type: Release }
-          - { image_name: rocky10, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10", arch: amd64, runner: arc-amd64, build_type: Debug }
+          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          - { image_name: ubuntu26, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: ubuntu26, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          - { image_name: ubuntu24, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: ubuntu24, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          - { image_name: ubuntu22, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "-DIO_URING_ENABLED=OFF" }
+          - { image_name: ubuntu22, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "-DIO_URING_ENABLED=OFF" }
+          - { image_name: rocky9, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: rocky9, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          - { image_name: rocky10, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
+          - { image_name: rocky10, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
           # The devcontainer is the one image tested on both architectures.
-          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: arm64, runner: arc-arm64, build_type: Release }
-          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: arm64, runner: arc-arm64, build_type: Debug }
+          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: arm64, runner: arc-arm64, build_type: Release , cmake_extra: "" }
+          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: arm64, runner: arc-arm64, build_type: Debug , cmake_extra: "" }
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -184,7 +184,7 @@ jobs:
             ${{ matrix.tag_prefix }}:${{ github.sha }}-${{ matrix.arch }} \
             bash -euxc '
               cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-                    -DREQUIRE_NETNS_TESTS=ON /workspace
+                    -DREQUIRE_NETNS_TESTS=ON ${{ matrix.cmake_extra }} /workspace
               ninja
               ccache --show-stats || true
               rc=0
@@ -250,6 +250,10 @@ jobs:
         with:
           submodules: recursive
 
+      # IO_URING_NVME_ENABLED=OFF matches chimera, and is what that option's
+      # own help text recommends: the NVMe uring_cmd path sends the analyzer
+      # into liburing's inline functions, where it reports a null dereference
+      # in the system header -- not actionable, and not ours.
       - name: Perform clang static analysis
         id: static-analysis
         run: |
@@ -263,7 +267,7 @@ jobs:
             ${{ env.DEV_IMAGE_TAG_PREFIX }}:${{ github.sha }}-${{ matrix.arch }} \
             bash -euxc '\
               scan-build --status-bugs -o /scan-report \
-              sh -c "cmake -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} -B /build -S /workspace -G Ninja && ninja -C /build"' \
+              sh -c "cmake -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} -D IO_URING_NVME_ENABLED=OFF -B /build -S /workspace -G Ninja && ninja -C /build"' \
             2>&1 | tee "${{ github.workspace }}/scan-report/scan-build-output.txt"
 
       - name: Upload static analysis report

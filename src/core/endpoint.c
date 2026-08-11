@@ -294,7 +294,12 @@ evpl_endpoint_resolve_inproc(struct evpl_endpoint *endpoint)
     memset(&sinp, 0, sizeof(sinp));
 
     sinp.family = EVPL_AF_INPROC;
-    sinp.id     = 0;
+#ifdef __APPLE__
+    /* The BSD length byte; nothing here reaches a syscall, but the field is
+     * part of the layout being aliased, so it should say what it means. */
+    sinp.len = sizeof(sinp);
+#endif /* ifdef __APPLE__ */
+    sinp.id = 0;
 
     /* Length was checked at create time, so this cannot truncate; the memset
      * supplies the terminator. */
