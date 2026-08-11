@@ -13,8 +13,11 @@
 #include "evpl/evpl.h"
 #include "test_common.h"
 
-const char            hello[]  = "Hello World!";
-const int             hellolen = strlen(hello) + 1;
+const char            hello[] = "Hello World!";
+/* sizeof, not strlen() + 1: they are the same value for a string literal
+ * array, but only sizeof is a constant expression.  GCC folds the strlen
+ * anyway; clang rejects it at file scope. */
+const int             hellolen = sizeof(hello);
 
 enum evpl_protocol_id proto       = EVPL_DATAGRAM_SOCKET_UDP;
 const char            localhost[] = "127.0.0.1";
