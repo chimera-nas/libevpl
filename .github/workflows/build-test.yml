@@ -82,7 +82,10 @@ jobs:
       - name: Build and push devcontainer image
         uses: docker/build-push-action@v6
         with:
-          context: .devcontainer
+          # docs/, not .devcontainer/: the Dockerfile ADDs the Gemfile that the
+          # docs build needs, and that lives under docs/.  devcontainer.json
+          # says the same thing with "context": "../docs".
+          context: docs
           file: .devcontainer/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
