@@ -146,10 +146,20 @@ evpl_thread_create(
     pthread_mutex_init(&evpl_thread->lock, NULL);
     pthread_cond_init(&evpl_thread->cond, NULL);
 
+    /* Give worker threads an explicit 8MB stack: Linux (glibc) defaults
+     * there, but macOS pthreads default to 512KB, which deep inline
+     * completion chains (e.g. a synchronous backend walking a
+     * near-SYMLOOP_MAX symlink chain under ASan) overflow. */
+    pthread_attr_t thread_attr;
+    pthread_attr_init(&thread_attr);
+    pthread_attr_setstacksize(&thread_attr, 8 * 1024 * 1024);
+
     /* If the thread is never created, the ready-wait below would block
      * forever, so a creation failure must abort rather than fall through. */
-    rc = evpl_pthread_create(&evpl_thread->thread, NULL,
+    rc = evpl_pthread_create(&evpl_thread->thread, &thread_attr,
                              evpl_thread_function, evpl_thread);
+
+    pthread_attr_destroy(&thread_attr);
 
     evpl_thread_abort_if(rc, "evpl_thread_create: pthread_create failed: %s",
                          strerror(rc));

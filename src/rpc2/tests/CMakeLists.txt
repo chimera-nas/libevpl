@@ -29,7 +29,7 @@ macro(unit_test_rpc2 test_name xdr_file)
     include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
     add_executable(evpl_rpc2_${test_name} ${sources} ${XDR_C} ${XDR_H})
-    target_link_libraries(evpl_rpc2_${test_name} evpl_rpc2 evpl pthread)
+    target_link_libraries(evpl_rpc2_${test_name} evpl_rpc2 evpl)
 
     # Set the first source for TEST_FILE environment variable
     list(GET sources 0 first_source)
