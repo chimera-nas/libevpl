@@ -14,7 +14,7 @@ macro(unit_test module test_name)
 
     add_executable(${module}_${test_name} ${sources})
 
-    target_link_libraries(${module}_${test_name} evpl pthread)
+    target_link_libraries(${module}_${test_name} evpl)
 
     list(GET sources 0 first_source)
 
@@ -42,7 +42,7 @@ macro(unit_test_all_mechs module test_name)
 
     add_executable(${module}_${test_name} ${sources})
 
-    target_link_libraries(${module}_${test_name} evpl pthread)
+    target_link_libraries(${module}_${test_name} evpl)
 
     list(GET sources 0 first_source)
 
@@ -133,7 +133,7 @@ macro(unit_test_local module test_name)
 
     add_executable(${module}_${test_name} ${sources})
 
-    target_link_libraries(${module}_${test_name} evpl pthread)
+    target_link_libraries(${module}_${test_name} evpl)
 
     list(GET sources 0 first_source)
 
