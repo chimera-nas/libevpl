@@ -97,6 +97,16 @@ evpl_wakeup_signal(struct evpl_wakeup *w)
         len = write(w->wfd, &word, sizeof(word));
     } while (len < 0 && errno == EINTR);
 
+    /* A wakeup that cannot be written is a wakeup already delivered: EAGAIN
+     * means the buffer holds signals the reader has not drained yet (a
+     * self-pipe fills after ~2K undrained words; an eventfd counter would
+     * have to reach 2^64-1), so the reader is guaranteed to wake without
+     * this write.  Report it delivered rather than surfacing an error the
+     * callers treat as fatal. */
+    if (len < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return (ssize_t) sizeof(word);
+    }
+
     return len;
 } /* evpl_wakeup_signal */
 
