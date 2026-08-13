@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,6 +115,14 @@ evpl_http_init(struct evpl *evpl)
     agent = evpl_zalloc(sizeof(*agent));
 
     agent->evpl = evpl;
+
+    /* Floor the configured limit so the fixed parts of a header block
+     * (status/request line, framing headers, terminator) always fit. */
+    agent->max_header_size = evpl_global_config_get_http_max_header_size();
+
+    if (agent->max_header_size < 512) {
+        agent->max_header_size = 512;
+    }
 
     return agent;
 } /* evpl_http_init */
@@ -312,6 +321,87 @@ evpl_http_handle_body(
     return 0;
 } /* evpl_http_handle_body */
 
+/*
+ * Fixed overhead reserved out of max_header_size for the parts of the
+ * outbound header block that are not application-added headers: the status
+ * line (<= 47 bytes; a client request line is instead counted exactly at
+ * request create time), the Content-Length or Transfer-Encoding line
+ * (<= 38), the internally added "Connection: keep-alive\r\n" (24) and the
+ * terminating "\r\n" (2).  Enforcing the limit minus this reserve at
+ * evpl_http_request_add_header() time means emission can never overflow
+ * the buffer it allocates.
+ */
+#define EVPL_HTTP_HEADER_EMIT_RESERVE 128
+
+/*
+ * Stage a header for emission.  With enforce_limit set (the public API),
+ * refuse a header that would push the block past max_header_size less the
+ * emission reserve.  The library's own fixed headers are added with
+ * enforce_limit clear: the reserve already accounts for them, so they
+ * cannot overflow the block and must not be dropped.  Returns 0 on
+ * success, -1 if the header was refused.
+ */
+static int
+evpl_http_request_add_header_common(
+    struct evpl_http_request *request,
+    const char               *name,
+    const char               *value,
+    int                       enforce_limit)
+{
+    struct evpl_http_conn           *conn  = request->conn;
+    struct evpl_http_agent          *agent = conn->agent;
+    struct evpl_http_request_header *header;
+    unsigned int                     line_bytes;
+
+    header = evpl_http_request_header_alloc(agent);
+
+    strncpy(header->name, name, sizeof(header->name) - 1);
+    strncpy(header->value, value, sizeof(header->value) - 1);
+
+    /* accounted as emitted: "<name>: <value>\r\n", using the stored
+     * (possibly truncated) field lengths */
+    line_bytes = strlen(header->name) + strlen(header->value) + 4;
+
+    if (enforce_limit &&
+        request->header_bytes + line_bytes + EVPL_HTTP_HEADER_EMIT_RESERVE >
+        agent->max_header_size) {
+        evpl_http_request_header_free(agent, header);
+        return -1;
+    }
+
+    request->header_bytes += line_bytes;
+
+    if (conn->is_server) {
+        DL_APPEND(request->response_headers, header);
+    } else {
+        DL_APPEND(request->request_headers, header);
+    }
+
+    return 0;
+} /* evpl_http_request_add_header_common */
+
+/*
+ * Inbound request headers exceeded max_header_size, or a single header
+ * line overflowed the parser: answer 400 Bad Request and close, as Apache
+ * does when its LimitRequestField* limits are exceeded.
+ */
+static void
+evpl_http_server_reject_headers(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    static const char rsp[] =
+        "HTTP/1.1 400 Bad Request\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+
+    evpl_http_debug("inbound request header block exceeds max_header_size");
+
+    evpl_send(evpl, bind, rsp, sizeof(rsp) - 1);
+    evpl_finish(evpl, bind);
+} /* evpl_http_server_reject_headers */
+
 static void
 evpl_http_server_handle_data(struct evpl_http_conn *conn)
 {
@@ -397,7 +487,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
 
         if (unlikely(rc == -2)) {
-            evpl_close(evpl, bind);
+            /* single header line overflowed the parse buffer */
+            evpl_http_server_reject_headers(evpl, bind);
             return;
         }
 
@@ -406,6 +497,9 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         }
 
         if (line[0] == '\0') {
+            /* inbound header block complete; reset the accounting for the
+             * outbound response block the application builds from here */
+            request->header_bytes  = 0;
             request->request_state = EVPL_HTTP_REQUEST_STATE_BODY;
 
             if (request->request_flags & EVPL_HTTP_REQUEST_WANTS_CONTINUE) {
@@ -417,6 +511,13 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                                       &request->notify_data,
                                       server->private_data);
         } else {
+            request->header_bytes += strlen(line) + 2;
+
+            if (unlikely(request->header_bytes > agent->max_header_size)) {
+                evpl_http_server_reject_headers(evpl, bind);
+                return;
+            }
+
             header = evpl_http_request_header_alloc(agent);
 
             token = strtok_r(line, ":", &saveptr);
@@ -554,6 +655,10 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
         request->status        = atoi(token);
         request->request_state = EVPL_HTTP_REQUEST_STATE_HEADERS;
 
+        /* header_bytes counted the outbound request block; reuse it for
+         * the inbound response header accounting */
+        request->header_bytes = 0;
+
         goto again;
 
     } else if (request->request_state == EVPL_HTTP_REQUEST_STATE_HEADERS) {
@@ -581,6 +686,15 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
 
             goto again;
         } else {
+            request->header_bytes += strlen(line) + 2;
+
+            if (unlikely(request->header_bytes > agent->max_header_size)) {
+                evpl_http_debug(
+                    "inbound response header block exceeds max_header_size");
+                evpl_close(evpl, bind);
+                return;
+            }
+
             header = evpl_http_request_header_alloc(agent);
 
             token = strtok_r(line, ":", &saveptr);
@@ -835,6 +949,55 @@ evpl_http_event(
 
 } /* evpl_http_event */
 
+/*
+ * Append a formatted line into [rsp_base, rsp_base + cap) at *rsp,
+ * advancing *rsp only by what vsnprintf actually had room to write, never
+ * past the end of the buffer.  The add-time accounting against
+ * max_header_size makes truncation unreachable here; this is the backstop
+ * that keeps an accounting bug from becoming a heap overflow.
+ */
+static void
+evpl_http_append_line(
+    char       *rsp_base,
+    size_t      cap,
+    char      **rsp,
+    const char *fmt,
+    ...) __attribute__((format(printf, 4, 5)));
+
+static void
+evpl_http_append_line(
+    char       *rsp_base,
+    size_t      cap,
+    char      **rsp,
+    const char *fmt,
+    ...)
+{
+    size_t  used = *rsp - rsp_base;
+    size_t  remain;
+    int     wanted;
+    va_list ap;
+
+    if (used >= cap) {
+        return;
+    }
+
+    remain = cap - used;
+
+    va_start(ap, fmt);
+    wanted = vsnprintf(*rsp, remain, fmt, ap);
+    va_end(ap);
+
+    if (wanted < 0) {
+        return;
+    }
+
+    if ((size_t) wanted >= remain) {
+        *rsp = rsp_base + cap;
+    } else {
+        *rsp += wanted;
+    }
+} /* evpl_http_append_line */
+
 static void
 evpl_http_server_send_headers(
     struct evpl              *evpl,
@@ -846,31 +1009,35 @@ evpl_http_server_send_headers(
     struct evpl_iovec                iov;
     int                              niov;
     char                            *rsp_base, *rsp;
+    const unsigned int               cap = conn->agent->max_header_size;
 
-    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, 0, &iov);
+    niov = evpl_iovec_alloc(evpl, cap, 4096, 1, 0, &iov);
 
     evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 
     rsp_base = iov.data;
     rsp      = rsp_base;
 
-    rsp += snprintf(rsp, 4096, "%s %d %s\r\n",
-                    http_version_string[request->http_version],
-                    request->status,
-                    evpl_http_response_status_string(request->status));
+    evpl_http_append_line(rsp_base, cap, &rsp, "%s %d %s\r\n",
+                          http_version_string[request->http_version],
+                          request->status,
+                          evpl_http_response_status_string(request->status));
 
     DL_FOREACH(request->response_headers, header)
     {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "%s: %s\r\n", header->name, header->value);
+        evpl_http_append_line(rsp_base, cap, &rsp, "%s: %s\r\n", header->name, header->value);
     }
 
     if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %" PRIu64 "\r\n", request->response_length);
+        evpl_http_append_line(rsp_base, cap, &rsp, "Content-Length: %" PRIu64 "\r\n", request->response_length);
     } else {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Transfer-Encoding: chunked\r\n");
+        evpl_http_append_line(rsp_base, cap, &rsp, "Transfer-Encoding: chunked\r\n");
     }
 
-    rsp +=  snprintf(rsp, 4096 - (rsp - rsp_base), "\r\n");
+    evpl_http_append_line(rsp_base, cap, &rsp, "\r\n");
+
+    evpl_http_abort_if((unsigned int) (rsp - rsp_base) >= cap,
+                       "http response header block overflowed max_header_size");
 
     iov.length = rsp - rsp_base;
 
@@ -888,30 +1055,34 @@ evpl_http_client_send_headers(
     struct evpl_iovec                iov;
     int                              niov;
     char                            *rsp_base, *rsp;
+    const unsigned int               cap = conn->agent->max_header_size;
 
-    niov = evpl_iovec_alloc(evpl, 4096, 4096, 1, 0, &iov);
+    niov = evpl_iovec_alloc(evpl, cap, 4096, 1, 0, &iov);
 
     evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 
     rsp_base = iov.data;
     rsp      = rsp_base;
 
-    rsp += snprintf(rsp, 4096, "%s %s HTTP/1.1\r\n",
-                    evpl_http_method_to_wire(request->request_type),
-                    request->uri);
+    evpl_http_append_line(rsp_base, cap, &rsp, "%s %s HTTP/1.1\r\n",
+                          evpl_http_method_to_wire(request->request_type),
+                          request->uri);
 
     DL_FOREACH(request->request_headers, header)
     {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "%s: %s\r\n", header->name, header->value);
+        evpl_http_append_line(rsp_base, cap, &rsp, "%s: %s\r\n", header->name, header->value);
     }
 
     if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Transfer-Encoding: chunked\r\n");
+        evpl_http_append_line(rsp_base, cap, &rsp, "Transfer-Encoding: chunked\r\n");
     } else {
-        rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "Content-Length: %" PRIu64 "\r\n", request->response_length);
+        evpl_http_append_line(rsp_base, cap, &rsp, "Content-Length: %" PRIu64 "\r\n", request->response_length);
     }
 
-    rsp += snprintf(rsp, 4096 - (rsp - rsp_base), "\r\n");
+    evpl_http_append_line(rsp_base, cap, &rsp, "\r\n");
+
+    evpl_http_abort_if((unsigned int) (rsp - rsp_base) >= cap,
+                       "http request header block overflowed max_header_size");
 
     iov.length = rsp - rsp_base;
 
@@ -1241,11 +1412,23 @@ evpl_http_request_create(
     const char                 *url)
 {
     struct evpl_http_request *request;
+    struct evpl_http_agent   *agent = conn->agent;
 
-    request               = evpl_http_request_alloc(conn->agent);
+    request               = evpl_http_request_alloc(agent);
     request->conn         = conn;
     request->request_type = method;
     request->uri_len      = evpl_copy_string(request->uri, url, sizeof(request->uri));
+
+    /* seed the outbound accounting with "<METHOD> <uri> HTTP/1.1\r\n" */
+    request->header_bytes = strlen(evpl_http_method_to_wire(method)) +
+        request->uri_len + 12;
+
+    if (request->header_bytes + EVPL_HTTP_HEADER_EMIT_RESERVE >
+        agent->max_header_size) {
+        evpl_http_debug("request line exceeds http max_header_size");
+        evpl_http_request_free(agent, request);
+        return NULL;
+    }
 
     return request;
 } /* evpl_http_request_create */
@@ -1306,27 +1489,13 @@ evpl_http_request_type(struct evpl_http_request *request)
     return request->request_type;
 } /* evpl_http_request_type */
 
-SYMBOL_EXPORT void
+SYMBOL_EXPORT int
 evpl_http_request_add_header(
     struct evpl_http_request *request,
     const char               *name,
     const char               *value)
 {
-    struct evpl_http_conn           *conn = request->conn;
-    struct evpl_http_request_header *header;
-
-    header = evpl_http_request_header_alloc(conn->agent);
-
-    strncpy(header->name, name, sizeof(header->name) - 1);
-    strncpy(header->value, value, sizeof(header->value) - 1);
-
-    if (conn->is_server) {
-        DL_APPEND(request->response_headers, header);
-    } else {
-        DL_APPEND(request->request_headers, header);
-    }
-
-
+    return evpl_http_request_add_header_common(request, name, value, 1);
 } /* evpl_http_request_add_header */
 
 SYMBOL_EXPORT void
@@ -1407,7 +1576,7 @@ evpl_http_server_dispatch_default(
     }
 #endif /* ifdef HAVE_NGHTTP2 */
 
-    evpl_http_request_add_header(request, "Connection", "keep-alive");
+    evpl_http_request_add_header_common(request, "Connection", "keep-alive", 0);
 
     evpl_defer(evpl, &conn->flush);
 } /* evpl_http_server_complete_request */

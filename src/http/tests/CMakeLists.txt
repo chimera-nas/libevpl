@@ -12,6 +12,12 @@ target_link_libraries(http_chunked evpl_http curl)
 unit_test(http client http1_client.c)
 target_link_libraries(http_client evpl_http)
 
+# Configurable header block limit (http_max_header_size): outbound refusal
+# via evpl_http_request_add_header, server-side 400 on an oversized inbound
+# request block, client-side disconnect on an oversized response block.
+unit_test(http max_headers http_max_headers.c)
+target_link_libraries(http_max_headers evpl_http)
+
 if (HAVE_NGHTTP2)
     # evpl HTTP/2 client <-> evpl server (h2c prior-knowledge, and h2 over TLS)
     unit_test(http h2_client http2_client.c)

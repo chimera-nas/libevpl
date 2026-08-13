@@ -103,6 +103,18 @@ void evpl_global_config_set_tls_ktls_enabled(
     struct evpl_global_config *config,
     int                        enabled);
 
+/*
+ * Maximum size in bytes of an HTTP/1.x header block (request or status
+ * line, all header lines, and the terminating blank line), applied in both
+ * directions.  Inbound, a peer exceeding it gets the connection closed (a
+ * server answers 400 Bad Request first).  Outbound, adding a header that
+ * would overflow it makes evpl_http_request_add_header() fail.  Default
+ * 8192, in line with Apache's request field limits.
+ */
+void evpl_global_config_set_http_max_header_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
 struct evpl_thread_config *
 evpl_thread_config_init(
     void);

@@ -49,6 +49,8 @@ evpl_global_config_init(void)
         config->page_size = 4096;
     }
 
+    config->http_max_header_size = 8192;
+
     config->io_uring_enabled = 1;
     config->io_uring_entries = 8192;
 
@@ -291,6 +293,20 @@ evpl_global_config_set_tls_ktls_enabled(
 {
     config->tls_ktls_enabled = enabled;
 } /* evpl_global_config_set_tls_ktls_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_http_max_header_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    config->http_max_header_size = size;
+} /* evpl_global_config_set_http_max_header_size */
+
+SYMBOL_EXPORT unsigned int
+evpl_global_config_get_http_max_header_size(void)
+{
+    return evpl_shared->config->http_max_header_size;
+} /* evpl_global_config_get_http_max_header_size */
 
 SYMBOL_EXPORT struct evpl_thread_config *
 evpl_thread_config_init(void)

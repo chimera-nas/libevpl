@@ -22,12 +22,14 @@ macro(unit_test module test_name)
         add_test(NAME libevpl/${module}/${test_name} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
 
         set_tests_properties(libevpl/${module}/${test_name} PROPERTIES
+            TIMEOUT 60
             ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source}")
     else()
         add_test(NAME libevpl/${module}/${test_name} COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
 
         set_tests_properties(libevpl/${module}/${test_name} PROPERTIES
             RESOURCE_LOCK evpl_net
+            TIMEOUT 60
             ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source}")
     endif()
 
