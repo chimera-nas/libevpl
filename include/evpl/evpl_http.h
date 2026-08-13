@@ -80,7 +80,14 @@ evpl_http_server_destroy(
     struct evpl_http_agent  *agent,
     struct evpl_http_server *server);
 
-void
+/*
+ * Attach a header to the outbound block (request headers on a client
+ * connection, response headers on a server connection).  Returns 0 on
+ * success, or -1 if adding the header would push the block past the
+ * configured http_max_header_size (see
+ * evpl_global_config_set_http_max_header_size); the header is not added.
+ */
+int
 evpl_http_request_add_header(
     struct evpl_http_request *request,
     const char               *name,
@@ -173,6 +180,10 @@ evpl_http_client_close(
     struct evpl_http_agent *agent,
     struct evpl_http_conn  *conn);
 
+/*
+ * Create a client request.  Returns NULL if the request line alone (method
+ * plus url) cannot fit within the configured http_max_header_size.
+ */
 struct evpl_http_request *
 evpl_http_request_create(
     struct evpl_http_conn      *conn,

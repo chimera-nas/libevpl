@@ -110,7 +110,16 @@ struct evpl_global_config {
     char                     *tls_cipher_list;
     int                       tls_verify_peer;
     int                       tls_ktls_enabled;
+
+    unsigned int              http_max_header_size;
 };
+
+/* Read the configured HTTP header block limit from the live global config.
+ * Exported so the http module (a separate library that cannot see the
+ * hidden evpl_shared symbol) can fetch it at agent init. */
+unsigned int
+evpl_global_config_get_http_max_header_size(
+    void);
 
 typedef void (*evpl_accept_callback_t)(
     struct evpl         *evpl,

@@ -91,6 +91,14 @@ struct evpl_http_request {
     uint64_t                                 request_flags;
     int                                      status;
     int                                      uri_len;
+
+    /* Wire bytes of the header block accumulated so far, counted against
+     * agent->max_header_size.  Repurposed per direction: while parsing
+     * inbound headers it tracks received header-line bytes (reset when the
+     * block completes); for the outbound block it is seeded with the
+     * request line at create time (client) or 0 (server response) and
+     * grows as headers are added. */
+    unsigned int                             header_bytes;
     struct evpl_http_conn                   *conn;
     struct evpl_iovec_ring                   send_ring;
     struct evpl_iovec_ring                   recv_ring;
@@ -135,6 +143,7 @@ struct evpl_http_agent {
     struct evpl_http_request_header *free_headers;
     struct evpl_http_conn           *conns; /* live connections; see conn */
     struct evpl                     *evpl;
+    unsigned int                     max_header_size;
 };
 
 static inline struct evpl_http_request_header *
@@ -189,6 +198,7 @@ evpl_http_request_alloc(struct evpl_http_agent *agent)
     request->request_flags              = 0;
     request->status                     = 0;
     request->uri_len                    = 0;
+    request->header_bytes               = 0;
     request->notify_callback            = NULL;
     request->notify_data                = NULL;
     request->request_headers            = NULL;
