@@ -315,6 +315,10 @@ test_inbound_server_limit(void)
     int                i;
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("inbound-server: socket");
+        return 1;
+    }
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -377,6 +381,10 @@ raw_server_function(void *ptr)
     ssize_t            n;
 
     lfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd < 0) {
+        perror("raw-server: socket");
+        exit(2);
+    }
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     memset(&addr, 0, sizeof(addr));
@@ -391,6 +399,10 @@ raw_server_function(void *ptr)
     }
 
     cfd = accept(lfd, NULL, NULL);
+    if (cfd < 0) {
+        perror("raw-server: accept");
+        exit(2);
+    }
 
     n = read(cfd, buf, sizeof(buf));
     (void) n;
