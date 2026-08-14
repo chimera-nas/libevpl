@@ -65,11 +65,7 @@ evpl_libaio_read(
     io_set_eventfd(&req->iocb, ctx->eventfd);
     req->iocb.data = req;
 
-    evpl_libaio_abort_if(ctx->num_pending >= ctx->max_pending, "too many pending iocbs");
-
-    ctx->pending_iocbs[ctx->num_pending++] = &req->iocb;
-
-    evpl_defer(evpl, &ctx->flush);
+    evpl_libaio_enqueue(evpl, ctx, req);
 } /* evpl_libaio_read */
 
 static void
@@ -130,11 +126,7 @@ evpl_libaio_write(
     io_set_eventfd(&req->iocb, ctx->eventfd);
     req->iocb.data = req;
 
-    evpl_libaio_abort_if(ctx->num_pending >= ctx->max_pending, "too many pending iocbs");
-
-    ctx->pending_iocbs[ctx->num_pending++] = &req->iocb;
-
-    evpl_defer(evpl, &ctx->flush);
+    evpl_libaio_enqueue(evpl, ctx, req);
 } /* evpl_libaio_write */
 
 static void
@@ -158,11 +150,7 @@ evpl_libaio_flush(
     io_set_eventfd(&req->iocb, ctx->eventfd);
     req->iocb.data = req;
 
-    evpl_libaio_abort_if(ctx->num_pending >= ctx->max_pending, "too many pending iocbs");
-
-    ctx->pending_iocbs[ctx->num_pending++] = &req->iocb;
-
-    evpl_defer(evpl, &ctx->flush);
+    evpl_libaio_enqueue(evpl, ctx, req);
 } /* evpl_libaio_flush */
 
 static void

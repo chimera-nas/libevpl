@@ -50,7 +50,8 @@ struct evpl_libaio_context {
     struct evpl_deferral        flush;
     struct evpl_libaio_request *free_requests;
     struct iocb               **pending_iocbs;
-    int                         max_pending;
+    int                         max_pending;      /* aio ring depth (io_setup nr_events) */
+    int                         pending_capacity; /* allocated slots in pending_iocbs */
     int                         num_pending;
     struct evpl_poll           *poll;
 };
@@ -85,3 +86,38 @@ evpl_libaio_request_free(
 {
     LL_PREPEND(ctx->free_requests, req);
 } /* evpl_libaio_request_free */
+
+/*
+ * Stage an iocb for the next deferred io_submit().
+ *
+ * The staging array is not the ring.  evpl_defer() only arms the flush, so
+ * nothing submits or completes until the current callback chain returns: a
+ * caller that issues a batch in one event-loop iteration stages all of it
+ * first.  Callers legitimately exceed the ring depth doing so -- diskfs' tail
+ * pusher caps home writes per device, so its in-flight budget is (per-device
+ * cap x device count) -- which makes a full staging array ordinary
+ * backpressure rather than a caller error.
+ *
+ * Grow instead of failing, and let evpl_libaio_flush_submit() feed the ring at
+ * its own depth.  Draining is already handled: a short or -EAGAIN io_submit()
+ * keeps its unsubmitted tail queued, and evpl_libaio_complete() re-arms this
+ * deferral after any completion batch, so the surplus always goes out.
+ */
+static inline void
+evpl_libaio_enqueue(
+    struct evpl                *evpl,
+    struct evpl_libaio_context *ctx,
+    struct evpl_libaio_request *req)
+{
+    if (ctx->num_pending == ctx->pending_capacity) {
+        ctx->pending_capacity *= 2;
+
+        ctx->pending_iocbs = evpl_realloc(ctx->pending_iocbs,
+                                          ctx->pending_capacity *
+                                          sizeof(struct iocb *));
+    }
+
+    ctx->pending_iocbs[ctx->num_pending++] = &req->iocb;
+
+    evpl_defer(evpl, &ctx->flush);
+} /* evpl_libaio_enqueue */
