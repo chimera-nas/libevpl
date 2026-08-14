@@ -198,8 +198,9 @@ evpl_libaio_create(
 
     ctx = evpl_zalloc(sizeof(*ctx));
 
-    ctx->max_pending   = evpl_shared->config->libaio_max_pending;
-    ctx->pending_iocbs = evpl_zalloc(ctx->max_pending * sizeof(struct iocb *));
+    ctx->max_pending      = evpl_shared->config->libaio_max_pending;
+    ctx->pending_capacity = ctx->max_pending;
+    ctx->pending_iocbs    = evpl_zalloc(ctx->pending_capacity * sizeof(struct iocb *));
 
     memset(&ctx->io_ctx, 0, sizeof(ctx->io_ctx));
 
