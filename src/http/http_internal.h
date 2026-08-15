@@ -42,6 +42,24 @@ enum evpl_http_request_transfer_encoding {
     EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED,
 };
 
+/*
+ * How the outbound message's content is delimited on the wire.
+ *
+ * Not the same question as which framing the application asked for: RFC 9112
+ * section 6.1 forbids a transfer coding towards a peer whose version does not
+ * have one, and forbids either framing header on a status that carries no
+ * content at all.  So the application says what it wants and this says what it
+ * gets, decided once when the message is dispatched and used by both the
+ * header emission and the body loop -- which have to agree, or the message and
+ * its declared framing describe different things.
+ */
+enum evpl_http_framing {
+    EVPL_HTTP_FRAMING_LENGTH,   /* a Content-Length delimits it            */
+    EVPL_HTTP_FRAMING_CHUNKED,  /* the chunked transfer coding does        */
+    EVPL_HTTP_FRAMING_CLOSE,    /* the connection close does               */
+    EVPL_HTTP_FRAMING_NONE,     /* the message carries no content at all   */
+};
+
 /* Protocol spoken on a connection.  UNKNOWN until decided (by ALPN on TLS or
  * the h2c client preface / requested version on TCP). */
 enum evpl_http_proto {
@@ -104,6 +122,7 @@ struct evpl_http_request {
     enum evpl_http_request_http_version      http_version;
     enum evpl_http_request_transfer_encoding request_transfer_encoding;
     enum evpl_http_request_transfer_encoding response_transfer_encoding;
+    enum evpl_http_framing                   response_framing;
     evpl_http_notify_callback_t              notify_callback;
     void                                    *notify_data;
     uint64_t                                 request_length;
@@ -235,6 +254,7 @@ evpl_http_request_alloc(struct evpl_http_agent *agent)
     request->http_version               = EVPL_HTTP_REQUEST_HTTP_VERSION_1_1;
     request->request_transfer_encoding  = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT;
     request->response_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT;
+    request->response_framing           = EVPL_HTTP_FRAMING_LENGTH;
     request->request_length             = 0;
     request->request_left               = 0;
     request->request_chunk_left         = 0;

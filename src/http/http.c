@@ -2349,11 +2349,23 @@ evpl_http_server_send_headers(
         evpl_http_append_line(rsp_base, cap, &rsp, "%s: %s\r\n", header->name, header->value);
     }
 
-    if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
-        evpl_http_append_line(rsp_base, cap, &rsp, "Content-Length: %" PRIu64 "\r\n", request->response_length);
-    } else {
-        evpl_http_append_line(rsp_base, cap, &rsp, "Transfer-Encoding: chunked\r\n");
-    }
+    switch (request->response_framing) {
+        case EVPL_HTTP_FRAMING_LENGTH:
+            evpl_http_append_line(rsp_base, cap, &rsp,
+                                  "Content-Length: %" PRIu64 "\r\n",
+                                  request->response_length);
+            break;
+        case EVPL_HTTP_FRAMING_CHUNKED:
+            evpl_http_append_line(rsp_base, cap, &rsp,
+                                  "Transfer-Encoding: chunked\r\n");
+            break;
+        default:
+            /* Neither.  A message with no content at all describes none, and a
+             * close-delimited one has nothing to describe it with -- the
+             * connection close is the delimiter, which the Connection header
+             * has already announced. */
+            break;
+    } /* switch */
 
     evpl_http_append_line(rsp_base, cap, &rsp, "\r\n");
 
@@ -2394,7 +2406,7 @@ evpl_http_client_send_headers(
         evpl_http_append_line(rsp_base, cap, &rsp, "%s: %s\r\n", header->name, header->value);
     }
 
-    if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) {
+    if (request->response_framing == EVPL_HTTP_FRAMING_CHUNKED) {
         evpl_http_append_line(rsp_base, cap, &rsp, "Transfer-Encoding: chunked\r\n");
     } else {
         evpl_http_append_line(rsp_base, cap, &rsp, "Content-Length: %" PRIu64 "\r\n", request->response_length);
@@ -2428,7 +2440,32 @@ evpl_http_send_body(
     uint64_t               chunk_length;
     int                    chunk_hdr_len, niov;
 
-    if (request->response_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
+    if (request->response_framing == EVPL_HTTP_FRAMING_NONE) {
+        /* RFC 9112 section 6.3: a 1xx or 204 response "is always terminated by
+         * the first empty line after the header fields".  The message is over,
+         * so anything the application staged is not part of it -- and putting
+         * it on the wire would have the peer read it as the start of the next
+         * response.  Which framing a status may use is the library's to know,
+         * as the HEAD rule already is. */
+        evpl_iovec_ring_clear(evpl, &request->send_ring);
+        return 1;
+    }
+
+    if (request->response_framing == EVPL_HTTP_FRAMING_CLOSE) {
+        /* No length and no coding: the content is whatever reaches the peer
+         * before the FIN, so everything staged goes out and the message ends
+         * when the application says it has. */
+        while (!evpl_iovec_ring_is_empty(&request->send_ring)) {
+            iovp = evpl_iovec_ring_tail(&request->send_ring);
+            evpl_sendv(evpl, bind, iovp, 1, iovp->length, EVPL_SEND_FLAG_TAKE_REF);
+            evpl_iovec_ring_remove(&request->send_ring);
+        }
+
+        return (request->request_flags &
+                EVPL_HTTP_REQUEST_RESPONSE_FINISHED) != 0;
+    }
+
+    if (request->response_framing == EVPL_HTTP_FRAMING_LENGTH) {
 
         while (request->response_left && !evpl_iovec_ring_is_empty(&request->send_ring)) {
             iovp = evpl_iovec_ring_tail(&request->send_ring);
@@ -2814,6 +2851,12 @@ evpl_http_request_dispatch(
     request->notify_data     = notify_data;
     request->request_flags  |= EVPL_HTTP_REQUEST_RESPONSE_READY;
 
+    /* The client speaks HTTP/1.1, so both framings are available to it and the
+     * one the caller asked for is the one it gets. */
+    request->response_framing = request->response_transfer_encoding ==
+        EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED ?
+        EVPL_HTTP_FRAMING_CHUNKED : EVPL_HTTP_FRAMING_LENGTH;
+
     /*
      * A retired connection can carry nothing, and queueing the request on it
      * would leave the caller waiting on a completion that can never arrive --
@@ -2968,6 +3011,55 @@ evpl_http_server_dispatch_default(
         return;
     }
 #endif /* ifdef HAVE_NGHTTP2 */
+
+    /*
+     * How the content will actually be delimited, which is not the same
+     * question as which framing the application asked for.
+     *
+     * RFC 9112 section 6.1: "A server MUST NOT send a Content-Length header
+     * field in any response with a status code of 1xx (Informational) or 204
+     * (No Content)", and MUST NOT send a Transfer-Encoding on one either --
+     * these carry no content, so a header describing its length is describing
+     * something that is not there, and a peer that believes it waits for
+     * bytes that are never coming.
+     *
+     * And: "A server MUST NOT send a response containing Transfer-Encoding
+     * unless the corresponding request indicates HTTP/1.1 (or later)."  An
+     * HTTP/1.0 client has no chunked coding to decode, so a chunked response
+     * to one is a response it cannot read at all -- it takes the chunk sizes
+     * for content.  What is left for content whose size the application does
+     * not know in advance is the framing HTTP/1.0 does have: the close.  That
+     * costs the connection, which is why the request is marked to close and
+     * the Connection header below says so.
+     */
+    if (status / 100 == 1 || status == 204) {
+        request->response_framing = EVPL_HTTP_FRAMING_NONE;
+    } else if (request->response_transfer_encoding ==
+               EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) {
+        if (request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_1) {
+            request->response_framing = EVPL_HTTP_FRAMING_CHUNKED;
+        } else {
+            request->response_framing = EVPL_HTTP_FRAMING_CLOSE;
+            request->request_flags   |= EVPL_HTTP_REQUEST_CONN_CLOSE;
+        }
+    } else {
+        request->response_framing = EVPL_HTTP_FRAMING_LENGTH;
+    }
+
+    /* RFC 9110 section 9.3.2 and RFC 9112 section 6.3: the response to HEAD,
+     * and a 304, carry the header fields a GET would have -- Content-Length
+     * included -- and no content.  So the framing header stays and the octets
+     * do not, which is the library's call rather than the application's: it is
+     * the only component that knows both the request method and what is about
+     * to reach the wire. */
+    if (request->request_type == EVPL_HTTP_REQUEST_TYPE_HEAD ||
+        status == 304) {
+        request->response_left = 0;
+
+        if (request->response_framing != EVPL_HTTP_FRAMING_LENGTH) {
+            request->response_framing = EVPL_HTTP_FRAMING_NONE;
+        }
+    }
 
     /* What the response says about the connection, which is not a free choice:
      * "Connection: keep-alive" is the Keep-Alive extension's acknowledgement
