@@ -676,6 +676,66 @@ evpl_http_handle_body(
 #define EVPL_HTTP_HEADER_EMIT_RESERVE 256
 
 /*
+ * Whether a field name is a token, which RFC 9110 section 5.1 requires:
+ *
+ *     field-name = token
+ *     token      = 1*tchar
+ *     tchar      = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "."
+ *                / "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+ *
+ * A name that is not one cannot be emitted as a field: a space or a colon in
+ * it makes the receiver read a different field, or none.
+ */
+static int
+evpl_http_field_name_is_token(const char *name)
+{
+    const char *p = name;
+
+    if (!*p) {
+        return 0;
+    }
+
+    for (; *p; p++) {
+        if (isalnum((unsigned char) *p) || strchr("!#$%&'*+-.^_`|~", *p)) {
+            continue;
+        }
+
+        return 0;
+    }
+
+    return 1;
+} /* evpl_http_field_name_is_token */
+
+/*
+ * Whether a field value can be emitted as written.
+ *
+ * RFC 9110 section 5.5: "A sender MUST NOT generate a field value that
+ * contains CR, LF, or NUL."  A CRLF inside a value ends the field, so
+ * everything after it is read as further fields -- and after a second CRLF, as
+ * the message content.  That is response splitting, and the application
+ * supplying the value is usually not the component that chose it: it is a
+ * header echoed from a request, a redirect target built from a query
+ * parameter, a name out of a database.  A library that emits it anyway turns
+ * every such place into an injection point.
+ *
+ * NUL needs no test of its own -- the value arrives as a C string, so it ends
+ * there.
+ */
+static int
+evpl_http_field_value_is_safe(const char *value)
+{
+    const char *p;
+
+    for (p = value; *p; p++) {
+        if (*p == '\r' || *p == '\n') {
+            return 0;
+        }
+    }
+
+    return 1;
+} /* evpl_http_field_value_is_safe */
+
+/*
  * Stage a header for emission.  With enforce_limit set (the public API),
  * refuse a header that would push the block past max_header_size less the
  * emission reserve.  The library's own fixed headers are added with
@@ -694,6 +754,17 @@ evpl_http_request_add_header_common(
     struct evpl_http_agent          *agent = conn->agent;
     struct evpl_http_request_header *header;
     unsigned int                     line_bytes;
+
+    /* Checked before anything is allocated, and on the library's own headers
+     * as well as the application's: the cost is a pass over two short strings,
+     * and the alternative is a rule that holds only where someone remembered
+     * to apply it. */
+    if (unlikely(!evpl_http_field_name_is_token(name) ||
+                 !evpl_http_field_value_is_safe(value))) {
+        evpl_http_error("refusing to emit header '%s': "
+                        "not a field name and value", name);
+        return -1;
+    }
 
     header = evpl_http_request_header_alloc(agent);
 

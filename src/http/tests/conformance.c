@@ -91,6 +91,13 @@ static int port = 8095;
 #define RESPOND_CHUNKED     "X-Respond-Chunked"
 #define ECHO_ABSENT         "(absent)"
 
+/* Asks the echo application to try to add response headers that are not
+ * headers -- a value carrying a CRLF, and a name that is not a token.  See
+ * run_injection_case. */
+#define INJECT_ASK          "X-Inject"
+#define INJECT_RESULT       "X-Inject-Result"
+#define INJECT_SMUGGLED     "X-Smuggled"
+
 #define URI_ROOT            "/"
 #define URI_PATH            "/echo"
 #define URI_QUERY           "/echo?a=1&b=2"
@@ -651,6 +658,28 @@ server_notify(
 
             snprintf(count, sizeof(count), "%d", scan.count);
             evpl_http_request_add_header(request, ECHO_PROBE_COUNT, count);
+
+            /* Response splitting, reached from the one direction the wire
+             * cannot: an application header whose value carries a CRLF, or
+             * whose name is not a token.  Neither can arrive in a request --
+             * the parser splits lines on LF, so a header value never contains
+             * one -- but an application builds header values from redirect
+             * targets, query parameters and database rows, and any of those
+             * can. */
+            if (evpl_http_request_header(request, INJECT_ASK)) {
+                int refused = 0;
+
+                refused += evpl_http_request_add_header(
+                    request, "X-Injected",
+                    "ok\r\n" INJECT_SMUGGLED ": yes") < 0;
+
+                refused += evpl_http_request_add_header(
+                    request, "X-Bad Name", "value") < 0;
+
+                evpl_http_request_add_header(request, INJECT_RESULT,
+                                             refused == 2 ? "refused" :
+                                             "accepted");
+            }
 
             /* Echo the request body back verbatim.  The same code runs for
              * HEAD: whether a body reaches the wire for a HEAD request is the
@@ -2866,6 +2895,80 @@ run_status_case(
     free(rd);
 } /* run_status_case */
 
+/*
+ * Response splitting, which is the one defect class in this file whose input
+ * comes from the application rather than from the wire.
+ *
+ * RFC 9110 section 5.5: "A sender MUST NOT generate a field value that
+ * contains CR, LF, or NUL", and section 5.1 makes a field name a token.  A
+ * CRLF inside a value ends the field, so everything after it is read as
+ * further fields and, after a second CRLF, as content -- one response becomes
+ * two, the second of them chosen by whoever supplied the value.  The wire
+ * cannot deliver such a header (the parser splits lines on LF, so a parsed
+ * value never contains one), but an application builds header values from
+ * redirect targets and query parameters, and those can.
+ *
+ * The library owns what reaches the wire, so refusing is its job; the echo
+ * application asks for the header and reports whether the API took it.
+ */
+static void
+run_injection_case(void)
+{
+    struct wirebuf wb;
+    struct reader *rd;
+    struct rawrsp  r;
+    const char    *result;
+    char           detail[256];
+    int            actual, ok;
+
+    rd = calloc(1, sizeof(*rd));
+
+    if (!rd) {
+        fprintf(stderr, "out of memory\n");
+        exit(1);
+    }
+
+    rd->fd = connect_raw();
+
+    if (rd->fd < 0) {
+        fprintf(stderr, "injection case: connect failed: %s\n",
+                strerror(errno));
+        g_results.unexpected++;
+        free(rd);
+        return;
+    }
+
+    g_results.status_run++;
+
+    wb_init(&wb);
+
+    wb_str(&wb, "GET " URI_PATH " HTTP/1.1\r\nHost: ");
+    wb_str(&wb, g_host_value);
+    wb_str(&wb, "\r\nConnection: close\r\n" INJECT_ASK ": 1\r\n\r\n");
+
+    deliver(rd->fd, &wb, HDLV_ONEWRITE);
+
+    read_response(rd, &r, 0, 1);
+
+    actual = classify(&r);
+    result = rsp_header(&r, INJECT_RESULT);
+
+    ok = actual == 200 && result && strcmp(result, "refused") == 0 &&
+        rsp_header(&r, INJECT_SMUGGLED) == NULL;
+
+    snprintf(detail, sizeof(detail),
+             "status %s, the API %s the header, %s smuggled field",
+             outcome_name(actual), result ? result : "(no result reported)",
+             rsp_header(&r, INJECT_SMUGGLED) ? "a" : "no");
+
+    record(PHASE_STATUS, ASPECT_FRAMING, 200, VACT_OK,
+           ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
+
+    wb_free(&wb);
+    close(rd->fd);
+    free(rd);
+} /* run_injection_case */
+
 static void
 run_status_phase(void)
 {
@@ -2887,6 +2990,8 @@ run_status_phase(void)
             run_status_case(chunked_statuses[i], ver, 1, 1);
         }
     }
+
+    run_injection_case();
 } /* run_status_phase */
 
 /* ------------------------------------------------------------------ *
