@@ -241,6 +241,28 @@ void evpl_global_config_set_hf_time_mode(
     struct evpl_global_config *config,
     unsigned int               mode);
 
+/*
+ * Take the event loop off the machine's clock and put it on one the
+ * application advances by hand, with evpl_virtual_clock_advance().
+ *
+ * Timer deadlines, the poll-mode spin window and every other internal
+ * deadline are then measured against that clock alone, so nothing in the loop
+ * happens because wall-clock time passed.  The core wait stops blocking as
+ * well: with no way for time to move while the loop is inside it, a wait for
+ * a deadline would be a wait for something that cannot happen.
+ *
+ * This exists so that time-dependent behaviour can be tested for what it is
+ * rather than for how loaded the machine was -- a test advances the clock by a
+ * known amount and drives the loop, instead of sleeping and hoping.  It is
+ * process-wide and must be set before evpl_init().
+ *
+ * Do not enable it in production: a loop on this clock never sleeps, and any
+ * timer in it stops firing the moment the application stops advancing time.
+ */
+void evpl_global_config_set_virtual_clock(
+    struct evpl_global_config *config,
+    int                        enabled);
+
 void evpl_global_config_set_max_pending(
     struct evpl_global_config *config,
     unsigned int               max);

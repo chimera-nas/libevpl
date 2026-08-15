@@ -12,6 +12,7 @@
 #include "protocol.h"
 #include "allocator.h"
 #include "stopwatch.h"
+#include "macros.h"
 
 struct evpl_allocator;
 
@@ -29,6 +30,19 @@ struct evpl_shared {
     struct stopwatch_context     hf_stopwatch;
     struct stopwatch             hf_base_sw;
     struct timespec              hf_base_time;
+
+    /* Virtual clock.  When enabled by the global config, the event loop takes
+     * its time from virtual_ticks -- which nothing but the application
+     * advances -- instead of from the stopwatch above, and a tick is exactly a
+     * nanosecond so the application's units are the loop's units.
+     *
+     * This exists so that behaviour which depends on time can be tested
+     * deterministically: a test advances the clock by a known amount and then
+     * drives the loop, rather than sleeping and hoping.  See
+     * evpl_global_config_set_virtual_clock().
+     */
+    unsigned int                 virtual_clock;
+    uint64_t                     virtual_ticks;
 
     struct prometheus_metrics   *metrics;
     struct prometheus_histogram *block_latency;
@@ -53,18 +67,34 @@ extern struct evpl_shared *evpl_shared;
 static inline uint64_t
 evpl_now_ticks(void)
 {
+    if (unlikely(evpl_shared->virtual_clock)) {
+        return evpl_shared->virtual_ticks;
+    }
+
     return stopwatch_read_ticks(&evpl_shared->hf_stopwatch, &evpl_shared->hf_base_sw);
 } /* evpl_now_ticks */
 
+/* On the virtual clock a tick IS a nanosecond, so both conversions are the
+ * identity.  Anything else would reinterpret the application's advances
+ * through the TSC frequency, which is exactly the machine-dependence the
+ * virtual clock exists to remove. */
 static inline uint64_t
 evpl_ns_to_ticks(uint64_t ns)
 {
+    if (unlikely(evpl_shared->virtual_clock)) {
+        return ns;
+    }
+
     return stopwatch_ns_to_ticks(&evpl_shared->hf_stopwatch, ns);
 } /* evpl_ns_to_ticks */
 
 static inline uint64_t
 evpl_ticks_to_ns(uint64_t ticks)
 {
+    if (unlikely(evpl_shared->virtual_clock)) {
+        return ticks;
+    }
+
     return stopwatch_ticks_to_ns(&evpl_shared->hf_stopwatch, ticks);
 } /* evpl_ticks_to_ns */
 

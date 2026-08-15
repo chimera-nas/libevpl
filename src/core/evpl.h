@@ -59,6 +59,7 @@ struct evpl_global_config {
     unsigned int              core_mech;
 
     unsigned int              hf_time_mode;
+    unsigned int              virtual_clock;
     unsigned int              max_pending;
     unsigned int              max_poll_fd;
     unsigned int              max_num_iovec;

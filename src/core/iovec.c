@@ -34,7 +34,15 @@ evpl_iovec_reserve(
 
         chunk = (buffer->size - buffer->used);
 
-        if (chunk < pad + left && niovs + 1 <= max_iovecs) {
+        /* Not enough room here for the rest of the request.  If the buffer
+         * has been used, discard the remainder and take a fresh one -- but
+         * only then: a FRESH buffer that is still too small means the request
+         * is larger than a buffer, and discarding that one for another of the
+         * same size would do the same thing forever.  Fall through instead
+         * and place what fits, which is what the loop below already does with
+         * the remainder. */
+        if (chunk < pad + left && niovs + 1 <= max_iovecs &&
+            buffer->used > 0) {
             evpl_buffer_release(evpl, buffer);
             evpl->current_buffer = NULL;
             continue;
@@ -134,7 +142,15 @@ evpl_iovec_alloc(
 
         chunk = (buffer->size - buffer->used);
 
-        if (chunk < pad + left && niovs + 1 <= max_iovecs) {
+        /* Not enough room here for the rest of the request.  If the buffer
+         * has been used, discard the remainder and take a fresh one -- but
+         * only then: a FRESH buffer that is still too small means the request
+         * is larger than a buffer, and discarding that one for another of the
+         * same size would do the same thing forever.  Fall through instead
+         * and place what fits, which is what the loop below already does with
+         * the remainder. */
+        if (chunk < pad + left && niovs + 1 <= max_iovecs &&
+            buffer->used > 0) {
             evpl_buffer_release(evpl, buffer);
             *bufferp = NULL;
             continue;

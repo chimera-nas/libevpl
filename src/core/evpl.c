@@ -151,6 +151,11 @@ evpl_shared_init(struct evpl_global_config *config)
     clock_gettime(CLOCK_MONOTONIC, &evpl_shared->hf_base_time);
     stopwatch_start(&evpl_shared->hf_stopwatch, &evpl_shared->hf_base_sw);
 
+    /* Lifted out of the config so the time path reads one cache line rather
+     * than chasing the config pointer on every call. */
+    evpl_shared->virtual_clock = evpl_shared->config->virtual_clock;
+    evpl_shared->virtual_ticks = 0;
+
     /* Block I/O metric definitions.  Per-device series (labelled by
      * device and type) are created lazily when a device is opened; the
      * histograms use base-2 buckets, so 32 buckets cover up to ~2.1s of
@@ -457,6 +462,13 @@ evpl_create(struct evpl_thread_config *config)
      * compares it without converting on every iteration. */
     evpl->spin_ticks = evpl_ns_to_ticks(evpl->config.spin_ns);
 
+    /* Start the spin grace period now rather than at the epoch.  Left at zero
+     * the loop measures inactivity from process init, so a thread created
+     * more than spin_ns after that never enters poll mode at all until
+     * something calls evpl_activity() -- which makes poll_mode a setting that
+     * silently does nothing on any thread but the first. */
+    evpl->last_activity_ticks = evpl_now_ticks();
+
     evpl_core_init(&evpl->core, 64);
 
     evpl->running = 1;
@@ -508,13 +520,22 @@ evpl_continue(struct evpl *evpl)
 
                 if (remain > 0) {
                     /* Timer not yet due; convert the remaining ticks to the
-                     * millisecond wait only here, off the busy path. */
+                     * millisecond wait only here, off the busy path.
+                     *
+                     * The break is unconditional: the timers are a min-heap,
+                     * so the head not being due means none of them is, and
+                     * falling through would fire a timer before its deadline.
+                     * Only the wait is conditional -- a caller that asked for
+                     * a shorter wait_ms than this timer's remaining time
+                     * still gets the shorter wait, and the timer fires on a
+                     * later pass once it is genuinely due. */
                     remain = (int64_t) (evpl_ticks_to_ns((uint64_t) remain) / 1000000);
 
                     if (remain < msecs || msecs == -1) {
                         msecs = remain;
-                        break;
                     }
+
+                    break;
                 }
 
                 if (timer->oneshot) {
@@ -573,6 +594,14 @@ evpl_continue(struct evpl *evpl)
 
         if (evpl->poll_mode || (evpl->config.poll_mode && evpl->activity != evpl->last_activity) ||
             evpl->num_active_events || evpl->num_active_deferrals || evpl->pending_close_binds) {
+            msecs = 0;
+        }
+
+        /* On the virtual clock, nothing but the application moves time, so a
+         * wait for a deadline would be a wait for something that cannot
+         * happen while we are in it.  Poll instead and let the caller decide
+         * when to advance. */
+        if (unlikely(evpl_shared->virtual_clock)) {
             msecs = 0;
         }
 
@@ -689,6 +718,31 @@ evpl_continue(struct evpl *evpl)
     }
 
 } /* evpl_continue */
+
+SYMBOL_EXPORT void
+evpl_virtual_clock_advance(uint64_t ns)
+{
+    evpl_core_abort_if(!evpl_shared,
+                       "evpl_virtual_clock_advance: evpl is not initialized");
+    evpl_core_abort_if(!evpl_shared->virtual_clock,
+                       "evpl_virtual_clock_advance: this process is not on the "
+                       "virtual clock; enable it with "
+                       "evpl_global_config_set_virtual_clock() before evpl_init()");
+
+    evpl_shared->virtual_ticks += ns;
+} /* evpl_virtual_clock_advance */
+
+SYMBOL_EXPORT uint64_t
+evpl_virtual_clock_now(void)
+{
+    evpl_core_abort_if(!evpl_shared,
+                       "evpl_virtual_clock_now: evpl is not initialized");
+    evpl_core_abort_if(!evpl_shared->virtual_clock,
+                       "evpl_virtual_clock_now: this process is not on the "
+                       "virtual clock");
+
+    return evpl_shared->virtual_ticks;
+} /* evpl_virtual_clock_now */
 
 SYMBOL_EXPORT void
 evpl_get_hf_monotonic_time(
