@@ -1878,21 +1878,20 @@ check_framing(
         return;
     }
 
-    /* RFC 9112 section 6.1 again: "A sender MUST NOT send a Content-Length
-     * header field in any message that contains a Transfer-Encoding header
-     * field."  Two framings that disagree is the response-splitting
-     * primitive, and it is the same defect the server refuses on the way
-     * in. */
+    /* RFC 9110 section 8.6: "A sender MUST NOT send a Content-Length header
+     * field in any message that contains a Transfer-Encoding header field."
+     * Two framings that disagree is the response-splitting primitive, and it
+     * is the same defect the server refuses on the way in. */
     if (r->chunked && rsp_header(r, "Content-Length")) {
         record(phase, ASPECT_FRAMING, subject, VACT_OK, VACT_BAD, 0,
                "both Content-Length and Transfer-Encoding on one response");
         return;
     }
 
-    /* "A server MUST NOT send a Content-Length header field in any response
-     * with a status code of 1xx (Informational) or 204 (No Content)."  These
-     * carry no content by definition, so a length is describing something
-     * that is not there. */
+    /* Section 8.6 again: "A server MUST NOT send a Content-Length header field
+     * in any response with a status code of 1xx (Informational) or 204 (No
+     * Content)."  These carry no content by definition, so a length is
+     * describing something that is not there. */
     if ((r->status / 100 == 1 || r->status == 204) &&
         rsp_header(r, "Content-Length")) {
         snprintf(detail, sizeof(detail),
@@ -2899,9 +2898,10 @@ run_status_case(
  * Response splitting, which is the one defect class in this file whose input
  * comes from the application rather than from the wire.
  *
- * RFC 9110 section 5.5: "A sender MUST NOT generate a field value that
- * contains CR, LF, or NUL", and section 5.1 makes a field name a token.  A
- * CRLF inside a value ends the field, so everything after it is read as
+ * RFC 9110 section 5.5 calls a field value containing CR, LF or NUL "invalid
+ * and dangerous" and has a recipient reject or sanitize it; section 5.1 makes
+ * a field name a token.  A CRLF inside a value ends the field, so everything
+ * after it is read as
  * further fields and, after a second CRLF, as content -- one response becomes
  * two, the second of them chosen by whoever supplied the value.  The wire
  * cannot deliver such a header (the parser splits lines on LF, so a parsed

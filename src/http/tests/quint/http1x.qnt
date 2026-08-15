@@ -765,20 +765,22 @@ module http1x_defects {
          * version and on nothing else. */
         | PostWithoutContentLength
 
-        /* --- transfer codings (RFC 9112 section 6.1) -------------------- */
-        /* "If a message is received with both a Transfer-Encoding and a
-         * Content-Length header field, the Transfer-Encoding overrides the
-         * Content-Length.  Such a message might indicate an attempt to
-         * perform request smuggling ... or response splitting ... and ought
-         * to be handled as an error."  Two framings that disagree leave the
-         * message boundary to the sender, which is the same defect as two
-         * Content-Lengths and gets the same answer. */
+        /* --- transfer codings (RFC 9112 sections 6.1 and 6.3) ----------- */
+        /* Section 6.3, rule 3: "If a message is received with both a
+         * Transfer-Encoding and a Content-Length header field, the
+         * Transfer-Encoding overrides the Content-Length.  Such a message
+         * might indicate an attempt to perform request smuggling ... or
+         * response splitting ... and ought to be handled as an error" -- and
+         * RFC 9110 section 8.6 makes sending the pair a MUST NOT.  Two
+         * framings that disagree leave the message boundary to the sender,
+         * which is the same defect as two Content-Lengths and gets the same
+         * answer. */
         | TransferEncodingWithContentLength
-        /* "If a Transfer-Encoding header field is present in a request and
-         * the chunked transfer coding is not the final encoding, the message
-         * body length cannot be determined reliably; the server MUST respond
-         * with the 400 (Bad Request) status code and then close the
-         * connection." */
+        /* Section 6.3, rule 4: "If a Transfer-Encoding header field is present
+         * in a request and the chunked transfer coding is not the final
+         * encoding, the message body length cannot be determined reliably;
+         * the server MUST respond with the 400 (Bad Request) status code and
+         * then close the connection." */
         | TransferEncodingChunkedNotFinal
         /* Chunked IS final, so the message is delimited -- but an inner
          * coding the server does not implement leaves it unable to do
@@ -904,7 +906,7 @@ module http1x_defects {
 
     /// What must become of the connection.
     ///
-    /// A refusal closes, at either version.  RFC 9112 section 6.1 says so in
+    /// A refusal closes, at either version.  RFC 9112 section 6.3 says so in
     /// as many words for the framing defects ("MUST respond with the 400 (Bad
     /// Request) status code and then close the connection"), and the reason
     /// generalises to every other refusal here: the server has just said it
@@ -1370,7 +1372,7 @@ module http1x_client {
          * would have, Content-Length included, and no body.  A client that
          * waits for the bytes that length promises waits forever. */
         | RspHeadWithContentLength
-        /* Both framings at once, from the other end.  RFC 9112 section 6.1
+        /* Both framings at once, from the other end.  RFC 9112 section 6.3
          * calls it a possible response-splitting attempt and says it "ought to
          * be handled as an error"; the client has no status to answer with, so
          * the error is the request's. */

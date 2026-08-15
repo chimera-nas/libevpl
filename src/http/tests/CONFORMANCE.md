@@ -159,8 +159,8 @@ they are held in the driver rather than bent into the case table:
 
 - The status line carries `HTTP/1.0` or `HTTP/1.1` and a reason phrase.
 - `Transfer-Encoding` only towards an HTTP/1.1 request (RFC 9112 §6.1).
-- Never `Content-Length` and `Transfer-Encoding` together (§6.1).
-- Neither on a 1xx or a 204 (§6.1).
+- Never `Content-Length` and `Transfer-Encoding` together (RFC 9110 §8.6).
+- Neither on a 1xx or a 204 (RFC 9110 §8.6 and RFC 9112 §6.1).
 - A `Date` on every 2xx, 3xx and 4xx (RFC 9110 §6.6.1).
 - A server may only answer `Connection: keep-alive` to an HTTP/1.0 client that
   asked for it (RFC 2068 §19.7.1.1).
@@ -275,13 +275,14 @@ the protocol:
   header field." The routing decision depends on it, so a request that leaves
   it ambiguous is one a front end and a back end can route differently.
 - **`Transfer-Encoding` together with `Content-Length` was accepted**, with the
-  coding silently winning. §6.1 calls it a possible request-smuggling attempt
-  that "ought to be handled as an error" — the same defect as two
-  Content-Lengths that disagree.
+  coding silently winning. §6.3 rule 3 calls it a possible request-smuggling
+  attempt that "ought to be handled as an error", and RFC 9110 §8.6 makes
+  sending the pair a MUST NOT — the same defect as two Content-Lengths that
+  disagree.
 - **`chunked` not being the final coding drew a 501**, which says the server
   does not implement something rather than that the message has no length.
-  §6.1 makes it a 400 and a close. A coding it genuinely does not implement,
-  with chunked still final, keeps the 501 the same section asks for.
+  §6.3 rule 4 makes it a 400 and a close. A coding it genuinely does not
+  implement, with chunked still final, keeps the 501 §6.1 asks for.
 - **`Transfer-Encoding` on a request claiming HTTP/1.0 was served.** A front
   end reading the version and a back end reading the coding disagree about
   where the message ends, which is the whole of a smuggling attack.
@@ -319,15 +320,16 @@ the protocol:
   4xx. Everything downstream that reasons about the age of a response starts
   from it, so a caching proxy in front of this server had to treat every reply
   as having unknown age.
-- **`Content-Length: 0` on a 204**, and on a 1xx, which §6.1 makes a MUST NOT:
-  these carry no content, so a length describes something that is not there.
-- **`Transfer-Encoding: chunked` towards an HTTP/1.0 request**, which §6.1 also
-  makes a MUST NOT — that client has no chunked coding, so it reads the chunk
+- **`Content-Length: 0` on a 204**, and on a 1xx, which RFC 9110 §8.6 makes a
+  MUST NOT: these carry no content, so a length describes something that is
+  not there.
+- **`Transfer-Encoding: chunked` towards an HTTP/1.0 request**, which RFC 9112
+  §6.1 makes a MUST NOT — that client has no chunked coding, so it reads the chunk
   sizes as content. Such a response is now close-delimited, which is the
   framing HTTP/1.0 does have for content of unknown size.
 - **A header value carrying a CRLF was emitted verbatim**, which is response
-  splitting: RFC 9110 §5.5 makes generating one a MUST NOT, and §5.1 makes a
-  field name a token.
+  splitting: RFC 9110 §5.5 calls such a value "invalid and dangerous" and puts
+  it outside the field-value grammar, and §5.1 makes a field name a token.
 
 **What the client got wrong:**
 

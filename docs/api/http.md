@@ -39,9 +39,10 @@ wire. Specifically —
   authority the endpoint implies.
 - **The framing headers** are chosen from the status and the request's
   version, not only from what the application asked for. A 1xx or 204 response
-  carries neither `Content-Length` nor `Transfer-Encoding` (RFC 9112 §6.1); a
-  chunked response to an HTTP/1.0 request is sent close-delimited instead,
-  because that version has no chunked coding to decode.
+  carries neither `Content-Length` nor `Transfer-Encoding` (RFC 9110 §8.6 and
+  RFC 9112 §6.1); a chunked response to an HTTP/1.0 request is sent
+  close-delimited instead, because that version has no chunked coding to
+  decode.
 - **The content of a response to HEAD, and of a 1xx, 204 or 304**, is
   suppressed: the header fields a GET would have returned are still sent, and
   the octets are not (RFC 9112 §6.3).
@@ -381,8 +382,9 @@ request headers on a client one.
 **Returns:** 0, or -1 with the header not added if either:
 
 - it would push the block past the configured `http_max_header_size`, or
-- the name is not a token, or the value contains CR or LF (RFC 9110 §5.1 and
-  §5.5). A CRLF in a value ends the field, so everything after it would be read
+- the name is not a token (RFC 9110 §5.1), or the value contains CR or LF,
+  which §5.5 calls "invalid and dangerous" and puts outside the field-value
+  grammar. A CRLF in a value ends the field, so everything after it would be read
   as further fields and then as content — one message becoming two, the second
   chosen by whoever supplied the value. Worth testing the return wherever a
   value comes from outside the program.

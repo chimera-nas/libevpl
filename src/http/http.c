@@ -709,14 +709,21 @@ evpl_http_field_name_is_token(const char *name)
 /*
  * Whether a field value can be emitted as written.
  *
- * RFC 9110 section 5.5: "A sender MUST NOT generate a field value that
- * contains CR, LF, or NUL."  A CRLF inside a value ends the field, so
- * everything after it is read as further fields -- and after a second CRLF, as
- * the message content.  That is response splitting, and the application
- * supplying the value is usually not the component that chose it: it is a
- * header echoed from a request, a redirect target built from a query
- * parameter, a name out of a database.  A library that emits it anyway turns
- * every such place into an injection point.
+ * RFC 9110 section 5.5 puts CR and LF outside the field-value grammar --
+ * field-vchar is VCHAR or obs-text, and neither includes a CTL -- and says of
+ * them: "Field values containing CR, LF, or NUL characters are invalid and
+ * dangerous, due to the varying ways that implementations might parse and
+ * interpret those characters; a recipient of CR, LF, or NUL within a field
+ * value MUST either reject the message or replace each of those characters
+ * with SP before further processing or forwarding of that message."
+ *
+ * What makes them dangerous is what happens where a recipient does neither: a
+ * CRLF inside a value ends the field, so everything after it is read as
+ * further fields -- and after a second CRLF, as the message content.  That is
+ * response splitting, and the application supplying the value is usually not
+ * the component that chose it: it is a header echoed from a request, a
+ * redirect target built from a query parameter, a name out of a database.  A
+ * library that emits it anyway turns every such place into an injection point.
  *
  * NUL needs no test of its own -- the value arrives as a C string, so it ends
  * there.
@@ -1281,19 +1288,22 @@ evpl_http_request_framing(
         return 400;
     }
 
-    /* Section 6.1 again: a message carrying both "might indicate an attempt to
-     * perform request smuggling ... and ought to be handled as an error".  Two
-     * framings that disagree is the same defect as two Content-Lengths that
-     * disagree, and gets the same answer. */
+    /* RFC 9112 section 6.3, rule 3: a message carrying both "might indicate an
+     * attempt to perform request smuggling ... or response splitting ... and
+     * ought to be handled as an error" -- and RFC 9110 section 8.6 makes
+     * sending the pair a MUST NOT in the first place.  Two framings that
+     * disagree is the same defect as two Content-Lengths that disagree, and
+     * gets the same answer. */
     if (request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH) {
         *why = "both Content-Length and Transfer-Encoding";
         return 400;
     }
 
-    /* "If a Transfer-Encoding header field is present in a request and the
-     * chunked transfer coding is not the final encoding, the message body
-     * length cannot be determined reliably; the server MUST respond with the
-     * 400 (Bad Request) status code and then close the connection." */
+    /* Section 6.3, rule 4: "If a Transfer-Encoding header field is present in
+     * a request and the chunked transfer coding is not the final encoding, the
+     * message body length cannot be determined reliably; the server MUST
+     * respond with the 400 (Bad Request) status code and then close the
+     * connection." */
     if (!chunked_last || not_final) {
         *why = "the chunked coding is not the final transfer coding";
         return 400;
@@ -1301,9 +1311,9 @@ evpl_http_request_framing(
 
     /* Chunked is final, so the message can be delimited -- but a coding inside
      * it that the server does not implement leaves it unable to do anything
-     * with the content.  "A server that receives a request message with a
-     * transfer coding it does not understand SHOULD respond with 501 (Not
-     * Implemented)." */
+     * with the content.  Section 6.1: "A server that receives a request
+     * message with a transfer coding it does not understand SHOULD respond
+     * with 501 (Not Implemented)." */
     if (extra) {
         *why = "unsupported transfer coding";
         return 501;
@@ -3144,15 +3154,16 @@ evpl_http_server_dispatch_default(
      * How the content will actually be delimited, which is not the same
      * question as which framing the application asked for.
      *
-     * RFC 9112 section 6.1: "A server MUST NOT send a Content-Length header
+     * RFC 9110 section 8.6: "A server MUST NOT send a Content-Length header
      * field in any response with a status code of 1xx (Informational) or 204
-     * (No Content)", and MUST NOT send a Transfer-Encoding on one either --
-     * these carry no content, so a header describing its length is describing
-     * something that is not there, and a peer that believes it waits for
-     * bytes that are never coming.
+     * (No Content)", and RFC 9112 section 6.1 says the same of a
+     * Transfer-Encoding on one -- these carry no content, so a header
+     * describing its length is describing something that is not there, and a
+     * peer that believes it waits for bytes that are never coming.
      *
-     * And: "A server MUST NOT send a response containing Transfer-Encoding
-     * unless the corresponding request indicates HTTP/1.1 (or later)."  An
+     * Section 6.1 also: "A server MUST NOT send a response containing
+     * Transfer-Encoding unless the corresponding request indicates HTTP/1.1
+     * (or later)."  An
      * HTTP/1.0 client has no chunked coding to decode, so a chunked response
      * to one is a response it cannot read at all -- it takes the chunk sizes
      * for content.  What is left for content whose size the application does

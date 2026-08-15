@@ -125,12 +125,13 @@ evpl_http_server_destroy(
  *   - it would push the block past the configured http_max_header_size (see
  *     evpl_global_config_set_http_max_header_size), or
  *
- *   - the name is not a token or the value contains CR or LF (RFC 9110
- *     sections 5.1 and 5.5).  A CRLF in a value ends the field, so everything
- *     after it would be read as further fields and then as content -- one
- *     message becoming two, the second chosen by whoever supplied the value.
- *     Worth testing the return of wherever a value comes from outside the
- *     program.
+ *   - the name is not a token (RFC 9110 section 5.1), or the value contains
+ *     CR or LF, which section 5.5 calls "invalid and dangerous" and puts
+ *     outside the field-value grammar.  A CRLF in a value ends the field, so
+ *     everything after it would be read as further fields and then as
+ *     content -- one message becoming two, the second chosen by whoever
+ *     supplied the value.  Worth testing the return wherever a value comes
+ *     from outside the program.
  */
 int
 evpl_http_request_add_header(
