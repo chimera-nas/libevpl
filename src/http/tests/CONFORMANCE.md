@@ -6,16 +6,17 @@ SPDX-License-Identifier: LGPL-2.1-only
 
 # Model-based HTTP/1.0 conformance test
 
-`conformance.c` + `quint/` form a conformance suite for libevpl's HTTP/1.x
-server. A formal model written in [Quint](https://quint-lang.org) enumerates
-the test cases; a generator turns them into a C table; the test binary replays
-them against a real libevpl HTTP server over a raw socket.
+`conformance.c`, `conformance_client.c` and `quint/` form a conformance suite
+for libevpl's HTTP/1.x implementation, both ends of it. A formal model written
+in [Quint](https://quint-lang.org) enumerates the test cases; a generator turns
+them into a C table; the test binaries replay them against a real libevpl HTTP
+server and a real libevpl HTTP client, each driven from a raw socket.
 
 It is the HTTP twin of the RPC2 suite in `src/rpc2/tests`, and follows the same
 rule: **the model encodes the specification, not libevpl's current behaviour.**
 Divergences are expected; each reviewed one is listed in `known_divergences[]`
-in `conformance.c` with a note, which keeps the suite green while leaving the
-gaps visible and counted. An unlisted divergence fails the test.
+in the driver with a note, which keeps the suite green while leaving the gaps
+visible and counted. An unlisted divergence fails the test.
 
 The cases are generated from the model at build time, so quint and python3 are
 build dependencies. CMake detects them; when either is missing the test is
@@ -30,8 +31,8 @@ Pass `-DQUINT_EXECUTABLE=OFF` to force it off. The devcontainer installs a
 pinned quint, so it is enabled there.
 
 ```
-ctest -R libevpl/http/conformance --output-on-failure
-ctest -R libevpl/http/quint_model --output-on-failure   # the model's own tests
+ctest -R libevpl/http/conformance --output-on-failure         # both directions
+ctest -R libevpl/http/quint_model --output-on-failure         # the model itself
 ```
 
 Nothing generated is checked in. The ITF traces and the case table are build
@@ -44,29 +45,35 @@ differently, which is why the devcontainer pins one.
 
 | File | Role |
 |---|---|
-| `quint/http10.qnt` | Three modules: the shared prediction vocabulary, the positive request matrix, the defect taxonomy |
+| `quint/http10.qnt` | Four modules: the shared vocabulary, the positive request matrix, the request defect taxonomy, the response defect taxonomy |
 | `quint/itf_to_cases.py` | ITF traces → C case table |
 | `quint/generate_cases.sh` | Build step: model → traces → case table |
 | `quint/check_models.sh` | The `quint_model` test: scenario tests + invariants |
 | `<build>/…/quint/http_cases.h` | **Generated**, not checked in |
-| `conformance.c` | The driver: echo server, raw-socket client, response classifier |
+| `conformance.c` | The server driver: echo server, raw-socket client, response classifier |
+| `conformance_client.c` | The client driver: raw-socket server, libevpl client, callback classifier |
 
-Three modules in one file rather than two files, because both matrices predict
-in the same vocabulary (`Outcome`, `BodyExpect`, `PersistExpect`,
-`ProbeExpect`) and the C driver compiles one table generated from all of it. A
-class that meant one thing in one file and another in the other would be a
-silently wrong test. `quint` picks the module with `--main`, which every
-invocation in the scripts passes explicitly.
+Four modules in one file rather than four files, because they predict in a
+shared vocabulary (`Delivery`, `ProbeExpect`, and the expectation types) and
+the two C drivers compile one table generated from all of it. A class that
+meant one thing in one file and another in the other would be a silently wrong
+test. `quint` picks the module with `--main`, which every invocation in the
+scripts passes explicitly.
 
-## Why a raw socket on both sides
+## Why a raw socket at both ends
 
-libevpl's own HTTP client cannot express any of this.
+Neither of libevpl's own HTTP peers can express any of this.
 `evpl_http_client_send_headers` hardcodes `HTTP/1.1` and emits a fixed header
-block, so it can send neither an HTTP/1.0 request nor a malformed one. Both
-phases therefore drive a socket directly, which also means one set of framing
-helpers covers the positive and negative matrices alike.
+block, so it can send neither an HTTP/1.0 request nor a malformed one; and the
+server emits a well-formed response by construction, so a real client never
+sees a defective one. Each direction is therefore driven by a socket, which
+also means one set of framing helpers covers every matrix.
 
-## The two phases
+`conformance.c` is a raw client against a real server; `conformance_client.c`
+is a raw server against a real client. They share the model file and the
+generated case table and nothing else.
+
+## The server direction: two phases
 
 **Requests** replay legal HTTP/1.0 requests across six dimensions — method,
 Request-URI shape, header-block grammar, body length, connection disposition,
@@ -242,20 +249,77 @@ The case stays in the model rather than being deleted from it, because what RFC
 1945 requires does not change when an implementation decides not to do it. The
 entry in `known_divergences[]` is where that decision is recorded.
 
+## The client direction
+
+`conformance_client.c` inverts the whole arrangement: a raw socket pretending
+to be a server, feeding defective responses to a real libevpl client. Its model
+(`http10_client`) has an outcome type with exactly two arms — the response is
+delivered, or the request completes as a failure — and deliberately no third
+arm for "nothing happens". A caller that dispatched a request is owed exactly
+one answer, and a client that frees the request without telling anyone has not
+failed it, it has abandoned the caller.
+
+Four of its findings are fixed, in the commits alongside this file:
+
+- **The response status line was parsed as loosely as the request line used to
+  be.** `atoi` turned a non-numeric status into `0` and handed it to the caller;
+  `99` and `700` were delivered as themselves; `HTTP/1.9` was refused rather
+  than read as HTTP/1.1. A caller testing `status < 400` treated `0` as a
+  success.
+- **Close-delimited bodies were discarded.** A response with no `Content-Length`
+  and no transfer coding is delimited by the close (RFC 1945 §7.2.2) — the only
+  framing HTTP/1.0 has for a body of unknown size, which every streamed reply
+  uses. libevpl read such a response as empty: status delivered, request
+  completed, body parsed and then dropped, indistinguishable to the caller from
+  a response that had none.
+- **HEAD responses hung.** The response to HEAD carries the header fields a GET
+  would have, `Content-Length` included, and no body (§8.2); 204 and 304 are
+  the same (§9.2.5, §9.3.5). The client waited for bytes that were never
+  coming.
+- **Conflicting `Content-Length`s were resolved rather than refused**, which the
+  request path already refused.
+
+### What is left, and why it is not fixed here
+
+Seventeen entries, and all of them are one gap: **there is nowhere to report a
+request that will not complete.**
+
+`evpl_http_notify_type` has five arms and none of them means "this request is
+over and there is no response". So when the client refuses a malformed response
+— which, after the fixes above, it now does promptly and for the right reason
+on every one of these cases — it closes the connection, and
+`evpl_http_event`'s `EVPL_NOTIFY_DISCONNECTED` arm frees every pending request
+without invoking one callback. The caller waits on a completion that can no
+longer arrive.
+
+This is the same defect the RPC2 suite found on its client, where the fix was
+`EVPL_RPC2_REPLY_CONN_LOST` plus a `status` parameter on the generated dispatch.
+The HTTP equivalent is a new value in a public enum, which every `switch` over
+it has to grow an arm for, so it is an API change rather than a bug fix and is
+recorded rather than done in passing.
+
+A second, related gap is not in the case table because it kills the harness
+rather than failing a case: **an application cannot tell that a connection has
+been retired.** `evpl_http_event` frees the `evpl_http_conn` on disconnect and
+there is no notification to register for, so the pointer
+`evpl_http_client_connect` returned goes stale at a moment its owner cannot
+observe, and `evpl_http_client_close` on it is a use-after-free — which is what
+the first run of this harness did. The driver works around it by never closing
+a connection it did not just successfully use.
+
+Both want the same shape of answer: a connection/request lifecycle
+notification. Until there is one, an HTTP client written against this API
+cannot distinguish "still waiting" from "will never complete", which is the
+same thing as saying it cannot implement a timeout correctly.
+
 ## What the suite does not cover
 
-- **The client direction.** `conformance.c` drives libevpl's *server*. The
-  mirror image — a hostile server driving libevpl's HTTP client with malformed
-  status lines, header blocks and bodies — is the natural next phase, and is
-  what `conformance_client.c` is to the RPC2 suite. This matters more than it
-  looks: the fixes above carried the header grammar, the Content-Length
-  validation and the body-length clamp into the response path too, because both
-  directions share `evpl_http_handle_body` and now share the field parser — but
-  *nothing tests the response path*. Its status-line parse is still the loose
-  one (`strncmp` against two spellings, `atoi` for the code), it has no
-  equivalent of the request line's trailing-token check, and a response with no
-  `Content-Length` and no `Transfer-Encoding` is read as a zero-length body
-  rather than one delimited by the close, which HTTP/1.0 requires.
+- **A client request body.** The client cases all issue GET or HEAD with no
+  body, so the outbound side of the client — `Content-Length` on a POST, the
+  `WANT_DATA` flow — is exercised only by `http1_client.c`, not modelled.
+- **Pipelining.** Both drivers use one request per connection. libevpl's client
+  matches responses to requests by queue order, which is only correct if the
+  peer answers in order; a model with two requests in flight would say so.
 - **HTTP/1.1.** Chunked transfer coding, the required `Host` header, `100
   Continue`, persistent connections and pipelining, `Transfer-Encoding`
   together with `Content-Length`, and the 1.1-only status codes (505, 414,
