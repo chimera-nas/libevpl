@@ -62,6 +62,27 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # unit_test macro grants by default.
     set_tests_properties(libevpl/http/conformance PROPERTIES TIMEOUT 180)
 
+    # -----------------------------------------------------------------------
+    # The same idea inverted: a hostile server driving libevpl's *client*.
+    #
+    # conformance.c can only reach the client's outbound path, because the
+    # responses it sees come from a real libevpl server and are therefore
+    # always well formed.  conformance_client.c is a raw socket pretending to
+    # be a server, so the response bytes are chosen by the test.  It shares the
+    # generated case table, whose client half comes from the http10_client
+    # module of the same model.
+    # -----------------------------------------------------------------------
+
+    unit_test(http conformance_client conformance_client.c)
+    target_sources(http_conformance_client PRIVATE ${HTTP_CASES})
+    target_include_directories(http_conformance_client
+                               PRIVATE ${HTTP_QUINT_WORK_DIR})
+    target_link_libraries(http_conformance_client evpl_http)
+
+    # A hundred exchanges, several of which deliberately wait out a response
+    # deadline to prove no callback arrives.
+    set_tests_properties(libevpl/http/conformance_client PROPERTIES TIMEOUT 180)
+
     # The model checking itself: scenario tests plus a random-simulation pass
     # against its invariants.  Separate from generation so that a broken
     # specification is a failing test rather than a failing build.

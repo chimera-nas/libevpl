@@ -56,6 +56,45 @@ BODIES = ["BodyNone", "BodyEmpty", "BodyOne", "BodySmall", "BodyLarge"]
 
 CONNS = ["ConnDefault", "ConnKeepAlive"]
 
+# --- module http10_client --------------------------------------------------
+
+CLIENT_OUTCOMES = ["CbComplete", "CbFailed"]
+
+CLIENT_BODIES = ["BodyDelivered", "BodyNone", "BodyUnchecked"]
+
+CLIENT_METHODS = ["CGet", "CHead"]
+
+CLIENT_DEFECTS = [
+    "RspWellFormed",
+    "RspHeaderEmptyValue",
+    "RspHeaderFolded",
+    "RspHeaderPadded",
+    "RspHeaderNoColon",
+    "RspHeaderNameEmpty",
+    "RspHeaderSpaceBeforeColon",
+    "RspHeaderBlockOverlong",
+    "RspNoReasonPhrase",
+    "RspMinorVersionUnknown",
+    "RspVersionMalformed",
+    "RspMajorVersionUnsupported",
+    "RspStatusNotNumeric",
+    "RspStatusOutOfRange",
+    "RspStatusMissing",
+    "RspNoStatusLine",
+    "RspStatus",
+    "RspStatusNoBody",
+    "RspBodyCloseDelimited",
+    "RspContentLengthNotNumeric",
+    "RspContentLengthNegative",
+    "RspContentLengthDuplicateConflicting",
+    "RspBodyShortOfContentLength",
+    "RspBodyLongerThanContentLength",
+    "RspHeadWithContentLength",
+    "RspPeerClosesWithoutResponse",
+    "RspPeerClosesMidStatusLine",
+    "RspPeerClosesMidHeaders",
+]
+
 # --- module http10_defects -------------------------------------------------
 
 DEFECTS = [
@@ -174,6 +213,42 @@ def collect_defects(paths):
     return cases
 
 
+def collect_client(paths):
+    seen, cases = set(), []
+    for state in load_states(paths):
+        cur = state["current"]
+        dv = cur["defect"]
+        dtag = tag_of(dv)
+        outcome = state["expected"]
+        otag = tag_of(outcome)
+        key = (
+            index_of(CLIENT_DEFECTS, dtag, "response defect"),
+            # A defect that carries a number needs it on the wire: the status
+            # to send, or the range to sit outside of.
+            payload_int(dv),
+            index_of(DELIVERIES, tag_of(cur["delivery"]), "delivery"),
+            index_of(CLIENT_OUTCOMES, otag, "client outcome"),
+            itf_int(outcome["value"]) if otag == "CbComplete" else -1,
+            index_of(CLIENT_BODIES, tag_of(state["expectBody"]),
+                     "body expectation"),
+            index_of(PROBE_EXPECTS, tag_of(state["expectProbe"]),
+                     "probe expectation"),
+            index_of(CLIENT_METHODS, tag_of(state["expectMethod"]), "method"),
+        )
+        if key not in seen:
+            seen.add(key)
+            cases.append(key)
+    return cases
+
+
+def payload_int(variant):
+    """Integer payload of a variant, or -1 when it carries none."""
+    val = variant.get("value")
+    if isinstance(val, dict) and "#tup" in val:
+        return -1
+    return itf_int(val)
+
+
 def emit_enum(out, name, prefix, tags):
     out.append("enum %s {" % name)
     for i, t in enumerate(tags):
@@ -204,20 +279,31 @@ def emit_names(out, fn, enum, tags):
 def main():
     if len(sys.argv) < 4:
         print("usage: %s <out.h> <requests.itf.json>... -- "
-              "<defects.itf.json>..." % sys.argv[0], file=sys.stderr)
+              "<defects.itf.json>... -- <client.itf.json>..." % sys.argv[0],
+              file=sys.stderr)
         return 2
 
     out_path = sys.argv[1]
 
     rest = sys.argv[2:]
-    if "--" not in rest:
-        print("error: the request and defect traces must be separated by --",
+    groups = []
+    current = []
+    for arg in rest:
+        if arg == "--":
+            groups.append(current)
+            current = []
+        else:
+            current.append(arg)
+    groups.append(current)
+
+    if len(groups) != 3:
+        print("error: expected three trace groups separated by --",
               file=sys.stderr)
         return 2
 
-    split = rest.index("--")
-    requests = collect_requests(rest[:split])
-    defects = collect_defects(rest[split + 1:])
+    requests = collect_requests(groups[0])
+    defects = collect_defects(groups[1])
+    client = collect_client(groups[2])
 
     o = []
     # The header written into the GENERATED file.  Fenced off because reuse
@@ -261,6 +347,12 @@ def main():
     # Defect taxonomy.
     emit_enum(o, "http_defect", "HDEF", DEFECTS)
 
+    # Client direction.
+    emit_enum(o, "http_client_outcome", "HCOUT", CLIENT_OUTCOMES)
+    emit_enum(o, "http_client_body", "HCBODY", CLIENT_BODIES)
+    emit_enum(o, "http_client_method", "HCMETH", CLIENT_METHODS)
+    emit_enum(o, "http_client_defect", "HCDEF", CLIENT_DEFECTS)
+
     emit_names(o, "http_delivery_name", "http_delivery", DELIVERIES)
     emit_names(o, "http_method_name", "http_method_cls", METHODS)
     emit_names(o, "http_uri_name", "http_uri_cls", URIS)
@@ -269,6 +361,8 @@ def main():
     emit_names(o, "http_conn_name", "http_conn_cls", CONNS)
     emit_names(o, "http_defect_name", "http_defect", DEFECTS)
     emit_names(o, "http_probe_expect_name", "http_probe_expect", PROBE_EXPECTS)
+    emit_names(o, "http_client_defect_name", "http_client_defect",
+               CLIENT_DEFECTS)
 
     o.append("struct http_request_case {")
     o.append("    uint8_t method;")
@@ -316,11 +410,35 @@ def main():
              "(sizeof(http_defect_cases) / sizeof(http_defect_cases[0]))")
     o.append("")
 
+    o.append("struct http_client_case {")
+    o.append("    uint8_t defect;")
+    o.append("    uint8_t delivery;")
+    o.append("    uint8_t expect;        /* HCOUT_*                          */")
+    o.append("    uint8_t expect_body;   /* HCBODY_*                         */")
+    o.append("    uint8_t expect_probe;  /* HPROBE_*                         */")
+    o.append("    uint8_t method;        /* HCMETH_*                         */")
+    o.append("    int16_t param;         /* defect payload, -1 when none     */")
+    o.append("    int16_t expect_status; /* status for HCOUT_CBCOMPLETE      */")
+    o.append("};")
+    o.append("")
+
+    o.append("static const struct http_client_case http_client_cases[] = {")
+    for (defect, param, delivery, outcome, status, body, probe,
+         method) in client:
+        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d }," %
+                 (defect, delivery, outcome, body, probe, method, param,
+                  status))
+    o.append("};")
+    o.append("")
+    o.append("#define HTTP_NUM_CLIENT_CASES "
+             "(sizeof(http_client_cases) / sizeof(http_client_cases[0]))")
+    o.append("")
+
     with open(out_path, "w") as f:
         f.write("\n".join(o))
 
-    print("%s: %d request cases, %d defect cases" %
-          (out_path, len(requests), len(defects)))
+    print("%s: %d request cases, %d defect cases, %d client cases" %
+          (out_path, len(requests), len(defects), len(client)))
     return 0
 
 

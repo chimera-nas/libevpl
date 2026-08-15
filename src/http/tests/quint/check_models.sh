@@ -26,12 +26,16 @@ MODEL="${SRC_DIR}/http10.qnt"
 
 "${QUINT}" test "${MODEL}" --main=http10_requests
 "${QUINT}" test "${MODEL}" --main=http10_defects
+"${QUINT}" test "${MODEL}" --main=http10_client
 
 # Random simulation against the invariants: the positive matrix must only ever
-# emit requests RFC 1945 requires a server to serve, and every defect must
-# carry an outcome that is both specified and consistent with the rule that a
-# complete request is always answered.
+# emit requests RFC 1945 requires a server to serve, every defect must carry an
+# outcome that is both specified and consistent with the rule that a complete
+# request is always answered, and every response defect must resolve to a
+# completion the caller can observe.
 "${QUINT}" run "${MODEL}" --main=http10_requests \
     --invariant=wellFormed --max-samples=500 --max-steps=50
 "${QUINT}" run "${MODEL}" --main=http10_defects \
+    --invariant=safety --max-samples=500 --max-steps=50
+"${QUINT}" run "${MODEL}" --main=http10_client \
     --invariant=safety --max-samples=500 --max-steps=50

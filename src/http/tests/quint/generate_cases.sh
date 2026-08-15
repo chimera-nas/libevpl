@@ -39,6 +39,7 @@ mkdir -p "${WORK_DIR}"
 # check on that, and must equal the size of that cross product.
 REQUEST_SEEDS=(0x21 0x22 0x23 0x24)
 DEFECT_SEEDS=(0x41 0x42 0x43 0x44 0x45 0x46)
+CLIENT_SEEDS=(0x61 0x62 0x63 0x64 0x65 0x66)
 
 REQUEST_TRACES=()
 for s in "${REQUEST_SEEDS[@]}"; do
@@ -56,5 +57,13 @@ for s in "${DEFECT_SEEDS[@]}"; do
     DEFECT_TRACES+=("$f")
 done
 
+CLIENT_TRACES=()
+for s in "${CLIENT_SEEDS[@]}"; do
+    f="${WORK_DIR}/client-${s}.itf.json"
+    "${QUINT}" run "${SRC_DIR}/http10.qnt" --main=http10_client \
+        --seed="$s" --max-steps=300 --out-itf="$f" > /dev/null
+    CLIENT_TRACES+=("$f")
+done
+
 "${PYTHON}" "${SRC_DIR}/itf_to_cases.py" "${OUT_HEADER}" \
-    "${REQUEST_TRACES[@]}" -- "${DEFECT_TRACES[@]}"
+    "${REQUEST_TRACES[@]}" -- "${DEFECT_TRACES[@]}" -- "${CLIENT_TRACES[@]}"

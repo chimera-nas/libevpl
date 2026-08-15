@@ -3,13 +3,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 /**
- * http10.qnt -- what RFC 1945 requires of an HTTP/1.0 origin server.
+ * http10.qnt -- what RFC 1945 requires of an HTTP/1.0 peer, both ends.
  *
- * Three modules in one file, because they share a vocabulary that must not
- * drift: `http10` holds the types both matrices predict in, `http10_requests`
- * is the positive matrix and `http10_defects` the negative one.  The C driver
- * compiles one case table generated from all of it, so a class that means one
- * thing here and another there would be a silently wrong test.
+ * Four modules in one file, because they share a vocabulary that must not
+ * drift: `http10` holds the types the matrices predict in, `http10_requests`
+ * is the positive server matrix, `http10_defects` the negative one, and
+ * `http10_client` is the whole thing inverted -- a hostile server driving
+ * libevpl's client.  The C drivers compile one case table generated from all
+ * of it, so a class that means one thing here and another there would be a
+ * silently wrong test.
  *
  * IMPORTANT: this models the SPECIFICATION, not libevpl's current behaviour.
  * Where the two disagree the driver records a divergence, which is reviewed as
@@ -17,17 +19,18 @@
  * defects into the spec and guarantee they are never found.  This is the same
  * rule the RPC2 models follow (src/rpc2/tests/quint), and for the same reason.
  *
- * Scope is deliberately HTTP/1.0 and the server direction only:
+ * Scope is deliberately HTTP/1.0: it is the smaller, fully-specified protocol
+ * -- no chunked encoding, no required Host, no persistent connections, no 1xx
+ * -- so it is the floor an HTTP/1.1 model would extend.  Everything below is
+ * either RFC 1945 text or, where marked, one of the tolerances RFC 1945
+ * section 19.3 / RFC 2616 section 4.1 recommend.
  *
- *   - HTTP/1.0 because it is the smaller, fully-specified protocol: no
- *     chunked encoding, no required Host, no persistent connections, no 1xx.
- *     Everything below is either RFC 1945 text or, where marked, one of the
- *     tolerances RFC 1945 section 19.3 / RFC 2616 section 4.1 recommend.
- *   - The server direction because libevpl's own HTTP client cannot express
- *     any of this: evpl_http_client_send_headers hardcodes "HTTP/1.1" and
- *     emits a fixed header block.  A raw socket is the only peer that can put
- *     an arbitrary HTTP/1.0 request on the wire, and it can also put a
- *     well-formed one there, so the positive matrix is driven the same way.
+ * Both directions are driven from a raw socket, because libevpl's own HTTP
+ * peers cannot express any of this: the client hardcodes "HTTP/1.1" and emits
+ * a fixed header block, and the server emits a well-formed response by
+ * construction.  A socket can put an arbitrary HTTP/1.0 message on the wire in
+ * either direction, and it can also put a well-formed one there, so the
+ * positive and negative matrices share one set of framing helpers.
  *
  * The classes are SYMBOLIC.  "UriQuery", not "/echo?a=1&b=2" -- the C driver
  * owns the mapping from class to bytes, which keeps this model about what the
@@ -35,6 +38,7 @@
  *
  *   quint test http10.qnt --main=http10_requests
  *   quint test http10.qnt --main=http10_defects
+ *   quint test http10.qnt --main=http10_client
  *   quint run  http10.qnt --main=http10_defects --invariant=safety
  *   ./check_models.sh $(which quint) .
  */
@@ -733,6 +737,381 @@ module http10_defects {
             .expect(expected == NotSuccess and completeRequestsAreAnswered)
             .then(use(BodyShortOfContentLength, TwoWrites))
             .expect(expected == NotSuccess and completeRequestsAreAnswered)
+
+    run everyDefectHasAnOutcomeTest =
+        init
+            .then(pick)
+            .expect(safety)
+            .then(pick)
+            .expect(safety)
+            .then(pick)
+            .expect(safety)
+}
+
+/* ===================================================================== *
+ * The client direction: responses an HTTP/1.0 client must cope with
+ * ===================================================================== */
+
+module http10_client {
+
+    import http10.*
+
+    /// What the client must do with the response.
+    ///
+    /// The two arms are the whole point.  A request that was dispatched has a
+    /// caller waiting on it, and that caller is owed exactly one answer --
+    /// the response, or the news that there will not be one.  There is
+    /// deliberately no third arm for "nothing happens": a client that frees a
+    /// request without telling anyone has not failed the request, it has
+    /// abandoned the caller, and no amount of correct behaviour elsewhere
+    /// makes up for it.
+    type ClientOutcome =
+        /* the response is delivered: its status is reported, and the body
+         * that belongs to it arrives complete */
+        | CbComplete(int)
+        /* the request completes as a failure.  Which way is left open --
+         * libevpl's notify callback carries no status, so requiring a
+         * particular spelling would be requiring an API change rather than
+         * stating an obligation.  What is not open is that the caller is
+         * told. */
+        | CbFailed
+
+    /// What the caller must end up holding.
+    type ClientBody =
+        | BodyDelivered    /* exactly the bytes the response carried    */
+        | BodyNone         /* the response has none, and none may be reported */
+        | BodyUnchecked    /* a failed request says nothing about a body */
+
+    /// Which method the request used.  Only the HEAD rule needs it, but it
+    /// changes what the response means, so it travels with the case.
+    type ClientMethod =
+        | CGet
+        | CHead
+
+    type Defect =
+        /* --- baseline: proves the hostile server can build a VALID reply -- */
+        | RspWellFormed
+
+        /* --- header grammar, inbound (RFC 1945 section 4.2) -------------- */
+        /* The mirror of the request-side cases.  The parser is now shared, so
+         * these are here to keep it shared: a future change that fixes one
+         * direction and not the other fails here. */
+        | RspHeaderEmptyValue
+        | RspHeaderFolded
+        | RspHeaderPadded
+        | RspHeaderNoColon
+        | RspHeaderNameEmpty
+        | RspHeaderSpaceBeforeColon
+        | RspHeaderBlockOverlong
+
+        /* --- the status line (RFC 1945 section 6.1) ---------------------- */
+        /*     Status-Line = HTTP-Version SP Status-Code SP Reason-Phrase CRLF
+         * The Reason-Phrase is the one field a client may ignore: "The client
+         * is not required to examine or display the Reason-Phrase."  A
+         * response that omits it is understood. */
+        | RspNoReasonPhrase
+        /* RFC 2145 section 2.3, the mirror of the request-side rule. */
+        | RspMinorVersionUnknown
+        | RspVersionMalformed
+        | RspMajorVersionUnsupported
+        | RspStatusNotNumeric
+        | RspStatusOutOfRange(int)
+        | RspStatusMissing
+        /* A response that does not begin with "HTTP/" is an HTTP/0.9
+         * Simple-Response, which RFC 1945 section 6.1 would have the client
+         * read as a body.  RFC 9112 section 2.1 lets a recipient reject a
+         * message that does not start with a valid status line instead, and
+         * that is what the server side of this suite decided to do with the
+         * request-line form, so the two ends agree: HTTP/0.9 is not spoken
+         * here, and the request fails rather than silently acquiring a body
+         * of unknown provenance. */
+        | RspNoStatusLine
+
+        /* --- statuses that are answers, not failures --------------------- */
+        /* A 404 or a 500 is a complete, well-formed response.  A client that
+         * treats a non-2xx as a transport failure loses the status, which is
+         * the only thing the response was carrying. */
+        | RspStatus(int)
+        /* RFC 1945 sections 9.2.5 and 9.3.5: 204 and 304 "must not include a
+         * message-body".  The absence of Content-Length on these does NOT
+         * mean the body runs to the close -- the message is complete at the
+         * end of the header block, and a client that waits for a close hangs
+         * on a conforming server. */
+        | RspStatusNoBody(int)
+
+        /* --- body framing (RFC 1945 section 7.2.2) ----------------------- */
+        /* "the length of that body is determined by ... the server closing
+         * the connection."  With no Content-Length and no chunked encoding,
+         * an HTTP/1.0 response body is exactly what arrives before the FIN,
+         * which is the only framing HTTP/1.0 has for a body of unknown size. */
+        | RspBodyCloseDelimited
+        | RspContentLengthNotNumeric
+        | RspContentLengthNegative
+        | RspContentLengthDuplicateConflicting
+        /* Declares more than it sends, then closes: the body is truncated, so
+         * there is no complete response to deliver. */
+        | RspBodyShortOfContentLength
+        /* Declares less than it sends: the surplus is not part of this
+         * response and must not reach the caller. */
+        | RspBodyLongerThanContentLength
+        /* RFC 1945 section 8.2: the response to HEAD carries the headers a GET
+         * would have, Content-Length included, and no body.  A client that
+         * waits for the bytes that length promises waits forever. */
+        | RspHeadWithContentLength
+
+        /* --- the transport ---------------------------------------------- */
+        | RspPeerClosesWithoutResponse
+        | RspPeerClosesMidStatusLine
+        | RspPeerClosesMidHeaders
+
+    type Case = { defect: Defect, delivery: Delivery }
+
+    var current: Case
+    var expected: ClientOutcome
+    var expectBody: ClientBody
+    var expectProbe: ProbeExpect
+    var expectMethod: ClientMethod
+
+    // ------------------------------------------------------------------
+    // The specification: defect -> required client behaviour
+    // ------------------------------------------------------------------
+
+    pure def required(d: Defect): ClientOutcome =
+        match d {
+            | RspWellFormed => CbComplete(200)
+
+            /* Legal header grammar, so the response is delivered. */
+            | RspHeaderEmptyValue => CbComplete(200)
+            | RspHeaderFolded => CbComplete(200)
+            | RspHeaderPadded => CbComplete(200)
+
+            /* Not header fields at all -- see the request-side model, which
+             * refuses the same three shapes. */
+            | RspHeaderNoColon => CbFailed
+            | RspHeaderNameEmpty => CbFailed
+            | RspHeaderSpaceBeforeColon => CbFailed
+            | RspHeaderBlockOverlong => CbFailed
+
+            | RspNoReasonPhrase => CbComplete(200)
+            | RspMinorVersionUnknown => CbComplete(200)
+
+            | RspVersionMalformed => CbFailed
+            | RspMajorVersionUnsupported => CbFailed
+            | RspStatusNotNumeric => CbFailed
+            | RspStatusOutOfRange(_) => CbFailed
+            | RspStatusMissing => CbFailed
+            | RspNoStatusLine => CbFailed
+
+            | RspStatus(s) => CbComplete(s)
+            | RspStatusNoBody(s) => CbComplete(s)
+
+            | RspBodyCloseDelimited => CbComplete(200)
+            | RspBodyLongerThanContentLength => CbComplete(200)
+            | RspHeadWithContentLength => CbComplete(200)
+
+            | RspContentLengthNotNumeric => CbFailed
+            | RspContentLengthNegative => CbFailed
+            | RspContentLengthDuplicateConflicting => CbFailed
+            | RspBodyShortOfContentLength => CbFailed
+
+            | RspPeerClosesWithoutResponse => CbFailed
+            | RspPeerClosesMidStatusLine => CbFailed
+            | RspPeerClosesMidHeaders => CbFailed
+        }
+
+    pure def bodyRequired(d: Defect): ClientBody =
+        match d {
+            | RspStatusNoBody(_) => BodyNone
+            | RspHeadWithContentLength => BodyNone
+            | _ =>
+                match required(d) {
+                    | CbFailed => BodyUnchecked
+                    | CbComplete(_) => BodyDelivered
+                }
+        }
+
+    /// The probe header the hostile server reflects, where the case is about
+    /// the header grammar at all.
+    pure def probeRequired(d: Defect): ProbeExpect =
+        match d {
+            | RspHeaderEmptyValue => ProbeEmpty
+            | RspHeaderFolded => ProbeAny
+            | RspHeaderPadded => ProbeValue
+            | RspWellFormed => ProbeValue
+            | _ => ProbeAbsent
+        }
+
+    pure def methodRequired(d: Defect): ClientMethod =
+        match d {
+            | RspHeadWithContentLength => CHead
+            | _ => CGet
+        }
+
+    action use(d: Defect, v: Delivery): bool = all {
+        current' = { defect: d, delivery: v },
+        expected' = required(d),
+        expectBody' = bodyRequired(d),
+        expectProbe' = probeRequired(d),
+        expectMethod' = methodRequired(d)
+    }
+
+    // ------------------------------------------------------------------
+    // Case generation
+    // ------------------------------------------------------------------
+
+    pure val DELIVERIES = Set(OneWrite, TwoWrites, Dribble)
+
+    pure val DEFECTS = Set(
+        RspWellFormed,
+        RspHeaderEmptyValue,
+        RspHeaderFolded,
+        RspHeaderPadded,
+        RspHeaderNoColon,
+        RspHeaderNameEmpty,
+        RspHeaderSpaceBeforeColon,
+        RspHeaderBlockOverlong,
+        RspNoReasonPhrase,
+        RspMinorVersionUnknown,
+        RspVersionMalformed,
+        RspMajorVersionUnsupported,
+        RspStatusNotNumeric,
+        RspStatusOutOfRange(99), RspStatusOutOfRange(700),
+        RspStatusMissing,
+        RspNoStatusLine,
+        RspStatus(404), RspStatus(500),
+        RspStatusNoBody(204), RspStatusNoBody(304),
+        RspBodyCloseDelimited,
+        RspContentLengthNotNumeric,
+        RspContentLengthNegative,
+        RspContentLengthDuplicateConflicting,
+        RspBodyShortOfContentLength,
+        RspBodyLongerThanContentLength,
+        RspHeadWithContentLength,
+        RspPeerClosesWithoutResponse,
+        RspPeerClosesMidStatusLine,
+        RspPeerClosesMidHeaders
+    )
+
+    action pick = {
+        nondet d = DEFECTS.oneOf()
+        nondet v = DELIVERIES.oneOf()
+        use(d, v)
+    }
+
+    action init = use(RspWellFormed, OneWrite)
+    action step = pick
+
+    // ------------------------------------------------------------------
+    // Invariants
+    // ------------------------------------------------------------------
+
+    /// Totality, and a sanity bound on the statuses the model asks for.
+    val outcomeIsSpecified =
+        match expected {
+            | CbComplete(s) => s >= 100 and s <= 599
+            | CbFailed => true
+        }
+
+    /// Requirement 1, and the reason this model exists.  Every defect,
+    /// including the ones where the peer simply hangs up, resolves to a
+    /// completion the caller can observe.  The type has no arm for silence,
+    /// so this is checking that no arm was quietly added.
+    val noRequestIsAbandoned =
+        match expected {
+            | CbComplete(_) => true
+            | CbFailed => true
+        }
+
+    /// Requirement 2.  A response whose framing is broken or whose body is
+    /// short is not a result: reporting it as one hands the caller a value
+    /// the peer never sent, which is worse than reporting nothing.
+    val truncatedResponsesAreNotResults =
+        match current.defect {
+            | RspBodyShortOfContentLength => expected == CbFailed
+            | RspContentLengthNotNumeric => expected == CbFailed
+            | RspContentLengthNegative => expected == CbFailed
+            | RspContentLengthDuplicateConflicting => expected == CbFailed
+            | _ => true
+        }
+
+    /// A body may only be expected where the response has one to give: not on
+    /// HEAD, not on the statuses RFC 1945 says carry none, and not on a
+    /// request that failed.
+    val bodyOnlyWhereTheResponseHasOne =
+        match expectBody {
+            | BodyNone =>
+                match current.defect {
+                    | RspStatusNoBody(_) => true
+                    | RspHeadWithContentLength => true
+                    | _ => false
+                }
+            | BodyUnchecked => expected == CbFailed
+            | BodyDelivered => expected != CbFailed
+        }
+
+    val safety =
+        outcomeIsSpecified and noRequestIsAbandoned and
+        truncatedResponsesAreNotResults and bodyOnlyWhereTheResponseHasOne
+
+    // ------------------------------------------------------------------
+    // Scenario tests: the outcomes most likely to be got wrong
+    // ------------------------------------------------------------------
+
+    /// The baseline.  If the hostile server cannot build a response the
+    /// client accepts, nothing else it says about the client means anything.
+    run peerCanBuildAValidResponseTest =
+        init
+            .expect(expected == CbComplete(200) and expectBody == BodyDelivered)
+
+    /// Losing the transport is still a completion.  This is the requirement
+    /// that catches "frees the pending request without telling the caller",
+    /// which leaves an application waiting on a callback that can no longer
+    /// arrive.
+    run transportLossCompletesTheRequestTest =
+        init
+            .then(use(RspPeerClosesWithoutResponse, OneWrite))
+            .expect(expected == CbFailed)
+            .then(use(RspPeerClosesMidHeaders, TwoWrites))
+            .expect(expected == CbFailed)
+            .then(use(RspPeerClosesMidStatusLine, Dribble))
+            .expect(expected == CbFailed)
+
+    /// An HTTP/1.0 body with no declared length runs to the close.  It is the
+    /// only framing HTTP/1.0 has for a body whose size the server does not
+    /// know in advance, so a client that reads such a response as empty
+    /// silently loses every streamed reply it is ever sent.
+    run closeDelimitedBodiesArriveTest =
+        init
+            .then(use(RspBodyCloseDelimited, OneWrite))
+            .expect(expected == CbComplete(200) and expectBody == BodyDelivered)
+
+    /// ... except where the status says there is no body, which is what keeps
+    /// the previous rule from turning a 204 into a wait for a close.
+    run noBodyStatusesAreCompleteTest =
+        init
+            .then(use(RspStatusNoBody(204), OneWrite))
+            .expect(expected == CbComplete(204) and expectBody == BodyNone)
+            .then(use(RspStatusNoBody(304), TwoWrites))
+            .expect(expected == CbComplete(304) and expectBody == BodyNone)
+            .then(use(RspHeadWithContentLength, OneWrite))
+            .expect(expectBody == BodyNone and expectMethod == CHead)
+
+    /// A refused request is still an answer: the status is the whole of what
+    /// the response carries, and losing it loses everything.
+    run errorStatusesAreDeliveredTest =
+        init
+            .then(use(RspStatus(404), OneWrite))
+            .expect(expected == CbComplete(404))
+            .then(use(RspStatus(500), Dribble))
+            .expect(expected == CbComplete(500))
+
+    /// A truncated body is not a short body.
+    run truncatedBodiesFailTest =
+        init
+            .then(use(RspBodyShortOfContentLength, OneWrite))
+            .expect(expected == CbFailed and truncatedResponsesAreNotResults)
+            .then(use(RspBodyLongerThanContentLength, OneWrite))
+            .expect(expected == CbComplete(200) and expectBody == BodyDelivered)
 
     run everyDefectHasAnOutcomeTest =
         init
