@@ -134,6 +134,3 @@ int evpl_protocol_is_local(
 int evpl_protocol_is_inproc(
     enum evpl_protocol_id protocol);
 
-struct evpl_config *
-evpl_config(
-    struct evpl *evpl);
