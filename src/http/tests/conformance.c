@@ -317,74 +317,28 @@ static const struct known_divergence known_divergences[] = {
       .note    = "HTTP/1.0 response does not close the connection" },
 
     /* ---------------------------------------------------------------- *
-    * 2. A malformed request is answered with silence.
+    * 2. The request line is parsed loosely where RFC 1945 section 5.1 is
+    *    exact.
     *
-    * evpl_http_server_handle_data reaches evpl_close() for every syntax
-    * error it detects in the request line or the header block, so a client
-    * that sends one gets a FIN and no status.  RFC 1945 section 9.4.1 (400)
-    * and section 9.5.2 (501) exist precisely so that it gets a verdict it
-    * can act on; a hang-up is indistinguishable from a crashed server, a
-    * lost route or a middlebox, so a client retries a request that will be
-    * refused the same way forever.  This is the `completeRequestsAreAnswered`
-    * invariant in http10.qnt, and it is the largest single gap here.
-    *
-    * All of these exit through the same three or four close() calls, so one
-    * fix retires the whole block.
+    * strtok_r treats a run of SP and HT as one delimiter and skips leading
+    * ones, so " /echo HTTP/1.0" parses as a request whose method is "/echo".
+    * That is answered -- 501, since it is not a method the server knows --
+    * but the request line is malformed rather than the method unimplemented,
+    * and 400 is what says so.  The same permissiveness discards a fourth
+    * token on the line entirely.
     * ---------------------------------------------------------------- */
 
     { .phase   = PHASE_DEFECT,
       .aspect  = ASPECT_STATUS,
-      .subject = HDEF_METHODUNKNOWN,
-      .expect  = 501,
-      .actual  = ACT_NORESPONSE,
-      .note    = "unknown method closes rather than answering 501" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_METHODLOWERCASE,
-      .expect  = 501,
-      .actual  = ACT_NORESPONSE,
-      .note    = "a lowercased method is an unknown method: 501, not a close" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
       .subject = HDEF_METHODEMPTY,
       .expect  = 400,
-      .actual  = ACT_NORESPONSE,
-      .note    = "malformed request line closes rather than answering 400" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_REQUESTLINEONETOKEN,
-      .expect  = 400,
-      .actual  = ACT_NORESPONSE,
-      .note    = "malformed request line closes rather than answering 400" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_VERSIONMALFORMED,
-      .expect  = 400,
-      .actual  = ACT_NORESPONSE,
-      .note    = "unparseable HTTP-Version closes rather than answering 400" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_VERSIONMAJORUNSUPPORTED,
-      .expect  = 400,
-      .actual  = ACT_NORESPONSE,
-      .note    = "an unsupported major version closes rather than answering" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_HEADERNOCOLON,
-      .expect  = 400,
-      .actual  = ACT_NORESPONSE,
-      .note    = "a header line with no colon closes rather than answering" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_HEADERNAMEEMPTY,
-      .expect  = 400,
-      .actual  = ACT_NORESPONSE,
-      .note    = "an empty field-name closes rather than answering 400" },
+      .actual  = 501,
+      .note    = "a leading space is skipped, so the URI parses as a method" },
 
     /* ---------------------------------------------------------------- *
     * 3. The header-field grammar of RFC 1945 section 4.2 is only partly
-    *    implemented, and the parts that are missing take the connection
-    *    down rather than being ignored.
+    *    implemented, and a field it does not understand fails the whole
+    *    request rather than being carried through.
     *
     * The parser splits a field on the first colon with strtok_r and treats a
     * NULL value token as fatal, so "X-Probe:" -- a field present with an
@@ -405,14 +359,14 @@ static const struct known_divergence known_divergences[] = {
       .aspect  = ASPECT_STATUS,
       .subject = HHDR_HDREMPTY,
       .expect  = 200,
-      .actual  = ACT_NORESPONSE,
-      .note    = "a header with an empty value closes the connection" },
+      .actual  = 400,
+      .note    = "a header with an empty value is refused with 400" },
     { .phase   = PHASE_REQUEST,
       .aspect  = ASPECT_STATUS,
       .subject = HHDR_HDRFOLDED,
       .expect  = 200,
-      .actual  = ACT_NORESPONSE,
-      .note    = "a continuation line closes the connection" },
+      .actual  = 400,
+      .note    = "a continuation line is refused with 400" },
     { .phase   = PHASE_REQUEST,
       .aspect  = ASPECT_PROBE,
       .subject = HHDR_HDRPADDED,
@@ -498,7 +452,7 @@ static const struct known_divergence known_divergences[] = {
       .aspect  = ASPECT_STATUS,
       .subject = HDEF_VERSIONMINORUNKNOWN,
       .expect  = 200,
-      .actual  = ACT_NORESPONSE,
+      .actual  = 400,
       .note    = "HTTP/1.9 is refused rather than served as HTTP/1.1" },
 
     /* RECOMMENDED rather than required: RFC 1945 section 19.3 asks parsers to
@@ -509,7 +463,7 @@ static const struct known_divergence known_divergences[] = {
       .aspect  = ASPECT_STATUS,
       .subject = HDEF_BARELFLINEENDINGS,
       .expect  = 200,
-      .actual  = ACT_NORESPONSE,
+      .actual  = 400,
       .note    = "bare LF line endings are refused (RFC 1945 19.3 tolerance)" },
 
     /* HTTP/0.9.  A request line with no version is a Simple-Request, and RFC
@@ -520,8 +474,8 @@ static const struct known_divergence known_divergences[] = {
       .aspect  = ASPECT_STATUS,
       .subject = HDEF_REQUESTLINENOVERSION,
       .expect  = -HOUT_SIMPLERESPONSE,
-      .actual  = ACT_NORESPONSE,
-      .note    = "an HTTP/0.9 Simple-Request is closed, not answered" },
+      .actual  = 400,
+      .note    = "an HTTP/0.9 Simple-Request is answered 400, not with a body" },
 
     /* ---------------------------------------------------------------- *
     * 6. An over-long request line can wedge the connection.

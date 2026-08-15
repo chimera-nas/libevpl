@@ -405,26 +405,44 @@ evpl_http_request_add_header_common(
 } /* evpl_http_request_add_header_common */
 
 /*
- * Inbound request headers exceeded max_header_size, or a single header
- * line overflowed the parser: answer 400 Bad Request and close, as Apache
- * does when its LimitRequestField* limits are exceeded.
+ * Refuse a request the parser cannot use, and close.
+ *
+ * RFC 1945 section 9.4.1 (400 Bad Request, "the request could not be
+ * understood by the server due to malformed syntax") and section 9.5.2 (501
+ * Not Implemented, for a method the server does not support) exist so that a
+ * client learns which of the two things went wrong.  Hanging up instead tells
+ * it nothing it can act on: a FIN is indistinguishable from a crashed server,
+ * a lost route or a middlebox, so the client retries a request that will be
+ * refused the same way forever.
+ *
+ * The response is built by hand rather than through the request, because the
+ * request may not have parsed far enough to have a version, a method or a URI
+ * -- and because the connection is going away with it either way, which is
+ * what "Connection: close" says explicitly for the benefit of a peer that
+ * would otherwise try to reuse it.
  */
 static void
-evpl_http_server_reject_headers(
+evpl_http_server_reject(
     struct evpl      *evpl,
-    struct evpl_bind *bind)
+    struct evpl_bind *bind,
+    int               status,
+    const char       *why)
 {
-    static const char rsp[] =
-        "HTTP/1.1 400 Bad Request\r\n"
-        "Content-Length: 0\r\n"
-        "Connection: close\r\n"
-        "\r\n";
+    char rsp[128];
+    int  len;
 
-    evpl_http_debug("inbound request header block exceeds max_header_size");
+    evpl_http_debug("refusing request with %d: %s", status, why);
 
-    evpl_send(evpl, bind, rsp, sizeof(rsp) - 1);
+    len = snprintf(rsp, sizeof(rsp),
+                   "HTTP/1.1 %d %s\r\n"
+                   "Content-Length: 0\r\n"
+                   "Connection: close\r\n"
+                   "\r\n",
+                   status, evpl_http_response_status_string(status));
+
+    evpl_send(evpl, bind, rsp, len);
     evpl_finish(evpl, bind);
-} /* evpl_http_server_reject_headers */
+} /* evpl_http_server_reject */
 
 static void
 evpl_http_server_handle_data(struct evpl_http_conn *conn)
@@ -452,7 +470,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         rc = evpl_http_parse_line(evpl, conn->bind, line, sizeof(line));
 
         if (unlikely(rc == -2)) {
-            evpl_close(evpl, bind);
+            evpl_http_server_reject(evpl, bind, 400, "request line too long");
             return;
         }
 
@@ -463,23 +481,24 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         token = strtok_r(line, " \t", &saveptr);
 
         if (!token) {
-            evpl_http_debug("missing request type");
-            evpl_close(evpl, bind);
+            evpl_http_server_reject(evpl, bind, 400, "empty request line");
             return;
         }
 
         request->request_type = evpl_http_method_from_string(token);
 
         if (request->request_type == EVPL_HTTP_REQUEST_TYPE_UNKNOWN) {
-            evpl_http_debug("unsupported request type: %s", token);
-            evpl_close(evpl, bind);
+            /* RFC 1945 section 5.1.1: Method is a token, and tokens are
+             * case-sensitive, so a lowercased "get" is as unknown as "FROB" --
+             * a server that folds case before comparing accepts a request the
+             * grammar does not describe. */
+            evpl_http_server_reject(evpl, bind, 501, "unsupported method");
             return;
         }
 
         token = strtok_r(NULL, " \t", &saveptr);
         if (!token) {
-            evpl_http_debug("missing uri");
-            evpl_close(evpl, bind);
+            evpl_http_server_reject(evpl, bind, 400, "missing uri");
             return;
         }
 
@@ -488,8 +507,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         token = strtok_r(NULL, " \t", &saveptr);
 
         if (!token) {
-            evpl_http_debug("missing http version");
-            evpl_close(evpl, bind);
+            evpl_http_server_reject(evpl, bind, 400, "missing http version");
             return;
         }
 
@@ -498,8 +516,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         } else if (strncmp(token, "HTTP/1.0", 8) == 0) {
             request->http_version = EVPL_HTTP_REQUEST_HTTP_VERSION_1_0;
         } else {
-            evpl_http_debug("unsupported http version: %s", token);
-            evpl_close(evpl, bind);
+            evpl_http_server_reject(evpl, bind, 400, "unsupported http version");
             return;
         }
 
@@ -511,8 +528,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
 
         if (unlikely(rc == -2)) {
-            /* single header line overflowed the parse buffer */
-            evpl_http_server_reject_headers(evpl, bind);
+            evpl_http_server_reject(evpl, bind, 400,
+                                    "header line overflowed the parse buffer");
             return;
         }
 
@@ -538,7 +555,10 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             request->header_bytes += strlen(line) + 2;
 
             if (unlikely(request->header_bytes > agent->max_header_size)) {
-                evpl_http_server_reject_headers(evpl, bind);
+                /* As Apache does when its LimitRequestField* limits are
+                 * exceeded. */
+                evpl_http_server_reject(evpl, bind, 400,
+                                        "header block exceeds max_header_size");
                 return;
             }
 
@@ -547,13 +567,13 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             token = strtok_r(line, ":", &saveptr);
 
             if (!token) {
-                evpl_http_debug("malformed header line");
                 /* Not on the request's list yet, so nothing else will ever
                  * reach it: dropping it here strands the header AND the tail
                  * of the free list still hanging off its next pointer, which
                  * a peer sending malformed header lines can repeat at will. */
                 evpl_http_request_header_free(agent, header);
-                evpl_close(evpl, bind);
+                evpl_http_server_reject(evpl, bind, 400,
+                                        "malformed header line");
                 return;
             }
 
@@ -562,9 +582,9 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             token = strtok_r(NULL, "", &saveptr);
 
             if (!token) {
-                evpl_http_debug("missing header value");
                 evpl_http_request_header_free(agent, header);
-                evpl_close(evpl, bind);
+                evpl_http_server_reject(evpl, bind, 400,
+                                        "missing header value");
                 return;
             }
 
@@ -586,8 +606,11 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                 if (strncasecmp(header->value, "chunked", 6) == 0) {
                     request->request_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
                 } else {
-                    evpl_http_debug("unsupported transfer encoding: '%s", header->value);
-                    evpl_close(evpl, bind);
+                    /* A transfer coding the server does not implement is
+                     * exactly what 501 is for (RFC 1945 section 9.5.2), and
+                     * the body cannot be delimited without it. */
+                    evpl_http_server_reject(evpl, bind, 501,
+                                            "unsupported transfer encoding");
                     return;
                 }
             }
