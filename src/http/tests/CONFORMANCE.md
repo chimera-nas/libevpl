@@ -416,7 +416,7 @@ against a clang-instrumented build and reports what they reach. Needs
 
 Over `src/http/http.c` and `src/http/http_internal.h` — the HTTP/1.x
 implementation — the two suites reach **100% of functions, 89.4% of lines and
-77.9% of branches**. (The HTTP/1.0 pass reached 96.9% / 81.2% / 70.5%.)
+78.0% of branches**. (The HTTP/1.0 pass reached 96.9% / 81.2% / 70.5%.)
 
 The largest remaining blocks are out of scope by construction:
 
