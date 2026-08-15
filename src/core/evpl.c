@@ -706,7 +706,7 @@ evpl_continue(struct evpl *evpl)
 
 } /* evpl_continue */
 
-SYMBOL_EXPORT void
+SYMBOL_EXPORT SYMBOL_EXPORT void
 evpl_get_hf_monotonic_time(
     struct evpl     *evpl,
     struct timespec *ts)
