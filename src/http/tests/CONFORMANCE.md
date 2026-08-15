@@ -427,8 +427,10 @@ The largest remaining blocks are out of scope by construction:
 | `evpl_http_request_type_to_string` | 6 | The PUT and DELETE arms; the model covers the three methods RFC 1945 defines |
 | `evpl_http_conn_set_host` | 5 | An IPv6 literal, and an endpoint that names no authority |
 
-`src/http/http2.c` is 0% throughout, which an HTTP/1.x model cannot be
-otherwise.
+`src/http/http2.c` is 0% under this filter, which an HTTP/1.x model cannot be
+otherwise — it is a different framing layer. The h2 tests alongside it reach
+87.4% of its lines, so the whole `libevpl/http` label together covers 100% of
+functions, 91.5% of lines and 77.8% of branches across all three files.
 
 ### The one piece of dead code the coverage found
 
