@@ -89,6 +89,10 @@ static int port = 8095;
  * by the status phase; see run_status_phase. */
 #define RESPOND_STATUS      "X-Respond-Status"
 #define RESPOND_CHUNKED     "X-Respond-Chunked"
+/* Asks the echo application to supply its own Date, which the library must
+ * then leave alone rather than adding a second one. */
+#define RESPOND_DATE        "X-Respond-Date"
+#define RESPOND_DATE_VALUE  "Sun, 06 Nov 1994 08:49:37 GMT"
 #define ECHO_ABSENT         "(absent)"
 
 /* Asks the echo application to try to add response headers that are not
@@ -726,6 +730,14 @@ server_notify(
              * status that may carry content -- so asking for the wrong one
              * here is how the driver finds out whether the library knows
              * that. */
+            /* An application that has its own clock reading, or that has to
+             * make the value match something it has signed, supplies its own
+             * Date -- and the library must then leave it alone. */
+            if (evpl_http_request_header(request, RESPOND_DATE)) {
+                evpl_http_request_add_header(request, "Date",
+                                             RESPOND_DATE_VALUE);
+            }
+
             chunked = evpl_http_request_header(request, RESPOND_CHUNKED) != NULL;
 
             if (chunked) {
@@ -1371,6 +1383,22 @@ rsp_header(
     return NULL;
 } /* rsp_header */
 
+static int
+rsp_header_count(
+    const struct rawrsp *r,
+    const char          *name)
+{
+    int i, n = 0;
+
+    for (i = 0; i < r->nhdr; i++) {
+        if (strcasecmp(r->hdr[i].name, name) == 0) {
+            n++;
+        }
+    }
+
+    return n;
+} /* rsp_header_count */
+
 /* The next CRLF at or after `p`, or NULL.  Spelled out rather than reached
  * for through memmem(), which is a GNU extension libevpl does not otherwise
  * depend on. */
@@ -1918,6 +1946,16 @@ check_framing(
         snprintf(detail, sizeof(detail), "no Date header on a %d response",
                  r->status);
         record(phase, ASPECT_FRAMING, subject, VACT_OK, VACT_BAD, 0, detail);
+        return;
+    }
+
+    /* And exactly one.  RFC 9110 section 5.3 forbids two field lines with the
+     * same name unless the field is a comma-separated list, which Date is not
+     * -- so a library that adds its own on top of an application's has made
+     * the message malformed rather than complete. */
+    if (rsp_header_count(r, "Date") > 1) {
+        record(phase, ASPECT_FRAMING, subject, VACT_OK, VACT_BAD, 0,
+               "more than one Date header on one response");
         return;
     }
 
@@ -2944,7 +2982,11 @@ run_injection_case(void)
 
     wb_str(&wb, "GET " URI_PATH " HTTP/1.1\r\nHost: ");
     wb_str(&wb, g_host_value);
-    wb_str(&wb, "\r\nConnection: close\r\n" INJECT_ASK ": 1\r\n\r\n");
+    /* The application supplies its own Date on the same request, so that the
+     * one-Date rule is checked where it can actually be broken: everywhere
+     * else in the suite the library is the only source of one. */
+    wb_str(&wb, "\r\nConnection: close\r\n" INJECT_ASK ": 1\r\n"
+           RESPOND_DATE ": 1\r\n\r\n");
 
     deliver(rd->fd, &wb, HDLV_ONEWRITE);
 
@@ -2954,12 +2996,15 @@ run_injection_case(void)
     result = rsp_header(&r, INJECT_RESULT);
 
     ok = actual == 200 && result && strcmp(result, "refused") == 0 &&
-        rsp_header(&r, INJECT_SMUGGLED) == NULL;
+        rsp_header(&r, INJECT_SMUGGLED) == NULL &&
+        rsp_header_count(&r, "Date") == 1 &&
+        strcmp(rsp_header(&r, "Date"), RESPOND_DATE_VALUE) == 0;
 
     snprintf(detail, sizeof(detail),
-             "status %s, the API %s the header, %s smuggled field",
+             "status %s, the API %s the header, %s smuggled field, %d Date(s)",
              outcome_name(actual), result ? result : "(no result reported)",
-             rsp_header(&r, INJECT_SMUGGLED) ? "a" : "no");
+             rsp_header(&r, INJECT_SMUGGLED) ? "a" : "no",
+             rsp_header_count(&r, "Date"));
 
     record(PHASE_STATUS, ASPECT_FRAMING, 200, VACT_OK,
            ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);

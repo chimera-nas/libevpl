@@ -2420,12 +2420,18 @@ evpl_http_server_send_headers(
                           evpl_http_response_status_string(request->status));
 
     /* RFC 9110 section 6.6.1 requires this on every response outside the 1xx
-     * and 5xx classes, where it is merely allowed.  Sent on all of them: a
-     * caller has no way to add it (the value has to be the moment the response
-     * is written, not the moment the application decided to write one), and
-     * there is nothing to gain from withholding it where it is optional. */
-    evpl_http_append_line(rsp_base, cap, &rsp, "Date: %s\r\n",
-                          evpl_http_date(conn->agent));
+     * and 5xx classes, where it is merely allowed.  Sent on all of them: there
+     * is nothing to gain from withholding it where it is optional.
+     *
+     * Only when the application did not supply one.  Section 5.3 forbids two
+     * field lines with the same name unless the field is a list, and Date is
+     * not -- so a server that has its own clock reading, or that has to make
+     * the value match something else it has signed, keeps it and this stays
+     * out of the way. */
+    if (!evpl_http_response_header(request, "Date")) {
+        evpl_http_append_line(rsp_base, cap, &rsp, "Date: %s\r\n",
+                              evpl_http_date(conn->agent));
+    }
 
     DL_FOREACH(request->response_headers, header)
     {
