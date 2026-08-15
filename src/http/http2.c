@@ -602,6 +602,7 @@ evpl_http2_submit_response(struct evpl_http_request *request)
     nghttp2_data_provider            prd;
     nghttp2_data_provider           *pprd;
     size_t                           nvlen = 0;
+    const char                      *date;
     char                             status_str[8];
     int                              has_body;
 
@@ -613,6 +614,22 @@ evpl_http2_submit_response(struct evpl_http_request *request)
     nva[nvlen].valuelen = strlen(status_str);
     nva[nvlen].flags    = NGHTTP2_NV_FLAG_NONE;
     nvlen++;
+
+    /* RFC 9110 section 6.6.1 is about HTTP, not about a version of it: an
+     * origin server with a clock MUST send a Date field on every response
+     * outside 1xx and 5xx.  Same rule and same caveat as the HTTP/1.x path --
+     * only where the application did not supply its own, since section 5.3
+     * does not allow two. */
+    if (!evpl_http_response_header(request, "Date")) {
+        date = evpl_http_date(conn->agent);
+
+        nva[nvlen].name     = (uint8_t *) "date";
+        nva[nvlen].namelen  = 4;
+        nva[nvlen].value    = (uint8_t *) date;
+        nva[nvlen].valuelen = strlen(date);
+        nva[nvlen].flags    = NGHTTP2_NV_FLAG_NONE;
+        nvlen++;
+    }
 
     DL_FOREACH(request->response_headers, header)
     {

@@ -370,6 +370,13 @@ evpl_http_priv(struct evpl_http_conn *conn)
     return conn->is_server ? conn->server->private_data : conn->private_data;
 } /* evpl_http_priv */
 
+/* The Date field value for right now, in IMF-fixdate (RFC 9110 section 5.6.7),
+ * cached on the agent to the second.  Both protocol paths need it: section
+ * 6.6.1's requirement is about HTTP rather than about a version of it. */
+const char *
+evpl_http_date(
+    struct evpl_http_agent *agent);
+
 /* The single flush deferral entry point; dispatches by protocol/direction. */
 void
 evpl_http_flush(

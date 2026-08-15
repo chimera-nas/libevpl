@@ -127,7 +127,7 @@ evpl_http_response_status_string(int status)
  * Recomputed at most once a second and cached on the agent, because it changes
  * that often and is needed on every response.
  */
-static const char *
+const char *
 evpl_http_date(struct evpl_http_agent *agent)
 {
     static const char *const days[] = {
