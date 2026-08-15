@@ -27,6 +27,7 @@ evpl_global_config_init(void)
     config->thread_default.wait_ms         = -1;
 
     config->hf_time_mode           = 2;
+    config->virtual_clock          = 0;
     config->max_pending            = 16;
     config->max_poll_fd            = 16;
     config->max_num_iovec          = 128;
@@ -555,6 +556,14 @@ evpl_global_config_set_hf_time_mode(
 {
     config->hf_time_mode = mode;
 } /* evpl_global_config_set_hf_time_mode */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_virtual_clock(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->virtual_clock = !!enabled;
+} /* evpl_global_config_set_virtual_clock */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_max_pending(

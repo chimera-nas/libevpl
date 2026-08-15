@@ -151,6 +151,11 @@ evpl_shared_init(struct evpl_global_config *config)
     clock_gettime(CLOCK_MONOTONIC, &evpl_shared->hf_base_time);
     stopwatch_start(&evpl_shared->hf_stopwatch, &evpl_shared->hf_base_sw);
 
+    /* Lifted out of the config so the time path reads one cache line rather
+     * than chasing the config pointer on every call. */
+    evpl_shared->virtual_clock = evpl_shared->config->virtual_clock;
+    evpl_shared->virtual_ticks = 0;
+
     /* Block I/O metric definitions.  Per-device series (labelled by
      * device and type) are created lazily when a device is opened; the
      * histograms use base-2 buckets, so 32 buckets cover up to ~2.1s of
@@ -592,6 +597,14 @@ evpl_continue(struct evpl *evpl)
             msecs = 0;
         }
 
+        /* On the virtual clock, nothing but the application moves time, so a
+         * wait for a deadline would be a wait for something that cannot
+         * happen while we are in it.  Poll instead and let the caller decide
+         * when to advance. */
+        if (unlikely(evpl_shared->virtual_clock)) {
+            msecs = 0;
+        }
+
         if (evpl->loop_hooks.pre_wait) {
             evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
         }
@@ -706,7 +719,32 @@ evpl_continue(struct evpl *evpl)
 
 } /* evpl_continue */
 
-SYMBOL_EXPORT SYMBOL_EXPORT void
+SYMBOL_EXPORT void
+evpl_virtual_clock_advance(uint64_t ns)
+{
+    evpl_core_abort_if(!evpl_shared,
+                       "evpl_virtual_clock_advance: evpl is not initialized");
+    evpl_core_abort_if(!evpl_shared->virtual_clock,
+                       "evpl_virtual_clock_advance: this process is not on the "
+                       "virtual clock; enable it with "
+                       "evpl_global_config_set_virtual_clock() before evpl_init()");
+
+    evpl_shared->virtual_ticks += ns;
+} /* evpl_virtual_clock_advance */
+
+SYMBOL_EXPORT uint64_t
+evpl_virtual_clock_now(void)
+{
+    evpl_core_abort_if(!evpl_shared,
+                       "evpl_virtual_clock_now: evpl is not initialized");
+    evpl_core_abort_if(!evpl_shared->virtual_clock,
+                       "evpl_virtual_clock_now: this process is not on the "
+                       "virtual clock");
+
+    return evpl_shared->virtual_ticks;
+} /* evpl_virtual_clock_now */
+
+SYMBOL_EXPORT void
 evpl_get_hf_monotonic_time(
     struct evpl     *evpl,
     struct timespec *ts)

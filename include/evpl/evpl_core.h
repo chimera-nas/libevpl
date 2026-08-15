@@ -5,6 +5,7 @@
 #pragma once
 
 #include <time.h>
+#include <stdint.h>
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_core.h directly, include evpl/evpl.h instead"
@@ -69,6 +70,25 @@ void
 evpl_get_hf_monotonic_time(
     struct evpl     *evpl,
     struct timespec *ts);
+
+/*
+ * Move the virtual clock forward by ns nanoseconds, and read it.
+ *
+ * Only meaningful when evpl_global_config_set_virtual_clock() was set before
+ * evpl_init(); calling either otherwise is a hard error rather than a silent
+ * no-op, because a test that believed it was advancing time and was not would
+ * pass for the wrong reason.
+ *
+ * Advancing does not itself run anything: it makes deadlines due, and the
+ * next evpl_continue() on a thread dispatches whatever became due on it.
+ */
+void
+evpl_virtual_clock_advance(
+    uint64_t ns);
+
+uint64_t
+evpl_virtual_clock_now(
+    void);
 
 void evpl_destroy(
     struct evpl *evpl);
