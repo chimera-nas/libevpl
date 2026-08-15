@@ -120,9 +120,17 @@ evpl_http_server_destroy(
 /*
  * Attach a header to the outbound block (request headers on a client
  * connection, response headers on a server connection).  Returns 0 on
- * success, or -1 if adding the header would push the block past the
- * configured http_max_header_size (see
- * evpl_global_config_set_http_max_header_size); the header is not added.
+ * success, or -1 with the header not added if either:
+ *
+ *   - it would push the block past the configured http_max_header_size (see
+ *     evpl_global_config_set_http_max_header_size), or
+ *
+ *   - the name is not a token or the value contains CR or LF (RFC 9110
+ *     sections 5.1 and 5.5).  A CRLF in a value ends the field, so everything
+ *     after it would be read as further fields and then as content -- one
+ *     message becoming two, the second chosen by whoever supplied the value.
+ *     Worth testing the return of wherever a value comes from outside the
+ *     program.
  */
 int
 evpl_http_request_add_header(

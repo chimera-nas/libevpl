@@ -4,11 +4,11 @@ SPDX-FileCopyrightText: 2026 Ben Jarvis
 SPDX-License-Identifier: LGPL-2.1-only
 -->
 
-# Model-based HTTP/1.0 conformance test
+# Model-based HTTP/1.x conformance test
 
 `conformance.c`, `conformance_client.c` and `quint/` form a conformance suite
-for libevpl's HTTP/1.x implementation, both ends of it. A formal model written
-in [Quint](https://quint-lang.org) enumerates the test cases; a generator turns
+for libevpl's HTTP implementation, both ends of it. A formal model written in
+[Quint](https://quint-lang.org) enumerates the test cases; a generator turns
 them into a C table; the test binaries replay them against a real libevpl HTTP
 server and a real libevpl HTTP client, each driven from a raw socket.
 
@@ -17,6 +17,12 @@ rule: **the model encodes the specification, not libevpl's current behaviour.**
 Divergences are expected; each reviewed one is listed in `known_divergences[]`
 in the driver with a note, which keeps the suite green while leaving the gaps
 visible and counted. An unlisted divergence fails the test.
+
+Scope is HTTP/1.x: RFC 1945 for HTTP/1.0, and RFC 9112 (with RFC 9110 for the
+semantics it factored out) for HTTP/1.1. The two are one protocol family rather
+than two protocols, which is why the version is a dimension of the matrices
+rather than a second model — most of what is worth testing is exactly the
+difference between them.
 
 The cases are generated from the model at build time, so quint and python3 are
 build dependencies. CMake detects them; when either is missing the test is
@@ -45,7 +51,7 @@ differently, which is why the devcontainer pins one.
 
 | File | Role |
 |---|---|
-| `quint/http10.qnt` | Four modules: the shared vocabulary, the positive request matrix, the request defect taxonomy, the response defect taxonomy |
+| `quint/http1x.qnt` | Four modules: the shared vocabulary, the positive request matrix, the request defect taxonomy, the response defect taxonomy |
 | `quint/itf_to_cases.py` | ITF traces → C case table |
 | `quint/generate_cases.sh` | Build step: model → traces → case table |
 | `quint/check_models.sh` | The `quint_model` test: scenario tests + invariants |
@@ -54,202 +60,293 @@ differently, which is why the devcontainer pins one.
 | `conformance_client.c` | The client driver: raw-socket server, libevpl client, callback classifier |
 
 Four modules in one file rather than four files, because they predict in a
-shared vocabulary (`Delivery`, `ProbeExpect`, and the expectation types) and
-the two C drivers compile one table generated from all of it. A class that
-meant one thing in one file and another in the other would be a silently wrong
-test. `quint` picks the module with `--main`, which every invocation in the
-scripts passes explicitly.
+shared vocabulary (`Version`, `Delivery`, `ProbeExpect`, and the expectation
+types) and the two C drivers compile one table generated from all of it. A
+class that meant one thing in one file and another in the other would be a
+silently wrong test. `quint` picks the module with `--main`, which every
+invocation in the scripts passes explicitly.
+
+Case counts as of this writing: **1100 request cases, 171 defect cases, 101
+status cases** in the server direction, **147 response cases** in the client
+direction.
 
 ## Why a raw socket at both ends
 
 Neither of libevpl's own HTTP peers can express any of this.
-`evpl_http_client_send_headers` hardcodes `HTTP/1.1` and emits a fixed header
-block, so it can send neither an HTTP/1.0 request nor a malformed one; and the
-server emits a well-formed response by construction, so a real client never
-sees a defective one. Each direction is therefore driven by a socket, which
-also means one set of framing helpers covers every matrix.
+`evpl_http_client_send_headers` emits a fixed header block at a fixed version,
+so it can send neither an HTTP/1.0 request nor a malformed one; and the server
+emits a well-formed response by construction, so a real client never sees a
+defective one. Each direction is therefore driven by a socket, which also means
+one set of framing helpers covers every matrix.
 
 `conformance.c` is a raw client against a real server; `conformance_client.c`
 is a raw server against a real client. They share the model file and the
 generated case table and nothing else.
 
-## The server direction: two phases
+## The server direction
 
-**Requests** replay legal HTTP/1.0 requests across six dimensions — method,
-Request-URI shape, header-block grammar, body length, connection disposition,
-and how the bytes are delivered — and check the response. The server behind the
-socket runs an echo application that reflects what the parser produced: the
-method, the URI, the probe header and its repeat count, and the request body
-come back in the response. The oracle is therefore what the server
-*understood*, not merely that it answered, which is what makes a case like
-"leading LWS is not part of a field value" checkable at all.
+### Phase 1: the positive matrix
 
-**Defects** replay malformed requests and classify the response against the
-status RFC 1945 names for it. The model's `Outcome` has three arms:
-`Status(n)` where the RFC names a code, `NotSuccess` for the shapes it leaves
-open (an incomplete request, where refusing and closing are both defensible),
-and `SimpleResponse` for the one HTTP/0.9 case.
+Legal HTTP/1.0 and HTTP/1.1 requests across eight dimensions — version, method,
+Request-URI shape, header-block grammar, content framing, connection
+disposition, whether an `Expect: 100-continue` is sent, and how the bytes are
+delivered. The server behind the socket runs an echo application that reflects
+what the parser produced: the method, the URI, the probe header and its repeat
+count, and the request content come back in the response. The oracle is
+therefore what the server *understood*, not merely that it answered, which is
+what makes a case like "leading LWS is not part of a field value" checkable at
+all.
 
-Every case is replayed under three delivery modes — one write, two writes, and
-one byte at a time with the server's event loop pumping between them. A parser
-defect that is only detected because the whole request arrived in one read is
-not really detected. A dribble writes at most the first 512 bytes one at a
-time: every state transition a byte-at-a-time delivery can expose is inside
-that, and dribbling eight kilobytes of body afterwards costs a syscall per byte
-and proves nothing further.
+The framing dimension covers HTTP/1.0's only option (`Content-Length`, at five
+lengths) and HTTP/1.1's addition: the chunked coding, in four shapes — one
+chunk, chunk extensions on the size line, a trailer section after the last
+chunk, and many chunks spanning read buffers. The last three are the parts a
+decoder can produce the right content without ever looking at.
 
-### Phase 3: the status line
+Delivery is one write, two writes, one byte at a time with the server's event
+loop pumping between them, and — HTTP/1.1 only — two complete requests in a
+single write. A parser defect that is only detected because the whole request
+arrived in one read is not really detected. A dribble writes at most the first
+512 bytes one at a time: every state transition a byte-at-a-time delivery can
+expose is inside that, and dribbling eight kilobytes of content afterwards
+costs a syscall per byte and proves nothing further.
 
-A third phase walks every status code `evpl_http_response_status_string` names,
-plus two valid ones it does not and four values that are not statuses at all,
-answering each through the echo application. It sits outside the model
-deliberately: the code list is libevpl's own table rather than anything RFC
-1945 enumerates, and the specification content is a single rule — a status line
-carries three digits in a defined class, and the code the application chose —
-applied to a list of inputs.
+### Phase 2: the defect taxonomy
 
-The reason phrases are not checked. RFC 1945 §6.1.1 makes the Reason-Phrase
-advisory ("The client is not required to examine or display the
-Reason-Phrase") and RFC 2616 §6.1.1 says the listed phrases "are only
-recommendations", so asserting them would assert something the RFC leaves open.
+Malformed requests, classified against the status the RFCs name for them. The
+model's `Outcome` has three arms: `Status(n)` where an RFC names a code,
+`NotSuccess` for the shapes they leave open (an incomplete request, where
+refusing and closing are both defensible), and `SimpleResponse` for the one
+HTTP/0.9 case.
 
-Mostly this is coverage of a lookup table. It did find one real defect:
-`evpl_http_server_dispatch_default` took any `int` and formatted it straight
-into the status line, so an application asking for `0` or `600` produced a
-response the peer could not parse. The library owns the outbound framing, so a
-status it cannot send is now answered `500` with the original logged.
+Each defect is generated at the versions where it *is* a defect. Most grammar
+rules are shared, so they run at both — a request-line parser that is right at
+one version and wrong at the other is wrong. Three groups are not:
+
+- the defects that *are* a version (malformed, unsupported major, higher minor,
+  none at all) carry it in the request line, so running them twice would run
+  the same bytes twice;
+- the chunked-coding defects need a version that has the chunked coding;
+- `HostMissing` and `PostWithoutContentLength` are the two whose answer *is*
+  the version and nothing else — a request with no Host is a perfectly good
+  HTTP/1.0 request and a refusable HTTP/1.1 one, and a POST with no length is
+  the other way round.
+
+### Phase 3: the status line and the response framing
+
+Every status code `evpl_http_response_status_string` names, plus two valid ones
+it does not and four values that are not statuses at all, answered through the
+echo application at both versions and with both response framings. It sits
+outside the model deliberately: the code list is libevpl's own table rather
+than anything the RFCs enumerate, and the specification content is a small
+number of rules applied to a list of inputs.
+
+The reason phrases are not checked. RFC 9112 §4 makes the reason phrase
+advisory ("A client SHOULD ignore the reason-phrase content") and RFC 2616
+§6.1.1 said outright that the listed phrases "are only recommendations", so
+asserting them would assert something the RFC leaves open.
+
+The phase closes with one case that is not about a status at all: an
+application header whose value carries a CRLF, and one whose name is not a
+token. Neither can arrive from the wire — the parser splits lines on LF, so a
+parsed value never contains one — so the echo application is asked to try, and
+the driver checks that nothing was smuggled into the response.
 
 ### Checks that sit outside the model
 
-Three things the driver asserts are properties of any response to an HTTP/1.0
-request rather than of a particular case, so they are held in the driver rather
-than bent into the case table:
+Properties of *any* well-formed response rather than of a particular case, so
+they are held in the driver rather than bent into the case table:
 
 - The status line carries `HTTP/1.0` or `HTTP/1.1` and a reason phrase.
-- No `Transfer-Encoding: chunked` — chunked is an HTTP/1.1 addition (RFC 2616
-  §3.6.1) and an HTTP/1.0 client has no way to delimit a response framed with
-  it.
-- A server may only answer `Connection: keep-alive` to a client that asked for
-  it (RFC 2068 §19.7.1.1).
+- `Transfer-Encoding` only towards an HTTP/1.1 request (RFC 9112 §6.1).
+- Never `Content-Length` and `Transfer-Encoding` together (§6.1).
+- Neither on a 1xx or a 204 (§6.1).
+- A `Date` on every 2xx, 3xx and 4xx (RFC 9110 §6.6.1).
+- A server may only answer `Connection: keep-alive` to an HTTP/1.0 client that
+  asked for it (RFC 2068 §19.7.1.1).
 
-The connection-close check is sampled rather than run on all several hundred
-request cases: whether the server closes depends on the request's version and
-its `Connection` header and on nothing else, and each check costs a quarter of
-a second waiting for a FIN that a conforming server sends immediately. It runs
-once per (method, connection) pair.
+The connection checks are sampled rather than run on all eleven hundred request
+cases, since each costs a wait. Whether the server *closes* depends on the
+request's version and its `Connection` header and on nothing else, so that is
+sampled per (version, method, connection) triple. Whether a connection the
+server *kept* can carry another request depends on something else entirely —
+whether the parser consumed exactly the bytes of the request it just answered —
+so that is sampled per (version, content framing) pair. It is the only check
+that can see an unconsumed trailer section or a miscounted chunk.
+
+## The client direction
+
+`conformance_client.c` inverts the whole arrangement: a raw socket pretending
+to be a server, feeding defective responses to a real libevpl client. Its model
+(`http1x_client`) has an outcome type with exactly two arms — the response is
+delivered, or the request completes as a failure — and deliberately no third
+arm for "nothing happens". A caller that dispatched a request is owed exactly
+one answer, and a client that frees the request without telling anyone has not
+failed it, it has abandoned the caller.
+
+Alongside the response cases, and outside the model because they hold for every
+one of them, the hostile server examines the requests it receives: exactly one
+`Host` field on each (RFC 9112 §3.2), and where the caller supplied content,
+exactly the octets it handed over under a framing that describes them.
 
 ## Divergences found, and fixed
 
-Every divergence the suite found on its first run has been fixed except one,
-which is a decision rather than a gap (see below). A recurrence of any of these
-fails the test.
+Every divergence either suite has found has been fixed except one, which is a
+decision rather than a gap (see below). A recurrence of any of these fails the
+test.
 
-Two are memory-safety faults reachable from an unauthenticated peer:
+### Memory safety and liveness
+
+Three faults reachable from an unauthenticated peer, all found by the HTTP/1.0
+pass:
 
 | What the RFC requires | What libevpl did | Fix |
 |---|---|---|
 | A Content-Length is a decimal number of octets (RFC 1945 §10.4) | `evpl_recvv` takes an `int` length while `request_left` is a `uint64_t`. `Content-Length: -1` makes it `UINT64_MAX`, which truncates to `-1`; `evpl_recvv` rejects a non-positive length by returning `-1` **without touching the caller's iovec**, and the caller only tested for `0` — so a stale iovec was added to the receive ring, taking a second reference to a buffer it did not own and then freeing it twice. A heap use-after-free from four bytes of a request header | the length is clamped to `INT_MAX` before the call, and both call sites treat any non-positive return as "no data" |
 | A malformed header field is a request the server refuses | the header struct was allocated before the field was parsed and dropped on both error returns — and because a dropped header still pointed at the rest of the agent's free list, each one stranded that whole tail too. ~16 KB per malformed header line, repeatable at will by a remote peer | the header is returned to the free list on both paths |
+| A request line longer than the parser will hold is refused | `evpl_http_parse_line` scanned at most eight peeked iovecs, and a peer that dribbles produces one iovec per byte — so exhausting the array did not mean the data had not arrived, only that the answer lay further along than the array reached. Reporting "need more data" for data already buffered left the connection making no progress, holding its receive buffers until the peer gave up | the iovec scan is still the fast path; when the array fills, the parser falls back to a bounded contiguous `evpl_peek` |
 
-The first is the more serious: it needs no valid method, no valid URI and no
-body — a request line and one header are enough, and it is reached before
-anything else looks at the request.
+Two more came out of the HTTP/1.1 pass, both about object lifetime rather than
+the protocol:
 
-One more is a liveness fault of the same character:
+- **A client connection handle went stale where its owner could not see it.**
+  `evpl_http_client_connect` returns a pointer the application holds, and
+  `EVPL_NOTIFY_DISCONNECTED` freed the struct behind it — with no notification
+  to tell the application, since notifications are per request. Calling
+  `evpl_http_client_close` on it was a use-after-free, which is what the client
+  harness did as soon as enough cases left a connection dropped by the peer.
+  A dropped client connection is now *retired* rather than freed: the bind is
+  cleared, every outstanding request is completed with
+  `EVPL_HTTP_NOTIFY_FAILED`, and the struct waits for the close its owner still
+  owes it. Dispatching on a retired connection fails immediately rather than
+  queueing forever.
+- **Nothing disarmed a connection's deferrals when it was torn down.** The
+  event loop holds the pointer until the deferral fires, so a connection
+  dropped between arming a flush and running it left the callback to run
+  against freed memory. `evpl_remove_deferral` existed but had never been
+  declared in a public header.
 
-- **An over-long request line could wedge the connection.**
-  `evpl_http_parse_line` scanned at most eight peeked iovecs
-  (`evpl_peekv`'s `maxiovecs`), and a peer that dribbles its request produces
-  one iovec per byte — so exhausting the array did not mean the data had not
-  arrived, only that the answer lay further along than the array reached.
-  Reporting "need more data" there for data already buffered left the
-  connection making no further progress, holding its receive buffers until the
-  peer gave up. The iovec scan is still the fast path; when the array fills the
-  parser falls back to a bounded contiguous `evpl_peek`, which sees the whole
-  window however finely it is fragmented.
+### HTTP/1.0 conformance (the first pass)
 
-The rest are conformance gaps, each fixed in its own commit:
+- **Connection semantics.** RFC 1945 §1.4 closes the connection after the
+  response; Keep-Alive (RFC 2068 §19.7.1) is an extension the client opts into.
+  libevpl did the opposite of both halves — it never closed, and it attached
+  `Connection: keep-alive` to every response whether or not anyone had asked.
+- **A malformed request was answered with silence.** Every syntax error reached
+  `evpl_close()`, so the client got a FIN and no status. RFC 1945 §9.4.1 (400)
+  and §9.5.2 (501) exist so it learns which of the two went wrong; a hang-up is
+  indistinguishable from a crashed server, so the client retries forever. This
+  is the `completeRequestsAreAnswered` invariant, and it was the largest single
+  gap.
+- **The header grammar of §4.2.** `X-Probe:` — a field with an empty value —
+  was a failed request, and so was a continuation line. Leading LWS was skipped
+  one space at a time so a tab survived into the value; trailing LWS was never
+  stripped. Conversely `X-Probe : v` was accepted, though `X-Probe ` is not a
+  token, which is how a request smuggles a header past a filter.
+- **Content-Length was taken on trust.** `strtoul` read `abc` as zero, so a
+  request with content was served as one without and the content was parsed as
+  whatever came next; `-1` wrapped; two conflicting lengths were resolved by
+  taking the last, which makes where the next request starts the sender's
+  choice.
+- **The request line was permissive where §5.1 is exact** — leading whitespace,
+  a fourth token, and a version matched with `strncmp` (which accepts
+  `HTTP/1.10` and rejects `HTTP/1.9`, though RFC 2145 §2.3 makes a higher minor
+  a request to serve).
+- **Bare LF line endings** (§19.3 recommends accepting them) were treated as a
+  line too long to hold.
+- **The response status line** was parsed as loosely as the request line used
+  to be: `atoi` turned a non-numeric status into `0` and handed it to the
+  caller, and a caller testing `status < 400` treated that as success.
+- **Close-delimited content was discarded** — the only framing HTTP/1.0 has for
+  content of unknown size, which every streamed reply uses.
+- **HEAD responses hung**, as did 204 and 304: the client waited for bytes that
+  were never coming.
+- **A status that is not a status** was formatted straight into the status
+  line, so an application asking for `0` or `600` produced a response the peer
+  could not parse.
 
-### HTTP/1.0 connection semantics
+### HTTP/1.1 conformance (this pass)
 
-RFC 1945 §1.4: "The connection is closed by the server after sending the
-response." HTTP/1.0 has no persistent connections of its own — Keep-Alive is an
-extension (RFC 2068 §19.7.1) the client opts into — and libevpl did the
-opposite of both halves: it never closed a connection it had answered on, and
-it attached `Connection: keep-alive` to every response whether or not anyone
-had asked. An HTTP/1.0 client that does not implement the extension was left
-waiting on a close that had been explicitly announced as not coming.
+**Requests the server got wrong:**
 
-`evpl_http_response_keeps_alive` now decides from the request: an explicit
-`Connection: close` always wins, HTTP/1.1 is persistent by default (RFC 7230
-§6.1), and HTTP/1.0 is persistent only if the client asked. The response says
-which it is, and `evpl_http_server_flush` finishes the connection after a
-non-persistent one. HTTP/1.1 peers are unaffected.
+- **`Host` was not checked at all.** RFC 9112 §3.2: "A server MUST respond with
+  a 400 (Bad Request) status code to any HTTP/1.1 request message that lacks a
+  Host header field and to any request message that contains more than one Host
+  header field." The routing decision depends on it, so a request that leaves
+  it ambiguous is one a front end and a back end can route differently.
+- **`Transfer-Encoding` together with `Content-Length` was accepted**, with the
+  coding silently winning. §6.1 calls it a possible request-smuggling attempt
+  that "ought to be handled as an error" — the same defect as two
+  Content-Lengths that disagree.
+- **`chunked` not being the final coding drew a 501**, which says the server
+  does not implement something rather than that the message has no length.
+  §6.1 makes it a 400 and a close. A coding it genuinely does not implement,
+  with chunked still final, keeps the 501 the same section asks for.
+- **`Transfer-Encoding` on a request claiming HTTP/1.0 was served.** A front
+  end reading the version and a back end reading the coding disagree about
+  where the message ends, which is the whole of a smuggling attack.
+- **Chunk sizes went through `strtoul`**, which reads a line with no digits as
+  zero — and zero is the last-chunk, so a size spelled `zz` ended the content
+  early and left everything after it to be read as the next request. The
+  chunked spelling of the Content-Length desync. A size too large to represent
+  wrapped instead.
+- **The trailer section was never consumed.** The decoder went straight to
+  COMPLETE on the last-chunk, leaving the trailer fields and the CRLF that ends
+  the coding in the stream — to be read as the start of the next message on a
+  connection HTTP/1.1 keeps open by default. Caught by the reuse check, which
+  is the only thing in the suite that can see it.
+- **A chunk whose data was not followed by CRLF closed the connection in
+  silence**, rather than answering the 400 the server owes a request it cannot
+  find the end of.
+- **Pipelined requests were never seen.** Both ends stopped parsing as soon as
+  one message was complete, leaving anything already in the buffer for a read
+  event that was never going to come. RFC 9112 §9.3.2 lets a client send its
+  next request without waiting and requires the responses in order; two
+  requests in one write meant the second was answered never. The server's
+  read-ahead is bounded, since a request read ahead is a request struct held
+  for as long as the peer chooses.
+- **A `100 Continue` went to HTTP/1.0 clients.** RFC 9110 §10.1.1 makes
+  ignoring the expectation a MUST there: a 1.0 client has no way to tell an
+  interim response from the answer, so it reads the 100 as its response and
+  everything after it as content.
+- **Empty lines before a request line were answered 400.** §2.2 asks a server
+  to ignore at least one, because that is what a client leaves behind when it
+  miscounts a previous request's content.
 
-### A malformed request was answered with silence
+**Responses the server got wrong:**
 
-`evpl_http_server_handle_data` reached `evpl_close()` for every syntax error in
-the request line or the header block, so a client that sent one got a FIN and
-no status. RFC 1945 §9.4.1 (400) and §9.5.2 (501) exist so that it learns which
-of the two things went wrong; a hang-up is indistinguishable from a crashed
-server, a lost route or a middlebox, so the client retries a request that will
-be refused the same way forever. This is the `completeRequestsAreAnswered`
-invariant in the model, and it was the largest single gap: every one of those
-paths now goes through `evpl_http_server_reject`.
+- **No `Date` on anything.** RFC 9110 §6.6.1 makes it a MUST on 2xx, 3xx and
+  4xx. Everything downstream that reasons about the age of a response starts
+  from it, so a caching proxy in front of this server had to treat every reply
+  as having unknown age.
+- **`Content-Length: 0` on a 204**, and on a 1xx, which §6.1 makes a MUST NOT:
+  these carry no content, so a length describes something that is not there.
+- **`Transfer-Encoding: chunked` towards an HTTP/1.0 request**, which §6.1 also
+  makes a MUST NOT — that client has no chunked coding, so it reads the chunk
+  sizes as content. Such a response is now close-delimited, which is the
+  framing HTTP/1.0 does have for content of unknown size.
+- **A header value carrying a CRLF was emitted verbatim**, which is response
+  splitting: RFC 9110 §5.5 makes generating one a MUST NOT, and §5.1 makes a
+  field name a token.
 
-### The header grammar of RFC 1945 §4.2
+**What the client got wrong:**
 
-    HTTP-header = field-name ":" [ field-value ] CRLF
-    field-name  = token
-
-The brackets are what a `strtok_r` split got wrong. `X-Probe:` — a field
-present with an empty value, which client libraries emit without thinking about
-it — was a failed request, and so was a continuation line, which has no colon
-of its own. Leading LWS was skipped one space at a time so a tab survived into
-the value, and trailing LWS was never stripped, leaving an application
-comparing a header against a constant with a mismatch it had no way to see
-coming. Conversely `X-Probe : v` was accepted, though `X-Probe ` is not a
-token; RFC 7230 §3.2.4 later made rejecting that a MUST, because a front end
-and a back end that disagree about whether it is a header is how a request
-smuggles one past a filter.
-
-`evpl_http_parse_header_line` and `evpl_http_fold_header_line` now do this for
-both directions, and a folded field re-runs the special-field handling over its
-extended value — `Content-Length:` CRLF SP `5` is a length of five, and reading
-only the first line would make it zero.
-
-### Content-Length was taken on trust
-
-The value went through `strtoul`, which accepts a sign, leading whitespace and
-trailing junk and reports none of it: `abc` read as zero, so a request with an
-entity was served as one without and the entity was left to be parsed as
-whatever came next, and `-1` wrapped to a length no peer could satisfy. Two
-conflicting lengths were resolved by taking the last, which makes where the
-next request starts the sender's choice — the desync a request-smuggling attack
-is built on. All three are now 400, as is an HTTP/1.0 POST with no length at
-all (RFC 1945 §8.3). Identical duplicates stay legal, and HTTP/1.1 is
-unaffected, since there a request with no length simply has no body (RFC 7230
-§3.3.3).
-
-### The request line was permissive where RFC 1945 is exact
-
-`Request-Line` is exactly three fields (§5.1), and §19.3 asks for tolerance of
-SP and HT *between* them — not before the first, where `strtok_r`'s skipping
-made `" /echo HTTP/1.0"` a request whose method was the URI, and not after the
-third, where a fourth token was silently discarded. The version was matched
-with `strncmp` against the two spellings the server speaks, which both accepted
-too much (`HTTP/1.10` matches `HTTP/1.1` in eight characters) and rejected too
-much: RFC 2145 §2.3 makes a higher minor version a request to serve at the
-highest 1.x the server speaks. `evpl_http_parse_version` now parses the
-grammar.
-
-### Bare LF line endings
-
-RFC 1945 §19.3 recommends recognising a single LF as a line terminator. The
-parser treated one as a line too long to hold, so a peer that sends bare LFs
-anywhere had its request refused. Now accepted — the defence against a front
-end that disagrees about where a message ends is refusing messages whose length
-is ambiguous, which the Content-Length work above provides.
+- **No `Host` on any request.** §3.2 makes it a MUST on every HTTP/1.1 request,
+  and this client writes HTTP/1.1 on the request line whatever the caller does.
+  Every existing caller adds one by hand, which is the caller doing the
+  library's job — and one that did not was making requests a conforming server
+  must refuse.
+- **A 1xx was reported as the answer.** RFC 9110 §15.2 requires a client to
+  parse interim responses "even if the client does not expect one". Reporting
+  one as the result loses the real response, which then arrives on a connection
+  the client believes is idle. A server sending `100 Continue` or `103 Early
+  Hints` was enough to break every request.
+- **`Transfer-Encoding` was compared whole against `chunked`**, so a list
+  (`gzip, chunked`) was not recognised as chunked at all — and a response
+  carrying both a coding and a length was accepted with the coding silently
+  winning.
+- **The chunked defects above**, which the two ends share a decoder for.
+- **Pipelined responses**, as on the server side.
 
 ## Divergences currently recorded
 
@@ -270,57 +367,26 @@ The case stays in the model rather than being deleted from it, because what RFC
 1945 requires does not change when an implementation decides not to do it. The
 entry in `known_divergences[]` is where that decision is recorded.
 
-## The client direction
+## The failure notification
 
-`conformance_client.c` inverts the whole arrangement: a raw socket pretending
-to be a server, feeding defective responses to a real libevpl client. Its model
-(`http10_client`) has an outcome type with exactly two arms — the response is
-delivered, or the request completes as a failure — and deliberately no third
-arm for "nothing happens". A caller that dispatched a request is owed exactly
-one answer, and a client that frees the request without telling anyone has not
-failed it, it has abandoned the caller.
-
-Four of its findings are fixed, in the commits alongside this file:
-
-- **The response status line was parsed as loosely as the request line used to
-  be.** `atoi` turned a non-numeric status into `0` and handed it to the caller;
-  `99` and `700` were delivered as themselves; `HTTP/1.9` was refused rather
-  than read as HTTP/1.1. A caller testing `status < 400` treated `0` as a
-  success.
-- **Close-delimited bodies were discarded.** A response with no `Content-Length`
-  and no transfer coding is delimited by the close (RFC 1945 §7.2.2) — the only
-  framing HTTP/1.0 has for a body of unknown size, which every streamed reply
-  uses. libevpl read such a response as empty: status delivered, request
-  completed, body parsed and then dropped, indistinguishable to the caller from
-  a response that had none.
-- **HEAD responses hung.** The response to HEAD carries the header fields a GET
-  would have, `Content-Length` included, and no body (§8.2); 204 and 304 are
-  the same (§9.2.5, §9.3.5). The client waited for bytes that were never
-  coming.
-- **Conflicting `Content-Length`s were resolved rather than refused**, which the
-  request path already refused.
-
-### The failure notification
-
-The suite's largest finding was that there was nowhere to report a request
+The first pass's largest finding was that there was nowhere to report a request
 that will not complete. `evpl_http_notify_type` had five arms and none of them
 meant "this request is over and there is no response", so when the client
-refused a malformed response — which, after the fixes above, it does promptly
-and for the right reason on every one of these cases — it closed the
-connection, and `EVPL_NOTIFY_DISCONNECTED` freed every pending request without
-invoking one callback. The caller waited on a completion that could no longer
-arrive.
+refused a malformed response it closed the connection, and
+`EVPL_NOTIFY_DISCONNECTED` freed every pending request without invoking one
+callback. The caller waited on a completion that could no longer arrive.
 
 `EVPL_HTTP_NOTIFY_FAILED` closes that, the way `EVPL_RPC2_REPLY_CONN_LOST`
 closed the same gap in the RPC2 client. Exactly one of `RECEIVE_COMPLETE`,
 `RESPONSE_COMPLETE` or `FAILED` reaches a given request, so it is also where an
 application releases whatever it attached to one. `evpl_http_request_status()`
 carries the reason, negative so it cannot collide with an HTTP status:
-`EVPL_HTTP_ERROR_CONN_LOST` when the peer went away, `EVPL_HTTP_ERROR_BAD_RESPONSE`
-when it sent something unparseable. The distinction is the point of having two:
-one is worth retrying against the same peer and the other is not. Which code
-each case must carry is checked in the driver rather than the model, since the
-model deliberately leaves the spelling of a failure open.
+`EVPL_HTTP_ERROR_CONN_LOST` when the peer went away,
+`EVPL_HTTP_ERROR_BAD_RESPONSE` when it sent something unparseable. The
+distinction is the point of having two: one is worth retrying against the same
+peer and the other is not. Which code each case must carry is checked in the
+driver rather than the model, since the model deliberately leaves the spelling
+of a failure open.
 
 It fires in both directions. A server whose peer disconnects mid-response has
 the same problem in reverse — the request it was answering is freed and the
@@ -329,28 +395,6 @@ in libevpl noticed because libevpl attaches nothing; an application that does
 (chimera's S3 server frees its own request struct in `RESPONSE_COMPLETE`) leaks
 one per dropped connection until it handles `FAILED`.
 
-### What is left
-
-Nothing in the case table: every divergence this suite found has been fixed,
-and `known_divergences[]` holds only its unmatchable placeholder row.
-
-One thing is still open and is not in the table, because it kills the harness
-rather than failing a case: **an application cannot tell that a connection has
-been retired.** `evpl_http_event` frees the `evpl_http_conn` on disconnect and
-there is no notification to register for, so the pointer
-`evpl_http_client_connect` returned goes stale at a moment its owner cannot
-observe, and `evpl_http_client_close` on it is a use-after-free — which is what
-the first run of this harness did. The driver works around it by never closing
-a connection it did not just successfully use.
-
-`FAILED` narrows this considerably, since a caller with a request outstanding
-now learns that the exchange is over, and in the one-request-per-connection
-case that is the same news. It does not close it: a client that keeps an idle
-connection for reuse still has no way to know the peer has gone. The RPC2
-equivalent is the thread-level notify callback, which reports
-`EVPL_RPC2_NOTIFY_CONNECTED` and `DISCONNECTED`; the HTTP client has no
-analogue.
-
 ## Coverage
 
 `make coverage COVERAGE_TESTS="libevpl/http/conformance"` runs both drivers
@@ -358,23 +402,19 @@ against a clang-instrumented build and reports what they reach. Needs
 `libclang-rt-<version>-dev` installed, or the Coverage build fails to link.
 
 Over `src/http/http.c` and `src/http/http_internal.h` — the HTTP/1.x
-implementation — the two suites reach **96.9% of functions, 81.2% of lines and
-70.5% of branches**.
+implementation — the two suites reach **100% of functions, 89.4% of lines and
+77.9% of branches**. (The HTTP/1.0 pass reached 96.9% / 81.2% / 70.5%.)
 
-The two functions never called are `evpl_http_client_set_request_chunked` and
-`evpl_http_server_set_response_chunked`, which is the intended stopping point:
-the only uncovered API surface is the part that is out of scope.
-
-Nearly all the missing lines are out of scope for the same reason:
+The largest remaining blocks are out of scope by construction:
 
 | Where | Missed lines | Why |
 |---|---|---|
-| `evpl_http_handle_body`, `evpl_http_send_body` | 77 | Chunked transfer coding, both directions — HTTP/1.1 |
-| `evpl_http_conn_connected`, `evpl_http_client_connect`, and the h2 branches of `dispatch`/`flush`/`add_datav`/`request_create` | ~50 | TLS/ALPN and HTTP/2 protocol selection |
+| `evpl_http_conn_connected`, `evpl_http_client_connect`, and the h2 branches of `dispatch` / `add_datav` / `request_create` | ~50 | TLS/ALPN and HTTP/2 protocol selection |
 | `evpl_http_parse_line` | 11 | The `evpl_peek` fallback — see below |
-| `evpl_http_request_type_to_string` | 6 | The PUT and DELETE arms; RFC 1945 defines GET, HEAD and POST |
+| `evpl_http_request_type_to_string` | 6 | The PUT and DELETE arms; the model covers the three methods RFC 1945 defines |
+| `evpl_http_conn_set_host` | 5 | An IPv6 literal, and an endpoint that names no authority |
 
-`src/http/http2.c` is 0% throughout, which an HTTP/1.0 model cannot be
+`src/http/http2.c` is 0% throughout, which an HTTP/1.x model cannot be
 otherwise.
 
 ### The one piece of dead code the coverage found
@@ -392,28 +432,28 @@ reaching it would need the suite to lower that setting.
 
 ## What the suite does not cover
 
-- **A client request body.** The client cases all issue GET or HEAD with no
-  body, so the outbound side of the client — `Content-Length` on a POST, the
-  `WANT_DATA` flow — is exercised only by `http1_client.c`, not modelled.
-- **Pipelining.** Both drivers use one request per connection. libevpl's client
-  matches responses to requests by queue order, which is only correct if the
-  peer answers in order; a model with two requests in flight would say so.
-- **HTTP/1.1.** Chunked transfer coding, the required `Host` header, `100
-  Continue`, persistent connections and pipelining, `Transfer-Encoding`
-  together with `Content-Length`, and the 1.1-only status codes (505, 414,
-  411). The 1.0 model is the floor; 1.1 is a superset that mostly adds
-  requirements rather than changing them, so it should extend this model rather
-  than replace it.
+- **Protocol upgrade.** `Upgrade`, `101 Switching Protocols`, and the `h2c`
+  path. libevpl selects h2 by ALPN or prior knowledge rather than by upgrade,
+  so there is nothing here to model yet.
+- **`Expect` values other than `100-continue`.** RFC 9110 §10.1.1 makes
+  answering one with 417 a MAY, and ignoring it — which libevpl does — is the
+  other conforming choice, so a case would assert a preference rather than a
+  requirement.
+- **`TE` and `Trailer` request fields**, and surfacing a received trailer
+  section: the decoder consumes it, and RFC 9112 §6.5 lets a recipient discard
+  the fields, but there is no API to expose them through.
+- **Methods beyond GET, HEAD and POST.** PUT and DELETE are accepted by the
+  parser and have no framing rules of their own; `OPTIONS *` and `CONNECT` are
+  not implemented, which RFC 9110 §9.1 permits.
+- **Request semantics** — conditional requests, ranges, content negotiation.
+  This is a suite about message framing and syntax, which is RFC 9112; RFC 9110
+  semantics are the application's.
 - **HTTP/2.** A different framing layer entirely (`http2.c`, nghttp2), with its
   own conformance surface.
 - **TLS.** The transport is orthogonal to the message grammar under test.
-- **Concurrency**: pipelined requests on one connection, and a server under
-  more than one connection at a time.
-- **The response direction of the grammar.** The driver checks the status line,
-  the framing headers and the echoed values, but not, say, that a header value
-  the application supplies with an embedded CRLF is rejected — response
-  splitting is a defect class of its own and wants cases that come from the
-  application rather than from the wire.
+- **Concurrency**: a server under more than one connection at a time. Both
+  drivers are sequential, and pipelining is covered within one connection
+  rather than across several.
 
 ## Regenerating
 

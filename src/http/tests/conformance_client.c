@@ -661,7 +661,7 @@ build_response(
 
                 snprintf(line, sizeof(line), "%x\r\n", chunk);
                 wb_str(wb, line);
-                wb_append(wb, RESPONSE_BODY + off, chunk);
+                wb_append(wb, &RESPONSE_BODY[off], chunk);
                 wb_str(wb, "\r\n");
             }
 

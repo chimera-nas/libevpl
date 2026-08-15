@@ -364,18 +364,28 @@ Read request body data into iovecs.
 #### `evpl_http_request_add_header`
 
 ```c
-void evpl_http_request_add_header(
+int evpl_http_request_add_header(
     struct evpl_http_request *request,
     const char               *name,
     const char               *value);
 ```
 
-Add a response header.
+Add a header to the outbound block — response headers on a server connection,
+request headers on a client one.
 
 **Parameters:**
 - `request` - HTTP request
 - `name` - Header name
 - `value` - Header value
+
+**Returns:** 0, or -1 with the header not added if either:
+
+- it would push the block past the configured `http_max_header_size`, or
+- the name is not a token, or the value contains CR or LF (RFC 9110 §5.1 and
+  §5.5). A CRLF in a value ends the field, so everything after it would be read
+  as further fields and then as content — one message becoming two, the second
+  chosen by whoever supplied the value. Worth testing the return wherever a
+  value comes from outside the program.
 
 ---
 
