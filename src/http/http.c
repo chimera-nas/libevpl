@@ -624,6 +624,75 @@ evpl_http_parse_content_length(
 } /* evpl_http_parse_content_length */
 
 /*
+ * Whether a comma-separated field value contains `token`.  Connection is such
+ * a list ("keep-alive, Upgrade" is ordinary), so comparing the whole value
+ * against one name would miss the case that matters.
+ */
+static int
+evpl_http_value_has_token(
+    const char *value,
+    const char *token)
+{
+    const char *p = value, *end;
+    size_t      len = strlen(token);
+
+    while (*p) {
+
+        while (evpl_http_is_lws(*p) || *p == ',') {
+            p++;
+        }
+
+        end = p;
+
+        while (*end && *end != ',') {
+            end++;
+        }
+
+        while (end > p && evpl_http_is_lws(*(end - 1))) {
+            end--;
+        }
+
+        if ((size_t) (end - p) == len && strncasecmp(p, token, len) == 0) {
+            return 1;
+        }
+
+        p = end;
+
+        if (*p) {
+            p++;
+        }
+    }
+
+    return 0;
+} /* evpl_http_value_has_token */
+
+/*
+ * Whether the connection survives this request's response.
+ *
+ * RFC 1945 section 1.4: "The connection is closed by the server after sending
+ * the response."  HTTP/1.0 has no persistent connections of its own; the
+ * Keep-Alive extension (RFC 2068 section 19.7.1) is opt-in, and only the
+ * client may open the subject.  HTTP/1.1 inverted the default, so there the
+ * question is whether the client asked to close (RFC 7230 section 6.1).
+ *
+ * Either way an explicit "Connection: close" wins, since a peer that has said
+ * it is done cannot be argued with.
+ */
+static int
+evpl_http_response_keeps_alive(struct evpl_http_request *request)
+{
+    if (request->request_flags & EVPL_HTTP_REQUEST_CONN_CLOSE) {
+        return 0;
+    }
+
+    if (request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_1) {
+        return 1;
+    }
+
+    return (request->request_flags & EVPL_HTTP_REQUEST_CONN_KEEPALIVE) != 0;
+} /* evpl_http_response_keeps_alive */
+
+/*
  * Refuse a request the parser cannot use, and close.
  *
  * RFC 1945 section 9.4.1 (400 Bad Request, "the request could not be
@@ -898,6 +967,14 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             } else if (strcasecmp(header->name, "Expect") == 0) {
                 if (strcasecmp(header->value, "100-continue") == 0) {
                     request->request_flags |= EVPL_HTTP_REQUEST_WANTS_CONTINUE;
+                }
+            } else if (strcasecmp(header->name, "Connection") == 0) {
+                if (evpl_http_value_has_token(header->value, "close")) {
+                    request->request_flags |= EVPL_HTTP_REQUEST_CONN_CLOSE;
+                }
+
+                if (evpl_http_value_has_token(header->value, "keep-alive")) {
+                    request->request_flags |= EVPL_HTTP_REQUEST_CONN_KEEPALIVE;
                 }
             } else if (strcasecmp(header->name, "Transfer-Encoding") == 0) {
                 if (strcasecmp(header->value, "chunked") == 0) {
@@ -1541,7 +1618,7 @@ evpl_http_server_flush(
     struct evpl_http_agent   *agent  = conn->agent;
     struct evpl_http_server  *server = conn->server;
     struct evpl_http_request *request, *tmp;
-    int                       done;
+    int                       done, keep_alive;
 
     DL_FOREACH_SAFE(conn->pending_requests, request, tmp)
     {
@@ -1558,6 +1635,10 @@ evpl_http_server_flush(
         done = evpl_http_send_body(evpl, request);
 
         if (done) {
+            /* Read before the request is freed, because the answer belongs to
+             * the request that was just answered. */
+            keep_alive = evpl_http_response_keeps_alive(request);
+
             request->notify_callback(evpl, agent, request,
                                      EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE,
                                      request->request_type, request->uri,
@@ -1571,6 +1652,17 @@ evpl_http_server_flush(
 #endif /* ifdef __clang_analyzer__ */
             DL_DELETE(conn->pending_requests, request);
             evpl_http_request_free(conn->agent, request);
+
+            if (!keep_alive) {
+                /* RFC 1945 section 1.4: an HTTP/1.0 exchange ends with the
+                 * connection unless the peer asked for Keep-Alive.  evpl_finish
+                 * flushes what is queued before closing, so the response the
+                 * loop just produced still reaches the wire.  Nothing further
+                 * on this connection can be answered, so the loop ends here
+                 * rather than starting on a request the peer will never see. */
+                evpl_finish(evpl, conn->bind);
+                return;
+            }
         } else {
             request->notify_callback(evpl, agent, request,
                                      EVPL_HTTP_NOTIFY_WANT_DATA,
@@ -1941,7 +2033,21 @@ evpl_http_server_dispatch_default(
     }
 #endif /* ifdef HAVE_NGHTTP2 */
 
-    evpl_http_request_add_header_common(request, "Connection", "keep-alive", 0);
+    /* What the response says about the connection, which is not a free choice:
+     * "Connection: keep-alive" is the Keep-Alive extension's acknowledgement
+     * (RFC 2068 section 19.7.1.1) and belongs only in a reply to a client that
+     * asked for it -- sending it unsolicited to an HTTP/1.0 client that does
+     * not implement the extension leaves it waiting on a close that has been
+     * announced as not coming.  A server that is about to close says so
+     * instead (RFC 7230 section 6.1).  An HTTP/1.1 response that is keeping
+     * the connection says nothing at all, because that is already the
+     * default. */
+    if (!evpl_http_response_keeps_alive(request)) {
+        evpl_http_request_add_header_common(request, "Connection", "close", 0);
+    } else if (request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_0) {
+        evpl_http_request_add_header_common(request, "Connection", "keep-alive",
+                                            0);
+    }
 
     evpl_defer(evpl, &conn->flush);
 } /* evpl_http_server_complete_request */

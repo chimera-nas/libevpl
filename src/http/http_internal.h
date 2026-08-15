@@ -70,6 +70,11 @@ struct evpl_http_request_header {
  * second Content-Length that disagrees with the first leaves the message with
  * no single length at all. */
 #define EVPL_HTTP_REQUEST_HAVE_LENGTH       0x40
+/* What the request's Connection header asked for.  Which of them decides the
+ * connection's fate depends on the version, since HTTP/1.0 and HTTP/1.1
+ * default opposite ways -- see evpl_http_response_keeps_alive. */
+#define EVPL_HTTP_REQUEST_CONN_CLOSE        0x80
+#define EVPL_HTTP_REQUEST_CONN_KEEPALIVE    0x100
 
 /* Per-stream HTTP/2 bookkeeping, embedded in every request.  Only meaningful
  * when request->conn->proto == EVPL_HTTP_PROTO_H2. */

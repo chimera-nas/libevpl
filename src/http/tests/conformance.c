@@ -253,48 +253,8 @@ static const struct known_divergence known_divergences[] = {
       .note    = NULL },
 
     /* ---------------------------------------------------------------- *
-    * 1. HTTP/1.0 connection semantics are not implemented.
-    *
-    * RFC 1945 section 1.4: "The connection is closed by the server after
-    * sending the response."  libevpl's HTTP/1.x server never closes a
-    * connection it has answered on, and evpl_http_server_dispatch_default
-    * additionally attaches "Connection: keep-alive" to every response,
-    * unsolicited -- which RFC 2068 section 19.7.1.1 reserves for a reply to
-    * a client that asked for it.  Together they leave an HTTP/1.0 client
-    * that does not implement the Keep-Alive extension waiting on a close
-    * that never comes, for every request it makes.
-    *
-    * Fixing it needs a decision the test cannot make: whether to close on
-    * the HTTP/1.0 default, honour Connection on both versions, or keep
-    * today's always-persistent behaviour and document it as HTTP/1.1-only.
-    * ---------------------------------------------------------------- */
-
-    { .phase   = PHASE_REQUEST,
-      .aspect  = ASPECT_PERSIST,
-      .subject = HCONN_CONNDEFAULT,
-      .expect  = PACT_CLOSED,
-      .actual  = PACT_OPEN,
-      .note    = "HTTP/1.0 response does not close the connection" },
-    { .phase   = PHASE_REQUEST,
-      .aspect  = ASPECT_KEEPALIVE,
-      .subject = HCONN_CONNDEFAULT,
-      .expect  = VACT_OK,
-      .actual  = VACT_BAD,
-      .note    = "unsolicited Connection: keep-alive on every response" },
-
-    /* The same fact, seen from the defect phase: every request that got an
-     * answer kept its connection.  One row per defect that reaches a
-     * response, because the divergence key carries the case. */
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_PERSIST,
-      .subject = HDEF_NODEFECT,
-      .expect  = PACT_CLOSED,
-      .actual  = PACT_OPEN,
-      .note    = "HTTP/1.0 response does not close the connection" },
-
-    /* ---------------------------------------------------------------- *
-    * 5. The line parser is strict where RFC 1945 recommends tolerance, and
-    *    two obsolete corners.
+    * 1. The line parser is strict where RFC 1945 recommends tolerance, and
+    *    one obsolete corner.
     * ---------------------------------------------------------------- */
 
     /* RECOMMENDED rather than required: RFC 1945 section 19.3 asks parsers to
@@ -320,7 +280,7 @@ static const struct known_divergence known_divergences[] = {
       .note    = "an HTTP/0.9 Simple-Request is answered 400, not with a body" },
 
     /* ---------------------------------------------------------------- *
-    * 6. An over-long request line can wedge the connection.
+    * 2. An over-long request line can wedge the connection.
     *
     * evpl_http_parse_line peeks at most 8 iovecs (evpl_peekv's maxiovecs),
     * so where the request line spans more receive buffers than that it never
