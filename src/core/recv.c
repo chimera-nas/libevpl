@@ -168,6 +168,12 @@ evpl_recv(
         memcpy(ptr, cur->data, chunk);
 
         left -= chunk;
+        /* Advance, or every iovec after the first lands on top of the one
+         * before it: the caller is handed the last one's bytes at offset zero,
+         * the correct length, and no way to tell.  Only reachable when a
+         * single receive spans more than one buffered iovec, which is what a
+         * payload arriving split does. */
+        ptr += chunk;
 
         cur = evpl_iovec_ring_next(&bind->iovec_recv, cur);
     }
