@@ -582,6 +582,48 @@ evpl_http_fold_header_line(
 } /* evpl_http_fold_header_line */
 
 /*
+ * Parse a Content-Length.  Returns 0 and the value, or -1.
+ *
+ * RFC 1945 section 10.4 makes it "the length of the message-body ...
+ * expressed as a decimal number of octets", so 1*DIGIT and nothing else.
+ * strtoul accepts far more than that -- a sign, leading whitespace, any
+ * trailing junk -- and reports none of it: "abc" reads as zero, which turns a
+ * request WITH an entity into one without and leaves the entity to be parsed
+ * as whatever comes next, and "-1" wraps to a length no peer will ever
+ * satisfy.  Both are desyncs an attacker chooses.
+ */
+static int
+evpl_http_parse_content_length(
+    const char *value,
+    uint64_t   *out)
+{
+    const char *p = value;
+    uint64_t    v = 0, digit;
+
+    if (!isdigit((unsigned char) *p)) {
+        return -1;
+    }
+
+    while (isdigit((unsigned char) *p)) {
+        digit = (uint64_t) (*p++ - '0');
+
+        if (v > (UINT64_MAX - digit) / 10) {
+            return -1;
+        }
+
+        v = v * 10 + digit;
+    }
+
+    if (*p) {
+        return -1;
+    }
+
+    *out = v;
+
+    return 0;
+} /* evpl_http_parse_content_length */
+
+/*
  * Refuse a request the parser cannot use, and close.
  *
  * RFC 1945 section 9.4.1 (400 Bad Request, "the request could not be
@@ -631,8 +673,9 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
     struct evpl_http_request_header *header;
     struct evpl                     *evpl = agent->evpl;
     char                             line[4096];
-    int                              rc;
+    int                              rc, folded;
     unsigned int                     major, minor;
+    uint64_t                         length;
     char                            *token, *saveptr;
 
     if (!conn->current_request) {
@@ -743,6 +786,23 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         }
 
         if (line[0] == '\0') {
+
+            /* RFC 1945 section 8.3: "A valid Content-Length is required on
+             * all HTTP/1.0 POST requests.  An HTTP/1.0 server should respond
+             * with a 400 (bad request) message if it cannot determine the
+             * length of the request message's content."  HTTP/1.1 gave a
+             * request with no length a defined meaning instead -- no body at
+             * all (RFC 7230 section 3.3.3) -- so this applies to 1.0 alone. */
+            if (request->request_type == EVPL_HTTP_REQUEST_TYPE_POST &&
+                request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_0 &&
+                request->request_transfer_encoding ==
+                EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT &&
+                !(request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH)) {
+                evpl_http_server_reject(evpl, bind, 400,
+                                        "HTTP/1.0 POST without Content-Length");
+                return;
+            }
+
             /* inbound header block complete; reset the accounting for the
              * outbound response block the application builds from here */
             request->header_bytes  = 0;
@@ -767,7 +827,9 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                 return;
             }
 
-            if (evpl_http_is_lws(line[0])) {
+            folded = evpl_http_is_lws(line[0]);
+
+            if (folded) {
                 /* A continuation of the field above, not a field of its own.
                  * The special-field handling below then runs again over the
                  * extended value, because a field's meaning follows from the
@@ -808,8 +870,31 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
              * was chunked), and now that the value arrives with its LWS
              * already stripped there is nothing an inexact match buys. */
             if (strcasecmp(header->name, "Content-Length") == 0) {
-                request->request_length = strtoul(header->value, NULL, 10);
-                request->request_left   = request->request_length;
+
+                if (evpl_http_parse_content_length(header->value, &length) < 0) {
+                    evpl_http_server_reject(evpl, bind, 400,
+                                            "Content-Length is not a decimal "
+                                            "number of octets");
+                    return;
+                }
+
+                /* Two lengths that disagree leave the message with no single
+                 * length, so where the next request starts becomes the
+                 * sender's choice rather than the receiver's -- the desync a
+                 * request-smuggling attack is built on.  Identical repeats are
+                 * harmless and stay allowed.  A fold is not a second field, so
+                 * it is exempt: it is this same field getting longer. */
+                if (!folded &&
+                    (request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH) &&
+                    length != request->request_length) {
+                    evpl_http_server_reject(evpl, bind, 400,
+                                            "conflicting Content-Length");
+                    return;
+                }
+
+                request->request_flags |= EVPL_HTTP_REQUEST_HAVE_LENGTH;
+                request->request_length = length;
+                request->request_left   = length;
             } else if (strcasecmp(header->name, "Expect") == 0) {
                 if (strcasecmp(header->value, "100-continue") == 0) {
                     request->request_flags |= EVPL_HTTP_REQUEST_WANTS_CONTINUE;
@@ -863,6 +948,7 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
     struct evpl_http_request_header *header;
     char                             line[4096];
     int                              rc;
+    uint64_t                         length;
     char                            *token, *saveptr;
 
     if (!conn->current_request) {
@@ -991,8 +1077,19 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
             }
 
             if (strcasecmp(header->name, "Content-Length") == 0) {
-                request->request_length = strtoul(header->value, NULL, 10);
-                request->request_left   = request->request_length;
+                /* The mirror of the request path, and for the same reason: a
+                 * response length that is not a decimal number of octets
+                 * cannot delimit the body.  A client has no status to answer
+                 * with, so the connection goes. */
+                if (evpl_http_parse_content_length(header->value, &length) < 0) {
+                    evpl_http_debug("response Content-Length is not a decimal "
+                                    "number of octets");
+                    evpl_close(evpl, bind);
+                    return;
+                }
+
+                request->request_length = length;
+                request->request_left   = length;
             } else if (strcasecmp(header->name, "Transfer-Encoding") == 0) {
                 if (strcasecmp(header->value, "chunked") == 0) {
                     request->request_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;

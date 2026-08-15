@@ -64,6 +64,12 @@ struct evpl_http_request_header {
 /* Client: the request (headers + body) has been fully written to the wire and
  * is now awaiting its response. */
 #define EVPL_HTTP_REQUEST_REQUEST_SENT      0x20
+/* A Content-Length has been seen and request_length is what it said.  Kept
+ * apart from "request_length is zero" because the two mean different things:
+ * RFC 1945 section 8.3 requires an HTTP/1.0 POST to carry a length, and a
+ * second Content-Length that disagrees with the first leaves the message with
+ * no single length at all. */
+#define EVPL_HTTP_REQUEST_HAVE_LENGTH       0x40
 
 /* Per-stream HTTP/2 bookkeeping, embedded in every request.  Only meaningful
  * when request->conn->proto == EVPL_HTTP_PROTO_H2. */

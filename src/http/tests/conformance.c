@@ -291,61 +291,6 @@ static const struct known_divergence known_divergences[] = {
       .expect  = PACT_CLOSED,
       .actual  = PACT_OPEN,
       .note    = "HTTP/1.0 response does not close the connection" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_PERSIST,
-      .subject = HDEF_POSTWITHOUTCONTENTLENGTH,
-      .expect  = PACT_CLOSED,
-      .actual  = PACT_OPEN,
-      .note    = "HTTP/1.0 response does not close the connection" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_PERSIST,
-      .subject = HDEF_CONTENTLENGTHNOTNUMERIC,
-      .expect  = PACT_CLOSED,
-      .actual  = PACT_OPEN,
-      .note    = "HTTP/1.0 response does not close the connection" },
-
-    /* ---------------------------------------------------------------- *
-    * 4. Content-Length is taken on trust.
-    *
-    * The value goes straight through strtoul with no check that it is a
-    * decimal number at all, and a second Content-Length simply overwrites
-    * the first.  A value that is not a number reads as zero, so a request
-    * WITH an entity is treated as one without and its body becomes whatever
-    * the server parses next; two conflicting values pick where the next
-    * request starts, which is the classic desync a request-smuggling attack
-    * is built on.  RFC 1945 section 8.3 also requires a POST to carry a
-    * length and names 400 for one that does not.
-    *
-    * The memory-safety half of this -- a length above INT_MAX truncating
-    * into evpl_recvv's int parameter and yielding a stale iovec -- was
-    * found by this suite and is fixed in http.c; what remains is the
-    * validation.
-    * ---------------------------------------------------------------- */
-
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_CONTENTLENGTHNOTNUMERIC,
-      .expect  = 400,
-      .actual  = 200,
-      .note    = "a non-numeric Content-Length reads as zero" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_CONTENTLENGTHNEGATIVE,
-      .expect  = 400,
-      .actual  = ACT_STALLED,
-      .note    = "'-1' wraps to a length no client will ever satisfy" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_CONTENTLENGTHDUPLICATECONFLICTING,
-      .expect  = 400,
-      .actual  = ACT_STALLED,
-      .note    = "the last of two conflicting Content-Lengths wins" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_POSTWITHOUTCONTENTLENGTH,
-      .expect  = 400,
-      .actual  = 200,
-      .note    = "a POST with no Content-Length is served as an empty one" },
 
     /* ---------------------------------------------------------------- *
     * 5. The line parser is strict where RFC 1945 recommends tolerance, and
