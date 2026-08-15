@@ -330,6 +330,46 @@ equivalent is the thread-level notify callback, which reports
 `EVPL_RPC2_NOTIFY_CONNECTED` and `DISCONNECTED`; the HTTP client has no
 analogue.
 
+## Coverage
+
+`make coverage COVERAGE_TESTS="libevpl/http/conformance"` runs both drivers
+against a clang-instrumented build and reports what they reach. Needs
+`libclang-rt-<version>-dev` installed, or the Coverage build fails to link.
+
+Over `src/http/http.c` and `src/http/http_internal.h` — the HTTP/1.x
+implementation — the two suites reach **96.9% of functions, 75.8% of lines and
+65.3% of branches**.
+
+The two functions never called are `evpl_http_client_set_request_chunked` and
+`evpl_http_server_set_response_chunked`, which is the intended stopping point:
+the only uncovered API surface is the part that is out of scope.
+
+Most of the missing lines are out of scope for the same reason:
+
+| Where | Missed lines | Why |
+|---|---|---|
+| `evpl_http_handle_body`, `evpl_http_send_body` | 77 | Chunked transfer coding, both directions — HTTP/1.1 |
+| `evpl_http_response_status_string` | 78 | The status→reason lookup switch; `case` arms for codes the model never sends. Not a gap, but it costs ~5 points of this file's line coverage on its own |
+| `evpl_http_conn_connected`, `evpl_http_client_connect`, and the h2 branches of `dispatch`/`flush`/`add_datav`/`request_create` | ~50 | TLS/ALPN and HTTP/2 protocol selection |
+| `evpl_http_parse_line` | 11 | The `evpl_peek` fallback — see below |
+| `evpl_http_request_type_to_string` | 6 | The PUT and DELETE arms; RFC 1945 defines GET, HEAD and POST |
+
+`src/http/http2.c` is 0% throughout, which an HTTP/1.0 model cannot be
+otherwise.
+
+### The one piece of dead code the coverage found
+
+`evpl_http_parse_line`'s `evpl_peek` fallback is never executed. It exists
+because `evpl_peekv` reports at most 8 iovecs, so a line spread over more of
+them than that would otherwise be reported as "not arrived yet" forever.
+
+At the default 2 MiB `buffer_size` that cannot happen:
+`evpl_iovec_ring_append` coalesces contiguous appends from the same buffer, so
+however finely a peer dribbles a 4 KB request line, it lands in one iovec. The
+fallback is therefore defensive code against a small `buffer_size`
+configuration rather than a fix for anything this suite reproduces, and
+reaching it would need the suite to lower that setting.
+
 ## What the suite does not cover
 
 - **A client request body.** The client cases all issue GET or HEAD with no
