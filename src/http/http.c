@@ -463,6 +463,125 @@ evpl_http_parse_version(
 } /* evpl_http_parse_version */
 
 /*
+ * Copy into one of the header struct's fixed fields, truncating rather than
+ * overrunning and always terminating.  A header comes off the free list
+ * without being cleared, so relying on strncpy's zero padding to terminate it
+ * only works while every string is shorter than the field.
+ */
+static inline void
+evpl_http_copy_field(
+    char       *dst,
+    size_t      cap,
+    const char *src)
+{
+    strncpy(dst, src, cap - 1);
+    dst[cap - 1] = '\0';
+} /* evpl_http_copy_field */
+
+/* Linear white space, RFC 1945 section 2.2. */
+static inline int
+evpl_http_is_lws(char c)
+{
+    return c == ' ' || c == '\t';
+} /* evpl_http_is_lws */
+
+/*
+ * Strip leading and trailing LWS from a NUL-terminated value in place, and
+ * return the start of what is left.
+ *
+ * RFC 1945 section 4.2: "The field-value ... may be preceded by any amount of
+ * LWS, though a single SP is preferred", and section 2.2 makes LWS both SP and
+ * HT.  None of it is part of the value, so an application comparing a header
+ * against a constant must not be handed the padding the peer happened to send.
+ */
+static char *
+evpl_http_trim_lws(char *value)
+{
+    char *end;
+
+    while (evpl_http_is_lws(*value)) {
+        value++;
+    }
+
+    end = value + strlen(value);
+
+    while (end > value && evpl_http_is_lws(*(end - 1))) {
+        end--;
+    }
+
+    *end = '\0';
+
+    return value;
+} /* evpl_http_trim_lws */
+
+/*
+ * Parse one header field line into `header`.  Returns 0, or -1 if the line is
+ * not a field at all.
+ *
+ * RFC 1945 section 4.2:
+ *
+ *     HTTP-header = field-name ":" [ field-value ] CRLF
+ *     field-name  = token
+ *
+ * The brackets are the part a strtok_r split gets wrong: a field with no value
+ * is legal, and treating the missing token as fatal turns "X-Probe:" -- which
+ * client libraries emit without thinking about it -- into a failed request.
+ */
+static int
+evpl_http_parse_header_line(
+    char                            *line,
+    struct evpl_http_request_header *header)
+{
+    char *colon = strchr(line, ':');
+
+    if (!colon || colon == line) {
+        /* no colon at all, or an empty field-name */
+        return -1;
+    }
+
+    /* A token contains neither SP nor HT, so whitespace before the colon is
+     * not part of the field-name and this line is not a field.  RFC 7230
+     * section 3.2.4 later made rejecting it a MUST for a reason worth keeping
+     * in mind here: a front end that reads "X-Probe : v" as no header and a
+     * back end that reads it as "X-Probe" disagree about what the request
+     * contains, and the difference is what gets smuggled. */
+    if (evpl_http_is_lws(*(colon - 1))) {
+        return -1;
+    }
+
+    *colon = '\0';
+
+    evpl_http_copy_field(header->name, sizeof(header->name), line);
+    evpl_http_copy_field(header->value, sizeof(header->value),
+                         evpl_http_trim_lws(colon + 1));
+
+    return 0;
+} /* evpl_http_parse_header_line */
+
+/*
+ * Continue `header` with a continuation line (RFC 1945 section 2.2: "Header
+ * fields can be extended over multiple lines by preceding each extra line with
+ * at least one SP or HT").  All LWS, folding included, has the semantics of a
+ * single SP, so that is what the fold becomes.
+ */
+static void
+evpl_http_fold_header_line(
+    struct evpl_http_request_header *header,
+    char                            *line)
+{
+    size_t len = strlen(header->value);
+
+    if (len + 2 >= sizeof(header->value)) {
+        return;
+    }
+
+    header->value[len++] = ' ';
+
+    evpl_http_copy_field(header->value + len, sizeof(header->value) - len,
+                         evpl_http_trim_lws(line));
+} /* evpl_http_fold_header_line */
+
+/*
  * Refuse a request the parser cannot use, and close.
  *
  * RFC 1945 section 9.4.1 (400 Bad Request, "the request could not be
@@ -648,48 +767,55 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                 return;
             }
 
-            header = evpl_http_request_header_alloc(agent);
+            if (evpl_http_is_lws(line[0])) {
+                /* A continuation of the field above, not a field of its own.
+                 * The special-field handling below then runs again over the
+                 * extended value, because a field's meaning follows from the
+                 * whole of it: "Content-Length:\r\n 5" is a length of five,
+                 * and reading only the first line would make it zero. */
+                header = request->request_headers ?
+                    request->request_headers->prev : NULL;
 
-            token = strtok_r(line, ":", &saveptr);
+                if (!header) {
+                    evpl_http_server_reject(evpl, bind, 400,
+                                            "continuation line with no field "
+                                            "to continue");
+                    return;
+                }
 
-            if (!token) {
-                /* Not on the request's list yet, so nothing else will ever
-                 * reach it: dropping it here strands the header AND the tail
-                 * of the free list still hanging off its next pointer, which
-                 * a peer sending malformed header lines can repeat at will. */
-                evpl_http_request_header_free(agent, header);
-                evpl_http_server_reject(evpl, bind, 400,
-                                        "malformed header line");
-                return;
+                evpl_http_fold_header_line(header, line);
+            } else {
+                header = evpl_http_request_header_alloc(agent);
+
+                if (evpl_http_parse_header_line(line, header) < 0) {
+                    /* Not on the request's list yet, so nothing else will ever
+                     * reach it: dropping it here strands the header AND the
+                     * tail of the free list still hanging off its next
+                     * pointer, which a peer sending malformed header lines can
+                     * repeat at will. */
+                    evpl_http_request_header_free(agent, header);
+                    evpl_http_server_reject(evpl, bind, 400,
+                                            "malformed header line");
+                    return;
+                }
+
+                DL_APPEND(request->request_headers, header);
             }
 
-            strncpy(header->name, token, sizeof(header->name) - 1);
-
-            token = strtok_r(NULL, "", &saveptr);
-
-            if (!token) {
-                evpl_http_request_header_free(agent, header);
-                evpl_http_server_reject(evpl, bind, 400,
-                                        "missing header value");
-                return;
-            }
-
-            while (*token == ' ') {
-                token++;
-            }
-            strncpy(header->value, token, sizeof(header->value) - 1);
-
-            DL_APPEND(request->request_headers, header);
-
-            if (strncasecmp(header->name, "Content-Length", 15) == 0) {
+            /* Exact comparisons: the counted forms these replace were prefix
+             * matches wherever the count was shorter than the string (an
+             * "Expectation" header set WANTS_CONTINUE, a "chunkedy" coding
+             * was chunked), and now that the value arrives with its LWS
+             * already stripped there is nothing an inexact match buys. */
+            if (strcasecmp(header->name, "Content-Length") == 0) {
                 request->request_length = strtoul(header->value, NULL, 10);
                 request->request_left   = request->request_length;
-            } else if (strncasecmp(header->name, "Expect", 6) == 0) {
-                if (strncasecmp(header->value, "100-continue", 13) == 0) {
+            } else if (strcasecmp(header->name, "Expect") == 0) {
+                if (strcasecmp(header->value, "100-continue") == 0) {
                     request->request_flags |= EVPL_HTTP_REQUEST_WANTS_CONTINUE;
                 }
-            } else if (strncasecmp(header->name, "Transfer-Encoding", 18) == 0) {
-                if (strncasecmp(header->value, "chunked", 6) == 0) {
+            } else if (strcasecmp(header->name, "Transfer-Encoding") == 0) {
+                if (strcasecmp(header->value, "chunked") == 0) {
                     request->request_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
                 } else {
                     /* A transfer coding the server does not implement is
@@ -834,42 +960,41 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
                 return;
             }
 
-            header = evpl_http_request_header_alloc(agent);
+            if (evpl_http_is_lws(line[0])) {
+                /* A continuation of the field above -- see the request path,
+                 * which this mirrors. */
+                header = request->response_headers ?
+                    request->response_headers->prev : NULL;
 
-            token = strtok_r(line, ":", &saveptr);
+                if (!header) {
+                    evpl_http_debug("continuation line with no field to "
+                                    "continue");
+                    evpl_close(evpl, bind);
+                    return;
+                }
 
-            if (!token) {
-                evpl_http_debug("malformed header line");
-                /* As on the request path: the header is not on any list yet,
-                 * so dropping it strands it and the free-list tail behind it. */
-                evpl_http_request_header_free(agent, header);
-                evpl_close(evpl, bind);
-                return;
+                evpl_http_fold_header_line(header, line);
+            } else {
+                header = evpl_http_request_header_alloc(agent);
+
+                if (evpl_http_parse_header_line(line, header) < 0) {
+                    evpl_http_debug("malformed header line");
+                    /* As on the request path: the header is not on any list
+                     * yet, so dropping it strands it and the free-list tail
+                     * behind it. */
+                    evpl_http_request_header_free(agent, header);
+                    evpl_close(evpl, bind);
+                    return;
+                }
+
+                DL_APPEND(request->response_headers, header);
             }
 
-            strncpy(header->name, token, sizeof(header->name) - 1);
-
-            token = strtok_r(NULL, "", &saveptr);
-
-            if (!token) {
-                evpl_http_debug("missing header value");
-                evpl_http_request_header_free(agent, header);
-                evpl_close(evpl, bind);
-                return;
-            }
-
-            while (*token == ' ') {
-                token++;
-            }
-            strncpy(header->value, token, sizeof(header->value) - 1);
-
-            DL_APPEND(request->response_headers, header);
-
-            if (strncasecmp(header->name, "Content-Length", 15) == 0) {
+            if (strcasecmp(header->name, "Content-Length") == 0) {
                 request->request_length = strtoul(header->value, NULL, 10);
                 request->request_left   = request->request_length;
-            } else if (strncasecmp(header->name, "Transfer-Encoding", 18) == 0) {
-                if (strncasecmp(header->value, "chunked", 6) == 0) {
+            } else if (strcasecmp(header->name, "Transfer-Encoding") == 0) {
+                if (strcasecmp(header->value, "chunked") == 0) {
                     request->request_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
                 }
             }

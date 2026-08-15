@@ -293,12 +293,6 @@ static const struct known_divergence known_divergences[] = {
       .note    = "HTTP/1.0 response does not close the connection" },
     { .phase   = PHASE_DEFECT,
       .aspect  = ASPECT_PERSIST,
-      .subject = HDEF_HEADERSPACEBEFORECOLON,
-      .expect  = PACT_CLOSED,
-      .actual  = PACT_OPEN,
-      .note    = "HTTP/1.0 response does not close the connection" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_PERSIST,
       .subject = HDEF_POSTWITHOUTCONTENTLENGTH,
       .expect  = PACT_CLOSED,
       .actual  = PACT_OPEN,
@@ -309,57 +303,6 @@ static const struct known_divergence known_divergences[] = {
       .expect  = PACT_CLOSED,
       .actual  = PACT_OPEN,
       .note    = "HTTP/1.0 response does not close the connection" },
-
-    /* ---------------------------------------------------------------- *
-    * 3. The header-field grammar of RFC 1945 section 4.2 is only partly
-    *    implemented, and a field it does not understand fails the whole
-    *    request rather than being carried through.
-    *
-    * The parser splits a field on the first colon with strtok_r and treats a
-    * NULL value token as fatal, so "X-Probe:" -- a field present with an
-    * empty value, which the grammar allows ("field-name ':' [ field-value ]")
-    * -- closes the connection.  A continuation line fares the same way: it
-    * has no colon of its own, so it parses as a malformed field rather than
-    * as more of the field above it.  Both are legal requests that a
-    * conforming server must serve, and both are things a client library
-    * emits without thinking about it.
-    *
-    * Leading LWS is skipped one space at a time (`while (*token == ' ')`),
-    * so a tab survives into the value, and trailing LWS is never stripped at
-    * all -- an application comparing a header value against a constant gets
-    * a mismatch it has no way to see coming.
-    * ---------------------------------------------------------------- */
-
-    { .phase   = PHASE_REQUEST,
-      .aspect  = ASPECT_STATUS,
-      .subject = HHDR_HDREMPTY,
-      .expect  = 200,
-      .actual  = 400,
-      .note    = "a header with an empty value is refused with 400" },
-    { .phase   = PHASE_REQUEST,
-      .aspect  = ASPECT_STATUS,
-      .subject = HHDR_HDRFOLDED,
-      .expect  = 200,
-      .actual  = 400,
-      .note    = "a continuation line is refused with 400" },
-    { .phase   = PHASE_REQUEST,
-      .aspect  = ASPECT_PROBE,
-      .subject = HHDR_HDRPADDED,
-      .expect  = HPROBE_PROBEVALUE,
-      .actual  = HPROBE_PROBEANY,
-      .note    = "leading HT and all trailing LWS are kept in the value" },
-
-    /* The mirror image: a field the grammar does NOT allow is accepted.  A
-     * space before the colon makes the field-name "X-Probe ", which is not a
-     * token, and RFC 7230 section 3.2.4 later made rejecting it a MUST
-     * precisely because a front end and a back end that disagree about
-     * whether it is a header is how a request smuggles one past a filter. */
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_HEADERSPACEBEFORECOLON,
-      .expect  = 400,
-      .actual  = 200,
-      .note    = "whitespace before the colon is accepted as a field name" },
 
     /* ---------------------------------------------------------------- *
     * 4. Content-Length is taken on trust.
