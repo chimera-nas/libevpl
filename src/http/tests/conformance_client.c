@@ -266,6 +266,15 @@ static const struct known_divergence known_divergences[] = {
       .actual = ACT_SILENT,
       .note   = "status outside 1xx..5xx: refused, not reported" },
 
+    /* Refused for the right reason, and unreportable for the same one: the
+     * response path now rejects two Content-Lengths that disagree, as the
+     * request path already did. */
+    { .aspect = ASPECT_OUTCOME,
+      .defect = HCDEF_RSPCONTENTLENGTHDUPLICATECONFLICTING,
+      .expect = EXP_FAILED,
+      .actual = ACT_SILENT,
+      .note   = "conflicting Content-Lengths: refused, not reported" },
+
     /* The same gap, reached the other way: the status arrived, so the caller
      * has been told a response is coming, and then the body it was promised
      * never does.  Worse than silence, because the caller has evidence that
@@ -276,42 +285,6 @@ static const struct known_divergence known_divergences[] = {
       .actual = ACT_HEADERS_ONLY,
       .note   = "truncated body: the status arrived, the completion never did" },
 
-    /* ---------------------------------------------------------------- *
-    * Response body framing.
-    * ---------------------------------------------------------------- */
-
-    /* RFC 1945 section 7.2.2: with no Content-Length, "the length of that
-     * body is determined by ... the server closing the connection".  It is
-     * the only framing HTTP/1.0 has for a body whose size the server does not
-     * know in advance, and the client reads such a response as EMPTY: the
-     * status is delivered, the request completes, and the body is silently
-     * dropped.  A caller has no way to tell that from a genuinely empty
-     * response. */
-    { .aspect = ASPECT_BODY,
-      .defect = HCDEF_RSPBODYCLOSEDELIMITED,
-      .expect = HCBODY_BODYDELIVERED,
-      .actual = HCBODY_BODYUNCHECKED,
-      .note   = "a close-delimited body is discarded, not delivered" },
-
-    /* RFC 1945 section 8.2: the response to HEAD carries the headers a GET
-     * would have -- Content-Length included -- and no body.  The client takes
-     * the length at face value and waits for bytes that are never coming, so
-     * every HEAD request hangs until something else tears the connection
-     * down. */
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPHEADWITHCONTENTLENGTH,
-      .expect = 200,
-      .actual = ACT_HEADERS_ONLY,
-      .note   = "a HEAD response waits for a body that cannot arrive" },
-
-    /* The request path refuses two Content-Lengths that disagree, because the
-     * message then has no single length; the response path still takes the
-     * last one and delivers whatever that framing produces. */
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPCONTENTLENGTHDUPLICATECONFLICTING,
-      .expect = EXP_FAILED,
-      .actual = 200,
-      .note   = "conflicting Content-Lengths resolved instead of refused" },
 };
 
 static int

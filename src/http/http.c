@@ -295,6 +295,29 @@ evpl_http_recv_chunk(uint64_t left)
 } /* evpl_http_recv_chunk */
 
 /*
+ * Whether this response carries no message-body, whatever its headers say.
+ *
+ * RFC 1945 section 8.2: "The HEAD method is identical to GET except that the
+ * server must not return a message-body in the response" -- and the header
+ * fields it does return are the ones a GET would have, Content-Length
+ * included.  Sections 9.2.5 and 9.3.5 say the same of 204 and 304.  So on
+ * these the length is a description of a body that is not here, and a client
+ * that waits for it waits for bytes the peer will never send.
+ */
+static inline int
+evpl_http_response_has_no_body(struct evpl_http_request *request)
+{
+    return request->request_type == EVPL_HTTP_REQUEST_TYPE_HEAD ||
+           request->status == 204 ||
+           request->status == 304;
+} /* evpl_http_response_has_no_body */
+
+/* How much to ask for at a time when the body's end is the connection close
+ * rather than a length: there is no total to count down, so this is just a
+ * read granularity. */
+#define EVPL_HTTP_CLOSE_DELIMITED_CHUNK 65536
+
+/*
  * Parse a body (Content-Length or chunked) from the wire into request->recv_ring
  * and emit RECEIVE_DATA / RECEIVE_COMPLETE notifications.  Shared by the server
  * (request body) and client (response body) HTTP/1.x paths: the only
@@ -316,17 +339,24 @@ evpl_http_handle_body(
 
     if (request->request_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
         int               niov;
+        int               close_delimited = (request->request_flags &
+                                             EVPL_HTTP_REQUEST_CLOSE_DELIMITED) != 0;
         struct evpl_iovec iov;
 
-        while (!evpl_iovec_ring_is_full(&request->recv_ring) && request->request_left > 0) {
+        while (!evpl_iovec_ring_is_full(&request->recv_ring) &&
+               (close_delimited || request->request_left > 0)) {
             niov = evpl_recvv(evpl, bind, &iov, 1,
+                              close_delimited ?
+                              EVPL_HTTP_CLOSE_DELIMITED_CHUNK :
                               evpl_http_recv_chunk(request->request_left), NULL);
 
             if (niov <= 0) {
                 break;
             }
 
-            request->request_left -= iov.length;
+            if (!close_delimited) {
+                request->request_left -= iov.length;
+            }
 
             evpl_iovec_ring_add(&request->recv_ring, &iov);
         }
@@ -338,7 +368,10 @@ evpl_http_handle_body(
                                      request->notify_data, priv);
         }
 
-        if (request->request_left == 0) {
+        /* A close-delimited body has no length to count down: it ends when the
+         * connection does, which the disconnect path turns into the
+         * completion. */
+        if (!close_delimited && request->request_left == 0) {
             request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
         }
     } else {
@@ -1114,7 +1147,7 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
     struct evpl_http_request        *request;
     struct evpl_http_request_header *header;
     char                             line[4096];
-    int                              rc;
+    int                              rc, folded;
     unsigned int                     major, minor;
     uint64_t                         length;
     char                            *token, *saveptr;
@@ -1214,6 +1247,32 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
         }
 
         if (line[0] == '\0') {
+
+            /* The header block is complete, so the body's framing is now
+             * decided.  Three ways, in order of precedence:
+             *
+             * RFC 1945 sections 8.2, 9.2.5 and 9.3.5: the response to HEAD and
+             * the 204 and 304 statuses carry no message-body at all, whatever
+             * their headers say -- so a Content-Length on one of them
+             * describes the body a GET would have returned, and waiting for
+             * those bytes waits forever.
+             *
+             * Otherwise a declared length delimits it, and failing that
+             * section 7.2.2 does: "the length of that body is determined by
+             * ... the server closing the connection."  That is the only
+             * framing HTTP/1.0 has for a body whose size the server does not
+             * know in advance, so a client that treats a length-less response
+             * as empty silently drops every streamed reply it is ever sent. */
+            if (evpl_http_response_has_no_body(request)) {
+                request->request_length = 0;
+                request->request_left   = 0;
+            } else if (!(request->request_flags &
+                         EVPL_HTTP_REQUEST_HAVE_LENGTH) &&
+                       request->request_transfer_encoding ==
+                       EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
+                request->request_flags |= EVPL_HTTP_REQUEST_CLOSE_DELIMITED;
+            }
+
             request->request_state = EVPL_HTTP_REQUEST_STATE_BODY;
 
             if (request->notify_callback) {
@@ -1235,7 +1294,9 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
                 return;
             }
 
-            if (evpl_http_is_lws(line[0])) {
+            folded = evpl_http_is_lws(line[0]);
+
+            if (folded) {
                 /* A continuation of the field above -- see the request path,
                  * which this mirrors. */
                 header = request->response_headers ?
@@ -1266,10 +1327,12 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
             }
 
             if (strcasecmp(header->name, "Content-Length") == 0) {
-                /* The mirror of the request path, and for the same reason: a
+                /* The mirror of the request path, and for the same reasons: a
                  * response length that is not a decimal number of octets
-                 * cannot delimit the body.  A client has no status to answer
-                 * with, so the connection goes. */
+                 * cannot delimit the body, and two that disagree leave it with
+                 * no single length -- so where this response ends and anything
+                 * after it begins would be the peer's choice.  A client has no
+                 * status to answer with, so the connection goes. */
                 if (evpl_http_parse_content_length(header->value, &length) < 0) {
                     evpl_http_debug("response Content-Length is not a decimal "
                                     "number of octets");
@@ -1277,6 +1340,15 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
                     return;
                 }
 
+                if (!folded &&
+                    (request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH) &&
+                    length != request->request_length) {
+                    evpl_http_debug("conflicting response Content-Length");
+                    evpl_close(evpl, bind);
+                    return;
+                }
+
+                request->request_flags |= EVPL_HTTP_REQUEST_HAVE_LENGTH;
                 request->request_length = length;
                 request->request_left   = length;
             } else if (strcasecmp(header->name, "Transfer-Encoding") == 0) {
@@ -1427,6 +1499,31 @@ evpl_http_event(
                 evpl_http2_conn_destroy(http_conn);
             }
 #endif /* ifdef HAVE_NGHTTP2 */
+
+            /* A close-delimited response body ends exactly here: RFC 1945
+            * section 7.2.2 makes the connection close the delimiter, so this
+            * FIN is the last byte of the message rather than the loss of one.
+            * Complete the request before the teardown below frees it --
+            * otherwise the whole body is parsed, buffered, and then dropped,
+            * which a caller cannot tell from a response that had none. */
+            request = http_conn->current_request;
+
+            if (!http_conn->is_server && request &&
+                (request->request_flags &
+                 EVPL_HTTP_REQUEST_CLOSE_DELIMITED) &&
+                request->request_state == EVPL_HTTP_REQUEST_STATE_BODY) {
+
+                request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
+
+                if (request->notify_callback) {
+                    request->notify_callback(evpl, http_conn->agent, request,
+                                             EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE,
+                                             request->request_type,
+                                             request->uri,
+                                             request->notify_data,
+                                             http_conn->private_data);
+                }
+            }
 
             /* Release any request still in flight on this connection: a
              * partially-parsed request (current_request, e.g. one allocated on

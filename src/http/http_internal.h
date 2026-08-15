@@ -75,6 +75,12 @@ struct evpl_http_request_header {
  * default opposite ways -- see evpl_http_response_keeps_alive. */
 #define EVPL_HTTP_REQUEST_CONN_CLOSE        0x80
 #define EVPL_HTTP_REQUEST_CONN_KEEPALIVE    0x100
+/* Client: the response declared no length and carries no transfer coding, so
+ * its body is whatever arrives before the connection closes (RFC 1945 section
+ * 7.2.2).  The only framing HTTP/1.0 has for a body whose size the server does
+ * not know in advance, and the one where the FIN is part of the message rather
+ * than the end of the conversation. */
+#define EVPL_HTTP_REQUEST_CLOSE_DELIMITED   0x200
 
 /* Per-stream HTTP/2 bookkeeping, embedded in every request.  Only meaningful
  * when request->conn->proto == EVPL_HTTP_PROTO_H2. */
