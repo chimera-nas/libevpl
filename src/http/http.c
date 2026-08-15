@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <limits.h>
 
 #include "http_internal.h"
 #include "core/tls/tls.h"
@@ -213,6 +214,26 @@ evpl_http_parse_line(
 } /* evpl_http_parse_line */
 
 /*
+ * How much of a declared body length to ask evpl_recvv() for in one call.
+ *
+ * The length comes off the wire -- a Content-Length header or a chunk size --
+ * and is held as a uint64_t, while evpl_recvv() takes an int.  Handing it
+ * across unclamped truncates: a peer sending "Content-Length: -1" makes
+ * request_left UINT64_MAX, which arrives as -1, and evpl_recvv() rejects a
+ * non-positive length by returning -1 without touching the caller's iovec.
+ * The caller then has a stale iovec to add to the ring, which is a double
+ * reference and then a use-after-free on an unauthenticated peer's say-so.
+ * Clamping keeps the conversion lossless; the callers additionally treat any
+ * non-positive return as "no data", so a rejected call can never be mistaken
+ * for a filled iovec again.
+ */
+static inline int
+evpl_http_recv_chunk(uint64_t left)
+{
+    return left > INT_MAX ? INT_MAX : (int) left;
+} /* evpl_http_recv_chunk */
+
+/*
  * Parse a body (Content-Length or chunked) from the wire into request->recv_ring
  * and emit RECEIVE_DATA / RECEIVE_COMPLETE notifications.  Shared by the server
  * (request body) and client (response body) HTTP/1.x paths: the only
@@ -237,9 +258,10 @@ evpl_http_handle_body(
         struct evpl_iovec iov;
 
         while (!evpl_iovec_ring_is_full(&request->recv_ring) && request->request_left > 0) {
-            niov = evpl_recvv(evpl, bind, &iov, 1, request->request_left, NULL);
+            niov = evpl_recvv(evpl, bind, &iov, 1,
+                              evpl_http_recv_chunk(request->request_left), NULL);
 
-            if (niov == 0) {
+            if (niov <= 0) {
                 break;
             }
 
@@ -266,9 +288,11 @@ evpl_http_handle_body(
         while (!evpl_iovec_ring_is_full(&request->recv_ring)) {
 
             if (request->request_chunk_left > 0) {
-                niov = evpl_recvv(evpl, bind, &iov, 1, request->request_chunk_left, NULL);
+                niov = evpl_recvv(evpl, bind, &iov, 1,
+                                  evpl_http_recv_chunk(request->request_chunk_left),
+                                  NULL);
 
-                if (niov == 0) {
+                if (niov <= 0) {
                     break;
                 }
 
