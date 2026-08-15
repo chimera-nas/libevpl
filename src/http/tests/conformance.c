@@ -253,50 +253,34 @@ static const struct known_divergence known_divergences[] = {
       .note    = NULL },
 
     /* ---------------------------------------------------------------- *
-    * 1. The line parser is strict where RFC 1945 recommends tolerance, and
-    *    one obsolete corner.
+    * HTTP/0.9, deliberately not implemented.
+    *
+    * A request line with no version is a Simple-Request, and RFC 1945 section
+    * 6 pairs it with a Simple-Response: the body alone, with no status line
+    * and no headers.  libevpl answers 400 instead, which is the only entry
+    * here that is a decision rather than a gap.
+    *
+    * Supporting it would make the shape of a response depend on how the
+    * request was spelled, which is a discontinuity every part of the response
+    * path would have to know about -- and it would reintroduce the one
+    * message framing in HTTP that carries no length and no status, on a
+    * server that has just been taught to refuse messages whose length is
+    * ambiguous.  HTTP/1.1 dropped the form entirely (RFC 7230 appendix A.2)
+    * and RFC 9112 section 2.1 lets a server answer a request line it does not
+    * recognise with 400, which is what happens here.
+    *
+    * The case stays in the model rather than being deleted from it, because
+    * what RFC 1945 requires does not change when an implementation decides
+    * not to do it.  This entry is the decision, and it is the honest place
+    * for it.
     * ---------------------------------------------------------------- */
 
-    /* RECOMMENDED rather than required: RFC 1945 section 19.3 asks parsers to
-     * accept a bare LF as a line terminator.  Recorded because a server that
-     * refuses it interoperates worse than the RFC asks, not because it
-     * violates a MUST. */
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_BARELFLINEENDINGS,
-      .expect  = 200,
-      .actual  = 400,
-      .note    = "bare LF line endings are refused (RFC 1945 19.3 tolerance)" },
-
-    /* HTTP/0.9.  A request line with no version is a Simple-Request, and RFC
-     * 1945 section 6 answers it with a Simple-Response -- the body with no
-     * status line.  Obsolete, and supporting it means the response shape
-     * depends on the request, so this is recorded rather than pursued. */
     { .phase   = PHASE_DEFECT,
       .aspect  = ASPECT_STATUS,
       .subject = HDEF_REQUESTLINENOVERSION,
       .expect  = -HOUT_SIMPLERESPONSE,
       .actual  = 400,
       .note    = "an HTTP/0.9 Simple-Request is answered 400, not with a body" },
-
-    /* ---------------------------------------------------------------- *
-    * 2. An over-long request line can wedge the connection.
-    *
-    * evpl_http_parse_line peeks at most 8 iovecs (evpl_peekv's maxiovecs),
-    * so where the request line spans more receive buffers than that it never
-    * accumulates the maxline bytes that would make it report the overflow,
-    * and returns "need more data" for data that has already arrived.  The
-    * connection then makes no further progress and holds its buffers until
-    * the peer gives up.  Reachable from an unauthenticated peer, and only on
-    * some delivery patterns, which is why it shows up on one case in three.
-    * ---------------------------------------------------------------- */
-
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_URITOOLONG,
-      .expect  = -HOUT_NOTSUCCESS,
-      .actual  = ACT_STALLED,
-      .note    = "an over-long request line can stall rather than be refused" },
 };
 
 static int

@@ -169,6 +169,56 @@ evpl_http_destroy(struct evpl_http_agent *agent)
     evpl_free(agent);
 } /* evpl_http_destroy */
 
+/* How many iovecs the line scan looks at before falling back to a contiguous
+ * copy.  Enough that an ordinary request never needs the fallback. */
+#define EVPL_HTTP_PARSE_IOV 8
+
+/*
+ * Terminate a line the scan has just found the LF of, and consume it.
+ *
+ * RFC 1945 section 19.3: "we recommend that applications, when parsing such
+ * headers, recognize a single LF as a line terminator and ignore the leading
+ * CR" -- so a bare LF ends the line just as CRLF does.  Refusing it buys
+ * nothing against a peer that can equally well send CRLF, and costs
+ * interoperability with the many that send LF somewhere.  What it does mean
+ * is that this parser and a front end that disagrees about bare LF would
+ * disagree about where a message ends; the defences against that are
+ * elsewhere, in refusing a message whose length is ambiguous.
+ */
+static inline int
+evpl_http_line_terminate(
+    struct evpl      *evpl,
+    struct evpl_bind *bind,
+    char             *line,
+    char             *lc)
+{
+    if (lc > line && *(lc - 1) == '\r') {
+        *(lc - 1) = '\0';
+    } else {
+        *lc = '\0';
+    }
+
+    evpl_consume(evpl, bind, (int) (lc - line) + 1);
+
+    return 0;
+} /* evpl_http_line_terminate */
+
+/*
+ * Copy one line out of the receive stream.  Returns 0 with `line`
+ * NUL-terminated and the bytes consumed, -1 if the line has not fully arrived,
+ * or -2 if it is longer than the buffer.
+ *
+ * The scan runs over the peeked iovecs, so a line that arrived contiguously
+ * costs no copy beyond the line itself.  evpl_peekv reports at most
+ * EVPL_HTTP_PARSE_IOV of them, though, and a peer that dribbles its request
+ * produces one iovec per byte -- so exhausting the array does NOT mean the
+ * data has not arrived, only that the answer lies further along than the array
+ * reaches.  Concluding "need more data" there is how an over-long request line
+ * could wedge a connection permanently: the bytes that would have tripped the
+ * length check were already buffered, just not visible.  When the array fills,
+ * fall back to the bounded contiguous copy, which sees the whole window
+ * however finely it is fragmented.
+ */
 static inline int
 evpl_http_parse_line(
     struct evpl      *evpl,
@@ -176,12 +226,12 @@ evpl_http_parse_line(
     char             *line,
     int               maxline)
 {
-    struct evpl_iovec iov[8];
-    int               niov, i, j;
+    struct evpl_iovec iov[EVPL_HTTP_PARSE_IOV];
+    int               niov, i, j, n;
     const char       *c;
     char             *lc = line;
 
-    niov = evpl_peekv(evpl, bind, iov, 8, maxline + 2);
+    niov = evpl_peekv(evpl, bind, iov, EVPL_HTTP_PARSE_IOV, maxline + 2);
 
     if (niov <= 0) {
         return -1;
@@ -197,21 +247,31 @@ evpl_http_parse_line(
             }
 
             if (*c == '\n') {
-
-                if (unlikely(lc == line || *(lc - 1) != '\r')) {
-                    return -2;
-                }
-
-                *(lc - 1) = '\0';
-                evpl_consume(evpl, bind, (lc - line) + 1);
-                return 0;
+                return evpl_http_line_terminate(evpl, bind, line, lc);
             }
 
             *lc++ = *c++;
         }
     }
 
-    return -1;
+    if (likely(niov < EVPL_HTTP_PARSE_IOV)) {
+        /* The whole window was scanned and holds no terminator yet. */
+        return -1;
+    }
+
+    n = evpl_peek(evpl, bind, line, maxline - 1);
+
+    if (n <= 0) {
+        return -1;
+    }
+
+    for (lc = line; lc < line + n; lc++) {
+        if (*lc == '\n') {
+            return evpl_http_line_terminate(evpl, bind, line, lc);
+        }
+    }
+
+    return n >= maxline - 1 ? -2 : -1;
 } /* evpl_http_parse_line */
 
 /*
