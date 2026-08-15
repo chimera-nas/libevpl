@@ -1901,13 +1901,22 @@ check_framing(
 * ------------------------------------------------------------------ */
 
 /*
- * Whether this case pays for the waits that prove the connection's fate.  The
- * answer depends on the request's version and its Connection header and on
- * nothing else, so it is checked once per (version, method, connection) triple
- * rather than on all eleven hundred cases -- at a quarter of a second each,
- * doing it everywhere would dominate the run.
+ * Whether this case pays for the waits that prove the connection's fate.
+ *
+ * Whether the server CLOSES depends on the request's version and its
+ * Connection header and on nothing else, so it is sampled per (version,
+ * method, connection) triple rather than on all eleven hundred cases -- at a
+ * quarter of a second each, doing it everywhere would dominate the run.
+ *
+ * Whether a connection the server KEPT can carry another request depends on
+ * something else entirely: whether the parser consumed exactly the bytes of
+ * the request it just answered.  Anything left behind -- an unconsumed trailer
+ * section, a miscounted chunk -- is read as the start of the next request, so
+ * that sample is keyed on the body framing instead.  It is the only check here
+ * that can see the difference.
  */
 static int g_persist_checked[2][3][3];
+static int g_reuse_checked[2][9];
 
 static void
 check_probe(
@@ -2148,6 +2157,12 @@ run_request_case(const struct http_request_case *c)
 
     want_persist                                  = !g_persist_checked[c->ver][c->method][c->conn];
     g_persist_checked[c->ver][c->method][c->conn] = 1;
+
+    if (c->expect_persist == HPERSIST_MUSTPERSIST &&
+        !g_reuse_checked[c->ver][c->body]) {
+        g_reuse_checked[c->ver][c->body] = 1;
+        want_persist                     = 1;
+    }
 
     deliver(rd->fd, &wb, c->delivery);
 

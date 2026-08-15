@@ -398,9 +398,48 @@ static inline int
 evpl_http_response_has_no_body(struct evpl_http_request *request)
 {
     return request->request_type == EVPL_HTTP_REQUEST_TYPE_HEAD ||
+           request->status / 100 == 1 ||
            request->status == 204 ||
            request->status == 304;
 } /* evpl_http_response_has_no_body */
+
+/*
+ * Put a request back to waiting for a status line, having just finished one
+ * that turned out not to be the answer.
+ *
+ * RFC 9110 section 15.2: a 1xx response is interim -- "A client MUST be able
+ * to parse one or more 1xx responses received prior to a final response, even
+ * if the client does not expect one" -- so it is a complete message that says
+ * the real one is still coming.  Everything the header block established about
+ * this message goes with it; the request itself is untouched, because it is
+ * still outstanding.
+ */
+static void
+evpl_http_request_reset_response(
+    struct evpl_http_agent   *agent,
+    struct evpl_http_request *request)
+{
+    struct evpl_http_request_header *header;
+
+    while (request->response_headers) {
+        header = request->response_headers;
+        DL_DELETE(request->response_headers, header);
+        evpl_http_request_header_free(agent, header);
+    }
+
+    request->request_state             = EVPL_HTTP_REQUEST_STATE_INIT;
+    request->request_transfer_encoding =
+        EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT;
+    request->request_length     = 0;
+    request->request_left       = 0;
+    request->request_chunk_left = 0;
+    request->header_bytes       = 0;
+    request->status             = 0;
+    request->request_flags     &= ~(EVPL_HTTP_REQUEST_HAVE_LENGTH |
+                                    EVPL_HTTP_REQUEST_CLOSE_DELIMITED |
+                                    EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL |
+                                    EVPL_HTTP_REQUEST_IN_TRAILER);
+} /* evpl_http_request_reset_response */
 
 /* How much to ask for at a time when the body's end is the connection close
  * rather than a length: there is no total to count down, so this is just a
@@ -1019,6 +1058,53 @@ evpl_http_parse_status(
     return 0;
 } /* evpl_http_parse_status */
 
+/* What the transfer codings on a message add up to. */
+enum evpl_http_coding {
+    EVPL_HTTP_CODING_NONE,     /* no Transfer-Encoding field at all      */
+    EVPL_HTTP_CODING_CHUNKED,  /* chunked, and chunked alone, is final   */
+    EVPL_HTTP_CODING_OTHER,    /* a coding this end does not implement,
+                                * or chunked somewhere other than last   */
+};
+
+/*
+ * Which transfer coding delimits a response's content.
+ *
+ * The response half of the request-side rule, and simpler because a client has
+ * nobody to complain to: RFC 9112 section 6.3 item 5 makes a coding that is
+ * not chunked, or a chunked that is not final, mean "read until the connection
+ * closes" rather than an error.  So the only distinction that matters here is
+ * chunked-and-nothing-else against everything else.
+ */
+static enum evpl_http_coding
+evpl_http_response_coding(struct evpl_http_request *request)
+{
+    struct evpl_http_request_header *header;
+    const char *p, *element;
+    size_t len;
+    enum evpl_http_coding            coding = EVPL_HTTP_CODING_NONE;
+
+    DL_FOREACH(request->response_headers, header)
+    {
+        if (strcasecmp(header->name, "Transfer-Encoding") != 0) {
+            continue;
+        }
+
+        p = header->value;
+
+        while ((element = evpl_http_next_element(&p, &len)) != NULL) {
+            coding = evpl_http_element_is_chunked(element, len) ?
+                EVPL_HTTP_CODING_CHUNKED : EVPL_HTTP_CODING_OTHER;
+        }
+
+        if (coding == EVPL_HTTP_CODING_NONE) {
+            /* The field was there but named no coding at all. */
+            coding = EVPL_HTTP_CODING_OTHER;
+        }
+    }
+
+    return coding;
+} /* evpl_http_response_coding */
+
 /*
  * Decide how the request's content is delimited, once the whole header block
  * has arrived.
@@ -1506,6 +1592,7 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
     struct evpl_http_request        *request;
     struct evpl_http_request_header *header;
     const char                      *why;
+    enum evpl_http_coding            coding;
     char                             line[4096];
     int                              rc, folded;
     unsigned int                     major, minor;
@@ -1603,29 +1690,67 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
 
         if (line[0] == '\0') {
 
-            /* The header block is complete, so the body's framing is now
-             * decided.  Three ways, in order of precedence:
+            /* An interim response is not the answer.  RFC 9110 section 15.2
+             * makes 1xx "an interim response for communicating connection
+             * status or request progress prior to completing the requested
+             * action and sending a final response", and lets a user agent
+             * ignore one it did not ask for -- but not mistake it for the
+             * result.  Reporting it as one loses the real response, which then
+             * arrives on a connection the client believes is idle.  The
+             * message ends with its header block, so what follows is the next
+             * status line for this same request. */
+            if (request->status / 100 == 1) {
+                evpl_http_debug("skipping interim %d response",
+                                request->status);
+                evpl_http_request_reset_response(agent, request);
+                goto again;
+            }
+
+            /* The header block is complete, so the content's framing is now
+             * decided.  RFC 9112 section 6.3 lists the ways in order of
+             * precedence, and this is that list.
              *
-             * RFC 1945 sections 8.2, 9.2.5 and 9.3.5: the response to HEAD and
-             * the 204 and 304 statuses carry no message-body at all, whatever
-             * their headers say -- so a Content-Length on one of them
-             * describes the body a GET would have returned, and waiting for
-             * those bytes waits forever.
-             *
-             * Otherwise a declared length delimits it, and failing that
-             * section 7.2.2 does: "the length of that body is determined by
-             * ... the server closing the connection."  That is the only
-             * framing HTTP/1.0 has for a body whose size the server does not
-             * know in advance, so a client that treats a length-less response
-             * as empty silently drops every streamed reply it is ever sent. */
+             * First: RFC 1945 sections 8.2/9.2.5/9.3.5 and RFC 9112 section
+             * 6.3, a response to HEAD and the 1xx, 204 and 304 statuses are
+             * "always terminated by the first empty line after the header
+             * fields, regardless of the header fields present in the message"
+             * -- so a Content-Length on one of them describes the content a
+             * GET would have returned, and waiting for those bytes waits
+             * forever. */
             if (evpl_http_response_has_no_body(request)) {
                 request->request_length = 0;
                 request->request_left   = 0;
-            } else if (!(request->request_flags &
-                         EVPL_HTTP_REQUEST_HAVE_LENGTH) &&
-                       request->request_transfer_encoding ==
-                       EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
-                request->request_flags |= EVPL_HTTP_REQUEST_CLOSE_DELIMITED;
+            } else {
+                coding = evpl_http_response_coding(request);
+
+                /* Section 6.1: both framings at once "might indicate an
+                 * attempt to perform ... response splitting ... and ought to
+                 * be handled as an error".  Where this response ends, and
+                 * anything after it begins, would otherwise be the peer's
+                 * choice rather than the client's. */
+                if (coding != EVPL_HTTP_CODING_NONE &&
+                    (request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH)) {
+                    evpl_http_client_abandon(conn,
+                                             "both Content-Length and Transfer-Encoding");
+                    return;
+                }
+
+                if (coding == EVPL_HTTP_CODING_CHUNKED) {
+                    request->request_transfer_encoding =
+                        EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
+                } else if (!(request->request_flags &
+                             EVPL_HTTP_REQUEST_HAVE_LENGTH)) {
+                    /* Section 6.3 item 5 covers a coding that is not chunked
+                     * or not final, and item 7 covers no framing at all; both
+                     * end the same way -- "the message body length is
+                     * determined by reading the connection until it is closed
+                     * by the server".  That is the only framing available for
+                     * content whose size the server does not know when it
+                     * starts writing, so a client that reads such a response
+                     * as empty silently drops every streamed reply it is ever
+                     * sent. */
+                    request->request_flags |= EVPL_HTTP_REQUEST_CLOSE_DELIMITED;
+                }
             }
 
             request->request_state = EVPL_HTTP_REQUEST_STATE_BODY;
@@ -1702,11 +1827,12 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
                 request->request_flags |= EVPL_HTTP_REQUEST_HAVE_LENGTH;
                 request->request_length = length;
                 request->request_left   = length;
-            } else if (strcasecmp(header->name, "Transfer-Encoding") == 0) {
-                if (strcasecmp(header->value, "chunked") == 0) {
-                    request->request_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
-                }
             }
+
+            /* Transfer-Encoding is deliberately NOT handled here: which coding
+             * is the final one, and whether it collides with a length, are
+             * properties of the whole block -- see the block-complete branch
+             * above. */
         }
 
         goto again;
