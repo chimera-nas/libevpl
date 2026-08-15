@@ -204,6 +204,14 @@ evpl_http_destroy(struct evpl_http_agent *agent)
                 evpl_close(agent->evpl, conn->bind);
                 live = 1;
             } else {
+#ifdef __clang_analyzer__
+                /* DL_DELETE asserts head != NULL but NDEBUG strips it in
+                 * Release builds; guide the analyzer explicitly, as
+                 * evpl_http_server_flush does for the same macro. */
+                if (!agent->conns) {
+                    break;
+                }
+#endif /* ifdef __clang_analyzer__ */
                 DL_DELETE(agent->conns, conn);
                 evpl_free(conn);
             }
@@ -531,6 +539,23 @@ evpl_http_handle_body(
     void                   *priv  = evpl_http_priv(conn);
     int                     rc;
     char                    line[4096];
+
+#ifdef __clang_analyzer__
+    /*
+     * evpl_http_parse_line always NUL-terminates this buffer before returning
+     * 0, but it does so through a pointer the analyzer can only bound relative
+     * to the buffer rather than pin to an index -- so it loses the terminating
+     * store, and then explores a path where evpl_http_parse_chunk_size walks
+     * off the end of a line that was never written.  Neither restructuring the
+     * termination as an indexed store nor terminating the buffer up front
+     * changes that: the copy loop's stores are what it cannot follow.
+     *
+     * Zeroing under the analyzer removes the false path and costs nothing in
+     * a real build, where this is four kilobytes of stack per body chunk
+     * parsed.
+     */
+    memset(line, 0, sizeof(line));
+#endif /* ifdef __clang_analyzer__ */
 
     if (request->request_transfer_encoding == EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT) {
         int               niov;
