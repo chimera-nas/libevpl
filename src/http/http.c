@@ -1350,6 +1350,30 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             return;
         }
 
+        /* RFC 9112 section 2.2: "In the interest of robustness, a server that
+         * is expecting to receive and parse a request-line SHOULD ignore at
+         * least one empty line (CRLF) received prior to the request-line."
+         * That empty line is what a client leaves behind when it miscounts a
+         * previous request's content, and answering 400 to the request that
+         * follows makes one client's arithmetic error look like a rejection of
+         * a request that is otherwise perfectly good.
+         *
+         * Counted against the header budget rather than skipped forever,
+         * because "ignore an empty line" and "read empty lines from this peer
+         * indefinitely" are not the same offer. */
+        if (line[0] == '\0') {
+            request->header_bytes += 2;
+
+            if (unlikely(request->header_bytes > agent->max_header_size)) {
+                evpl_http_server_reject(conn, 400,
+                                        "empty lines before the request line "
+                                        "exceed max_header_size");
+                return;
+            }
+
+            goto again;
+        }
+
         /* RFC 1945 section 5.1 is exact -- Method SP Request-URI SP
          * HTTP-Version -- and section 19.3 asks a server to tolerate any
          * amount of SP or HT *between* those fields, which is what strtok_r
