@@ -2294,6 +2294,26 @@ evpl_http_server_dispatch_default(
     struct evpl_http_conn *conn = request->conn;
     struct evpl           *evpl = conn->agent->evpl;
 
+    /*
+     * A Status-Code is three digits with a leading 1 through 5 (RFC 1945
+     * section 6.1.1), so an application asking for anything else is asking for
+     * something that cannot be put on the wire: formatted straight into the
+     * status line it produces a response the peer cannot parse at all, and the
+     * exchange fails in a way that looks like a transport fault rather than
+     * like the caller's mistake.
+     *
+     * The library owns the outbound framing, so it is the component that has
+     * to keep it well formed -- the same reasoning that makes suppressing the
+     * body of a HEAD response its job rather than the application's.  A status
+     * it cannot send becomes the one that describes the situation: something
+     * went wrong inside the server.
+     */
+    if (unlikely(status < 100 || status > 599)) {
+        evpl_http_error("status %d is not a Status-Code; answering 500",
+                        status);
+        status = 500;
+    }
+
     request->status         = status;
     request->request_flags |= EVPL_HTTP_REQUEST_RESPONSE_READY;
 

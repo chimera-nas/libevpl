@@ -78,6 +78,10 @@ static int port = 8095;
 #define ECHO_URI            "X-Echo-Uri"
 #define ECHO_PROBE          "X-Echo-Probe"
 #define ECHO_PROBE_COUNT    "X-Echo-Probe-Count"
+
+/* Asks the echo application to answer with this status rather than 200.  Used
+ * only by the status-line phase; see run_status_phase. */
+#define RESPOND_STATUS      "X-Respond-Status"
 #define ECHO_ABSENT         "(absent)"
 
 #define URI_ROOT            "/"
@@ -146,6 +150,7 @@ static int port = 8095;
 
 #define PHASE_REQUEST       0
 #define PHASE_DEFECT        1
+#define PHASE_STATUS        2
 
 /* ASPECT_PERSIST actuals. */
 #define PACT_CLOSED         0
@@ -202,6 +207,14 @@ subject_name(
     int aspect,
     int subject)
 {
+    static char code[16];
+
+    if (phase == PHASE_STATUS) {
+        /* The subject is the status the application asked for. */
+        snprintf(code, sizeof(code), "%d", subject);
+        return code;
+    }
+
     if (phase == PHASE_DEFECT) {
         return http_defect_name(subject);
     }
@@ -333,6 +346,9 @@ static struct {
     int defect_run;
     int defect_checks;
     int defect_failed;
+    int status_run;
+    int status_checks;
+    int status_failed;
     int unexpected;
     int known;
 } g_results;
@@ -355,21 +371,33 @@ record(
     struct observed *o;
     int              known, i;
 
-    if (phase == PHASE_REQUEST) {
-        g_results.request_checks++;
-    } else {
-        g_results.defect_checks++;
-    }
+    switch (phase) {
+        case PHASE_REQUEST:
+            g_results.request_checks++;
+            break;
+        case PHASE_DEFECT:
+            g_results.defect_checks++;
+            break;
+        default:
+            g_results.status_checks++;
+            break;
+    } /* switch */
 
     if (ok) {
         return;
     }
 
-    if (phase == PHASE_REQUEST) {
-        g_results.request_failed++;
-    } else {
-        g_results.defect_failed++;
-    }
+    switch (phase) {
+        case PHASE_REQUEST:
+            g_results.request_failed++;
+            break;
+        case PHASE_DEFECT:
+            g_results.defect_failed++;
+            break;
+        default:
+            g_results.status_failed++;
+            break;
+    } /* switch */
 
     known = is_known_divergence(phase, aspect, subject, expect, actual);
 
@@ -640,7 +668,12 @@ server_notify(
 
             echo_send_next(evpl, request, st);
 
-            evpl_http_server_dispatch_default(request, 200);
+            /* The status is the application's to choose, and the status
+             * phase chooses it through this header. */
+            probe = evpl_http_request_header(request, RESPOND_STATUS);
+
+            evpl_http_server_dispatch_default(request, probe ? atoi(probe) :
+                                              200);
             break;
         case EVPL_HTTP_NOTIFY_WANT_DATA:
             /* libevpl has drained what it was given and the response is not
@@ -1917,6 +1950,174 @@ run_defect_phase(void)
 } /* run_defect_phase */
 
 /* ------------------------------------------------------------------ *
+* Phase 3: the status line, over every status the server can name
+*
+* A check that sits outside the model, for the same reason the framing checks
+* do: the code list is libevpl's own table rather than anything RFC 1945
+* enumerates, and the specification content is a single rule --
+*
+*     Status-Line = HTTP-Version SP Status-Code SP Reason-Phrase CRLF
+*     Status-Code = 3DIGIT, leading digit 1 through 5   (RFC 1945 6.1.1)
+*
+* -- applied to a list of inputs.  Bending forty status codes into the model
+* would say they were a specification when they are a lookup table.
+*
+* The phrases themselves are deliberately NOT checked.  RFC 1945 section 6.1.1
+* makes the Reason-Phrase advisory ("The client is not required to examine or
+* display the Reason-Phrase"), and RFC 2616 section 6.1.1 says outright that
+* the listed phrases "are only recommendations -- they MAY be replaced by
+* local equivalents without affecting the protocol".  Asserting them would be
+* asserting something the RFC explicitly leaves open.
+*
+* What IS checked is the part the RFC does pin down, and it is the reason this
+* phase is worth having rather than merely worth measuring: whatever an
+* application asks for, what reaches the wire must be a status line.  The last
+* few entries ask for things that are not statuses at all, where the library
+* -- which owns the wire format, as it does for the HEAD body rule -- is the
+* only component in a position to refuse.
+* ------------------------------------------------------------------ */
+
+/* Every code evpl_http_response_status_string names, then two valid 3DIGIT
+ * statuses it does not: status codes are extensible (RFC 1945 section 6.1.1),
+ * so an unnamed one must still be carried, with whatever phrase the default
+ * arm supplies. */
+static const int status_codes[] = {
+    100,
+    101,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    300,
+    301,
+    302,
+    303,
+    304,
+    305,
+    307,
+    400,
+    401,
+    402,
+    403,
+    404,
+    405,
+    406,
+    407,
+    408,
+    409,
+    410,
+    411,
+    412,
+    413,
+    414,
+    415,
+    416,
+    417,
+    426,
+    500,
+    501,
+    502,
+    503,
+    504,
+    505,
+    418,
+    451,
+};
+
+/* Not statuses.  A Status-Code is three digits with a leading 1..5, so none of
+ * these can be represented, and a peer handed one cannot parse the response at
+ * all -- which is what libevpl used to send, straight from whatever the
+ * application passed.  What it sends instead is not pinned down here beyond
+ * having to be a status line; today it is 500. */
+static const int status_not_codes[] = {
+    0,
+    42,
+    600,
+    1000,
+};
+
+static void
+run_status_case(
+    int status,
+    int exact)
+{
+    struct wirebuf wb;
+    struct rawrsp  r;
+    char           line[128];
+    char           detail[256];
+    int            fd, actual, ok;
+
+    fd = connect_raw();
+
+    if (fd < 0) {
+        fprintf(stderr, "status case %d: connect failed: %s\n", status,
+                strerror(errno));
+        g_results.unexpected++;
+        return;
+    }
+
+    g_results.status_run++;
+
+    wb_init(&wb);
+
+    wb_str(&wb, "GET " URI_PATH " HTTP/1.0\r\n");
+    snprintf(line, sizeof(line), "%s: %d\r\n", RESPOND_STATUS, status);
+    wb_str(&wb, line);
+    wb_str(&wb, "\r\n");
+
+    deliver(fd, &wb, HDLV_ONEWRITE);
+
+    read_response(&r, fd, 0, 0);
+
+    actual = classify(&r);
+
+    /* Well-formedness first: three digits in a class the RFC defines, and a
+     * phrase.  check_framing covers the version and the phrase; the range is
+     * this phase's business. */
+    ok = actual >= 100 && actual <= 599;
+
+    snprintf(detail, sizeof(detail), "asked for %d, wire carried %s",
+             status, outcome_name(actual));
+
+    record(PHASE_STATUS, ASPECT_FRAMING, status, VACT_OK,
+           ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
+
+    if (ok) {
+        check_framing(PHASE_STATUS, status, &r);
+    }
+
+    /* Then, where the application asked for a real status, that it is the one
+     * that arrived. */
+    if (exact) {
+        ok = actual == status;
+
+        record(PHASE_STATUS, ASPECT_STATUS, status, status, actual, ok,
+               ok ? NULL : detail);
+    }
+
+    wb_free(&wb);
+    close(fd);
+} /* run_status_case */
+
+static void
+run_status_phase(void)
+{
+    unsigned int i;
+
+    for (i = 0; i < sizeof(status_codes) / sizeof(status_codes[0]); i++) {
+        run_status_case(status_codes[i], 1);
+    }
+
+    for (i = 0; i < sizeof(status_not_codes) / sizeof(status_not_codes[0]);
+         i++) {
+        run_status_case(status_not_codes[i], 0);
+    }
+} /* run_status_phase */
+
+/* ------------------------------------------------------------------ *
 * main
 * ------------------------------------------------------------------ */
 
@@ -1927,11 +2128,14 @@ report(void)
 
     fprintf(stderr,
             "\nhttp/1.0 conformance: %d/%u request cases (%d checks, %d "
-            "failed), %d/%u defect cases (%d checks, %d failed)\n",
+            "failed), %d/%u defect cases (%d checks, %d failed), "
+            "%d status cases (%d checks, %d failed)\n",
             g_results.request_run, (unsigned int) HTTP_NUM_REQUEST_CASES,
             g_results.request_checks, g_results.request_failed,
             g_results.defect_run, (unsigned int) HTTP_NUM_DEFECT_CASES,
-            g_results.defect_checks, g_results.defect_failed);
+            g_results.defect_checks, g_results.defect_failed,
+            g_results.status_run, g_results.status_checks,
+            g_results.status_failed);
 
     if (g_num_observed) {
         fprintf(stderr, "\ndivergences from RFC 1945:\n");
@@ -1939,7 +2143,8 @@ report(void)
 
     for (i = 0; i < g_num_observed; i++) {
         fprintf(stderr, "  %-6s %-12s %-28s expected %5d, got %5d  x%-4d %s\n",
-                g_observed[i].phase == PHASE_REQUEST ? "req" : "defect",
+                g_observed[i].phase == PHASE_REQUEST ? "req" :
+                g_observed[i].phase == PHASE_DEFECT ? "defect" : "status",
                 aspect_name(g_observed[i].aspect),
                 subject_name(g_observed[i].phase, g_observed[i].aspect,
                              g_observed[i].subject),
@@ -1991,6 +2196,7 @@ main(
 
     run_request_phase();
     run_defect_phase();
+    run_status_phase();
 
     server.run = 0;
     __sync_synchronize();
