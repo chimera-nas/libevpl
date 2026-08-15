@@ -457,6 +457,13 @@ evpl_create(struct evpl_thread_config *config)
      * compares it without converting on every iteration. */
     evpl->spin_ticks = evpl_ns_to_ticks(evpl->config.spin_ns);
 
+    /* Start the spin grace period now rather than at the epoch.  Left at zero
+     * the loop measures inactivity from process init, so a thread created
+     * more than spin_ns after that never enters poll mode at all until
+     * something calls evpl_activity() -- which makes poll_mode a setting that
+     * silently does nothing on any thread but the first. */
+    evpl->last_activity_ticks = evpl_now_ticks();
+
     evpl_core_init(&evpl->core, 64);
 
     evpl->running = 1;
