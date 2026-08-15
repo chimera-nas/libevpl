@@ -244,21 +244,3 @@ evpl_recvv(
     return niovs;
 
 } /* evpl_readv */
-
-int
-evpl_recv_peek_iovec(
-    struct evpl       *evpl,
-    struct evpl_bind  *conn,
-    struct evpl_iovec *iovecs,
-    int                nbufvecs,
-    int                length)
-{
-    int niovs = 0, left = length;
-
-    do{
-
-    } while (left);
-
-    return niovs;
-
-} /* evpl_recv_peek_iovec */
