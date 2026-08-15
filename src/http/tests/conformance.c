@@ -603,11 +603,11 @@ server_notify(
     struct echo_state *st = notify_data;
     struct evpl_iovec  iov[ECHO_DRAIN_IOV];
     struct probe_scan  scan;
-    const char        *probe;
+    const char        *probe, *uri_echo;
     char               echo[1024];
     char               count[16];
     uint64_t           avail;
-    int                niov, i, want, chunked;
+    int                niov, i, want, chunked, uri_len;
 
     switch (notify_type) {
         case EVPL_HTTP_NOTIFY_RECEIVE_DATA:
@@ -633,8 +633,18 @@ server_notify(
                                          evpl_http_request_type_to_string(
                                              request));
 
-            evpl_http_request_add_header(request, ECHO_URI,
-                                         evpl_http_request_url(request, NULL));
+            /* Through the length out-param, which nothing else calls: an
+             * application that forwards a URI needs its length, and a length
+             * that disagrees with the string is a truncation nobody sees. */
+            uri_echo = evpl_http_request_url(request, &uri_len);
+
+            if (uri_len != (int) strlen(uri_echo)) {
+                fprintf(stderr, "echo: request_url length %d disagrees with "
+                        "the string (%zu)\n", uri_len, strlen(uri_echo));
+                exit(1);
+            }
+
+            evpl_http_request_add_header(request, ECHO_URI, uri_echo);
 
             /* Looked up by name as well as counted by iteration: an
              * application reads a header the first way, and the two must
@@ -680,8 +690,11 @@ server_notify(
                 refused += evpl_http_request_add_header(
                     request, "X-Bad Name", "value") < 0;
 
+                refused += evpl_http_request_add_header(request, "", "value")
+                    < 0;
+
                 evpl_http_request_add_header(request, INJECT_RESULT,
-                                             refused == 2 ? "refused" :
+                                             refused == 3 ? "refused" :
                                              "accepted");
             }
 
@@ -988,10 +1001,12 @@ static const char *
 method_wire(int method_cls)
 {
     switch (method_cls) {
-        case HMETH_MGET:  return "GET";
-        case HMETH_MHEAD: return "HEAD";
-        case HMETH_MPOST: return "POST";
-        default:          return "GET";
+        case HMETH_MGET:    return "GET";
+        case HMETH_MHEAD:   return "HEAD";
+        case HMETH_MPOST:   return "POST";
+        case HMETH_MPUT:    return "PUT";
+        case HMETH_MDELETE: return "DELETE";
+        default:            return "GET";
     } /* switch */
 } /* method_wire */
 
@@ -1001,10 +1016,12 @@ static const char *
 method_echoed(int method_cls)
 {
     switch (method_cls) {
-        case HMETH_MGET:  return "Get";
-        case HMETH_MHEAD: return "Head";
-        case HMETH_MPOST: return "Post";
-        default:          return "Get";
+        case HMETH_MGET:    return "Get";
+        case HMETH_MHEAD:   return "Head";
+        case HMETH_MPOST:   return "Post";
+        case HMETH_MPUT:    return "Put";
+        case HMETH_MDELETE: return "Delete";
+        default:            return "Get";
     } /* switch */
 } /* method_echoed */
 
@@ -1109,7 +1126,10 @@ append_chunked_body(
         }
 
         if (body_cls == HBDY_BODYCHUNKEDEXT) {
-            snprintf(line, sizeof(line), "%x;probe=1;flag\r\n", chunk);
+            /* With the "bad whitespace" the chunk-ext grammar allows around
+             * the semicolon, since a decoder that stops at the first space
+             * reads the size and then loses the rest of the line. */
+            snprintf(line, sizeof(line), "%x ;probe=1;flag\r\n", chunk);
         } else {
             snprintf(line, sizeof(line), "%x\r\n", chunk);
         }
@@ -1981,7 +2001,7 @@ check_framing(
  * that sample is keyed on the body framing instead.  It is the only check here
  * that can see the difference.
  */
-static int g_persist_checked[2][3][3];
+static int g_persist_checked[2][5][3];
 static int g_reuse_checked[2][9];
 
 static void
@@ -2478,6 +2498,37 @@ build_defect(
             wb_str(wb, "\r\n");
             break;
 
+        case HDEF_HEADERFOLDEDFIRST:
+            /* The fold is the FIRST line of the block, so there is no field
+             * for it to continue.  Not through REQ_LINE, because the Host it
+             * adds would be the field above and this would be an ordinary
+             * fold; the Host goes after instead, so the only defect is the
+             * one under test. */
+            wb_str(wb, "GET " URI_PATH " ");
+            wb_str(wb, v);
+            wb_str(wb, "\r\n\tcontinuation-of-nothing\r\n");
+
+            if (ver == HVER_V11) {
+                wb_str(wb, "Host: ");
+                wb_str(wb, g_host_value);
+                wb_str(wb, "\r\n");
+            }
+
+            wb_str(wb, "\r\n");
+            break;
+
+        case HDEF_LEADINGCRLFFLOOD:
+            /* The robustness rule asked to run forever.  More empty lines than
+             * the header budget can hold, then a request that would otherwise
+             * be served. */
+            for (i = 0; i * 2 < MAX_HEADER_SIZE + 512; i++) {
+                wb_str(wb, "\r\n");
+            }
+
+            REQ_LINE("GET", URI_PATH);
+            wb_str(wb, "\r\n");
+            break;
+
         case HDEF_HEADERBLOCKUNTERMINATED:
             REQ_LINE("GET", URI_PATH);
             wb_str(wb, PROBE_NAME ": " PROBE_VALUE "\r\n");
@@ -2534,6 +2585,19 @@ build_defect(
                    "Content-Length: 8\r\n\r\nabcde");
             break;
 
+        case HDEF_CONTENTLENGTHTRAILINGJUNK:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Content-Length: 5x\r\n\r\nabcde");
+            break;
+
+        case HDEF_CONTENTLENGTHOVERFLOW:
+            /* Twenty-three digits: a decimal numeral no 64-bit counter can
+             * hold, which is exactly what RFC 9110 section 8.6 asks a
+             * recipient to anticipate. */
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Content-Length: 99999999999999999999999\r\n\r\n");
+            break;
+
         case HDEF_BODYSHORTOFCONTENTLENGTH:
             REQ_LINE("POST", URI_PATH);
             wb_str(wb, "Content-Length: 32\r\n\r\nshort");
@@ -2570,6 +2634,20 @@ build_defect(
             wb_str(wb, "POST " URI_PATH " HTTP/1.0\r\n"
                    "Transfer-Encoding: chunked\r\n\r\n"
                    "5\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_TRANSFERENCODINGEMPTY:
+            /* The field is there and names no coding, so the message says a
+             * coding delimits it and none does. */
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: ,\r\n\r\n"
+                   "5\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_CHUNKSIZETRAILINGJUNK:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: chunked\r\n\r\n"
+                   "5x\r\nabcde\r\n0\r\n\r\n");
             break;
 
         case HDEF_CHUNKSIZENOTHEX:
@@ -2824,20 +2902,32 @@ static const int status_not_codes[] = {
 };
 
 /* The statuses the chunked variant is run over: one that may carry content,
- * one that may not, and one error.  The point is the framing rather than the
- * status, so a sample is enough. */
+ * two that may not, and one error.  The point is the framing rather than the
+ * status, so a sample is enough -- but it has to include the two shapes where
+ * asking for chunked and being refused it are different answers: a 204 has no
+ * content at all, while a 304 keeps the header fields a GET would have got. */
 static const int chunked_statuses[] = {
     200,
     204,
+    304,
     404,
 };
 
+/* Content the chunked variants send, so that the response has something to
+ * frame.  A response whose content is empty exercises the header block and
+ * nothing else -- and the framing of last resort, where the close delimits
+ * the content, has no observable behaviour at all without octets to
+ * delimit. */
+#define STATUS_BODY     "framed-content"
+#define STATUS_BODY_LEN ((int) sizeof(STATUS_BODY) - 1)
+
 static void
 run_status_case(
-    int status,
-    int ver,
-    int chunked,
-    int exact)
+    int         status,
+    int         ver,
+    int         chunked,
+    int         exact,
+    const char *method)
 {
     struct wirebuf wb;
     struct reader *rd;
@@ -2867,7 +2957,8 @@ run_status_case(
 
     wb_init(&wb);
 
-    wb_str(&wb, "GET " URI_PATH " ");
+    wb_str(&wb, method);
+    wb_str(&wb, " " URI_PATH " ");
     wb_str(&wb, version_wire(ver));
     wb_str(&wb, "\r\n");
 
@@ -2887,9 +2978,19 @@ run_status_case(
 
     if (chunked) {
         wb_str(&wb, RESPOND_CHUNKED ": 1\r\n");
+        /* The echo application answers with whatever the request carried, so
+         * the request has to carry something for the response framing to have
+         * any work to do. */
+        snprintf(line, sizeof(line), "Content-Length: %d\r\n",
+                 STATUS_BODY_LEN);
+        wb_str(&wb, line);
     }
 
     wb_str(&wb, "\r\n");
+
+    if (chunked) {
+        wb_str(&wb, STATUS_BODY);
+    }
 
     deliver(rd->fd, &wb, HDLV_ONEWRITE);
 
@@ -2898,7 +2999,7 @@ run_status_case(
      * its answer, so the 1xx is the message under examination and skipping it
      * would leave the reader waiting for a response that was never going to
      * be sent. */
-    read_response(rd, &r, 0, 0);
+    read_response(rd, &r, strcmp(method, "HEAD") == 0, 0);
 
     actual = classify(&r);
 
@@ -3022,18 +3123,23 @@ run_status_phase(void)
 
     for (ver = HVER_V10; ver <= HVER_V11; ver++) {
         for (i = 0; i < sizeof(status_codes) / sizeof(status_codes[0]); i++) {
-            run_status_case(status_codes[i], ver, 0, 1);
+            run_status_case(status_codes[i], ver, 0, 1, "GET");
         }
 
         for (i = 0; i < sizeof(status_not_codes) / sizeof(status_not_codes[0]);
              i++) {
-            run_status_case(status_not_codes[i], ver, 0, 0);
+            run_status_case(status_not_codes[i], ver, 0, 0, "GET");
         }
 
         for (i = 0; i < sizeof(chunked_statuses) / sizeof(chunked_statuses[0]);
              i++) {
-            run_status_case(chunked_statuses[i], ver, 1, 1);
+            run_status_case(chunked_statuses[i], ver, 1, 1, "POST");
         }
+
+        /* And once as HEAD, where the header fields a GET would have got stay
+         * and the content does not -- which is a different decision from the
+         * one a 204 gets, and reaches it through a different branch. */
+        run_status_case(200, ver, 1, 1, "HEAD");
     }
 
     run_injection_case();

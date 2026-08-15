@@ -86,6 +86,12 @@ static int port = 8096;
  * to exceed. */
 #define MAX_HEADER_SIZE   8192
 
+/* The parser's line buffer, which the "one line longer than the receiver will
+ * hold" cases have to exceed.  A separate limit from the block above: a block
+ * can be refused for its total while every line in it is short, and a line can
+ * be refused for its own length while the block is small. */
+#define MAX_HEADER_LINE   4096
+
 /* Wall-clock budget for one exchange.  Loopback responses land in
  * microseconds, so anything approaching this is a client that has stopped
  * making progress -- which is what several cases look for.  Kept small
@@ -139,6 +145,7 @@ static int port = 8096;
 #define ASPECT_REQUEST    5     /* the request body the peer actually received */
 #define ASPECT_HOST       6     /* the Host header HTTP/1.1 requires           */
 #define ASPECT_PIPELINE   7     /* the second of two requests on one connection */
+#define ASPECT_LIFETIME   8     /* what the API does with a handle, not the wire */
 
 /* ASPECT_BODY / ASPECT_ONCE actuals. */
 #define VACT_OK           0
@@ -156,9 +163,19 @@ aspect_name(int aspect)
         case ASPECT_REQUEST:  return "request";
         case ASPECT_HOST:     return "host";
         case ASPECT_PIPELINE: return "pipeline";
+        case ASPECT_LIFETIME: return "lifetime";
         default:              return "?";
     } /* switch */
 } /* aspect_name */
+
+/* What a divergence is filed under.  The model's cases are filed under the
+ * response defect; the handful of checks that are about the API rather than
+ * about a message on the wire pass -1, since no response defect names them. */
+static const char *
+defect_name(int defect)
+{
+    return defect < 0 ? "(api)" : http_client_defect_name(defect);
+} /* defect_name */
 
 static const char *
 outcome_name(int o)
@@ -301,7 +318,7 @@ record(
 
     fprintf(stderr, "%s %s/%s: expected %d, got %d%s%s\n",
             known ? "known divergence" : "DIVERGENCE",
-            aspect_name(aspect), http_client_defect_name(defect),
+            aspect_name(aspect), defect_name(defect),
             expect, actual, detail ? " -- " : "", detail ? detail : "");
 } /* record */
 
@@ -400,6 +417,7 @@ case_holds_connection(int defect)
     switch (defect) {
         case HCDEF_RSPBODYCLOSEDELIMITED:
         case HCDEF_RSPCLOSEDELIMITEDHTTP11:
+        case HCDEF_RSPTRANSFERENCODINGNOCODING:
         case HCDEF_RSPBODYSHORTOFCONTENTLENGTH:
         case HCDEF_RSPCHUNKEDTRUNCATED:
         case HCDEF_RSPCONNECTIONCLOSE:
@@ -485,6 +503,55 @@ build_response(
             }
 
             wb_str(wb, "\r\n");
+            break;
+
+        case HCDEF_RSPHEADERLINEOVERLONG:
+            wb_str(wb, "HTTP/1.0 200 OK\r\nX-Long: ");
+            wb_fill(wb, 'a', MAX_HEADER_LINE + 64);
+            wb_str(wb, "\r\nContent-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPHEADERFOLDEDFIRST:
+            /* The fold is the first line of the block, so there is no field
+             * for it to continue. */
+            wb_str(wb, "HTTP/1.0 200 OK\r\n"
+                   "\tcontinuation-of-nothing\r\n"
+                   "Content-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPSTATUSLINEOVERLONG:
+            wb_str(wb, "HTTP/1.0 200 ");
+            wb_fill(wb, 'a', MAX_HEADER_LINE + 64);
+            wb_str(wb, "\r\nContent-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPSTATUSLINELEADINGWHITESPACE:
+            wb_str(wb, " HTTP/1.0 200 OK\r\n"
+                   "Content-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPSTATUSLINEEMPTY:
+            /* Nothing on the first line at all.  What follows is a perfectly
+             * good response, which is the point: the client has to refuse on
+             * the line it was given rather than resynchronise onto the next
+             * thing that looks like one. */
+            wb_str(wb, "\r\nHTTP/1.0 200 OK\r\n"
+                   "Content-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPVERSIONNOTHTTP:
+            wb_str(wb, "XTTP/1.1 200 OK\r\n"
+                   "Content-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPVERSIONMINORNOTNUMERIC:
+            wb_str(wb, "HTTP/1.x 200 OK\r\n"
+                   "Content-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPVERSIONNUMBERTOOLARGE:
+            wb_str(wb, "HTTP/1000.0 200 OK\r\n"
+                   "Content-Length: 27\r\n\r\n" RESPONSE_BODY);
             break;
 
         case HCDEF_RSPNOREASONPHRASE:
@@ -595,6 +662,17 @@ build_response(
                    "Content-Length: 11\r\n\r\n" RESPONSE_BODY);
             break;
 
+        case HCDEF_RSPCONTENTLENGTHTRAILINGJUNK:
+            wb_str(wb, "HTTP/1.0 200 OK\r\n"
+                   "Content-Length: 27x\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPCONTENTLENGTHOVERFLOW:
+            wb_str(wb, "HTTP/1.0 200 OK\r\n"
+                   "Content-Length: 99999999999999999999999\r\n\r\n"
+                   RESPONSE_BODY);
+            break;
+
         case HCDEF_RSPBODYSHORTOFCONTENTLENGTH:
             wb_str(wb, "HTTP/1.0 200 OK\r\n"
                    "Content-Length: 64\r\n\r\n" RESPONSE_BODY);
@@ -678,6 +756,29 @@ build_response(
             wb_str(wb, "HTTP/1.1 200 OK\r\n"
                    "Transfer-Encoding: chunked\r\n\r\n"
                    "-1b\r\n" RESPONSE_BODY "\r\n0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKSIZETRAILINGJUNK:
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   RESPONSE_BODY_HEX "x\r\n" RESPONSE_BODY "\r\n0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKLINEOVERLONG:
+            /* A chunk-size line whose extension runs past the parse buffer. */
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   RESPONSE_BODY_HEX ";");
+            wb_fill(wb, 'a', MAX_HEADER_LINE + 64);
+            wb_str(wb, "\r\n" RESPONSE_BODY "\r\n0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPTRANSFERENCODINGNOCODING:
+            /* A coding field naming no coding: RFC 9112 section 6.3 rule 5
+             * makes the content run to the close rather than making this an
+             * error, so the response is still delivered. */
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: ,\r\n\r\n" RESPONSE_BODY);
             break;
 
         case HCDEF_RSPCHUNKBADTERMINATOR:
@@ -1143,7 +1244,9 @@ raw_server_function(void *ptr)
     unsigned int       i;
     int                fd, close_after;
 
-    for (i = 0; i < HTTP_NUM_CLIENT_CASES; i++) {
+    /* One more accept than there are cases: the last is the API checks', and
+     * it is answered by dropping the connection.  See run_api_cases. */
+    for (i = 0; i <= HTTP_NUM_CLIENT_CASES; i++) {
 
         raw->ready = 1;
         __sync_synchronize();
@@ -1152,7 +1255,10 @@ raw_server_function(void *ptr)
 
         raw->ready = 0;
 
-        if (fd >= 0) {
+        if (fd >= 0 && raw->case_index == (int) HTTP_NUM_CLIENT_CASES) {
+            close(fd);
+            fd = -1;
+        } else if (fd >= 0) {
             const struct http_client_case *c =
                 &http_client_cases[raw->case_index];
 
@@ -1787,6 +1893,115 @@ run_client_case(
 } /* run_client_case */
 
 /* ------------------------------------------------------------------ *
+* The API checks
+*
+* Two things about the connection handle rather than about anything on the
+* wire, so they sit outside the model: no response defect describes them, and
+* the peer is not involved at all.  They are here because the harness is the
+* only thing that holds a connection across its peer's departure -- an
+* application does too, which is exactly the problem.
+* ------------------------------------------------------------------ */
+
+static void
+run_api_cases(
+    struct evpl            *evpl,
+    struct evpl_http_agent *agent,
+    struct evpl_endpoint   *endpoint)
+{
+    struct evpl_http_conn    *conn;
+    struct evpl_http_request *request;
+    struct req_ctx           *ctx1, *ctx2;
+    char                      detail[256];
+    char                      big[MAX_HEADER_SIZE + 64];
+    int64_t                   deadline;
+    int                       ok;
+
+    ctx1 = ctx_alloc();
+    ctx2 = ctx_alloc();
+
+    /* The hostile server's last accept, which it answers by hanging up: the
+     * ordinary way a connection is retired, rather than a connect that never
+     * succeeded. */
+    while (!g_raw.ready) {
+        sched_yield();
+    }
+
+    g_raw.case_index = (int) HTTP_NUM_CLIENT_CASES;
+    g_raw.case_done  = 0;
+    __sync_synchronize();
+
+    conn = evpl_http_client_connect(agent, EVPL_STREAM_SOCKET_TCP, endpoint,
+                                    EVPL_HTTP_VERSION_HTTP1, ctx1);
+
+    request = evpl_http_request_create(conn, EVPL_HTTP_REQUEST_TYPE_GET,
+                                       REQUEST_URI);
+    evpl_http_client_set_request_length(request, 0);
+    evpl_http_request_dispatch(request, client_notify, ctx1);
+
+    deadline = now_ms() + CASE_TIMEOUT_MS;
+
+    while (now_ms() < deadline && !ctx_done(ctx1)) {
+        evpl_continue(evpl);
+    }
+
+    ok = ctx1->n_failed == 1 && ctx1->error == EVPL_HTTP_ERROR_CONN_LOST;
+
+    snprintf(detail, sizeof(detail),
+             "%d failure(s) with reason %d when the peer hung up",
+             ctx1->n_failed, ctx1->error);
+
+    record(ASPECT_LIFETIME, -1, EVPL_HTTP_ERROR_CONN_LOST, ctx1->error, ok,
+           ok ? NULL : detail);
+
+    /*
+     * The connection is retired now, and the handle is still the caller's.
+     * A request dispatched on it has to complete rather than queue behind a
+     * connection that is not coming back -- and it has to do so before
+     * dispatch returns, since there is no event left to carry the news later.
+     * Nothing is pumped between the dispatch and the check, which is the
+     * whole assertion.
+     */
+    request = evpl_http_request_create(conn, EVPL_HTTP_REQUEST_TYPE_GET,
+                                       REQUEST_URI);
+    evpl_http_client_set_request_length(request, 0);
+    evpl_http_request_dispatch(request, client_notify, ctx2);
+
+    ok = ctx2->n_failed == 1 && ctx2->error == EVPL_HTTP_ERROR_CONN_LOST;
+
+    snprintf(detail, sizeof(detail),
+             "%d failure(s) before dispatch returned on a retired connection",
+             ctx2->n_failed);
+
+    record(ASPECT_LIFETIME, -1, 1, ctx2->n_failed, ok, ok ? NULL : detail);
+
+    /*
+     * And a request line that cannot fit the configured header budget is
+     * refused at creation, rather than becoming a header block that overflows
+     * the buffer emission allocates for it.
+     */
+    memset(big, 'a', sizeof(big) - 1);
+    big[0]               = '/';
+    big[sizeof(big) - 1] = '\0';
+
+    request = evpl_http_request_create(conn, EVPL_HTTP_REQUEST_TYPE_GET, big);
+
+    ok = request == NULL;
+
+    record(ASPECT_LIFETIME, -1, 0, ok ? 0 : 1, ok, ok ? NULL :
+           "a request line past http_max_header_size was created anyway");
+
+    /*
+     * Closing a connection whose peer has already gone is the whole point of
+     * the handle outliving the transport: this is a use-after-free if it is
+     * not.
+     */
+    evpl_http_client_close(agent, conn);
+
+    g_raw.case_done = 1;
+    __sync_synchronize();
+} /* run_api_cases */
+
+/* ------------------------------------------------------------------ *
 * main
 * ------------------------------------------------------------------ */
 
@@ -1808,7 +2023,7 @@ report(void)
     for (i = 0; i < g_num_observed; i++) {
         fprintf(stderr, "  %-8s %-38s expected %5d, got %5d  x%-4d %s\n",
                 aspect_name(g_observed[i].aspect),
-                http_client_defect_name(g_observed[i].defect),
+                defect_name(g_observed[i].defect),
                 g_observed[i].expect, g_observed[i].actual,
                 g_observed[i].count,
                 g_observed[i].known ? "(known)" : "");
@@ -1888,6 +2103,8 @@ main(
     for (i = 0; i < HTTP_NUM_CLIENT_CASES; i++) {
         run_client_case(evpl, agent, endpoint, &http_client_cases[i], i);
     }
+
+    run_api_cases(evpl, agent, endpoint);
 
     pthread_join(g_raw.thread, NULL);
     close(g_raw.listen_fd);

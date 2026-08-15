@@ -175,12 +175,27 @@ module http1x_requests {
 
     /// Methods.  RFC 1945 section 8 and RFC 9110 section 9.1: "the methods GET
     /// and HEAD MUST be supported by all general-purpose servers"; POST is the
-    /// third method RFC 1945 defines and the only one of the three that
-    /// carries a request body.
+    /// third method RFC 1945 defines, and the only one of those three that
+    /// carries content.
+    ///
+    /// PUT and DELETE are RFC 9110 section 9.3.4 and 9.3.5, so they are
+    /// generated at HTTP/1.1 alone -- RFC 1945 mentions them only in its list
+    /// of methods other specifications might define.  They are here because
+    /// libevpl's parser accepts them, and a method the parser accepts but
+    /// nothing exercises is a method whose framing nothing has checked: PUT
+    /// carries content the way POST does, and DELETE does not.
     type MethodCls =
         | MGet
         | MHead
         | MPost
+        | MPut
+        | MDelete
+
+    /// Whether the method is one this matrix attaches content to.  RFC 9110
+    /// section 9.3 gives PUT and POST content and gives GET, HEAD and DELETE
+    /// none -- "A client SHOULD NOT generate content in a DELETE request".
+    pure def carriesContent(m: MethodCls): bool =
+        m == MPost or m == MPut
 
     /// Request-URI shapes (RFC 1945 section 5.1.2 / RFC 9112 section 3.2).
     type UriCls =
@@ -356,7 +371,12 @@ module http1x_requests {
     // ------------------------------------------------------------------
 
     pure val VERSIONS = Set(V10, V11)
-    pure val METHODS = Set(MGet, MHead, MPost)
+
+    /// RFC 1945 defines GET, HEAD and POST; PUT and DELETE arrive with RFC
+    /// 9110, so an HTTP/1.0 request using one is not a case this matrix
+    /// claims a server must serve.
+    pure val METHODS_10 = Set(MGet, MHead, MPost)
+    pure val METHODS_11 = METHODS_10.union(Set(MPut, MDelete))
     pure val HDRS = Set(HdrNone, HdrPlain, HdrPadded, HdrEmpty, HdrMixedCase,
                         HdrFolded, HdrDuplicate, HdrMany)
     pure val CONNS = Set(ConnDefault, ConnKeepAlive, ConnClose)
@@ -395,8 +415,11 @@ module http1x_requests {
     pure def urisFor(v: Version): Set[UriCls] =
         if (v == V11) URIS_11 else URIS_10
 
+    pure def methodsFor(v: Version): Set[MethodCls] =
+        if (v == V11) METHODS_11 else METHODS_10
+
     pure def bodiesFor(v: Version, m: MethodCls): Set[BodyCls] =
-        if (m != MPost) {
+        if (not(carriesContent(m))) {
             BODIES_NO_ENTITY
         } else if (v == V11) {
             BODIES_ENTITY_11
@@ -407,7 +430,8 @@ module http1x_requests {
     /// An expectation is about a body the client is holding back, so it only
     /// belongs on a request that has one to hold back.
     pure def expectsFor(m: MethodCls): Set[ExpectCls] =
-        if (m == MPost) Set(ExpectNone, ExpectContinue) else Set(ExpectNone)
+        if (carriesContent(m)) Set(ExpectNone, ExpectContinue)
+        else Set(ExpectNone)
 
     /// Which deliveries a case can be sent by.
     ///
@@ -419,7 +443,7 @@ module http1x_requests {
     /// is left out: what is under test is the server's ordering obligation,
     /// and a method the RFC discourages pipelining does not test it better.
     pure def deliveriesFor(c: Case): Set[Delivery] =
-        if (c.ver == V11 and c.conn != ConnClose and c.method != MPost) {
+        if (c.ver == V11 and c.conn != ConnClose and not(carriesContent(c.method))) {
             if (BODIES_DRIBBLEABLE.contains(c.body)) {
                 Set(OneWrite, TwoWrites, Dribble, Pipelined)
             } else {
@@ -433,7 +457,7 @@ module http1x_requests {
 
     action pick = {
         nondet v = VERSIONS.oneOf()
-        nondet m = METHODS.oneOf()
+        nondet m = methodsFor(v).oneOf()
         nondet u = urisFor(v).oneOf()
         nondet h = HDRS.oneOf()
         nondet c = CONNS.oneOf()
@@ -472,7 +496,8 @@ module http1x_requests {
     /// where they are not legal requests at all.
     val elevenOnlyShapesAreElevenOnly = and {
         (current.uri == UriAbsolute) implies (current.ver == V11),
-        (current.delivery == Pipelined) implies (current.ver == V11)
+        (current.delivery == Pipelined) implies (current.ver == V11),
+        methodsFor(current.ver).contains(current.method)
     }
 
     /// The HEAD rule, stated where it cannot be missed: a body is required on
@@ -577,6 +602,22 @@ module http1x_requests {
                         body: BodyChunkedTrailer, conn: ConnDefault,
                         expect: ExpectNone, delivery: OneWrite }))
             .expect(bodyMatchesMethod and wellFormed)
+
+    /// PUT carries content and DELETE does not, and neither is an HTTP/1.0
+    /// method as far as this matrix is concerned.
+    run putAndDeleteAreElevenOnlyTest =
+        init
+            .expect(methodsFor(V10).contains(MPut) == false)
+            .expect(methodsFor(V11).contains(MPut))
+            .expect(carriesContent(MPut) and not(carriesContent(MDelete)))
+            .then(use({ ver: V11, method: MPut, uri: UriPath, hdr: HdrPlain,
+                        body: BodySmall, conn: ConnDefault, expect: ExpectNone,
+                        delivery: OneWrite }))
+            .expect(expectBody == BodyEchoed and wellFormed)
+            .then(use({ ver: V11, method: MDelete, uri: UriPath, hdr: HdrNone,
+                        body: BodyNone, conn: ConnDefault, expect: ExpectNone,
+                        delivery: Pipelined }))
+            .expect(expectBody == BodyEchoed and wellFormed)
 
     /// The chunked coding is HTTP/1.1's and nothing else's: an HTTP/1.0 POST
     /// has no framing for it, so the model never generates one.
@@ -687,6 +728,12 @@ module http1x_defects {
          * body; a server that does not skip it answers 400 to a request that
          * is otherwise perfectly good. */
         | LeadingCrlfBeforeRequestLine
+        /* The same tolerance asked to run forever.  "Ignore at least one empty
+         * line" is not an offer to read empty lines from this peer
+         * indefinitely, so there has to be a point at which the server stops
+         * -- otherwise a rule about robustness is a way to hold a connection
+         * open at no cost to the peer. */
+        | LeadingCrlfFlood
 
         /* --- the version (RFC 1945 section 3.1 / RFC 9112 section 2.3) --- */
         | VersionMalformed             /* "HTTP/1", "HTTP/x.y"              */
@@ -716,6 +763,11 @@ module http1x_defects {
         | HeaderSpaceBeforeColon
         | HeaderLineOverlong           /* one field longer than the buffer  */
         | HeaderBlockOverlong          /* the block past max_header_size    */
+        /* A continuation line as the FIRST line of the block: LWS says it
+         * continues the field above, and there is no field above.  The one
+         * shape of fold that is not a fold, and the one a parser reaching for
+         * "the last header on the list" dereferences NULL on. */
+        | HeaderFoldedFirst
         /* The client stops mid-block and half-closes.  The request never
          * became a request, so there is nothing to answer: this is the one
          * shape where silence is a legitimate response. */
@@ -748,6 +800,17 @@ module http1x_defects {
          * request with an entity as one without -- the classic desync. */
         | ContentLengthNotNumeric
         | ContentLengthNegative
+        /* A length with digits and then something else.  Reads as the digits
+         * alone to a parser that stops at the first non-digit, which is a
+         * different length from the one the sender wrote -- and the difference
+         * is where the next message starts. */
+        | ContentLengthTrailingJunk
+        /* RFC 9110 section 8.6: "a recipient MUST anticipate potentially large
+         * decimal numerals and prevent parsing errors due to integer
+         * conversion overflows".  A length past what the receiver can
+         * represent wraps to a smaller one: the same desync arrived at by
+         * arithmetic rather than by syntax. */
+        | ContentLengthOverflow
         /* Two lengths that disagree: the message has no single length, so it
          * cannot be parsed at all.  Picking either one is picking where the
          * next request starts, which is the peer's decision to make and not
@@ -799,6 +862,11 @@ module http1x_defects {
          * coding disagree about where it ends -- the smuggling primitive
          * again.  Refusing is the only answer that cannot be got wrong. */
         | TransferEncodingOnHttp10
+        /* A Transfer-Encoding field that names no coding at all.  The field is
+         * present, so the message says a coding delimits it; the list is
+         * empty, so none does.  Chunked is not the final coding, because there
+         * is no final coding. */
+        | TransferEncodingEmpty
 
         /* --- the chunked coding itself (RFC 9112 section 7.1) ----------- */
         /*     chunk-size = 1*HEXDIG
@@ -809,6 +877,12 @@ module http1x_defects {
          * rather than a library call that reports no errors. */
         | ChunkSizeNotHex
         | ChunkSizeNegative
+        /* Hex digits and then something that is not a chunk extension.  RFC
+         * 9112 section 7.1 allows only a chunk-ext after the size, introduced
+         * by a semicolon; anything else means the line is not a chunk-size
+         * line, and reading the digits while ignoring the rest is how a
+         * decoder and its peer end up at different offsets. */
+        | ChunkSizeTrailingJunk
         /* A size larger than the receiver can represent.  Wrapping it is how
          * a declared length becomes a much smaller one. */
         | ChunkSizeOverflow
@@ -859,6 +933,9 @@ module http1x_defects {
             | ContentLengthNotNumeric => Status(400)
             | ContentLengthNegative => Status(400)
             | ContentLengthDuplicateConflicting => Status(400)
+            | ContentLengthTrailingJunk => Status(400)
+            | ContentLengthOverflow => Status(400)
+            | HeaderFoldedFirst => Status(400)
             | HostDuplicate => Status(400)
             | TransferEncodingWithContentLength => Status(400)
             | TransferEncodingChunkedNotFinal => Status(400)
@@ -866,6 +943,8 @@ module http1x_defects {
             | ChunkSizeNotHex => Status(400)
             | ChunkSizeNegative => Status(400)
             | ChunkSizeOverflow => Status(400)
+            | ChunkSizeTrailingJunk => Status(400)
+            | TransferEncodingEmpty => Status(400)
             | ChunkBadTerminator => Status(400)
 
             /* A coding the server does not implement, on a message it can
@@ -886,6 +965,10 @@ module http1x_defects {
             /* Tolerances.  A server that takes them serves the request. */
             | BareLfLineEndings => Status(200)
             | LeadingCrlfBeforeRequestLine => Status(200)
+
+            /* The tolerance's limit: past it the server owes the same answer
+             * it owes any other header block it will not hold. */
+            | LeadingCrlfFlood => Status(400)
 
             /* No code is specified and the request never completed, so an
              * error status and a close are both defensible; what is not is
@@ -960,19 +1043,25 @@ module http1x_defects {
         HeaderLineOverlong,
         HeaderBlockOverlong,
         HeaderBlockUnterminated,
+        HeaderFoldedFirst,
+        LeadingCrlfFlood,
         HostMissing,
         HostDuplicate,
         BareLfLineEndings,
         ContentLengthNotNumeric,
         ContentLengthNegative,
         ContentLengthDuplicateConflicting,
+        ContentLengthTrailingJunk,
+        ContentLengthOverflow,
         BodyShortOfContentLength,
         PostWithoutContentLength,
         TransferEncodingWithContentLength,
         TransferEncodingChunkedNotFinal,
         TransferEncodingUnknownCoding,
         TransferEncodingOnHttp10,
+        TransferEncodingEmpty,
         ChunkSizeNotHex,
+        ChunkSizeTrailingJunk,
         ChunkSizeNegative,
         ChunkSizeOverflow,
         ChunkBadTerminator,
@@ -1001,8 +1090,10 @@ module http1x_defects {
             | TransferEncodingWithContentLength => Set(V11)
             | TransferEncodingChunkedNotFinal => Set(V11)
             | TransferEncodingUnknownCoding => Set(V11)
+            | TransferEncodingEmpty => Set(V11)
             | ChunkSizeNotHex => Set(V11)
             | ChunkSizeNegative => Set(V11)
+            | ChunkSizeTrailingJunk => Set(V11)
             | ChunkSizeOverflow => Set(V11)
             | ChunkBadTerminator => Set(V11)
             | ChunkNoLastChunk => Set(V11)
@@ -1302,6 +1393,15 @@ module http1x_client {
         | RspHeaderNameEmpty
         | RspHeaderSpaceBeforeColon
         | RspHeaderBlockOverlong
+        /* One field line longer than the receiver will hold.  The block-level
+         * limit above cannot produce this: a block can be refused for its
+         * total while every line in it is short, and a line can be refused for
+         * its own length while the block is small.  Two limits, two paths. */
+        | RspHeaderLineOverlong
+        /* A continuation line as the first line of the block, which continues
+         * nothing -- the mirror of the request-side case, and the one a parser
+         * reaching for "the last header on the list" dereferences NULL on. */
+        | RspHeaderFoldedFirst
 
         /* --- the status line (RFC 1945 s6.1 / RFC 9112 s4) --------------- */
         /*     status-line = HTTP-version SP status-code SP [ reason-phrase ]
@@ -1317,6 +1417,22 @@ module http1x_client {
         | RspStatusNotNumeric
         | RspStatusOutOfRange(int)
         | RspStatusMissing
+        /* A status line longer than the receiver will hold. */
+        | RspStatusLineOverlong
+        /* Leading whitespace on the status line.  RFC 9112 section 4 puts the
+         * version first and nothing before it, and a tokenizer that skips
+         * leading separators reads the version out of whatever follows. */
+        | RspStatusLineLeadingWhitespace
+        /* A status line with nothing on it at all. */
+        | RspStatusLineEmpty
+        /* Not an HTTP-version: the name is wrong rather than the numbers. */
+        | RspVersionNotHttp
+        /* "HTTP/1.x" -- the separator is there and the minor number is not. */
+        | RspVersionMinorNotNumeric
+        /* A version number past what the receiver will hold.  RFC 9112 section
+         * 2.3 makes HTTP-version a single DIGIT either side of the dot, so
+         * this is outside the grammar as well as outside the range. */
+        | RspVersionNumberTooLarge
         /* A response that does not begin with "HTTP/" is an HTTP/0.9
          * Simple-Response, which RFC 1945 section 6.1 would have the client
          * read as a body.  RFC 9112 section 2.1 lets a recipient reject a
@@ -1365,6 +1481,11 @@ module http1x_client {
         | RspContentLengthNotNumeric
         | RspContentLengthNegative
         | RspContentLengthDuplicateConflicting
+        /* Digits and then something else, and a value past what the receiver
+         * can represent -- the response-side spellings of the two the request
+         * side already refuses. */
+        | RspContentLengthTrailingJunk
+        | RspContentLengthOverflow
         /* Declares more than it sends, then closes: the body is truncated, so
          * there is no complete response to deliver. */
         | RspBodyShortOfContentLength
@@ -1393,10 +1514,21 @@ module http1x_client {
          * reason: a size that is not a size cannot delimit a chunk. */
         | RspChunkSizeNotHex
         | RspChunkSizeNegative
+        | RspChunkSizeTrailingJunk
         | RspChunkBadTerminator
+        /* A chunk-size line longer than the receiver will hold. */
+        | RspChunkLineOverlong
         /* Chunks, then a close, and never a last-chunk: the content is
          * incomplete, so it is not a result. */
         | RspChunkedTruncated
+
+        /* A Transfer-Encoding field naming no coding at all.  RFC 9112 section
+         * 6.3 rule 5 covers it without treating it as an error: where the
+         * final coding is not chunked, "the message body length is determined
+         * by reading the connection until it is closed" -- so this is a
+         * response the client must still deliver, by the framing of last
+         * resort rather than by the one the field claimed. */
+        | RspTransferEncodingNoCoding
 
         /* --- connection management (RFC 9112 section 9.6) ---------------- */
         /* "A server that does not support persistent connections MUST send the
@@ -1456,6 +1588,8 @@ module http1x_client {
             | RspHeaderNameEmpty => CbFailed
             | RspHeaderSpaceBeforeColon => CbFailed
             | RspHeaderBlockOverlong => CbFailed
+            | RspHeaderLineOverlong => CbFailed
+            | RspHeaderFoldedFirst => CbFailed
 
             | RspNoReasonPhrase => CbComplete(200)
             | RspMinorVersionUnknown => CbComplete(200)
@@ -1465,6 +1599,12 @@ module http1x_client {
             | RspStatusNotNumeric => CbFailed
             | RspStatusOutOfRange(_) => CbFailed
             | RspStatusMissing => CbFailed
+            | RspStatusLineOverlong => CbFailed
+            | RspStatusLineLeadingWhitespace => CbFailed
+            | RspStatusLineEmpty => CbFailed
+            | RspVersionNotHttp => CbFailed
+            | RspVersionMinorNotNumeric => CbFailed
+            | RspVersionNumberTooLarge => CbFailed
             | RspNoStatusLine => CbFailed
 
             /* An interim response is not the answer, so the answer is what
@@ -1489,18 +1629,23 @@ module http1x_client {
             | RspChunkedTrailer => CbComplete(200)
             | RspChunkedManyChunks => CbComplete(200)
 
+            | RspTransferEncodingNoCoding => CbComplete(200)
             | RspConnectionClose => CbComplete(200)
             | RspPipelined => CbComplete(200)
 
             | RspContentLengthNotNumeric => CbFailed
             | RspContentLengthNegative => CbFailed
             | RspContentLengthDuplicateConflicting => CbFailed
+            | RspContentLengthTrailingJunk => CbFailed
+            | RspContentLengthOverflow => CbFailed
             | RspBodyShortOfContentLength => CbFailed
             | RspTransferEncodingWithContentLength => CbFailed
 
             | RspChunkSizeNotHex => CbFailed
             | RspChunkSizeNegative => CbFailed
+            | RspChunkSizeTrailingJunk => CbFailed
             | RspChunkBadTerminator => CbFailed
+            | RspChunkLineOverlong => CbFailed
             | RspChunkedTruncated => CbFailed
 
             | RspPeerClosesWithoutResponse => CbFailed
@@ -1578,6 +1723,8 @@ module http1x_client {
         RspHeaderNameEmpty,
         RspHeaderSpaceBeforeColon,
         RspHeaderBlockOverlong,
+        RspHeaderLineOverlong,
+        RspHeaderFoldedFirst,
         RspNoReasonPhrase,
         RspMinorVersionUnknown,
         RspVersionMalformed,
@@ -1585,6 +1732,12 @@ module http1x_client {
         RspStatusNotNumeric,
         RspStatusOutOfRange(99), RspStatusOutOfRange(700),
         RspStatusMissing,
+        RspStatusLineOverlong,
+        RspStatusLineLeadingWhitespace,
+        RspStatusLineEmpty,
+        RspVersionNotHttp,
+        RspVersionMinorNotNumeric,
+        RspVersionNumberTooLarge,
         RspNoStatusLine,
         RspInterimContinue,
         RspInterimRepeated,
@@ -1596,6 +1749,8 @@ module http1x_client {
         RspContentLengthNotNumeric,
         RspContentLengthNegative,
         RspContentLengthDuplicateConflicting,
+        RspContentLengthTrailingJunk,
+        RspContentLengthOverflow,
         RspBodyShortOfContentLength,
         RspBodyLongerThanContentLength,
         RspHeadWithContentLength,
@@ -1606,8 +1761,11 @@ module http1x_client {
         RspChunkedManyChunks,
         RspChunkSizeNotHex,
         RspChunkSizeNegative,
+        RspChunkSizeTrailingJunk,
         RspChunkBadTerminator,
+        RspChunkLineOverlong,
         RspChunkedTruncated,
+        RspTransferEncodingNoCoding,
         RspConnectionClose,
         RspPipelined,
         RspToPostWithBody,
@@ -1657,10 +1815,14 @@ module http1x_client {
             | RspContentLengthNotNumeric => expected == CbFailed
             | RspContentLengthNegative => expected == CbFailed
             | RspContentLengthDuplicateConflicting => expected == CbFailed
+            | RspContentLengthTrailingJunk => expected == CbFailed
+            | RspContentLengthOverflow => expected == CbFailed
             | RspTransferEncodingWithContentLength => expected == CbFailed
             | RspChunkSizeNotHex => expected == CbFailed
             | RspChunkSizeNegative => expected == CbFailed
+            | RspChunkSizeTrailingJunk => expected == CbFailed
             | RspChunkBadTerminator => expected == CbFailed
+            | RspChunkLineOverlong => expected == CbFailed
             | RspChunkedTruncated => expected == CbFailed
             | _ => true
         }
