@@ -355,6 +355,31 @@ wb_fill(
  * the request without a close has understood the framing, while one that
  * completes only when the connection drops has merely been rescued by it.
  */
+/*
+ * Whether the hostile server holds this case's connection open after
+ * answering, rather than making the close part of the message.
+ *
+ * The driver needs the same answer the raw thread does: it may only call
+ * evpl_http_client_close() on a connection it knows is still there, since
+ * closing one the peer has already dropped is a use-after-free (see
+ * run_client_case).
+ */
+static int
+case_holds_connection(int defect)
+{
+    switch (defect) {
+        case HCDEF_RSPBODYCLOSEDELIMITED:
+        case HCDEF_RSPBODYSHORTOFCONTENTLENGTH:
+        case HCDEF_RSPNOSTATUSLINE:
+        case HCDEF_RSPPEERCLOSESWITHOUTRESPONSE:
+        case HCDEF_RSPPEERCLOSESMIDSTATUSLINE:
+        case HCDEF_RSPPEERCLOSESMIDHEADERS:
+            return 0;
+        default:
+            return 1;
+    } /* switch */
+} /* case_holds_connection */
+
 static void
 build_response(
     struct wirebuf                *wb,
@@ -364,7 +389,7 @@ build_response(
     char line[128];
     int  i;
 
-    *close_after = 0;
+    *close_after = !case_holds_connection(c->defect);
 
     switch (c->defect) {
         case HCDEF_RSPWELLFORMED:
@@ -462,7 +487,6 @@ build_response(
         case HCDEF_RSPNOSTATUSLINE:
             /* An HTTP/0.9 Simple-Response: the body, and nothing else. */
             wb_str(wb, RESPONSE_BODY);
-            *close_after = 1;
             break;
 
         case HCDEF_RSPSTATUS:
@@ -483,7 +507,6 @@ build_response(
 
         case HCDEF_RSPBODYCLOSEDELIMITED:
             wb_str(wb, "HTTP/1.0 200 OK\r\n\r\n" RESPONSE_BODY);
-            *close_after = 1;
             break;
 
         case HCDEF_RSPCONTENTLENGTHNOTNUMERIC:
@@ -505,7 +528,6 @@ build_response(
         case HCDEF_RSPBODYSHORTOFCONTENTLENGTH:
             wb_str(wb, "HTTP/1.0 200 OK\r\n"
                    "Content-Length: 64\r\n\r\n" RESPONSE_BODY);
-            *close_after = 1;
             break;
 
         case HCDEF_RSPBODYLONGERTHANCONTENTLENGTH:
@@ -522,18 +544,15 @@ build_response(
             break;
 
         case HCDEF_RSPPEERCLOSESWITHOUTRESPONSE:
-            *close_after = 1;
             break;
 
         case HCDEF_RSPPEERCLOSESMIDSTATUSLINE:
             wb_str(wb, "HTTP/1.0 20");
-            *close_after = 1;
             break;
 
         case HCDEF_RSPPEERCLOSESMIDHEADERS:
             wb_str(wb, "HTTP/1.0 200 OK\r\n"
                    "Content-Length: 27\r\n");
-            *close_after = 1;
             break;
 
         default:
@@ -771,6 +790,34 @@ struct req_ctx {
     char body[BODY_MAX];
 };
 
+/* Collects what the response header block says about the probe, by
+ * enumeration rather than by lookup. */
+struct probe_scan {
+    int  count;
+    int  found;
+    char value[512];
+};
+
+static void
+probe_count_cb(
+    const char *name,
+    const char *value,
+    void       *private_data)
+{
+    struct probe_scan *scan = private_data;
+
+    if (strcasecmp(name, PROBE_NAME) != 0) {
+        return;
+    }
+
+    if (!scan->found) {
+        snprintf(scan->value, sizeof(scan->value), "%s", value);
+        scan->found = 1;
+    }
+
+    scan->count++;
+} /* probe_count_cb */
+
 static void
 client_drain(
     struct evpl              *evpl,
@@ -814,8 +861,9 @@ client_notify(
     void                       *notify_data,
     void                       *private_data)
 {
-    struct req_ctx *ctx = notify_data;
-    const char     *probe;
+    struct req_ctx   *ctx = notify_data;
+    struct probe_scan scan;
+    const char       *probe;
 
     switch (notify_type) {
         case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
@@ -827,6 +875,22 @@ client_notify(
             if (probe) {
                 ctx->probe_present = 1;
                 snprintf(ctx->probe, sizeof(ctx->probe), "%s", probe);
+            }
+
+            /* The other route to the same headers.  An application reads one
+             * by name and enumerates them to log or forward them, and the two
+             * must agree; nothing checked that, and
+             * evpl_http_response_header_iterate had no caller at all. */
+            memset(&scan, 0, sizeof(scan));
+            evpl_http_response_header_iterate(request, probe_count_cb, &scan);
+
+            if ((probe != NULL) != (scan.found != 0) ||
+                (probe && strcmp(probe, scan.value) != 0)) {
+                fprintf(stderr, "response header lookup and iteration "
+                        "disagree ('%.64s' vs '%.64s')\n",
+                        probe ? probe : "(absent)",
+                        scan.found ? scan.value : "(absent)");
+                exit(1);
             }
             break;
         case EVPL_HTTP_NOTIFY_RECEIVE_DATA:
@@ -1082,21 +1146,27 @@ run_client_case(
     }
 
     /*
-     * The connection is retired by letting the hostile server drop its end,
-     * not by calling evpl_http_client_close().
+     * Retiring the connection.
      *
-     * That is not a stylistic choice.  evpl_http_event frees the
-     * evpl_http_conn on EVPL_NOTIFY_DISCONNECTED and there is no notification
-     * an application can register for, so the pointer
-     * evpl_http_client_connect() returned becomes dangling at a moment the
-     * caller cannot observe -- and most of the cases here end with exactly
-     * that, since a client that cannot parse a response closes the
-     * connection.  Calling close() on it is then a use-after-free, which is
-     * what the first run of this harness found.  Until the API grows a way to
-     * learn a connection has gone, the only safe thing an application can do
-     * is what happens here: never close one it did not just successfully use,
-     * and let evpl_http_destroy sweep whatever is still live.
+     * evpl_http_event frees the evpl_http_conn on EVPL_NOTIFY_DISCONNECTED
+     * and there is no notification an application can register for, so the
+     * pointer evpl_http_client_connect() returned becomes dangling at a moment
+     * its owner cannot observe.  Calling evpl_http_client_close() on it is
+     * then a use-after-free, which is what the first run of this harness did.
+     *
+     * So it is called on exactly the cases where the connection is known to be
+     * there: the hostile server is holding its end open for this one, and the
+     * response was delivered whole, which means the client had no reason to
+     * close either.  Everywhere else the connection is retired by letting the
+     * peer drop its end, and evpl_http_destroy sweeps whatever survives to the
+     * end of the run.  "Only close one you have just successfully used" is a
+     * rule an application can follow, but it should not have to.
      */
+    if (case_holds_connection(c->defect) && ctx->n_complete &&
+        !ctx->n_failed) {
+        evpl_http_client_close(agent, conn);
+    }
+
     g_raw.case_done = 1;
     __sync_synchronize();
 

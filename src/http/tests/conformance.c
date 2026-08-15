@@ -432,11 +432,37 @@ struct probe_scan {
     int  found;
 };
 
-/* How many iovecs the echo application drains at a time, and the flat buffer
- * it reassembles them into.  Touched only by the server thread. */
-#define ECHO_DRAIN_IOV 64
+/* How many iovecs the echo application drains at a time. */
+#define ECHO_DRAIN_IOV    64
 
-static char g_echo_body[BODY_LARGE_LEN + 64];
+/*
+ * How much of the response the echo application hands over at a time when it
+ * streams.
+ *
+ * Handing the whole body over at once is the easy shape, and the one every
+ * other test here used, so evpl_http_send_body's partial-drain loop and the
+ * WANT_DATA notification that drives it were never executed.  Streaming is a
+ * property of the application rather than of the protocol -- the bytes on the
+ * wire are identical either way -- so this is invisible to the model, which
+ * still expects exactly the same response.
+ */
+#define ECHO_STREAM_CHUNK 1500
+
+/*
+ * Per-request state for the echo application, allocated when the request is
+ * dispatched and released when it ends.
+ *
+ * "When it ends" is the point: a connection dropped mid-response ends it just
+ * as much as a completed response does, and before EVPL_HTTP_NOTIFY_FAILED
+ * existed there was nowhere to release this from.  One of these would have
+ * leaked per request the defect phase abandoned, which it does constantly.
+ */
+struct echo_state {
+    int  len;       /* bytes of body echoed back                      */
+    int  sent;      /* how much has been handed to libevpl so far     */
+    int  streamed;  /* handing it over in pieces rather than at once  */
+    char body[BODY_LARGE_LEN + 64];
+};
 
 static void
 server_wake(
@@ -465,6 +491,40 @@ probe_count_cb(
     scan->count++;
 } /* probe_count_cb */
 
+/*
+ * Hand libevpl the next piece of the echoed body.
+ *
+ * Whole when it fits, ECHO_STREAM_CHUNK at a time when it does not.  The bytes
+ * on the wire are the same either way -- what differs is that the streamed
+ * form leaves evpl_http_send_body with a partly-drained send ring, which is
+ * what makes it return "not done" and fire WANT_DATA.
+ */
+static void
+echo_send_next(
+    struct evpl              *evpl,
+    struct evpl_http_request *request,
+    struct echo_state        *st)
+{
+    struct evpl_iovec rsp;
+    int               chunk = st->len - st->sent;
+
+    if (chunk <= 0) {
+        return;
+    }
+
+    if (st->streamed && chunk > ECHO_STREAM_CHUNK) {
+        chunk = ECHO_STREAM_CHUNK;
+    }
+
+    evpl_iovec_alloc(evpl, chunk, 0, 1, 0, &rsp);
+    memcpy(rsp.data, st->body + st->sent, chunk);
+    rsp.length = chunk;
+
+    evpl_http_request_add_datav(request, &rsp, 1);
+
+    st->sent += chunk;
+} /* echo_send_next */
+
 static void
 server_notify(
     struct evpl                *evpl,
@@ -476,13 +536,14 @@ server_notify(
     void                       *notify_data,
     void                       *private_data)
 {
-    struct evpl_iovec iov[ECHO_DRAIN_IOV];
-    struct evpl_iovec rsp;
-    struct probe_scan scan;
-    char              echo[1024];
-    char              count[16];
-    uint64_t          avail;
-    int               niov, i, want, total = 0;
+    struct echo_state *st = notify_data;
+    struct evpl_iovec  iov[ECHO_DRAIN_IOV];
+    struct probe_scan  scan;
+    const char        *probe;
+    char               echo[1024];
+    char               count[16];
+    uint64_t           avail;
+    int                niov, i, want;
 
     switch (notify_type) {
         case EVPL_HTTP_NOTIFY_RECEIVE_DATA:
@@ -494,6 +555,16 @@ server_notify(
             memset(&scan, 0, sizeof(scan));
             evpl_http_request_header_iterate(request, probe_count_cb, &scan);
 
+            /* The accessor and the callback argument are two routes to the
+             * same fact, so they must agree; nothing else in the suite says
+             * so, and evpl_http_request_type had no caller at all. */
+            if (evpl_http_request_type(request) != request_type) {
+                fprintf(stderr, "echo: request type accessor disagrees with "
+                        "the notification (%d vs %d)\n",
+                        evpl_http_request_type(request), request_type);
+                exit(1);
+            }
+
             evpl_http_request_add_header(request, ECHO_METHOD,
                                          evpl_http_request_type_to_string(
                                              request));
@@ -501,8 +572,24 @@ server_notify(
             evpl_http_request_add_header(request, ECHO_URI,
                                          evpl_http_request_url(request, NULL));
 
-            if (scan.found) {
-                snprintf(echo, sizeof(echo), "[%s]", scan.value);
+            /* Looked up by name as well as counted by iteration: an
+             * application reads a header the first way, and the two must
+             * produce the same value.  evpl_http_request_header had no caller
+             * either, so nothing checked that the lookup finds what the
+             * iteration sees -- including the case-insensitive match, which
+             * HdrMixedCase depends on. */
+            probe = evpl_http_request_header(request, PROBE_NAME);
+
+            if ((probe != NULL) != (scan.found != 0) ||
+                (probe && strcmp(probe, scan.value) != 0)) {
+                fprintf(stderr, "echo: header lookup and iteration disagree "
+                        "('%s' vs '%s')\n", probe ? probe : "(absent)",
+                        scan.found ? scan.value : "(absent)");
+                exit(1);
+            }
+
+            if (probe) {
+                snprintf(echo, sizeof(echo), "[%s]", probe);
             } else {
                 snprintf(echo, sizeof(echo), "%s", ECHO_ABSENT);
             }
@@ -527,7 +614,7 @@ server_notify(
              * fragmentation. */
             avail = evpl_http_request_get_data_avail(request);
 
-            while (avail > 0 && total < (int) sizeof(g_echo_body)) {
+            while (avail > 0 && st->len < (int) sizeof(st->body)) {
                 want = avail > ECHO_DRAIN_IOV ? ECHO_DRAIN_IOV : (int) avail;
                 niov = evpl_http_request_get_datav(evpl, request, iov, want);
 
@@ -536,35 +623,42 @@ server_notify(
                 }
 
                 for (i = 0; i < niov; i++) {
-                    memcpy(g_echo_body + total, iov[i].data, iov[i].length);
-                    total += iov[i].length;
+                    memcpy(st->body + st->len, iov[i].data, iov[i].length);
+                    st->len += iov[i].length;
                     evpl_iovec_release(evpl, &iov[i]);
                 }
 
                 avail = evpl_http_request_get_data_avail(request);
             }
 
-            evpl_http_server_set_response_length(request, total);
+            /* Anything that will not fit in one piece is handed over in
+             * several, which is the shape an application streaming a file
+             * would use and the only one that reaches WANT_DATA. */
+            st->streamed = st->len > ECHO_STREAM_CHUNK;
 
-            if (total) {
-                evpl_iovec_alloc(evpl, total, 0, 1, 0, &rsp);
-                memcpy(rsp.data, g_echo_body, total);
-                rsp.length = total;
-                evpl_http_request_add_datav(request, &rsp, 1);
-            }
+            evpl_http_server_set_response_length(request, st->len);
+
+            echo_send_next(evpl, request, st);
 
             evpl_http_server_dispatch_default(request, 200);
             break;
         case EVPL_HTTP_NOTIFY_WANT_DATA:
+            /* libevpl has drained what it was given and the response is not
+             * complete: hand over the next piece. */
+            echo_send_next(evpl, request, st);
+            break;
         case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
+            break;
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
+            free(st);
             break;
         case EVPL_HTTP_NOTIFY_FAILED:
-            /* The defect phase closes on the server mid-exchange all the time,
+            /* The defect phase closes on the server mid-exchange constantly,
              * so a request that can no longer be answered is expected here.
-             * What matters is that the notification arrives at all: this is
-             * where an application would release whatever it hung off the
-             * request, and before it existed there was nowhere to do that. */
+             * What matters is that the notification arrives at all: without
+             * it this allocation would leak once per abandoned request, which
+             * is the shape of leak the arm exists to prevent. */
+            free(st);
             break;
     } /* switch */
 } /* server_notify */
@@ -578,8 +672,15 @@ server_dispatch(
     void                       **notify_data,
     void                        *private_data)
 {
+    struct echo_state *st = calloc(1, sizeof(*st));
+
+    if (!st) {
+        fprintf(stderr, "echo: out of memory\n");
+        exit(1);
+    }
+
     *notify_callback = server_notify;
-    *notify_data     = NULL;
+    *notify_data     = st;
 } /* server_dispatch */
 
 static void *
