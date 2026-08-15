@@ -549,7 +549,18 @@ module http10_defects {
     /// and an error response is exactly where holding the connection open is
     /// least defensible -- the server has already decided it cannot parse
     /// what the peer is sending.
-    pure def persistRequired(d: Defect): PersistExpect = MustClose
+    ///
+    /// VersionMinorUnknown is the one exception, and it is not an exception
+    /// to the rule so much as a request the rule does not cover: RFC 2145
+    /// section 2.3 has it served as HTTP/1.1, where a persistent connection
+    /// is the default rather than an extension the client must ask for.  A
+    /// server that closes anyway is still conforming, so this is the weaker
+    /// MayPersist rather than a requirement to hold the connection.
+    pure def persistRequired(d: Defect): PersistExpect =
+        match d {
+            | VersionMinorUnknown => MayPersist
+            | _ => MustClose
+        }
 
     action use(d: Defect, v: Delivery): bool = all {
         current' = { defect: d, delivery: v },
@@ -646,8 +657,14 @@ module http10_defects {
         }
 
     /// HTTP/1.0 has no persistent connections without Keep-Alive, and none of
-    /// these requests asks for it.
-    val everyDefectClosesTheConnection = expectPersist == MustClose
+    /// these requests asks for it -- except the one that is not an HTTP/1.0
+    /// request at all, which is named rather than folded into a default so
+    /// that a second such case cannot appear by accident.
+    val everyDefectClosesTheConnection =
+        match current.defect {
+            | VersionMinorUnknown => expectPersist == MayPersist
+            | _ => expectPersist == MustClose
+        }
 
     val safety =
         outcomeIsSpecified and completeRequestsAreAnswered and

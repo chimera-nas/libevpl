@@ -293,12 +293,6 @@ static const struct known_divergence known_divergences[] = {
       .note    = "HTTP/1.0 response does not close the connection" },
     { .phase   = PHASE_DEFECT,
       .aspect  = ASPECT_PERSIST,
-      .subject = HDEF_REQUESTLINEEXTRATOKEN,
-      .expect  = PACT_CLOSED,
-      .actual  = PACT_OPEN,
-      .note    = "HTTP/1.0 response does not close the connection" },
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_PERSIST,
       .subject = HDEF_HEADERSPACEBEFORECOLON,
       .expect  = PACT_CLOSED,
       .actual  = PACT_OPEN,
@@ -315,25 +309,6 @@ static const struct known_divergence known_divergences[] = {
       .expect  = PACT_CLOSED,
       .actual  = PACT_OPEN,
       .note    = "HTTP/1.0 response does not close the connection" },
-
-    /* ---------------------------------------------------------------- *
-    * 2. The request line is parsed loosely where RFC 1945 section 5.1 is
-    *    exact.
-    *
-    * strtok_r treats a run of SP and HT as one delimiter and skips leading
-    * ones, so " /echo HTTP/1.0" parses as a request whose method is "/echo".
-    * That is answered -- 501, since it is not a method the server knows --
-    * but the request line is malformed rather than the method unimplemented,
-    * and 400 is what says so.  The same permissiveness discards a fourth
-    * token on the line entirely.
-    * ---------------------------------------------------------------- */
-
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_METHODEMPTY,
-      .expect  = 400,
-      .actual  = 501,
-      .note    = "a leading space is skipped, so the URI parses as a method" },
 
     /* ---------------------------------------------------------------- *
     * 3. The header-field grammar of RFC 1945 section 4.2 is only partly
@@ -430,30 +405,9 @@ static const struct known_divergence known_divergences[] = {
       .note    = "a POST with no Content-Length is served as an empty one" },
 
     /* ---------------------------------------------------------------- *
-    * 5. The request line is parsed permissively where RFC 1945 is exact,
-    *    and strictly where it recommends tolerance.
+    * 5. The line parser is strict where RFC 1945 recommends tolerance, and
+    *    two obsolete corners.
     * ---------------------------------------------------------------- */
-
-    /* strtok_r keeps handing out tokens, and only the first three are read,
-     * so anything after the version is silently discarded.  Request-Line is
-     * exactly three fields (section 5.1). */
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_REQUESTLINEEXTRATOKEN,
-      .expect  = 400,
-      .actual  = 200,
-      .note    = "a fourth token on the request line is ignored" },
-
-    /* The version is matched with strncmp against exactly "HTTP/1.1" and
-     * "HTTP/1.0", so "HTTP/1.9" is refused.  RFC 2145 section 2.3: a higher
-     * minor version is a request to be served at the version the server does
-     * speak, which is what makes the minor number usable for negotiation. */
-    { .phase   = PHASE_DEFECT,
-      .aspect  = ASPECT_STATUS,
-      .subject = HDEF_VERSIONMINORUNKNOWN,
-      .expect  = 200,
-      .actual  = 400,
-      .note    = "HTTP/1.9 is refused rather than served as HTTP/1.1" },
 
     /* RECOMMENDED rather than required: RFC 1945 section 19.3 asks parsers to
      * accept a bare LF as a line terminator.  Recorded because a server that
@@ -1998,8 +1952,13 @@ run_defect_case(const struct http_defect_case *c)
      * left a peer it has already decided it cannot talk to holding a
      * resource. */
     if (actual != ACT_NORESPONSE && actual != ACT_STALLED) {
+        /* MayPersist is for the one defect that is not an HTTP/1.0 request --
+         * a higher minor version, served as HTTP/1.1 -- where holding the
+         * connection is the default and closing is also allowed. */
+        ok = c->expect_persist == HPERSIST_MAYPERSIST || r.eof;
+
         record(PHASE_DEFECT, ASPECT_PERSIST, c->defect, PACT_CLOSED,
-               r.eof ? PACT_CLOSED : PACT_OPEN, r.eof, r.eof ? NULL :
+               r.eof ? PACT_CLOSED : PACT_OPEN, ok, ok ? NULL :
                "the connection was still open after the response");
     }
 

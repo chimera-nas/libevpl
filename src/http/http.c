@@ -8,6 +8,7 @@
 #include <string.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <ctype.h>
 
 #include "http_internal.h"
 #include "core/tls/tls.h"
@@ -405,6 +406,63 @@ evpl_http_request_add_header_common(
 } /* evpl_http_request_add_header_common */
 
 /*
+ * Parse an HTTP-Version, which RFC 1945 section 3.1 defines exactly:
+ *
+ *     HTTP-Version = "HTTP" "/" 1*DIGIT "." 1*DIGIT
+ *
+ * Returns 0 and fills in the two numbers, or -1 if the token is not one.
+ * Hand-rolled rather than matched with strncmp against the two versions the
+ * server speaks, because that both accepts too much -- strncmp(token,
+ * "HTTP/1.1", 8) matches "HTTP/1.10" -- and rejects too much, since section
+ * 3.1 makes the minor number a compatibility statement rather than a name to
+ * be matched.
+ */
+static int
+evpl_http_parse_version(
+    const char   *token,
+    unsigned int *major,
+    unsigned int *minor)
+{
+    const char  *p = token;
+    unsigned int i, v;
+
+    if (strncmp(p, "HTTP/", 5) != 0) {
+        return -1;
+    }
+
+    p += 5;
+
+    for (i = 0; i < 2; i++) {
+
+        if (i && *p++ != '.') {
+            return -1;
+        }
+
+        if (!isdigit((unsigned char) *p)) {
+            return -1;
+        }
+
+        v = 0;
+
+        while (isdigit((unsigned char) *p)) {
+            v = v * 10 + (unsigned int) (*p++ - '0');
+
+            if (v > 999) {
+                return -1;
+            }
+        }
+
+        if (i) {
+            *minor = v;
+        } else {
+            *major = v;
+        }
+    }
+
+    return *p ? -1 : 0;
+} /* evpl_http_parse_version */
+
+/*
  * Refuse a request the parser cannot use, and close.
  *
  * RFC 1945 section 9.4.1 (400 Bad Request, "the request could not be
@@ -455,6 +513,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
     struct evpl                     *evpl = agent->evpl;
     char                             line[4096];
     int                              rc;
+    unsigned int                     major, minor;
     char                            *token, *saveptr;
 
     if (!conn->current_request) {
@@ -475,6 +534,19 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         }
 
         if (rc == -1) {
+            return;
+        }
+
+        /* RFC 1945 section 5.1 is exact -- Method SP Request-URI SP
+         * HTTP-Version -- and section 19.3 asks a server to tolerate any
+         * amount of SP or HT *between* those fields, which is what strtok_r
+         * gives.  What it does not ask for is tolerating a run before the
+         * first one: strtok_r skips leading delimiters too, so " /echo
+         * HTTP/1.0" would otherwise parse as a request whose method is the
+         * URI. */
+        if (line[0] == ' ' || line[0] == '\t') {
+            evpl_http_server_reject(evpl, bind, 400,
+                                    "request line starts with whitespace");
             return;
         }
 
@@ -511,12 +583,26 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             return;
         }
 
-        if (strncmp(token, "HTTP/1.1", 8) == 0) {
-            request->http_version = EVPL_HTTP_REQUEST_HTTP_VERSION_1_1;
-        } else if (strncmp(token, "HTTP/1.0", 8) == 0) {
-            request->http_version = EVPL_HTTP_REQUEST_HTTP_VERSION_1_0;
-        } else {
+        if (evpl_http_parse_version(token, &major, &minor) < 0 || major != 1) {
+            /* RFC 1945 names no code for a version it cannot serve -- 505 is
+             * an HTTP/1.1 addition -- so a request line the grammar does not
+             * describe is a malformed one. */
             evpl_http_server_reject(evpl, bind, 400, "unsupported http version");
+            return;
+        }
+
+        /* RFC 2145 section 2.3: answer at the highest version the server
+         * speaks whose major matches, so HTTP/1.9 is a request to be served
+         * as HTTP/1.1 rather than one to refuse.  Refusing it is what makes
+         * the minor number useless for negotiation. */
+        request->http_version = minor ? EVPL_HTTP_REQUEST_HTTP_VERSION_1_1
+                                      : EVPL_HTTP_REQUEST_HTTP_VERSION_1_0;
+
+        token = strtok_r(NULL, " \t", &saveptr);
+
+        if (token) {
+            evpl_http_server_reject(evpl, bind, 400,
+                                    "trailing token on the request line");
             return;
         }
 
