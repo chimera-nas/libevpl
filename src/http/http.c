@@ -134,7 +134,8 @@ evpl_http_destroy(struct evpl_http_agent *agent)
 {
     struct evpl_http_request        *request;
     struct evpl_http_request_header *header;
-    struct evpl_http_conn           *conn;
+    struct evpl_http_conn           *conn, *tmp;
+    int                              live;
 
     /* Close and retire every live connection before freeing the agent.  Conn
      * binds hold notify callbacks that dereference the agent (the h2 receive
@@ -143,13 +144,29 @@ evpl_http_destroy(struct evpl_http_agent *agent)
      * evpl_destroy's close pump delivers that data.  Pump the loop until the
      * disconnect notifications retire each conn (evpl_close is idempotent on
      * a bind already pending close).  Must run on the agent's evpl thread,
-     * which every existing caller already does. */
+     * which every existing caller already does.
+     *
+     * A retired client connection that its owner never released has no bind
+     * left to close and no notification left to wait for, so it is freed here
+     * directly; waiting for one would not terminate. */
     while (agent->conns) {
-        DL_FOREACH(agent->conns, conn)
+
+        live = 0;
+
+        DL_FOREACH_SAFE(agent->conns, conn, tmp)
         {
-            evpl_close(agent->evpl, conn->bind);
+            if (conn->bind) {
+                evpl_close(agent->evpl, conn->bind);
+                live = 1;
+            } else {
+                DL_DELETE(agent->conns, conn);
+                evpl_free(conn);
+            }
         }
-        evpl_continue(agent->evpl);
+
+        if (live) {
+            evpl_continue(agent->evpl);
+        }
     }
 
     while (agent->free_headers) {
@@ -1621,8 +1638,26 @@ evpl_http_event(
                 request = next;
             }
 
-            DL_DELETE(http_conn->agent->conns, http_conn);
-            evpl_free(http_conn);
+            /*
+             * A server connection was never handed to anyone: the application
+             * sees requests, not connections, so nothing outside can be
+             * holding a pointer and it is freed here.
+             *
+             * A client connection is a handle its owner is holding, and the
+             * owner has no way to be told that the peer went away -- so
+             * freeing it here would leave a pointer that becomes a
+             * use-after-free at a moment nothing observable happened.  Retire
+             * it instead: the bind is gone, every outstanding request has just
+             * been failed, and the struct waits for the
+             * evpl_http_client_close() its owner still owes it.
+             */
+            if (http_conn->is_server || http_conn->released) {
+                DL_DELETE(http_conn->agent->conns, http_conn);
+                evpl_free(http_conn);
+            } else {
+                http_conn->bind      = NULL;
+                http_conn->connected = 0;
+            }
         }
         break;
         case EVPL_NOTIFY_RECV_DATA:
@@ -2132,7 +2167,18 @@ evpl_http_client_close(
     struct evpl_http_agent *agent,
     struct evpl_http_conn  *conn)
 {
-    evpl_close(agent->evpl, conn->bind);
+    /* Mark it released first, so that the disconnect this is about to provoke
+     * frees the struct rather than retiring it -- and so that a connection
+     * whose peer already went away, which has no bind left to close, is freed
+     * here instead. */
+    conn->released = 1;
+
+    if (conn->bind) {
+        evpl_close(agent->evpl, conn->bind);
+    } else {
+        DL_DELETE(agent->conns, conn);
+        evpl_free(conn);
+    }
 } /* evpl_http_client_close */
 
 SYMBOL_EXPORT struct evpl_http_request *
@@ -2190,6 +2236,26 @@ evpl_http_request_dispatch(
     request->notify_callback = notify_callback;
     request->notify_data     = notify_data;
     request->request_flags  |= EVPL_HTTP_REQUEST_RESPONSE_READY;
+
+    /*
+     * A retired connection can carry nothing, and queueing the request on it
+     * would leave the caller waiting on a completion that can never arrive --
+     * the one thing EVPL_HTTP_NOTIFY_FAILED exists to prevent.  Answer it now
+     * instead; the callback runs before this returns, which is documented on
+     * evpl_http_client_close().
+     */
+    if (unlikely(!conn->bind)) {
+        request->status = EVPL_HTTP_ERROR_CONN_LOST;
+
+        if (notify_callback) {
+            notify_callback(evpl, conn->agent, request,
+                            EVPL_HTTP_NOTIFY_FAILED, request->request_type,
+                            request->uri, notify_data, evpl_http_priv(conn));
+        }
+
+        evpl_http_request_free(conn->agent, request);
+        return;
+    }
 
 #ifdef HAVE_NGHTTP2
     if (conn->proto == EVPL_HTTP_PROTO_H2) {

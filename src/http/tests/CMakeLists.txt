@@ -19,7 +19,7 @@ unit_test(http max_headers http_max_headers.c)
 target_link_libraries(http_max_headers evpl_http)
 
 # ---------------------------------------------------------------------------
-# Model-based HTTP/1.0 conformance test
+# Model-based HTTP/1.x conformance test
 #
 # The cases this test runs are generated from the Quint model in quint/ by a
 # build step, so the traces and the resulting case table are build artifacts
@@ -44,10 +44,10 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
         COMMAND ${HTTP_QUINT_SRC_DIR}/generate_cases.sh
                 ${QUINT_EXECUTABLE} ${PYTHON3_EXECUTABLE}
                 ${HTTP_QUINT_SRC_DIR} ${HTTP_QUINT_WORK_DIR} ${HTTP_CASES}
-        DEPENDS ${HTTP_QUINT_SRC_DIR}/http10.qnt
+        DEPENDS ${HTTP_QUINT_SRC_DIR}/http1x.qnt
                 ${HTTP_QUINT_SRC_DIR}/itf_to_cases.py
                 ${HTTP_QUINT_SRC_DIR}/generate_cases.sh
-        COMMENT "Generating HTTP/1.0 conformance cases from the Quint model"
+        COMMENT "Generating HTTP/1.x conformance cases from the Quint model"
         VERBATIM)
 
     add_custom_target(http_conformance_cases DEPENDS ${HTTP_CASES})
@@ -57,10 +57,10 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     target_include_directories(http_conformance PRIVATE ${HTTP_QUINT_WORK_DIR})
     target_link_libraries(http_conformance evpl_http)
 
-    # Several hundred exchanges, a handful of which deliberately wait out a
-    # response deadline to prove no answer arrives -- more than the 60s the
-    # unit_test macro grants by default.
-    set_tests_properties(libevpl/http/conformance PROPERTIES TIMEOUT 180)
+    # Well over a thousand exchanges, a handful of which deliberately wait out
+    # a response deadline to prove no answer arrives -- far more than the 60s
+    # the unit_test macro grants by default.
+    set_tests_properties(libevpl/http/conformance PROPERTIES TIMEOUT 300)
 
     # -----------------------------------------------------------------------
     # The same idea inverted: a hostile server driving libevpl's *client*.
@@ -69,7 +69,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # responses it sees come from a real libevpl server and are therefore
     # always well formed.  conformance_client.c is a raw socket pretending to
     # be a server, so the response bytes are chosen by the test.  It shares the
-    # generated case table, whose client half comes from the http10_client
+    # generated case table, whose client half comes from the http1x_client
     # module of the same model.
     # -----------------------------------------------------------------------
 

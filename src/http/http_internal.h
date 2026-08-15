@@ -129,6 +129,12 @@ struct evpl_http_request {
 
 struct evpl_http_conn {
     int                       is_server;
+    /* Client connections only: the application has called
+     * evpl_http_client_close() and is no longer holding the handle, so the
+     * struct may be freed.  Until then a dropped connection is retired --
+     * bind cleared, requests failed -- but kept, because its owner has a
+     * pointer to it and no way to be told the pointer has gone stale. */
+    int                       released;
     /* Why this connection is going down, as an EVPL_HTTP_ERROR_* code, or 0
      * for the default (the peer went away).  Set by the parse paths before
      * they close, so the disconnect that follows can tell each pending request

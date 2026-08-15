@@ -3,23 +3,23 @@
 #
 # SPDX-License-Identifier: LGPL-2.1-only
 
-"""Convert Quint ITF traces of http10.qnt into a C case table.
+"""Convert Quint ITF traces of http1x.qnt into a C case table.
 
-http10.qnt enumerates HTTP/1.0 requests and their required responses
-symbolically.  This script turns the resulting traces into a C header that
-conformance.c compiles in, so the test binary carries its cases as static
-data -- no JSON parser, no Python, and no quint at run time.  CMake runs
-generate_cases.sh, which runs this; the header lives in the build tree so it
-can never drift from the model.
+http1x.qnt enumerates HTTP/1.0 and HTTP/1.1 messages and their required
+handling symbolically.  This script turns the resulting traces into a C header
+that conformance.c and conformance_client.c compile in, so the test binaries
+carry their cases as static data -- no JSON parser, no Python, and no quint at
+run time.  CMake runs generate_cases.sh, which runs this; the header lives in
+the build tree so it can never drift from the model.
 
-Two trace sets go in and two tables come out: the positive matrix from
-http10_requests and the defect taxonomy from http10_defects.  They share the
-outcome vocabulary (module http10), so the enums for it are emitted once and
-both tables index them.
+Three trace sets go in and three tables come out: the positive matrix from
+http1x_requests, the defect taxonomy from http1x_defects and the response
+taxonomy from http1x_client.  They share the outcome vocabulary (module
+http1x), so the enums for it are emitted once and all three tables index them.
 
 Every tag the model can emit must appear in the tables below.  An unknown tag
 is a hard error rather than a silently skipped case: if the model gains a
-variant, the C driver needs a corresponding arm, and failing loudly here is
+variant, the C drivers need a corresponding arm, and failing loudly here is
 what forces that.
 """
 
@@ -30,33 +30,42 @@ import sys
 # reordering a list renumbers the enum -- harmless (the header is regenerated
 # atomically with the tables) but avoid it for reviewable diffs.
 
-# --- module http10: the shared vocabulary ----------------------------------
+# --- module http1x: the shared vocabulary ----------------------------------
 
-DELIVERIES = ["OneWrite", "TwoWrites", "Dribble"]
+VERSIONS = ["V10", "V11"]
+
+DELIVERIES = ["OneWrite", "TwoWrites", "Dribble", "Pipelined"]
 
 OUTCOMES = ["Status", "NotSuccess", "SimpleResponse"]
 
 BODY_EXPECTS = ["BodyEchoed", "BodyAbsent", "BodyAny"]
 
-PERSISTS = ["MustClose", "MayPersist"]
+PERSISTS = ["MustClose", "MayPersist", "MustPersist"]
+
+INTERIMS = ["InterimNone", "InterimAllowed"]
 
 PROBE_EXPECTS = ["ProbeAbsent", "ProbeValue", "ProbeEmpty", "ProbeTwice",
                  "ProbeAny"]
 
-# --- module http10_requests ------------------------------------------------
+# --- module http1x_requests ------------------------------------------------
 
 METHODS = ["MGet", "MHead", "MPost"]
 
-URIS = ["UriRoot", "UriPath", "UriQuery", "UriEscaped", "UriLong"]
+URIS = ["UriRoot", "UriPath", "UriQuery", "UriEscaped", "UriLong",
+        "UriAbsolute"]
 
 HDRS = ["HdrNone", "HdrPlain", "HdrPadded", "HdrEmpty", "HdrMixedCase",
         "HdrFolded", "HdrDuplicate", "HdrMany"]
 
-BODIES = ["BodyNone", "BodyEmpty", "BodyOne", "BodySmall", "BodyLarge"]
+BODIES = ["BodyNone", "BodyEmpty", "BodyOne", "BodySmall", "BodyLarge",
+          "BodyChunked", "BodyChunkedExt", "BodyChunkedTrailer",
+          "BodyChunkedMany"]
 
-CONNS = ["ConnDefault", "ConnKeepAlive"]
+CONNS = ["ConnDefault", "ConnKeepAlive", "ConnClose"]
 
-# --- module http10_client --------------------------------------------------
+EXPECTS = ["ExpectNone", "ExpectContinue"]
+
+# --- module http1x_client --------------------------------------------------
 
 CLIENT_OUTCOMES = ["CbComplete", "CbFailed"]
 
@@ -64,7 +73,10 @@ CLIENT_BODIES = ["BodyDelivered", "BodyNone", "BodyUnchecked"]
 
 CLIENT_METHODS = ["CGet", "CHead", "CPost"]
 
-CLIENT_SUPPLIES = ["SupplyNone", "SupplyWhole", "SupplyStreamed"]
+CLIENT_SUPPLIES = ["SupplyNone", "SupplyWhole", "SupplyStreamed",
+                   "SupplyChunked"]
+
+CLIENT_REQUESTS = ["OneRequest", "TwoPipelined"]
 
 CLIENT_DEFECTS = [
     "RspWellFormed",
@@ -83,23 +95,39 @@ CLIENT_DEFECTS = [
     "RspStatusOutOfRange",
     "RspStatusMissing",
     "RspNoStatusLine",
+    "RspInterimContinue",
+    "RspInterimRepeated",
+    "RspInterimEarlyHints",
     "RspStatus",
     "RspStatusNoBody",
     "RspBodyCloseDelimited",
+    "RspCloseDelimitedHttp11",
     "RspContentLengthNotNumeric",
     "RspContentLengthNegative",
     "RspContentLengthDuplicateConflicting",
     "RspBodyShortOfContentLength",
     "RspBodyLongerThanContentLength",
     "RspHeadWithContentLength",
+    "RspTransferEncodingWithContentLength",
+    "RspChunked",
+    "RspChunkedExtension",
+    "RspChunkedTrailer",
+    "RspChunkedManyChunks",
+    "RspChunkSizeNotHex",
+    "RspChunkSizeNegative",
+    "RspChunkBadTerminator",
+    "RspChunkedTruncated",
+    "RspConnectionClose",
+    "RspPipelined",
     "RspToPostWithBody",
     "RspToStreamedPost",
+    "RspToChunkedPost",
     "RspPeerClosesWithoutResponse",
     "RspPeerClosesMidStatusLine",
     "RspPeerClosesMidHeaders",
 ]
 
-# --- module http10_defects -------------------------------------------------
+# --- module http1x_defects -------------------------------------------------
 
 DEFECTS = [
     "NoDefect",
@@ -109,6 +137,7 @@ DEFECTS = [
     "RequestLineOneToken",
     "RequestLineExtraToken",
     "RequestLineNoVersion",
+    "LeadingCrlfBeforeRequestLine",
     "VersionMalformed",
     "VersionMajorUnsupported",
     "VersionMinorUnknown",
@@ -119,12 +148,24 @@ DEFECTS = [
     "HeaderLineOverlong",
     "HeaderBlockOverlong",
     "HeaderBlockUnterminated",
+    "HostMissing",
+    "HostDuplicate",
     "BareLfLineEndings",
     "ContentLengthNotNumeric",
     "ContentLengthNegative",
     "ContentLengthDuplicateConflicting",
     "BodyShortOfContentLength",
     "PostWithoutContentLength",
+    "TransferEncodingWithContentLength",
+    "TransferEncodingChunkedNotFinal",
+    "TransferEncodingUnknownCoding",
+    "TransferEncodingOnHttp10",
+    "ChunkSizeNotHex",
+    "ChunkSizeNegative",
+    "ChunkSizeOverflow",
+    "ChunkBadTerminator",
+    "ChunkNoLastChunk",
+    "ChunkTruncated",
 ]
 
 
@@ -177,11 +218,13 @@ def collect_requests(paths):
         cur = state["current"]
         outcome, status = outcome_of(state["expected"])
         key = (
+            index_of(VERSIONS, tag_of(cur["ver"]), "version"),
             index_of(METHODS, tag_of(cur["method"]), "method"),
             index_of(URIS, tag_of(cur["uri"]), "uri"),
             index_of(HDRS, tag_of(cur["hdr"]), "header shape"),
             index_of(BODIES, tag_of(cur["body"]), "body"),
             index_of(CONNS, tag_of(cur["conn"]), "connection"),
+            index_of(EXPECTS, tag_of(cur["expect"]), "expectation"),
             index_of(DELIVERIES, tag_of(cur["delivery"]), "delivery"),
             outcome,
             status,
@@ -191,6 +234,8 @@ def collect_requests(paths):
                      "probe expectation"),
             index_of(PERSISTS, tag_of(state["expectPersist"]),
                      "persistence expectation"),
+            index_of(INTERIMS, tag_of(state["expectInterim"]),
+                     "interim expectation"),
         )
         if key not in seen:
             seen.add(key)
@@ -205,6 +250,7 @@ def collect_defects(paths):
         outcome, status = outcome_of(state["expected"])
         key = (
             index_of(DEFECTS, tag_of(cur["defect"]), "defect"),
+            index_of(VERSIONS, tag_of(cur["ver"]), "version"),
             index_of(DELIVERIES, tag_of(cur["delivery"]), "delivery"),
             outcome,
             status,
@@ -240,6 +286,8 @@ def collect_client(paths):
             index_of(CLIENT_METHODS, tag_of(state["expectMethod"]), "method"),
             index_of(CLIENT_SUPPLIES, tag_of(state["expectSupply"]),
                      "request body supply"),
+            index_of(CLIENT_REQUESTS, tag_of(state["expectRequests"]),
+                     "request count"),
         )
         if key not in seen:
             seen.add(key)
@@ -324,11 +372,13 @@ def main():
     o.append(" * GENERATED FILE -- DO NOT EDIT.")
     o.append(" *")
     o.append(" * Produced by quint/generate_cases.sh from the Quint model in")
-    o.append(" * quint/http10.qnt.  Each row of http_request_cases is one")
-    o.append(" * legal HTTP/1.0 request; each row of http_defect_cases is one")
-    o.append(" * malformed one.  The driver in conformance.c maps the symbolic")
-    o.append(" * classes to wire bytes and checks the server's response")
-    o.append(" * against the prediction carried alongside them.")
+    o.append(" * quint/http1x.qnt.  Each row of http_request_cases is one")
+    o.append(" * legal HTTP/1.x request; each row of http_defect_cases is one")
+    o.append(" * malformed one; each row of http_client_cases is one response")
+    o.append(" * a client must cope with.  The drivers in conformance.c and")
+    o.append(" * conformance_client.c map the symbolic classes to wire bytes")
+    o.append(" * and check the peer's behaviour against the prediction")
+    o.append(" * carried alongside them.")
     o.append(" */")
     o.append("")
     o.append("#pragma once")
@@ -337,10 +387,12 @@ def main():
     o.append("")
 
     # Shared vocabulary.
+    emit_enum(o, "http_version_cls", "HVER", VERSIONS)
     emit_enum(o, "http_delivery", "HDLV", DELIVERIES)
     emit_enum(o, "http_outcome", "HOUT", OUTCOMES)
     emit_enum(o, "http_body_expect", "HBODY", BODY_EXPECTS)
     emit_enum(o, "http_persist_expect", "HPERSIST", PERSISTS)
+    emit_enum(o, "http_interim_expect", "HINTERIM", INTERIMS)
     emit_enum(o, "http_probe_expect", "HPROBE", PROBE_EXPECTS)
 
     # Positive matrix.
@@ -349,6 +401,7 @@ def main():
     emit_enum(o, "http_hdr_cls", "HHDR", HDRS)
     emit_enum(o, "http_body_cls", "HBDY", BODIES)
     emit_enum(o, "http_conn_cls", "HCONN", CONNS)
+    emit_enum(o, "http_expect_cls", "HEXP", EXPECTS)
 
     # Defect taxonomy.
     emit_enum(o, "http_defect", "HDEF", DEFECTS)
@@ -358,40 +411,48 @@ def main():
     emit_enum(o, "http_client_body", "HCBODY", CLIENT_BODIES)
     emit_enum(o, "http_client_method", "HCMETH", CLIENT_METHODS)
     emit_enum(o, "http_client_supply", "HCSUP", CLIENT_SUPPLIES)
+    emit_enum(o, "http_client_requests", "HCREQ", CLIENT_REQUESTS)
     emit_enum(o, "http_client_defect", "HCDEF", CLIENT_DEFECTS)
 
+    emit_names(o, "http_version_name", "http_version_cls", VERSIONS)
     emit_names(o, "http_delivery_name", "http_delivery", DELIVERIES)
     emit_names(o, "http_method_name", "http_method_cls", METHODS)
     emit_names(o, "http_uri_name", "http_uri_cls", URIS)
     emit_names(o, "http_hdr_name", "http_hdr_cls", HDRS)
     emit_names(o, "http_body_name", "http_body_cls", BODIES)
     emit_names(o, "http_conn_name", "http_conn_cls", CONNS)
+    emit_names(o, "http_expect_name", "http_expect_cls", EXPECTS)
     emit_names(o, "http_defect_name", "http_defect", DEFECTS)
     emit_names(o, "http_probe_expect_name", "http_probe_expect", PROBE_EXPECTS)
     emit_names(o, "http_client_defect_name", "http_client_defect",
                CLIENT_DEFECTS)
 
     o.append("struct http_request_case {")
+    o.append("    uint8_t ver;           /* HVER_*: the version claimed      */")
     o.append("    uint8_t method;")
     o.append("    uint8_t uri;")
     o.append("    uint8_t hdr;")
     o.append("    uint8_t body;")
     o.append("    uint8_t conn;")
+    o.append("    uint8_t expect_cls;    /* HEXP_*: Expect: 100-continue     */")
     o.append("    uint8_t delivery;")
     o.append("    uint8_t expect;        /* HOUT_*: the required outcome    */")
     o.append("    uint8_t expect_body;   /* HBODY_*                          */")
     o.append("    uint8_t expect_probe;  /* HPROBE_*                         */")
     o.append("    uint8_t expect_persist;/* HPERSIST_*                       */")
+    o.append("    uint8_t expect_interim;/* HINTERIM_*                       */")
     o.append("    int16_t expect_status; /* status for HOUT_STATUS, else -1  */")
     o.append("};")
     o.append("")
 
     o.append("static const struct http_request_case http_request_cases[] = {")
-    for (method, uri, hdr, body, conn, delivery, outcome, status,
-         body_expect, probe_expect, persist) in requests:
-        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d },"
-                 % (method, uri, hdr, body, conn, delivery, outcome,
-                    body_expect, probe_expect, persist, status))
+    for (ver, method, uri, hdr, body, conn, expect_cls, delivery, outcome,
+         status, body_expect, probe_expect, persist, interim) in requests:
+        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, "
+                 "%d },"
+                 % (ver, method, uri, hdr, body, conn, expect_cls, delivery,
+                    outcome, body_expect, probe_expect, persist, interim,
+                    status))
     o.append("};")
     o.append("")
     o.append("#define HTTP_NUM_REQUEST_CASES "
@@ -400,6 +461,7 @@ def main():
 
     o.append("struct http_defect_case {")
     o.append("    uint8_t defect;")
+    o.append("    uint8_t ver;           /* HVER_*                           */")
     o.append("    uint8_t delivery;")
     o.append("    uint8_t expect;        /* HOUT_*                           */")
     o.append("    uint8_t expect_persist;/* HPERSIST_*                       */")
@@ -408,9 +470,9 @@ def main():
     o.append("")
 
     o.append("static const struct http_defect_case http_defect_cases[] = {")
-    for defect, delivery, outcome, status, persist in defects:
-        o.append("    { %d, %d, %d, %d, %d }," %
-                 (defect, delivery, outcome, persist, status))
+    for defect, ver, delivery, outcome, status, persist in defects:
+        o.append("    { %d, %d, %d, %d, %d, %d }," %
+                 (defect, ver, delivery, outcome, persist, status))
     o.append("};")
     o.append("")
     o.append("#define HTTP_NUM_DEFECT_CASES "
@@ -425,6 +487,7 @@ def main():
     o.append("    uint8_t expect_probe;  /* HPROBE_*                         */")
     o.append("    uint8_t method;        /* HCMETH_*                         */")
     o.append("    uint8_t supply;        /* HCSUP_*: how the body is handed over */")
+    o.append("    uint8_t requests;      /* HCREQ_*: how many on one conn    */")
     o.append("    int16_t param;         /* defect payload, -1 when none     */")
     o.append("    int16_t expect_status; /* status for HCOUT_CBCOMPLETE      */")
     o.append("};")
@@ -432,10 +495,10 @@ def main():
 
     o.append("static const struct http_client_case http_client_cases[] = {")
     for (defect, param, delivery, outcome, status, body, probe, method,
-         supply) in client:
-        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d }," %
+         supply, nreq) in client:
+        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d, %d }," %
                  (defect, delivery, outcome, body, probe, method, supply,
-                  param, status))
+                  nreq, param, status))
     o.append("};")
     o.append("")
     o.append("#define HTTP_NUM_CLIENT_CASES "

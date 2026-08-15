@@ -3,31 +3,42 @@
  *
  * SPDX-License-Identifier: LGPL-2.1-only
  *
- * Model-based HTTP/1.0 conformance test, client direction.
+ * Model-based HTTP/1.x conformance test, client direction.
  *
  * conformance.c drives libevpl's HTTP *server* from a raw socket.  This is its
  * mirror image: a raw socket pretending to be a server, feeding deliberately
  * defective responses to a real libevpl HTTP client and checking what the
- * client does with them.  The cases come from the http10_client module of
- * quint/http10.qnt and are compiled in as part of http_cases.h.
+ * client does with them.  The cases come from the http1x_client module of
+ * quint/http1x.qnt and are compiled in as part of http_cases.h.
  *
  * conformance.c cannot reach any of this, because the responses it sees come
  * from a real libevpl server and are therefore well formed by construction --
  * the same reason the RPC2 suite needs conformance_client.c alongside
  * conformance.c.
  *
- * The two requirements that carry most of the weight here, because both are
- * easy to violate and neither is visible from a well-behaved peer:
+ * The three requirements that carry most of the weight here, because all are
+ * easy to violate and none is visible from a well-behaved peer:
  *
  *   1. No request may be abandoned in silence.  A caller that dispatched a
  *      request is owed exactly one answer -- the response, or the news that
  *      there will not be one -- whatever the peer does, including hanging up.
  *      Anything else is a caller blocked forever.
  *
- *   2. A response whose framing is broken is not a result.  A truncated body
- *      or a length that is not a length must not reach the caller as a
- *      completed response, because the value it would hand over is one the
- *      peer never sent.
+ *   2. A response whose framing is broken is not a result.  A truncated body,
+ *      a length that is not a length or a chunk size that is not a size must
+ *      not reach the caller as a completed response, because the value it
+ *      would hand over is one the peer never sent.
+ *
+ *   3. An interim response is not the answer.  RFC 9110 section 15.2 requires
+ *      a client to parse 1xx responses that precede the final one; reporting
+ *      one as the result loses the real response and leaves it arriving on a
+ *      connection the client believes is idle.
+ *
+ * Alongside those, and outside the model because they hold for every case, the
+ * hostile server examines the requests it receives: a Host header on each one
+ * (RFC 9112 section 3.2 makes it a MUST for HTTP/1.1, which is the version
+ * libevpl's client speaks) and, where the caller supplied a body, exactly the
+ * octets it handed over under a framing that describes them.
  *
  * As in conformance.c, the model encodes the SPECIFICATION.  Reviewed
  * divergences are listed in known_divergences[] with a note; an unlisted one
@@ -68,6 +79,7 @@ static int port = 8096;
 #define PROBE_NAME        "X-Probe"
 #define PROBE_VALUE       "probe-value"
 #define RESPONSE_BODY     "hello from a hostile server"
+#define RESPONSE_BODY_HEX "1b"    /* strlen(RESPONSE_BODY), for chunk sizes */
 #define REQUEST_URI       "/probe"
 
 /* Mirrors libevpl's default http_max_header_size, which the overlong case has
@@ -79,6 +91,10 @@ static int port = 8096;
  * making progress -- which is what several cases look for.  Kept small
  * because a few cases are expected to hit it. */
 #define CASE_TIMEOUT_MS   400
+
+/* How long the driver keeps pumping after a case has reached a terminal state,
+ * which is what proves the SECOND callback does not arrive. */
+#define SETTLE_MS         25
 
 /* How long the event loop blocks per turn.  Bounded so the pump keeps ticking
  * while nothing is arriving, which is what lets a case time out rather than
@@ -102,6 +118,9 @@ static int port = 8096;
 #define REQUEST_BODY_LEN  4000
 #define REQUEST_CHUNK     1500
 
+/* At most this many requests on one connection (the pipelined case). */
+#define MAX_REQUESTS      2
+
 /* ------------------------------------------------------------------ *
 * Outcomes the driver can observe that the model has no name for
 * ------------------------------------------------------------------ */
@@ -118,6 +137,8 @@ static int port = 8096;
 #define ASPECT_ONCE       3     /* exactly one completion, never two */
 #define ASPECT_REASON     4     /* which EVPL_HTTP_ERROR_* a failure carried */
 #define ASPECT_REQUEST    5     /* the request body the peer actually received */
+#define ASPECT_HOST       6     /* the Host header HTTP/1.1 requires           */
+#define ASPECT_PIPELINE   7     /* the second of two requests on one connection */
 
 /* ASPECT_BODY / ASPECT_ONCE actuals. */
 #define VACT_OK           0
@@ -127,13 +148,15 @@ static const char *
 aspect_name(int aspect)
 {
     switch (aspect) {
-        case ASPECT_OUTCOME: return "outcome";
-        case ASPECT_BODY:    return "body";
-        case ASPECT_PROBE:   return "probe";
-        case ASPECT_ONCE:    return "once";
-        case ASPECT_REASON:  return "reason";
-        case ASPECT_REQUEST: return "request";
-        default:             return "?";
+        case ASPECT_OUTCOME:  return "outcome";
+        case ASPECT_BODY:     return "body";
+        case ASPECT_PROBE:    return "probe";
+        case ASPECT_ONCE:     return "once";
+        case ASPECT_REASON:   return "reason";
+        case ASPECT_REQUEST:  return "request";
+        case ASPECT_HOST:     return "host";
+        case ASPECT_PIPELINE: return "pipeline";
+        default:              return "?";
     } /* switch */
 } /* aspect_name */
 
@@ -358,17 +381,6 @@ wb_fill(
 } /* wb_fill */
 
 /*
- * Build the response for one case.  Sets *close_after when the case needs the
- * connection dropped: a close is itself part of the message for a
- * close-delimited body and for the truncation cases, and it is the whole of
- * the message for the three where the peer simply hangs up.
- *
- * Everywhere else the connection is deliberately LEFT OPEN, which is what
- * makes a case like RspStatusNoBody mean anything: a client that completes
- * the request without a close has understood the framing, while one that
- * completes only when the connection drops has merely been rescued by it.
- */
-/*
  * Whether the hostile server holds this case's connection open after
  * answering, rather than making the close part of the message.
  *
@@ -376,13 +388,21 @@ wb_fill(
  * evpl_http_client_close() on a connection it knows is still there, since
  * closing one the peer has already dropped is a use-after-free (see
  * run_client_case).
+ *
+ * Everywhere this returns 1 the connection is deliberately LEFT OPEN, which is
+ * what makes a case like RspStatusNoBody mean anything: a client that
+ * completes the request without a close has understood the framing, while one
+ * that completes only when the connection drops has merely been rescued by it.
  */
 static int
 case_holds_connection(int defect)
 {
     switch (defect) {
         case HCDEF_RSPBODYCLOSEDELIMITED:
+        case HCDEF_RSPCLOSEDELIMITEDHTTP11:
         case HCDEF_RSPBODYSHORTOFCONTENTLENGTH:
+        case HCDEF_RSPCHUNKEDTRUNCATED:
+        case HCDEF_RSPCONNECTIONCLOSE:
         case HCDEF_RSPNOSTATUSLINE:
         case HCDEF_RSPPEERCLOSESWITHOUTRESPONSE:
         case HCDEF_RSPPEERCLOSESMIDSTATUSLINE:
@@ -393,6 +413,13 @@ case_holds_connection(int defect)
     } /* switch */
 } /* case_holds_connection */
 
+/* One ordinary 200 with a declared length, which several cases answer with
+ * because the response is not what they are about. */
+#define PLAIN_200                       \
+        "HTTP/1.1 200 OK\r\n"           \
+        PROBE_NAME ": " PROBE_VALUE "\r\n" \
+        "Content-Length: 27\r\n\r\n" RESPONSE_BODY
+
 static void
 build_response(
     struct wirebuf                *wb,
@@ -400,7 +427,7 @@ build_response(
     int                           *close_after)
 {
     char line[128];
-    int  i;
+    int  i, off, chunk;
 
     *close_after = !case_holds_connection(c->defect);
 
@@ -502,6 +529,29 @@ build_response(
             wb_str(wb, RESPONSE_BODY);
             break;
 
+        case HCDEF_RSPINTERIMCONTINUE:
+            /* The interim response, then the answer.  Nothing asked for the
+             * 100 -- RFC 9110 section 15.2 requires a client to cope with one
+             * "even if the client does not expect one". */
+            wb_str(wb, "HTTP/1.1 100 Continue\r\n\r\n" PLAIN_200);
+            break;
+
+        case HCDEF_RSPINTERIMREPEATED:
+            wb_str(wb, "HTTP/1.1 100 Continue\r\n\r\n"
+                   "HTTP/1.1 100 Continue\r\n\r\n" PLAIN_200);
+            break;
+
+        case HCDEF_RSPINTERIMEARLYHINTS:
+            /* 103 Early Hints (RFC 8297), which carries header fields of its
+             * own: an interim response is a complete message, not a bare
+             * status line, so a client that skips one has to skip the whole
+             * message. */
+            wb_str(wb, "HTTP/1.1 103 Early Hints\r\n"
+                   "Link: </style.css>; rel=preload; as=style\r\n"
+                   "Link: </script.js>; rel=preload; as=script\r\n\r\n"
+                   PLAIN_200);
+            break;
+
         case HCDEF_RSPSTATUS:
             snprintf(line, sizeof(line), "HTTP/1.0 %d Something\r\n",
                      (int) c->param);
@@ -510,9 +560,9 @@ build_response(
             break;
 
         case HCDEF_RSPSTATUSNOBODY:
-            /* No Content-Length, and none is needed: RFC 1945 says these
-             * carry no body, so the message ends with the header block. */
-            snprintf(line, sizeof(line), "HTTP/1.0 %d No Body\r\n",
+            /* No Content-Length, and none is needed: these carry no content,
+             * so the message ends with the header block. */
+            snprintf(line, sizeof(line), "HTTP/1.1 %d No Body\r\n",
                      (int) c->param);
             wb_str(wb, line);
             wb_str(wb, PROBE_NAME ": " PROBE_VALUE "\r\n\r\n");
@@ -520,6 +570,13 @@ build_response(
 
         case HCDEF_RSPBODYCLOSEDELIMITED:
             wb_str(wb, "HTTP/1.0 200 OK\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPCLOSEDELIMITEDHTTP11:
+            /* RFC 9112 section 6.3 item 7: with no length and no coding the
+             * content still runs to the close, at HTTP/1.1 as much as at
+             * HTTP/1.0. */
+            wb_str(wb, "HTTP/1.1 200 OK\r\n\r\n" RESPONSE_BODY);
             break;
 
         case HCDEF_RSPCONTENTLENGTHNOTNUMERIC:
@@ -556,11 +613,114 @@ build_response(
                    "Content-Length: 27\r\n\r\n");
             break;
 
+        case HCDEF_RSPTRANSFERENCODINGWITHCONTENTLENGTH:
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Content-Length: 27\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   RESPONSE_BODY_HEX "\r\n" RESPONSE_BODY "\r\n0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKED:
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   RESPONSE_BODY_HEX "\r\n" RESPONSE_BODY "\r\n0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKEDEXTENSION:
+            /* RFC 9112 section 7.1.1: a recipient that does not understand a
+             * chunk extension "MUST ignore" it, so the size line still
+             * delimits the same chunk. */
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   RESPONSE_BODY_HEX ";probe=1;flag\r\n" RESPONSE_BODY
+                   "\r\n0;done\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKEDTRAILER:
+            /* The trailer section (RFC 9112 section 7.1.2).  A decoder can
+             * produce the right content without ever consuming it, and then
+             * the trailer is left to be read as the start of the next
+             * response on a connection HTTP/1.1 keeps open by default. */
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   RESPONSE_BODY_HEX "\r\n" RESPONSE_BODY "\r\n"
+                   "0\r\nX-Trailer: after-the-content\r\n"
+                   "X-Trailer-Two: and-another\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKEDMANYCHUNKS:
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n");
+
+            for (off = 0; off < (int) strlen(RESPONSE_BODY); off += chunk) {
+                chunk = (int) strlen(RESPONSE_BODY) - off;
+
+                if (chunk > 5) {
+                    chunk = 5;
+                }
+
+                snprintf(line, sizeof(line), "%x\r\n", chunk);
+                wb_str(wb, line);
+                wb_append(wb, RESPONSE_BODY + off, chunk);
+                wb_str(wb, "\r\n");
+            }
+
+            wb_str(wb, "0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKSIZENOTHEX:
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   "zz\r\n" RESPONSE_BODY "\r\n0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKSIZENEGATIVE:
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   "-1b\r\n" RESPONSE_BODY "\r\n0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKBADTERMINATOR:
+            /* The CRLF that must follow the chunk data is something else, so
+             * the next size line is read from inside the content. */
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   RESPONSE_BODY_HEX "\r\n" RESPONSE_BODY "XX0\r\n\r\n");
+            break;
+
+        case HCDEF_RSPCHUNKEDTRUNCATED:
+            /* Chunks, then a close, and never a last-chunk. */
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   RESPONSE_BODY_HEX "\r\n" RESPONSE_BODY "\r\n");
+            break;
+
+        case HCDEF_RSPCONNECTIONCLOSE:
+            /* RFC 9112 section 9.6: the announcement, and then the close it
+             * announced.  The content is still delimited by its length, so a
+             * client that has understood the framing completes the request
+             * before the FIN rather than because of it. */
+            wb_str(wb, "HTTP/1.1 200 OK\r\n"
+                   "Connection: close\r\n"
+                   "Content-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
+        case HCDEF_RSPPIPELINED:
+            /* Two responses in one write, for the two requests the driver
+             * dispatched before either was answered.  A client that stops
+             * parsing when one response is complete never sees the second,
+             * because the read event that carried it has already been
+             * delivered. */
+            wb_str(wb, PLAIN_200);
+            wb_str(wb, PLAIN_200);
+            break;
+
         case HCDEF_RSPTOPOSTWITHBODY:
         case HCDEF_RSPTOSTREAMEDPOST:
-            /* An ordinary response.  These two cases are about the request,
+        case HCDEF_RSPTOCHUNKEDPOST:
+            /* An ordinary response.  These three cases are about the request,
              * not the reply -- what is under test is that the body the caller
-             * handed over reached the peer intact, which drain_request checks
+             * handed over reached the peer intact, which drain_requests checks
              * before this runs. */
             wb_str(wb, "HTTP/1.0 200 OK\r\n"
                    PROBE_NAME ": " PROBE_VALUE "\r\n"
@@ -678,10 +838,13 @@ deliver(
  */
 static char         g_request_body[REQUEST_BODY_LEN];
 
-/* What the hostile server made of the request body it was sent, read by the
- * driver after the case completes. */
+/* What the hostile server made of the requests it was sent, read by the driver
+ * after the case completes. */
 static volatile int g_request_body_len;
 static volatile int g_request_body_ok;
+static volatile int g_request_host_ok;
+static volatile int g_request_host_count;
+static volatile int g_requests_seen;
 
 static void
 fill_request_body(void)
@@ -693,67 +856,251 @@ fill_request_body(void)
     }
 } /* fill_request_body */
 
-/* The offset just past the header block's terminator, or -1 if it has not
- * arrived yet.  Doubles as "is the block complete", and tells the caller where
- * the body starts. */
-static int
-header_terminator_end(
-    const char *buf,
-    int         len)
-{
-    int i;
+/* ------------------------------------------------------------------ *
+* Reading what the client actually sent
+*
+* Two things are under test here, and neither is visible from the response
+* side.  RFC 9112 section 3.2 makes a Host header mandatory on every HTTP/1.1
+* request, which is the version libevpl's client speaks; and where the caller
+* supplied a body, the peer has to receive exactly those octets under a framing
+* that describes them -- which is the half of every other case in this suite
+* that is taken on trust.
+* ------------------------------------------------------------------ */
 
-    for (i = 0; i + 3 < len; i++) {
-        if (buf[i] == '\r' && buf[i + 1] == '\n' &&
-            buf[i + 2] == '\r' && buf[i + 3] == '\n') {
-            return i + 4;
+struct raw_request {
+    int  host_count;
+    int  chunked;
+    int  declared;               /* Content-Length, or -1                */
+    int  body_len;
+    char body[REQUEST_BODY_LEN + 4096];
+};
+
+/* The next CRLF at or after `p`, or NULL. */
+static const char *
+find_crlf(
+    const char *p,
+    const char *end)
+{
+    while (p + 1 < end) {
+        if (p[0] == '\r' && p[1] == '\n') {
+            return p;
         }
+        p++;
     }
 
-    return -1;
-} /* header_terminator_end */
+    return NULL;
+} /* find_crlf */
 
 /*
- * Read the client's request far enough to know it has finished sending one.
- * The request itself is not under test here -- conformance.c is where request
- * bytes are examined -- so this only needs to find the end of the header
- * block before the response goes out.
+ * Parse one complete request starting at buf[*off].  Returns 1 and advances
+ * *off past it, or 0 if more bytes are needed.
+ */
+static int
+parse_request(
+    const char         *buf,
+    int                 len,
+    int                *off,
+    struct raw_request *ri)
+{
+    const char *base = buf, *end = buf + len;
+    const char *line, *eol, *colon, *value;
+    char        name[128], val[256];
+    int         p, chunk;
+
+    memset(ri, 0, sizeof(*ri));
+    ri->declared = -1;
+
+    line = base + *off;
+
+    /* The request line; its contents are conformance.c's business. */
+    eol = find_crlf(line, end);
+
+    if (!eol) {
+        return 0;
+    }
+
+    line = eol + 2;
+
+    for (;;) {
+        eol = find_crlf(line, end);
+
+        if (!eol) {
+            return 0;
+        }
+
+        if (eol == line) {
+            line += 2;
+            break;
+        }
+
+        colon = memchr(line, ':', eol - line);
+
+        if (colon) {
+            size_t nlen = colon - line;
+            size_t vlen;
+
+            value = colon + 1;
+
+            while (value < eol && (*value == ' ' || *value == '\t')) {
+                value++;
+            }
+
+            vlen = eol - value;
+
+            if (nlen > sizeof(name) - 1) {
+                nlen = sizeof(name) - 1;
+            }
+
+            if (vlen > sizeof(val) - 1) {
+                vlen = sizeof(val) - 1;
+            }
+
+            memcpy(name, line, nlen);
+            name[nlen] = '\0';
+            memcpy(val, value, vlen);
+            val[vlen] = '\0';
+
+            if (strcasecmp(name, "Host") == 0) {
+                ri->host_count++;
+            } else if (strcasecmp(name, "Content-Length") == 0) {
+                ri->declared = atoi(val);
+            } else if (strcasecmp(name, "Transfer-Encoding") == 0) {
+                ri->chunked = strcasecmp(val, "chunked") == 0;
+            }
+        }
+
+        line = eol + 2;
+    }
+
+    p = (int) (line - base);
+
+    if (ri->chunked) {
+        char size[64];
+
+        for (;;) {
+            eol = find_crlf(base + p, end);
+
+            if (!eol) {
+                return 0;
+            }
+
+            {
+                size_t n = eol - (base + p);
+
+                if (n > sizeof(size) - 1) {
+                    n = sizeof(size) - 1;
+                }
+
+                memcpy(size, base + p, n);
+                size[n] = '\0';
+            }
+
+            chunk = (int) strtol(size, NULL, 16);
+            p     = (int) (eol + 2 - base);
+
+            if (chunk == 0) {
+                break;
+            }
+
+            if (len - p < chunk + 2) {
+                return 0;
+            }
+
+            if (ri->body_len + chunk <= (int) sizeof(ri->body)) {
+                memcpy(ri->body + ri->body_len, base + p, chunk);
+                ri->body_len += chunk;
+            }
+
+            p += chunk + 2;
+        }
+
+        /* The trailer section, then the CRLF that ends the coding. */
+        for (;;) {
+            eol = find_crlf(base + p, end);
+
+            if (!eol) {
+                return 0;
+            }
+
+            if (eol == base + p) {
+                p += 2;
+                break;
+            }
+
+            p = (int) (eol + 2 - base);
+        }
+
+        *off = p;
+        return 1;
+    }
+
+    if (ri->declared > 0) {
+        if (len - p < ri->declared) {
+            return 0;
+        }
+
+        if (ri->declared <= (int) sizeof(ri->body)) {
+            memcpy(ri->body, base + p, ri->declared);
+            ri->body_len = ri->declared;
+        }
+
+        p += ri->declared;
+    }
+
+    *off = p;
+
+    return 1;
+} /* parse_request */
+
+/*
+ * Read `count` complete requests off the socket and check what they carried.
  */
 static void
-drain_request(
+drain_requests(
     int fd,
-    int expect_body)
+    int expect_body,
+    int count)
 {
-    struct pollfd   pfd;
-    char            buf[16384];
-    const char     *cl, *body;
-    int             len = 0, n, want = 0, hdr_end = -1;
-    int64_t         deadline;
-    struct timespec ts;
+    struct pollfd      pfd;
+    struct raw_request ri;
+    static char        buf[65536];
+    int                len = 0, n, off = 0, seen = 0;
+    int64_t            deadline;
+    struct timespec    ts;
 
-    g_request_body_len = 0;
-    g_request_body_ok  = 0;
+    g_request_body_len   = 0;
+    g_request_body_ok    = 0;
+    g_request_host_ok    = 1;
+    g_request_host_count = -1;
+    g_requests_seen      = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
     deadline = (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000 +
         CASE_TIMEOUT_MS;
 
-    for (;;) {
-        if (hdr_end < 0) {
-            hdr_end = header_terminator_end(buf, len);
+    while (seen < count) {
 
-            if (hdr_end >= 0 && expect_body) {
-                /* The request line and headers are NUL-terminated in place so
-                 * the Content-Length can be found with plain string search;
-                 * the body starts past the terminator either way. */
-                buf[hdr_end - 1] = '\0';
-                cl               = strcasestr(buf, "Content-Length:");
-                want             = cl ? atoi(cl + 15) : 0;
+        if (parse_request(buf, len, &off, &ri)) {
+            seen++;
+
+            if (g_request_host_count < 0 || ri.host_count != 1) {
+                g_request_host_count = ri.host_count;
             }
-        }
 
-        if (hdr_end >= 0 && (!expect_body || len - hdr_end >= want)) {
-            break;
+            if (ri.host_count != 1) {
+                g_request_host_ok = 0;
+            }
+
+            if (expect_body) {
+                /* The oracle for the client's own outbound framing: the peer
+                 * must receive exactly the octets the caller handed over,
+                 * under a framing that describes them. */
+                g_request_body_len = ri.body_len;
+                g_request_body_ok  = ri.body_len == REQUEST_BODY_LEN &&
+                    memcmp(ri.body, g_request_body, REQUEST_BODY_LEN) == 0;
+            }
+
+            continue;
         }
 
         clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -785,19 +1132,8 @@ drain_request(
         }
     }
 
-    if (expect_body && hdr_end >= 0) {
-        /* The oracle for the client's own outbound framing: the peer must
-         * receive exactly the octets the caller handed over, under a
-         * Content-Length that describes them.  Every other case in this suite
-         * takes the request on trust. */
-        body               = buf + hdr_end;
-        g_request_body_len = len - hdr_end;
-        g_request_body_ok  = want == REQUEST_BODY_LEN &&
-            g_request_body_len == REQUEST_BODY_LEN &&
-            memcmp(body, g_request_body,
-                   REQUEST_BODY_LEN) == 0;
-    }
-} /* drain_request */
+    g_requests_seen = seen;
+} /* drain_requests */
 
 static void *
 raw_server_function(void *ptr)
@@ -817,15 +1153,16 @@ raw_server_function(void *ptr)
         raw->ready = 0;
 
         if (fd >= 0) {
-            drain_request(fd,
-                          http_client_cases[raw->case_index].supply !=
-                          HCSUP_SUPPLYNONE);
+            const struct http_client_case *c =
+                &http_client_cases[raw->case_index];
+
+            drain_requests(fd, c->supply != HCSUP_SUPPLYNONE,
+                           c->requests == HCREQ_TWOPIPELINED ? 2 : 1);
 
             wb_init(&wb);
-            build_response(&wb, &http_client_cases[raw->case_index],
-                           &close_after);
+            build_response(&wb, c, &close_after);
 
-            deliver(fd, &wb, http_client_cases[raw->case_index].delivery);
+            deliver(fd, &wb, c->delivery);
 
             wb_free(&wb);
 
@@ -859,6 +1196,7 @@ raw_server_function(void *ptr)
 struct req_ctx {
     int  supply;         /* HCSUP_*: how the request body is handed over */
     int  sent;           /* how much of it has been handed over so far   */
+    int  finished;       /* the end-of-body marker has been handed over  */
     int  n_headers;      /* RESPONSE_HEADERS callbacks                  */
     int  n_complete;     /* RECEIVE_COMPLETE callbacks                  */
     /* EVPL_HTTP_NOTIFY_FAILED callbacks, and the reason the last one
@@ -936,11 +1274,15 @@ client_drain(
 /*
  * Hand libevpl the next piece of the request body.
  *
- * Whole for SupplyWhole, REQUEST_CHUNK at a time for SupplyStreamed.  The
- * request on the wire is identical either way -- same octets, same
- * Content-Length -- so the model predicts the same response for both; what
- * differs is that the streamed form leaves the send ring partly drained, which
- * is what makes libevpl ask for the rest.
+ * Whole for SupplyWhole, REQUEST_CHUNK at a time for SupplyStreamed and for
+ * SupplyChunked.  The first two produce an identical request on the wire --
+ * same octets, same Content-Length -- so the model predicts the same response
+ * for both; what differs is that the streamed form leaves the send ring partly
+ * drained, which is what makes libevpl ask for the rest.
+ *
+ * SupplyChunked is a different request: no length is declared, so the library
+ * has to frame the body with the chunked coding, and it only knows the body has
+ * ended when the caller says so.
  */
 static void
 client_send_body(
@@ -951,21 +1293,31 @@ client_send_body(
     struct evpl_iovec iov;
     int               chunk = REQUEST_BODY_LEN - ctx->sent;
 
-    if (ctx->supply == HCSUP_SUPPLYNONE || chunk <= 0) {
+    if (ctx->supply == HCSUP_SUPPLYNONE || ctx->finished) {
         return;
     }
 
-    if (ctx->supply == HCSUP_SUPPLYSTREAMED && chunk > REQUEST_CHUNK) {
-        chunk = REQUEST_CHUNK;
+    if (chunk > 0) {
+        if (ctx->supply != HCSUP_SUPPLYWHOLE && chunk > REQUEST_CHUNK) {
+            chunk = REQUEST_CHUNK;
+        }
+
+        evpl_iovec_alloc(evpl, chunk, 0, 1, 0, &iov);
+        memcpy(iov.data, g_request_body + ctx->sent, chunk);
+        iov.length = chunk;
+
+        evpl_http_request_add_datav(request, &iov, 1);
+
+        ctx->sent += chunk;
     }
 
-    evpl_iovec_alloc(evpl, chunk, 0, 1, 0, &iov);
-    memcpy(iov.data, g_request_body + ctx->sent, chunk);
-    iov.length = chunk;
-
-    evpl_http_request_add_datav(request, &iov, 1);
-
-    ctx->sent += chunk;
+    /* A chunked body has no declared length, so nothing but the caller can say
+     * where it ends: the last-chunk goes out when this is called. */
+    if (ctx->supply == HCSUP_SUPPLYCHUNKED &&
+        ctx->sent == REQUEST_BODY_LEN) {
+        evpl_http_request_add_datav(request, NULL, 0);
+        ctx->finished = 1;
+    }
 } /* client_send_body */
 
 static void
@@ -1048,9 +1400,8 @@ now_ms(void)
  * What the client did, in the model's terms where it has a name for it.
  *
  * A dispatched request has exactly two acceptable ends: the response, or the
- * news that there will not be one.  libevpl's notify callback has no arm for
- * the second, so "the caller was told nothing" is reported here as SILENT
- * rather than being folded into a failure the API cannot express.
+ * news that there will not be one.  "The caller was told nothing" is reported
+ * here as SILENT rather than being folded into either.
  */
 static int
 classify(const struct req_ctx *ctx)
@@ -1070,50 +1421,49 @@ classify(const struct req_ctx *ctx)
     return ACT_SILENT;
 } /* classify */
 
+/* Whether a request has reached an end the caller can observe. */
+static int
+ctx_done(const struct req_ctx *ctx)
+{
+    return ctx->n_complete || ctx->n_failed;
+} /* ctx_done */
+
 /* Every ctx outlives its case: libevpl frees the request when the response
  * completes or the connection drops, but a callback that arrives after the
  * driver has moved on would otherwise write into a reused record.  Same
  * lesson the RPC2 client harness learned -- per-call state on the frame of
  * the case that started the call is only safe while abandoned calls never
  * complete. */
-static struct req_ctx *g_ctx[4096];
+static struct req_ctx *g_ctx[4096 * MAX_REQUESTS];
+static int             g_num_ctx;
 
-static void
-run_client_case(
-    struct evpl                   *evpl,
-    struct evpl_http_agent        *agent,
-    struct evpl_endpoint          *endpoint,
-    const struct http_client_case *c,
-    unsigned int                   index)
+static struct req_ctx *
+ctx_alloc(void)
 {
-    struct evpl_http_conn    *conn;
-    struct evpl_http_request *request;
-    struct req_ctx           *ctx;
-    char                      detail[512];
-    int64_t                   deadline;
-    int                       actual, ok, expect;
-
-    ctx = calloc(1, sizeof(*ctx));
+    struct req_ctx *ctx = calloc(1, sizeof(*ctx));
 
     if (!ctx) {
         fprintf(stderr, "out of memory\n");
         exit(1);
     }
 
-    g_ctx[index] = ctx;
+    g_ctx[g_num_ctx++] = ctx;
 
-    /* Publish the case before the client can connect, so the accept the
-     * hostile server is about to take is unambiguously this one's. */
-    while (!g_raw.ready) {
-        sched_yield();
-    }
+    return ctx;
+} /* ctx_alloc */
 
-    g_raw.case_index = (int) index;
-    g_raw.case_done  = 0;
-    __sync_synchronize();
-
-    conn = evpl_http_client_connect(agent, EVPL_STREAM_SOCKET_TCP, endpoint,
-                                    EVPL_HTTP_VERSION_HTTP1, ctx);
+/*
+ * Dispatch one request, with whatever body the case says the caller supplies.
+ * Returns NULL if the library refused to create it.
+ */
+static struct evpl_http_request *
+dispatch_one(
+    struct evpl                   *evpl,
+    struct evpl_http_conn         *conn,
+    const struct http_client_case *c,
+    struct req_ctx                *ctx)
+{
+    struct evpl_http_request *request;
 
     request = evpl_http_request_create(conn,
                                        c->method == HCMETH_CHEAD ?
@@ -1124,42 +1474,60 @@ run_client_case(
                                        REQUEST_URI);
 
     if (!request) {
-        fprintf(stderr, "case %s: request_create failed\n",
-                http_client_defect_name(c->defect));
-        g_results.unexpected++;
-        g_raw.case_done = 1;
-        __sync_synchronize();
-        return;
+        return NULL;
     }
 
-    evpl_http_request_add_header(request, "Host", "localhost");
+    /*
+     * No Host header is added here on purpose.  RFC 9112 section 3.2 makes it
+     * a MUST on every HTTP/1.1 request, and libevpl's client sends HTTP/1.1
+     * unconditionally -- so supplying one from the test would be the harness
+     * meeting an obligation that belongs to the library, and would hide
+     * whether the library meets it.  The hostile server counts what arrives.
+     */
 
     ctx->supply = c->supply;
 
-    if (c->supply == HCSUP_SUPPLYNONE) {
-        evpl_http_client_set_request_length(request, 0);
-    } else {
-        /* RFC 1945 section 8.3: an HTTP/1.0 POST must declare its length. */
-        evpl_http_client_set_request_length(request, REQUEST_BODY_LEN);
-        client_send_body(evpl, request, ctx);
-    }
+    switch (c->supply) {
+        case HCSUP_SUPPLYNONE:
+            evpl_http_client_set_request_length(request, 0);
+            break;
+        case HCSUP_SUPPLYCHUNKED:
+            /* No length: an application that does not know the size in advance
+             * has only the chunked coding to frame the body with. */
+            evpl_http_client_set_request_chunked(request);
+            break;
+        default:
+            evpl_http_client_set_request_length(request, REQUEST_BODY_LEN);
+            break;
+    } /* switch */
+
+    client_send_body(evpl, request, ctx);
 
     evpl_http_request_dispatch(request, client_notify, ctx);
 
-    g_results.cases_run++;
+    return request;
+} /* dispatch_one */
 
-    deadline = now_ms() + CASE_TIMEOUT_MS;
+/*
+ * Check everything about one completed request that the case predicts.  Split
+ * out from run_client_case because the pipelined case has two of them, and the
+ * second is checked against exactly the same prediction as the first.
+ */
+static void
+check_request(
+    const struct http_client_case *c,
+    const struct req_ctx          *ctx,
+    int                            which)
+{
+    char detail[512];
+    int  actual = classify(ctx);
+    int  expect = c->expect == HCOUT_CBCOMPLETE ? c->expect_status : EXP_FAILED;
+    int  ok;
 
-    while (now_ms() < deadline && !ctx->n_complete) {
-        evpl_continue(evpl);
-    }
-
-    actual = classify(ctx);
-    expect = c->expect == HCOUT_CBCOMPLETE ? c->expect_status : -1;
-
-    snprintf(detail, sizeof(detail), "%s, %s -> %s",
+    snprintf(detail, sizeof(detail), "%s, %s -> %s%s",
              http_client_defect_name(c->defect),
-             http_delivery_name(c->delivery), outcome_name(actual));
+             http_delivery_name(c->delivery), outcome_name(actual),
+             which ? " (second of a pipelined pair)" : "");
 
     /*
      * The outcome.
@@ -1178,7 +1546,8 @@ run_client_case(
         ok = ctx->n_failed > 0;
     }
 
-    record(ASPECT_OUTCOME, c->defect, expect, actual, ok, ok ? NULL : detail);
+    record(which ? ASPECT_PIPELINE : ASPECT_OUTCOME, c->defect, expect, actual,
+           ok, ok ? NULL : detail);
 
     /*
      * Outside the model: which failure it was.
@@ -1198,11 +1567,13 @@ run_client_case(
          * with no line terminator anywhere in it.  The client is still waiting
          * for the end of a status line when the peer hangs up, so it never had
          * one to reject, and "the connection ended before a response arrived"
-         * is exactly what happened. */
+         * is exactly what happened.  The truncation cases are the same shape
+         * one layer down: the framing was fine, the content simply stopped. */
         int want = (c->defect == HCDEF_RSPPEERCLOSESWITHOUTRESPONSE ||
                     c->defect == HCDEF_RSPPEERCLOSESMIDSTATUSLINE ||
                     c->defect == HCDEF_RSPPEERCLOSESMIDHEADERS ||
                     c->defect == HCDEF_RSPBODYSHORTOFCONTENTLENGTH ||
+                    c->defect == HCDEF_RSPCHUNKEDTRUNCATED ||
                     c->defect == HCDEF_RSPNOSTATUSLINE) ?
             EVPL_HTTP_ERROR_CONN_LOST : EVPL_HTTP_ERROR_BAD_RESPONSE;
 
@@ -1225,11 +1596,153 @@ run_client_case(
     record(ASPECT_ONCE, c->defect, VACT_OK, ok ? VACT_OK : VACT_BAD, ok,
            ok ? NULL : detail);
 
+    if (c->expect != HCOUT_CBCOMPLETE || actual != c->expect_status) {
+        return;
+    }
+
+    switch (c->expect_body) {
+        case HCBODY_BODYNONE:
+            ok = ctx->body_len == 0;
+            break;
+        case HCBODY_BODYDELIVERED:
+            ok = ctx->body_len == (int) strlen(RESPONSE_BODY) &&
+                memcmp(ctx->body, RESPONSE_BODY, ctx->body_len) == 0;
+
+            if (c->defect == HCDEF_RSPBODYLONGERTHANCONTENTLENGTH) {
+                /* Eleven octets were declared, so eleven is all that
+                 * belongs to this response. */
+                ok = ctx->body_len == 11 &&
+                    memcmp(ctx->body, RESPONSE_BODY, 11) == 0;
+            }
+            break;
+        default:
+            ok = 1;
+            break;
+    } /* switch */
+
+    snprintf(detail, sizeof(detail), "%d body bytes delivered", ctx->body_len);
+
+    record(ASPECT_BODY, c->defect, c->expect_body,
+           ok ? c->expect_body : HCBODY_BODYUNCHECKED, ok,
+           ok ? NULL : detail);
+
+    switch (c->expect_probe) {
+        case HPROBE_PROBEVALUE:
+            ok = ctx->probe_present && strcmp(ctx->probe, PROBE_VALUE) == 0;
+            break;
+        case HPROBE_PROBEEMPTY:
+            ok = ctx->probe_present && ctx->probe[0] == '\0';
+            break;
+        case HPROBE_PROBEANY:
+            ok = ctx->probe_present && ctx->probe[0] != '\0';
+            break;
+        case HPROBE_PROBEABSENT:
+            ok = 1;   /* the case is not about the header block */
+            break;
+        default:
+            ok = 1;
+            break;
+    } /* switch */
+
+    snprintf(detail, sizeof(detail), "probe reflected as '%.128s'",
+             ctx->probe_present ? ctx->probe : "(absent)");
+
+    record(ASPECT_PROBE, c->defect, c->expect_probe,
+           ok ? c->expect_probe : HPROBE_PROBEANY, ok, ok ? NULL : detail);
+} /* check_request */
+
+static void
+run_client_case(
+    struct evpl                   *evpl,
+    struct evpl_http_agent        *agent,
+    struct evpl_endpoint          *endpoint,
+    const struct http_client_case *c,
+    unsigned int                   index)
+{
+    struct evpl_http_conn *conn;
+    struct req_ctx        *ctx, *ctx2 = NULL;
+    char                   detail[512];
+    int64_t                deadline;
+    int                    two = c->requests == HCREQ_TWOPIPELINED;
+    int                    ok;
+
+    ctx = ctx_alloc();
+
+    if (two) {
+        ctx2 = ctx_alloc();
+    }
+
+    /* Publish the case before the client can connect, so the accept the
+     * hostile server is about to take is unambiguously this one's. */
+    while (!g_raw.ready) {
+        sched_yield();
+    }
+
+    g_raw.case_index = (int) index;
+    g_raw.case_done  = 0;
+    __sync_synchronize();
+
+    conn = evpl_http_client_connect(agent, EVPL_STREAM_SOCKET_TCP, endpoint,
+                                    EVPL_HTTP_VERSION_HTTP1, ctx);
+
+    if (!dispatch_one(evpl, conn, c, ctx) ||
+        (two && !dispatch_one(evpl, conn, c, ctx2))) {
+        fprintf(stderr, "case %s: request_create failed\n",
+                http_client_defect_name(c->defect));
+        g_results.unexpected++;
+        g_raw.case_done = 1;
+        __sync_synchronize();
+        return;
+    }
+
+    g_results.cases_run++;
+
+    deadline = now_ms() + CASE_TIMEOUT_MS;
+
+    while (now_ms() < deadline &&
+           (!ctx_done(ctx) || (two && !ctx_done(ctx2)))) {
+        evpl_continue(evpl);
+    }
+
+    /* Keep pumping for a moment after the case has reached its end: a second
+     * callback on a request that is already over is exactly the failure
+     * ASPECT_ONCE exists to catch, and it can only be seen by waiting for
+     * it. */
+    deadline = now_ms() + SETTLE_MS;
+
+    while (now_ms() < deadline) {
+        evpl_continue(evpl);
+    }
+
+    check_request(c, ctx, 0);
+
+    if (two) {
+        check_request(c, ctx2, 1);
+    }
+
     /*
-     * Outside the model, and the only check here that looks at the request
-     * rather than the response: the peer must have received exactly the body
-     * the caller handed over, under a Content-Length that describes it.  Every
-     * other case takes the client's outbound framing on trust.
+     * Outside the model, and about the request rather than the response: RFC
+     * 9112 section 3.2 makes a Host header mandatory on every HTTP/1.1
+     * request, and libevpl's client speaks HTTP/1.1 unconditionally.  "A
+     * server MUST respond with a 400 (Bad Request) status code to any HTTP/1.1
+     * request message that lacks a Host header field", so a client that omits
+     * it is a client whose requests a conforming server must refuse.
+     */
+    if (g_requests_seen > 0) {
+        ok = g_request_host_ok;
+
+        snprintf(detail, sizeof(detail),
+                 "the peer received %d Host header(s) on an HTTP/1.1 request",
+                 g_request_host_count);
+
+        record(ASPECT_HOST, c->defect, 1, g_request_host_count, ok,
+               ok ? NULL : detail);
+    }
+
+    /*
+     * And the request body, which every other case takes on trust: the peer
+     * must have received exactly the octets the caller handed over, under a
+     * framing that describes them.
      */
     if (c->supply != HCSUP_SUPPLYNONE) {
         ok = g_request_body_ok;
@@ -1240,61 +1753,6 @@ run_client_case(
 
         record(ASPECT_REQUEST, c->defect, REQUEST_BODY_LEN,
                g_request_body_len, ok, ok ? NULL : detail);
-    }
-
-    if (c->expect == HCOUT_CBCOMPLETE && actual == c->expect_status) {
-
-        switch (c->expect_body) {
-            case HCBODY_BODYNONE:
-                ok = ctx->body_len == 0;
-                break;
-            case HCBODY_BODYDELIVERED:
-                ok = ctx->body_len == (int) strlen(RESPONSE_BODY) &&
-                    memcmp(ctx->body, RESPONSE_BODY, ctx->body_len) == 0;
-
-                if (c->defect == HCDEF_RSPBODYLONGERTHANCONTENTLENGTH) {
-                    /* Eleven octets were declared, so eleven is all that
-                     * belongs to this response. */
-                    ok = ctx->body_len == 11 &&
-                        memcmp(ctx->body, RESPONSE_BODY, 11) == 0;
-                }
-                break;
-            default:
-                ok = 1;
-                break;
-        } /* switch */
-
-        snprintf(detail, sizeof(detail), "%d body bytes delivered",
-                 ctx->body_len);
-
-        record(ASPECT_BODY, c->defect, c->expect_body,
-               ok ? c->expect_body : HCBODY_BODYUNCHECKED, ok,
-               ok ? NULL : detail);
-
-        switch (c->expect_probe) {
-            case HPROBE_PROBEVALUE:
-                ok = ctx->probe_present &&
-                    strcmp(ctx->probe, PROBE_VALUE) == 0;
-                break;
-            case HPROBE_PROBEEMPTY:
-                ok = ctx->probe_present && ctx->probe[0] == '\0';
-                break;
-            case HPROBE_PROBEANY:
-                ok = ctx->probe_present && ctx->probe[0] != '\0';
-                break;
-            case HPROBE_PROBEABSENT:
-                ok = 1;   /* the case is not about the header block */
-                break;
-            default:
-                ok = 1;
-                break;
-        } /* switch */
-
-        snprintf(detail, sizeof(detail), "probe reflected as '%.128s'",
-                 ctx->probe_present ? ctx->probe : "(absent)");
-
-        record(ASPECT_PROBE, c->defect, c->expect_probe,
-               ok ? c->expect_probe : HPROBE_PROBEANY, ok, ok ? NULL : detail);
     }
 
     /*
@@ -1314,8 +1772,7 @@ run_client_case(
      * end of the run.  "Only close one you have just successfully used" is a
      * rule an application can follow, but it should not have to.
      */
-    if (case_holds_connection(c->defect) && ctx->n_complete &&
-        !ctx->n_failed) {
+    if (case_holds_connection(c->defect) && ctx->n_complete && !ctx->n_failed) {
         evpl_http_client_close(agent, conn);
     }
 
@@ -1339,13 +1796,13 @@ report(void)
     int i;
 
     fprintf(stderr,
-            "\nhttp/1.0 client conformance: %d/%u cases (%d checks, %d "
+            "\nhttp/1.x client conformance: %d/%u cases (%d checks, %d "
             "failed)\n",
             g_results.cases_run, (unsigned int) HTTP_NUM_CLIENT_CASES,
             g_results.checks, g_results.failed);
 
     if (g_num_observed) {
-        fprintf(stderr, "\ndivergences from RFC 1945:\n");
+        fprintf(stderr, "\ndivergences from RFC 1945 / RFC 9112:\n");
     }
 
     for (i = 0; i < g_num_observed; i++) {
@@ -1438,7 +1895,7 @@ main(
     evpl_http_destroy(agent);
     evpl_destroy(evpl);
 
-    for (i = 0; i < HTTP_NUM_CLIENT_CASES; i++) {
+    for (i = 0; i < (unsigned int) g_num_ctx; i++) {
         free(g_ctx[i]);
     }
 

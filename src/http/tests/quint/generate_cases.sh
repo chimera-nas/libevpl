@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: LGPL-2.1-only
 
-# generate_cases.sh - turn http10.qnt into the C case table
+# generate_cases.sh - turn http1x.qnt into the C case table
 #
 # Usage: generate_cases.sh QUINT PYTHON SRC_DIR WORK_DIR OUT_HEADER
 #
@@ -31,28 +31,28 @@ OUT_HEADER="${5:?}"
 
 mkdir -p "${WORK_DIR}"
 
-# The positive matrix is a cross product of six dimensions, so it is sampled
+# The positive matrix is a cross product of eight dimensions, so it is sampled
 # rather than enumerated: enough traces to cover the pairs that matter without
 # opening several thousand TCP connections per run.  The defect taxonomy is
 # small and enumerable, so its traces only need to be long enough to reach
-# every (defect, delivery) pair -- the case count printed at the end is the
-# check on that, and must equal the size of that cross product.
-REQUEST_SEEDS=(0x21 0x22 0x23 0x24)
-DEFECT_SEEDS=(0x41 0x42 0x43 0x44 0x45 0x46)
-CLIENT_SEEDS=(0x61 0x62 0x63 0x64 0x65 0x66)
+# every (defect, version, delivery) triple -- the case count printed at the end
+# is the check on that, and must equal the size of that cross product.
+REQUEST_SEEDS=(0x21 0x22 0x23 0x24 0x25 0x26)
+DEFECT_SEEDS=(0x41 0x42 0x43 0x44 0x45 0x46 0x47 0x48 0x0009 0x1234 0xdead 0x0777)
+CLIENT_SEEDS=(0x61 0x62 0x63 0x64 0x65 0x66 0x67 0x68 0x0009 0x1234 0xdead 0x0777)
 
 REQUEST_TRACES=()
 for s in "${REQUEST_SEEDS[@]}"; do
     f="${WORK_DIR}/requests-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/http10.qnt" --main=http10_requests \
-        --seed="$s" --max-steps=150 --out-itf="$f" > /dev/null
+    "${QUINT}" run "${SRC_DIR}/http1x.qnt" --main=http1x_requests \
+        --seed="$s" --max-steps=200 --out-itf="$f" > /dev/null
     REQUEST_TRACES+=("$f")
 done
 
 DEFECT_TRACES=()
 for s in "${DEFECT_SEEDS[@]}"; do
     f="${WORK_DIR}/defects-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/http10.qnt" --main=http10_defects \
+    "${QUINT}" run "${SRC_DIR}/http1x.qnt" --main=http1x_defects \
         --seed="$s" --max-steps=300 --out-itf="$f" > /dev/null
     DEFECT_TRACES+=("$f")
 done
@@ -60,7 +60,7 @@ done
 CLIENT_TRACES=()
 for s in "${CLIENT_SEEDS[@]}"; do
     f="${WORK_DIR}/client-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/http10.qnt" --main=http10_client \
+    "${QUINT}" run "${SRC_DIR}/http1x.qnt" --main=http1x_client \
         --seed="$s" --max-steps=300 --out-itf="$f" > /dev/null
     CLIENT_TRACES+=("$f")
 done

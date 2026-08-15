@@ -212,6 +212,23 @@ evpl_http_client_connect(
     enum evpl_http_version  version,
     void                   *private_data);
 
+/*
+ * Release a client connection.
+ *
+ * The connection handle belongs to the caller from evpl_http_client_connect()
+ * until this is called, and stays valid even after the peer has gone away: a
+ * connection that has been dropped is retired but not freed, so that the
+ * pointer its owner is holding never becomes stale at a moment the owner
+ * cannot observe.  Every request outstanding on it is completed with
+ * EVPL_HTTP_NOTIFY_FAILED when that happens, which is how the owner learns.
+ *
+ * Calling this on a connection whose peer has already gone is therefore fine,
+ * and is how such a connection is finally released.  Dispatching a request on
+ * one is also safe: it completes immediately with EVPL_HTTP_NOTIFY_FAILED,
+ * before evpl_http_request_dispatch() returns.
+ *
+ * The handle must not be used afterwards.
+ */
 void
 evpl_http_client_close(
     struct evpl_http_agent *agent,

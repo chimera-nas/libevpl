@@ -3,27 +3,32 @@
  *
  * SPDX-License-Identifier: LGPL-2.1-only
  *
- * Model-based HTTP/1.0 conformance test.
+ * Model-based HTTP/1.x conformance test, server direction.
  *
- * Two phases, both driven by cases generated from the Quint model in
- * quint/http10.qnt and compiled in as http_cases.h:
+ * Four phases, the first three driven by cases generated from the Quint model
+ * in quint/http1x.qnt and compiled in as http_cases.h:
  *
- *   1. Requests.  Legal HTTP/1.0 requests -- every method, URI shape, header
- *      grammar, body length and connection disposition the model enumerates --
- *      are written onto a raw socket, and the response is checked against what
- *      RFC 1945 requires.  The server behind the socket is a real libevpl HTTP
- *      server running an echo application, so the reply carries the method,
- *      the URI, the probe header and the body it parsed: the oracle is what
- *      the server understood, not merely that it answered.
+ *   1. Requests.  Legal HTTP/1.0 and HTTP/1.1 requests -- every version,
+ *      method, URI shape, header grammar, body framing, connection
+ *      disposition and delivery the model enumerates -- are written onto a raw
+ *      socket, and the response is checked against what the RFCs require.  The
+ *      server behind the socket is a real libevpl HTTP server running an echo
+ *      application, so the reply carries the method, the URI, the probe header
+ *      and the body it parsed: the oracle is what the server understood, not
+ *      merely that it answered.
  *
  *   2. Defects.  Deliberately malformed requests, likewise written raw.  Each
- *      response is classified and compared against the status RFC 1945
- *      requires.
+ *      response is classified and compared against the status the RFCs
+ *      require, at each version where the defect is one.
  *
- * Both phases drive a raw socket rather than libevpl's own HTTP client,
+ *   3. The status line, over every status the server can name, at both
+ *      versions and with both response framings.  Outside the model on
+ *      purpose; see run_status_phase.
+ *
+ * Every phase drives a raw socket rather than libevpl's own HTTP client,
  * because that client cannot express any of this: evpl_http_client_send_headers
- * hardcodes "HTTP/1.1" and emits a fixed header block, so it can neither send
- * an HTTP/1.0 request nor a malformed one.
+ * emits a fixed header block at a fixed version, so it can neither send an
+ * HTTP/1.0 request nor a malformed one.
  *
  * The model encodes the SPECIFICATION, so a mismatch here is a candidate bug
  * in libevpl rather than a broken test.  Known, reviewed divergences are
@@ -61,7 +66,7 @@
 * Wire constants
 *
 * The byte-level spelling of every symbolic class in the model lives here,
-* which is the whole point of the split: http10.qnt says "a header whose
+* which is the whole point of the split: http1x.qnt says "a header whose
 * value is padded with LWS", this file decides that means a tab.
 * ------------------------------------------------------------------ */
 
@@ -79,9 +84,11 @@ static int port = 8095;
 #define ECHO_PROBE          "X-Echo-Probe"
 #define ECHO_PROBE_COUNT    "X-Echo-Probe-Count"
 
-/* Asks the echo application to answer with this status rather than 200.  Used
- * only by the status-line phase; see run_status_phase. */
+/* Asks the echo application to answer with this status rather than 200, and to
+ * frame its response with the chunked coding rather than a length.  Used only
+ * by the status phase; see run_status_phase. */
 #define RESPOND_STATUS      "X-Respond-Status"
+#define RESPOND_CHUNKED     "X-Respond-Chunked"
 #define ECHO_ABSENT         "(absent)"
 
 #define URI_ROOT            "/"
@@ -96,6 +103,11 @@ static int port = 8095;
 
 #define BODY_SMALL_LEN      37    /* deliberately not a multiple of anything */
 #define BODY_LARGE_LEN      8000  /* larger than one receive buffer          */
+
+/* The chunked bodies.  One chunk for the shapes that are about the coding's
+ * syntax, many for the shape that is about spanning reads. */
+#define BODY_CHUNKED_LEN    137
+#define CHUNK_SPLIT_LEN     1000
 
 /* Mirrors of libevpl's limits, which the two overflow defects must exceed.
  * Kept as their own constants so that a change to either shows up here as a
@@ -114,6 +126,7 @@ static int port = 8095;
 #define RESPONSE_TIMEOUT_MS 500  /* first response byte, or a stall          */
 #define NOBODY_GRACE_MS     30   /* proving a body does NOT arrive           */
 #define CLOSE_TIMEOUT_MS    250  /* proving the server closes                */
+#define PERSIST_GRACE_MS    120  /* proving the server does NOT close        */
 
 #define SPLIT_DELAY_US      200  /* between the halves of a TwoWrites        */
 #define DRIBBLE_DELAY_US    20   /* between the bytes of a Dribble           */
@@ -147,6 +160,9 @@ static int port = 8095;
 #define ASPECT_ECHO_METHOD  5
 #define ASPECT_ECHO_URI     6
 #define ASPECT_FRAMING      7
+#define ASPECT_INTERIM      8   /* a 1xx where the version allows one, or none */
+#define ASPECT_REUSE        9   /* a second request on the same connection     */
+#define ASPECT_PIPELINE     10  /* two requests in one write, answered in order */
 
 #define PHASE_REQUEST       0
 #define PHASE_DEFECT        1
@@ -156,8 +172,9 @@ static int port = 8095;
 #define PACT_CLOSED         0
 #define PACT_OPEN           1
 
-/* ASPECT_KEEPALIVE / ASPECT_ECHO_* / ASPECT_FRAMING actuals: the check either
- * held or it did not, and the report carries the case that failed it. */
+/* ASPECT_KEEPALIVE / ASPECT_ECHO_* / ASPECT_FRAMING / ASPECT_INTERIM /
+ * ASPECT_REUSE / ASPECT_PIPELINE actuals: the check either held or it did
+ * not, and the report carries the case that failed it. */
 #define VACT_OK             0
 #define VACT_BAD            1
 
@@ -173,6 +190,9 @@ aspect_name(int aspect)
         case ASPECT_ECHO_METHOD: return "echo-method";
         case ASPECT_ECHO_URI:    return "echo-uri";
         case ASPECT_FRAMING:     return "framing";
+        case ASPECT_INTERIM:     return "interim";
+        case ASPECT_REUSE:       return "reuse";
+        case ASPECT_PIPELINE:    return "pipeline";
         default:                 return "?";
     } /* switch */
 } /* aspect_name */
@@ -197,7 +217,7 @@ outcome_name(int o)
  *
  * A refused request is filed under its header shape, because that is the only
  * dimension of the positive matrix whose grammar a server can plausibly
- * reject: the methods and URI forms here are the ones RFC 1945 defines, while
+ * reject: the methods and URI forms here are the ones the RFCs define, while
  * the header block is where a hand-written parser meets folding, empty values
  * and repeated fields.  The full case is printed alongside, so a refusal that
  * really came from somewhere else is still legible in the log. */
@@ -225,9 +245,14 @@ subject_name(
             return http_hdr_name(subject);
         case ASPECT_PERSIST:
         case ASPECT_KEEPALIVE:
+        case ASPECT_REUSE:
             return http_conn_name(subject);
         case ASPECT_ECHO_URI:
             return http_uri_name(subject);
+        case ASPECT_FRAMING:
+        case ASPECT_INTERIM:
+        case ASPECT_PIPELINE:
+            return http_version_name(subject);
         default:
             return http_method_name(subject);
     } /* switch */
@@ -571,7 +596,7 @@ server_notify(
     char               echo[1024];
     char               count[16];
     uint64_t           avail;
-    int                niov, i, want;
+    int                niov, i, want, chunked;
 
     switch (notify_type) {
         case EVPL_HTTP_NOTIFY_RECEIVE_DATA:
@@ -629,7 +654,7 @@ server_notify(
 
             /* Echo the request body back verbatim.  The same code runs for
              * HEAD: whether a body reaches the wire for a HEAD request is the
-             * server's decision to make (RFC 1945 section 8.2), not the
+             * server's decision to make (RFC 9110 section 9.3.2), not the
              * application's, and taking it here would hide the answer.
              *
              * Drained in bounded steps and flattened into one buffer.  A
@@ -664,9 +689,29 @@ server_notify(
              * would use and the only one that reaches WANT_DATA. */
             st->streamed = st->len > ECHO_STREAM_CHUNK;
 
-            evpl_http_server_set_response_length(request, st->len);
+            /* The response framing is the application's to choose between the
+             * two libevpl offers, and the status phase chooses it through this
+             * header.  Which of them may actually reach the wire for a given
+             * request is NOT the application's business -- a transfer coding
+             * belongs only in a response to an HTTP/1.1 request, and only on a
+             * status that may carry content -- so asking for the wrong one
+             * here is how the driver finds out whether the library knows
+             * that. */
+            chunked = evpl_http_request_header(request, RESPOND_CHUNKED) != NULL;
+
+            if (chunked) {
+                evpl_http_server_set_response_chunked(request);
+            } else {
+                evpl_http_server_set_response_length(request, st->len);
+            }
 
             echo_send_next(evpl, request, st);
+
+            if (chunked && st->sent == st->len) {
+                /* A chunked response ends where the application says it does,
+                 * so say so: there is no length counting down to zero. */
+                evpl_http_request_add_datav(request, NULL, 0);
+            }
 
             /* The status is the application's to choose, and the status
              * phase chooses it through this header. */
@@ -679,6 +724,10 @@ server_notify(
             /* libevpl has drained what it was given and the response is not
              * complete: hand over the next piece. */
             echo_send_next(evpl, request, st);
+
+            if (st->sent == st->len) {
+                evpl_http_request_add_datav(request, NULL, 0);
+            }
             break;
         case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
             break;
@@ -851,6 +900,30 @@ fill_body(
     }
 } /* fill_body */
 
+/* ------------------------------------------------------------------ *
+* Class to wire bytes
+* ------------------------------------------------------------------ */
+
+static const char *
+version_wire(int ver)
+{
+    return ver == HVER_V11 ? "HTTP/1.1" : "HTTP/1.0";
+} /* version_wire */
+
+static int
+body_is_chunked(int body_cls)
+{
+    switch (body_cls) {
+        case HBDY_BODYCHUNKED:
+        case HBDY_BODYCHUNKEDEXT:
+        case HBDY_BODYCHUNKEDTRAILER:
+        case HBDY_BODYCHUNKEDMANY:
+            return 1;
+        default:
+            return 0;
+    } /* switch */
+} /* body_is_chunked */
+
 static int
 body_length(int body_cls)
 {
@@ -860,6 +933,12 @@ body_length(int body_cls)
         case HBDY_BODYONE:   return 1;
         case HBDY_BODYSMALL: return BODY_SMALL_LEN;
         case HBDY_BODYLARGE: return BODY_LARGE_LEN;
+        case HBDY_BODYCHUNKED:
+        case HBDY_BODYCHUNKEDEXT:
+        case HBDY_BODYCHUNKEDTRAILER:
+            return BODY_CHUNKED_LEN;
+        case HBDY_BODYCHUNKEDMANY:
+            return BODY_LARGE_LEN;
         default:             return 0;
     } /* switch */
 } /* body_length */
@@ -889,24 +968,28 @@ method_echoed(int method_cls)
 } /* method_echoed */
 
 static char g_uri_long[URI_LONG_PATH_LEN + 16];
+static char g_uri_absolute[128];
+static char g_host_value[64];
 
 static const char *
 uri_wire(int uri_cls)
 {
     switch (uri_cls) {
-        case HURI_URIROOT:    return URI_ROOT;
-        case HURI_URIPATH:    return URI_PATH;
-        case HURI_URIQUERY:   return URI_QUERY;
-        case HURI_URIESCAPED: return URI_ESCAPED;
-        case HURI_URILONG:    return g_uri_long;
-        default:              return URI_PATH;
+        case HURI_URIROOT:     return URI_ROOT;
+        case HURI_URIPATH:     return URI_PATH;
+        case HURI_URIQUERY:    return URI_QUERY;
+        case HURI_URIESCAPED:  return URI_ESCAPED;
+        case HURI_URILONG:     return g_uri_long;
+        case HURI_URIABSOLUTE: return g_uri_absolute;
+        default:               return URI_PATH;
     } /* switch */
 } /* uri_wire */
 
 /*
- * The header fields a request carries, less the ones the framing adds
- * (Connection, Content-Length).  Every shape here is legal RFC 1945 section
- * 4.2 grammar; the model says which, this says how it is spelled.
+ * The header fields a request carries, less the ones the framing adds (Host,
+ * Connection, Content-Length, Transfer-Encoding, Expect).  Every shape here is
+ * legal RFC 9112 section 5 grammar; the model says which, this says how it is
+ * spelled.
  */
 static void
 append_headers(
@@ -956,6 +1039,58 @@ append_headers(
 } /* append_headers */
 
 /*
+ * Append `len` bytes of `body` chunked-encoded (RFC 9112 section 7.1).
+ *
+ *     chunked-body = *chunk last-chunk trailer-section CRLF
+ *     chunk        = chunk-size [ chunk-ext ] CRLF chunk-data CRLF
+ *
+ * The three variants differ only in the parts a decoder can produce the right
+ * body without ever looking at, which is exactly why they are separate cases:
+ * an extension that is not skipped corrupts the size, and a trailer section
+ * that is not consumed is left to be read as the start of the next request.
+ */
+static void
+append_chunked_body(
+    struct wirebuf *wb,
+    const char     *body,
+    int             len,
+    int             body_cls)
+{
+    char line[64];
+    int  off = 0, chunk;
+    int  split = body_cls == HBDY_BODYCHUNKEDMANY ? CHUNK_SPLIT_LEN : len;
+
+    while (off < len) {
+        chunk = len - off;
+
+        if (split > 0 && chunk > split) {
+            chunk = split;
+        }
+
+        if (body_cls == HBDY_BODYCHUNKEDEXT) {
+            snprintf(line, sizeof(line), "%x;probe=1;flag\r\n", chunk);
+        } else {
+            snprintf(line, sizeof(line), "%x\r\n", chunk);
+        }
+
+        wb_str(wb, line);
+        wb_append(wb, body + off, chunk);
+        wb_str(wb, "\r\n");
+
+        off += chunk;
+    }
+
+    wb_str(wb, "0\r\n");
+
+    if (body_cls == HBDY_BODYCHUNKEDTRAILER) {
+        wb_str(wb, "X-Trailer: after-the-body\r\n");
+        wb_str(wb, "X-Trailer-Two: and-another\r\n");
+    }
+
+    wb_str(wb, "\r\n");
+} /* append_chunked_body */
+
+/*
  * Build one request of the positive matrix.  Returns the body bytes it
  * carried (into `body`) so the echo can be compared against them.
  */
@@ -976,15 +1111,35 @@ build_request(
     wb_str(wb, method_wire(c->method));
     wb_str(wb, " ");
     wb_str(wb, uri_wire(c->uri));
-    wb_str(wb, " HTTP/1.0\r\n");
+    wb_str(wb, " ");
+    wb_str(wb, version_wire(c->ver));
+    wb_str(wb, "\r\n");
+
+    /* RFC 9112 section 3.2: "A client MUST send a Host header field in all
+     * HTTP/1.1 request messages" -- including one whose request-target is
+     * already in absolute-form.  Part of the framing rather than a header
+     * class, the same way Content-Length is. */
+    if (c->ver == HVER_V11) {
+        wb_str(wb, "Host: ");
+        wb_str(wb, g_host_value);
+        wb_str(wb, "\r\n");
+    }
 
     append_headers(wb, c->hdr);
 
     if (c->conn == HCONN_CONNKEEPALIVE) {
         wb_str(wb, "Connection: keep-alive\r\n");
+    } else if (c->conn == HCONN_CONNCLOSE) {
+        wb_str(wb, "Connection: close\r\n");
     }
 
-    if (c->body != HBDY_BODYNONE) {
+    if (c->expect_cls == HEXP_EXPECTCONTINUE) {
+        wb_str(wb, "Expect: 100-continue\r\n");
+    }
+
+    if (body_is_chunked(c->body)) {
+        wb_str(wb, "Transfer-Encoding: chunked\r\n");
+    } else if (c->body != HBDY_BODYNONE) {
         snprintf(line, sizeof(line), "Content-Length: %d\r\n", *body_len);
         wb_str(wb, line);
     }
@@ -993,6 +1148,11 @@ build_request(
 
     if (*body_len) {
         fill_body(body, *body_len);
+    }
+
+    if (body_is_chunked(c->body)) {
+        append_chunked_body(wb, body, *body_len, c->body);
+    } else if (*body_len) {
         wb_append(wb, body, *body_len);
     }
 } /* build_request */
@@ -1058,6 +1218,10 @@ write_all(
  * a dimension of the model rather than an implementation detail: a parser
  * defect that is only detected because the whole request arrived in one read
  * is not really detected.
+ *
+ * Pipelined is the one that is a protocol claim rather than a fragmentation
+ * choice -- the same request twice in a single write, which RFC 9112 section
+ * 9.3.2 permits and requires the server to answer in order.
  */
 static void
 deliver(
@@ -1093,6 +1257,20 @@ deliver(
                 write_all(fd, wb->data + dribble, wb->len - dribble);
             }
             break;
+        case HDLV_PIPELINED:
+            /* Both requests in one write, so that when the server's first
+             * read returns, the second request is already buffered and no
+             * further read event is coming to announce it. */
+        {
+            struct wirebuf both;
+
+            wb_init(&both);
+            wb_append(&both, wb->data, wb->len);
+            wb_append(&both, wb->data, wb->len);
+            write_all(fd, both.data, both.len);
+            wb_free(&both);
+        }
+        break;
         default:
             write_all(fd, wb->data, wb->len);
             break;
@@ -1100,25 +1278,35 @@ deliver(
 } /* deliver */
 
 /* ------------------------------------------------------------------ *
-* The response parser
+* The response reader
+*
+* A reader owns the socket buffer and a cursor, so a connection that carries
+* more than one response -- a pipelined pair, or one reused for a second
+* request -- is parsed as a sequence rather than as a single message.  That
+* also makes the interim-response rule expressible: a 1xx is a complete
+* message that is not the answer, so it is parsed, counted, and skipped.
 * ------------------------------------------------------------------ */
 
-#define MAX_RESPONSE  (BODY_LARGE_LEN + 65536)
+#define MAX_RESPONSE  (2 * BODY_LARGE_LEN + 65536)
 #define MAX_RSP_HDRS  64
 #define MAX_RSP_NAME  128
 #define MAX_RSP_VALUE 2048
+#define MAX_RSP_BODY  (BODY_LARGE_LEN + 4096)
+
+struct reader {
+    int  fd;
+    int  len;        /* bytes read from the socket so far   */
+    int  pos;        /* where the next unparsed message starts */
+    int  eof;
+    char buf[MAX_RESPONSE];
+};
 
 struct rawrsp {
-    char    buf[MAX_RESPONSE];
-    int     len;
-    int     eof;
-
     int     have_status;
     int     status;
     char    version[16];
     char    reason[128];
 
-    int     hdr_end;          /* offset past the CRLFCRLF, -1 until seen */
     int     nhdr;
     struct {
         char name[MAX_RSP_NAME];
@@ -1127,8 +1315,15 @@ struct rawrsp {
 
     int64_t content_length;   /* -1 when the response declares none */
     int     chunked;
+    int     close_delimited;
 
+    /* The decoded content, whichever framing carried it. */
     int     body_len;
+    char    body[MAX_RSP_BODY];
+
+    int     interim;          /* 1xx messages skipped before this one */
+    int     eof;              /* the peer closed at or before this message */
+    int     simple;           /* no status line at all */
 };
 
 static const char *
@@ -1180,41 +1375,74 @@ copy_field(
     dst[len] = '\0';
 } /* copy_field */
 
-/*
- * Parse as much of the accumulated bytes as have arrived.  Idempotent: it is
- * called after every read and stops as soon as it needs bytes it does not
- * have, so a response split across a hundred reads parses exactly once.
- */
 static void
-parse_response(struct rawrsp *r)
+body_append(
+    struct rawrsp *r,
+    const char    *src,
+    int            len)
 {
-    const char *base = r->buf;
-    const char *end  = r->buf + r->len;
+    if (r->body_len + len > MAX_RSP_BODY) {
+        len = MAX_RSP_BODY - r->body_len;
+    }
+
+    if (len > 0) {
+        memcpy(r->body + r->body_len, src, len);
+        r->body_len += len;
+    }
+} /* body_append */
+
+/*
+ * Parse one message beginning at rd->buf[start].
+ *
+ * Returns the offset just past the message, or -1 if it has not fully arrived
+ * yet, or -2 if the bytes are not a status line at all.  Nothing is consumed:
+ * the caller advances the cursor, so a partial parse costs only the work of
+ * redoing it when more bytes turn up.
+ */
+static int
+parse_message(
+    const struct reader *rd,
+    struct rawrsp       *r,
+    int                  start,
+    int                  expect_body_absent)
+{
+    const char *base = rd->buf;
+    const char *end  = rd->buf + rd->len;
     const char *line, *eol, *sp1, *sp2, *colon, *value, *vend;
     const char *cl;
+    int         hdr_end, no_body, chunk;
+    char        size[64];
 
-    if (r->hdr_end >= 0) {
-        r->body_len = r->len - r->hdr_end;
-        return;
+    memset(r, 0, sizeof(*r));
+
+    r->content_length = -1;
+
+    if (rd->len - start < 5) {
+        return rd->eof ? -2 : -1;
     }
 
-    if (r->len < 5 || memcmp(base, "HTTP/", 5) != 0) {
-        /* Either not enough bytes to tell, or a Simple-Response, which has no
-         * status line and no headers at all: every byte is body. */
-        return;
+    if (memcmp(base + start, "HTTP/", 5) != 0) {
+        /* A Simple-Response, which has no status line and no headers at all:
+         * every byte is content, and it ends with the connection. */
+        r->simple = 1;
+        body_append(r, base + start, rd->len - start);
+        return rd->eof ? rd->len : -1;
     }
 
-    line = base;
+    line = base + start;
     eol  = find_crlf(line, end);
 
     if (!eol) {
-        return;
+        return -1;
     }
 
     sp1 = memchr(line, ' ', eol - line);
 
     if (!sp1) {
-        return;
+        /* A status line with only one token.  Recorded in `version` so the
+         * classifier can tell it from having received nothing at all. */
+        copy_field(r->version, sizeof(r->version), line, eol - line);
+        return -2;
     }
 
     copy_field(r->version, sizeof(r->version), line, sp1 - line);
@@ -1230,16 +1458,19 @@ parse_response(struct rawrsp *r)
 
     line = eol + 2;
 
-    while (line < end) {
+    for (;;) {
+        if (line >= end) {
+            return -1;
+        }
+
         eol = find_crlf(line, end);
 
         if (!eol) {
-            return;
+            return -1;
         }
 
         if (eol == line) {
-            r->hdr_end  = (int) ((line + 2) - base);
-            r->body_len = r->len - r->hdr_end;
+            line += 2;
             break;
         }
 
@@ -1267,9 +1498,7 @@ parse_response(struct rawrsp *r)
         line = eol + 2;
     }
 
-    if (r->hdr_end < 0) {
-        return;
-    }
+    hdr_end = (int) (line - base);
 
     cl = rsp_header(r, "Content-Length");
 
@@ -1278,7 +1507,92 @@ parse_response(struct rawrsp *r)
     cl = rsp_header(r, "Transfer-Encoding");
 
     r->chunked = cl && strcasecmp(cl, "chunked") == 0;
-} /* parse_response */
+
+    /* RFC 9112 section 6.3: a 1xx, 204 or 304 response, and any response to a
+     * HEAD request, "is always terminated by the first empty line after the
+     * header fields, regardless of the header fields present in the
+     * message". */
+    no_body = expect_body_absent || r->status / 100 == 1 || r->status == 204 ||
+        r->status == 304;
+
+    if (no_body) {
+        return hdr_end;
+    }
+
+    if (r->chunked) {
+        int p = hdr_end;
+
+        for (;;) {
+            eol = find_crlf(base + p, end);
+
+            if (!eol) {
+                return -1;
+            }
+
+            copy_field(size, sizeof(size), base + p, eol - (base + p));
+
+            chunk = (int) strtol(size, NULL, 16);
+
+            p = (int) (eol + 2 - base);
+
+            if (chunk == 0) {
+                break;
+            }
+
+            if (rd->len - p < chunk + 2) {
+                return -1;
+            }
+
+            body_append(r, base + p, chunk);
+            p += chunk + 2;
+        }
+
+        /* The trailer section, then the CRLF that ends the coding: zero or
+         * more field lines followed by an empty one. */
+        for (;;) {
+            eol = find_crlf(base + p, end);
+
+            if (!eol) {
+                return -1;
+            }
+
+            if (eol == base + p) {
+                p += 2;
+                break;
+            }
+
+            p = (int) (eol + 2 - base);
+        }
+
+        return p;
+    }
+
+    if (r->content_length >= 0) {
+        if (rd->len - hdr_end < r->content_length) {
+            /* A truncated body is only final once the peer has closed. */
+            if (!rd->eof) {
+                return -1;
+            }
+
+            body_append(r, base + hdr_end, rd->len - hdr_end);
+            return rd->len;
+        }
+
+        body_append(r, base + hdr_end, (int) r->content_length);
+        return hdr_end + (int) r->content_length;
+    }
+
+    /* Neither a length nor a coding: the content runs to the close. */
+    r->close_delimited = 1;
+
+    if (!rd->eof) {
+        return -1;
+    }
+
+    body_append(r, base + hdr_end, rd->len - hdr_end);
+
+    return rd->len;
+} /* parse_message */
 
 static int64_t
 now_ms(void)
@@ -1291,148 +1605,194 @@ now_ms(void)
 } /* now_ms */
 
 /*
- * Read the response.
+ * Read once into the reader's buffer, waiting at most `timeout`.  Returns 1 if
+ * bytes arrived, 0 on timeout, -1 on close or error.
+ */
+static int
+rd_fill(
+    struct reader *rd,
+    int            timeout)
+{
+    struct pollfd pfd;
+    int           n;
+
+    if (rd->eof || rd->len == MAX_RESPONSE) {
+        return -1;
+    }
+
+    pfd.fd      = rd->fd;
+    pfd.events  = POLLIN;
+    pfd.revents = 0;
+
+    if (timeout < 0) {
+        timeout = 0;
+    }
+
+    n = poll(&pfd, 1, timeout);
+
+    if (n < 0) {
+        return errno == EINTR ? 0 : -1;
+    }
+
+    if (n == 0) {
+        return 0;
+    }
+
+    n = read(rd->fd, rd->buf + rd->len, MAX_RESPONSE - rd->len);
+
+    if (n < 0) {
+        if (errno == EINTR) {
+            return 0;
+        }
+
+        /* A reset is a close: a server that hangs up on a request the client
+         * is still dribbling out will reset the rest of it, and the read fails
+         * rather than returning EOF.  Recording that as a stall would say the
+         * server held the connection when it did the opposite, and would make
+         * the same defect classify differently depending only on how the
+         * request was delivered. */
+        if (errno == ECONNRESET) {
+            rd->eof = 1;
+        }
+
+        return -1;
+    }
+
+    if (n == 0) {
+        rd->eof = 1;
+        return -1;
+    }
+
+    rd->len += n;
+
+    return 1;
+} /* rd_fill */
+
+/*
+ * Read the next response off the connection.
+ *
+ * With `skip_interim` set, 1xx messages are parsed, counted into r->interim
+ * and skipped: RFC 9110 section 15.2 makes them interim by definition -- "A
+ * client MUST be able to parse one or more 1xx responses received prior to a
+ * final response" -- so the answer is whatever follows them, and whether one
+ * was allowed to be there at all is a separate check.  The status phase clears
+ * it, because there the 1xx IS the message under examination and nothing
+ * further is coming.
  *
  * `expect_body_absent` is the HEAD case: the response declares a length but
  * must not carry the bytes, so the reader spends a short grace proving none
  * arrive rather than blocking on a body that is required to be missing.
- *
- * `wait_close` asks for the extra wait that proves the server closed the
- * connection.  It is expensive and the answer does not vary with the URI or
- * the header shape, so run_request_case only asks for it on a sample.
  */
 static void
 read_response(
+    struct reader *rd,
     struct rawrsp *r,
-    int            fd,
     int            expect_body_absent,
-    int            wait_close)
+    int            skip_interim)
 {
-    struct pollfd pfd;
-    int64_t       deadline, grace = -1;
-    int           n, timeout;
-    int           complete = 0;
-
-    memset(r, 0, sizeof(*r));
-
-    r->hdr_end        = -1;
-    r->content_length = -1;
-
-    deadline = now_ms() + RESPONSE_TIMEOUT_MS;
+    int64_t deadline = now_ms() + RESPONSE_TIMEOUT_MS;
+    int     interim  = 0;
+    int     msg_end, avail, n;
 
     for (;;) {
-        parse_response(r);
+        msg_end = parse_message(rd, r, rd->pos, expect_body_absent);
 
-        if (!complete && r->hdr_end >= 0) {
+        if (msg_end == -2) {
+            r->interim = interim;
+            r->eof     = rd->eof;
+            return;
+        }
+
+        if (msg_end >= 0) {
+            if (skip_interim && r->have_status && r->status / 100 == 1) {
+                /* An interim response.  Skip it and keep reading for the
+                 * answer, which is what a 1xx says is still coming. */
+                interim++;
+                rd->pos = msg_end;
+                continue;
+            }
+
+            rd->pos    = msg_end;
+            r->interim = interim;
+            r->eof     = rd->eof;
+
             if (expect_body_absent) {
-                if (r->body_len > 0) {
-                    /* A body arrived where none may: nothing further to
-                     * learn, and waiting for the rest of it wastes the
-                     * grace. */
-                    return;
+                /* Prove the body really is absent rather than merely late. */
+                int64_t grace = now_ms() + NOBODY_GRACE_MS;
+
+                while (now_ms() < grace && rd->len == msg_end) {
+                    if (rd_fill(rd, (int) (grace - now_ms())) < 0) {
+                        break;
+                    }
                 }
 
-                if (grace < 0) {
-                    grace = now_ms() + NOBODY_GRACE_MS;
+                avail = rd->len - msg_end;
+
+                /* Anything that follows is only a body if it is not the next
+                 * response: a pipelined pair puts the second status line
+                 * exactly where a forbidden body would be, and counting that
+                 * as content would fail the HEAD rule for obeying it. */
+                n = avail < 5 ? avail : 5;
+
+                if (avail > 0 && memcmp(rd->buf + msg_end, "HTTP/", n) != 0) {
+                    body_append(r, rd->buf + msg_end, avail);
                 }
-
-                if (now_ms() >= grace) {
-                    complete = 1;
-                }
-            } else if (r->content_length >= 0 &&
-                       r->body_len >= r->content_length) {
-                complete = 1;
-            }
-
-            if (complete) {
-                if (!wait_close) {
-                    return;
-                }
-
-                deadline = now_ms() + CLOSE_TIMEOUT_MS;
-            }
-        }
-
-        timeout = (int) (deadline - now_ms());
-
-        if (grace >= 0 && !complete) {
-            int g = (int) (grace - now_ms());
-
-            if (g < timeout) {
-                timeout = g;
-            }
-        }
-
-        if (timeout < 0) {
-            timeout = 0;
-        }
-
-        pfd.fd      = fd;
-        pfd.events  = POLLIN;
-        pfd.revents = 0;
-
-        n = poll(&pfd, 1, timeout);
-
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return;
-        }
-
-        if (n == 0) {
-            if (grace >= 0 && !complete && now_ms() >= grace) {
-                continue;
-            }
-            return;
-        }
-
-        if (r->len == MAX_RESPONSE) {
-            return;
-        }
-
-        n = read(fd, r->buf + r->len, MAX_RESPONSE - r->len);
-
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-
-            /* A reset is a close: a server that hangs up on a request the
-             * client is still dribbling out will reset the rest of it, and
-             * the read fails rather than returning EOF.  Recording that as a
-             * stall would say the server held the connection when it did the
-             * opposite, and would make the same defect classify differently
-             * depending only on how the request was delivered. */
-            if (errno == ECONNRESET) {
-                r->eof = 1;
             }
 
             return;
         }
 
-        if (n == 0) {
-            r->eof = 1;
-            parse_response(r);
+        if (now_ms() >= deadline || rd_fill(rd, (int) (deadline - now_ms())) < 0) {
+            /* Out of time, or the peer closed.  Parse one last time: a close
+             * is the delimiter for a close-delimited body and for a truncated
+             * one, so the final read can complete a message. */
+            msg_end = parse_message(rd, r, rd->pos, expect_body_absent);
+
+            if (msg_end >= 0) {
+                rd->pos = msg_end;
+            }
+
+            r->interim = interim;
+            r->eof     = rd->eof;
             return;
         }
-
-        r->len += n;
     }
 } /* read_response */
+
+/*
+ * Whether the connection is still there after a response.
+ *
+ * Costs a wait either way: a close that has not arrived yet is
+ * indistinguishable from one that never will until the deadline passes.
+ */
+static int
+connection_closed(
+    struct reader *rd,
+    int            timeout)
+{
+    int64_t deadline = now_ms() + timeout;
+
+    while (!rd->eof && now_ms() < deadline) {
+        if (rd_fill(rd, (int) (deadline - now_ms())) <= 0) {
+            break;
+        }
+    }
+
+    return rd->eof;
+} /* connection_closed */
 
 static int
 classify(const struct rawrsp *r)
 {
-    if (r->len == 0) {
-        return r->eof ? ACT_NORESPONSE : ACT_STALLED;
-    }
-
-    if (r->len < 5 || memcmp(r->buf, "HTTP/", 5) != 0) {
+    if (r->simple) {
         return ACT_SIMPLE;
     }
 
-    if (!r->have_status || r->hdr_end < 0) {
+    if (!r->have_status) {
+        if (r->version[0] == '\0' && r->nhdr == 0 && r->body_len == 0) {
+            return r->eof ? ACT_NORESPONSE : ACT_STALLED;
+        }
+
         return ACT_MALFORMED;
     }
 
@@ -1442,7 +1802,7 @@ classify(const struct rawrsp *r)
 /*
  * Checks that sit outside the model, applied to every response that has a
  * status line at all.  None of them is a property of a particular case -- they
- * are what makes any response to an HTTP/1.0 request a well-formed one -- so
+ * are what makes any response to an HTTP/1.x request a well-formed one -- so
  * holding them here rather than bending them into the case table keeps the
  * model about what the request means.
  */
@@ -1450,6 +1810,7 @@ static void
 check_framing(
     int                  phase,
     int                  subject,
+    int                  ver,
     const struct rawrsp *r)
 {
     char detail[256];
@@ -1477,12 +1838,58 @@ check_framing(
         return;
     }
 
-    /* Chunked transfer coding is an HTTP/1.1 addition (RFC 2616 section 3.6.1);
-     * an HTTP/1.0 client has no way to delimit a response framed with it, so
-     * sending one to an HTTP/1.0 request is a response the peer cannot read. */
-    if (r->chunked) {
+    /* RFC 9112 section 6.1: "A server MUST NOT send a response containing
+     * Transfer-Encoding unless the corresponding request indicates HTTP/1.1
+     * (or later)."  An HTTP/1.0 client has no way to delimit a body framed
+     * with a coding its version does not have, so this is a response the peer
+     * cannot read. */
+    if (r->chunked && ver != HVER_V11) {
         record(phase, ASPECT_FRAMING, subject, VACT_OK, VACT_BAD, 0,
                "chunked response to an HTTP/1.0 request");
+        return;
+    }
+
+    /* RFC 9112 section 6.1 again: "A sender MUST NOT send a Content-Length
+     * header field in any message that contains a Transfer-Encoding header
+     * field."  Two framings that disagree is the response-splitting
+     * primitive, and it is the same defect the server refuses on the way
+     * in. */
+    if (r->chunked && rsp_header(r, "Content-Length")) {
+        record(phase, ASPECT_FRAMING, subject, VACT_OK, VACT_BAD, 0,
+               "both Content-Length and Transfer-Encoding on one response");
+        return;
+    }
+
+    /* "A server MUST NOT send a Content-Length header field in any response
+     * with a status code of 1xx (Informational) or 204 (No Content)."  These
+     * carry no content by definition, so a length is describing something
+     * that is not there. */
+    if ((r->status / 100 == 1 || r->status == 204) &&
+        rsp_header(r, "Content-Length")) {
+        snprintf(detail, sizeof(detail),
+                 "Content-Length on a %d response", r->status);
+        record(phase, ASPECT_FRAMING, subject, VACT_OK, VACT_BAD, 0, detail);
+        return;
+    }
+
+    if ((r->status / 100 == 1 || r->status == 204) && r->chunked) {
+        snprintf(detail, sizeof(detail),
+                 "Transfer-Encoding on a %d response", r->status);
+        record(phase, ASPECT_FRAMING, subject, VACT_OK, VACT_BAD, 0, detail);
+        return;
+    }
+
+    /* RFC 9110 section 6.6.1: "An origin server MUST send a Date header field
+     * in all [2xx, 3xx and 4xx] cases" -- it is optional only for 1xx and 5xx,
+     * and forbidden only to a server with no clock.  Everything downstream
+     * that reasons about the age of a response starts from it, so a response
+     * without one cannot be cached, revalidated or have its freshness
+     * computed at all. */
+    if (r->status >= 200 && r->status < 500 &&
+        rsp_header(r, "Date") == NULL) {
+        snprintf(detail, sizeof(detail), "no Date header on a %d response",
+                 r->status);
+        record(phase, ASPECT_FRAMING, subject, VACT_OK, VACT_BAD, 0, detail);
         return;
     }
 
@@ -1494,13 +1901,13 @@ check_framing(
 * ------------------------------------------------------------------ */
 
 /*
- * Whether this case pays for the wait that proves the connection closed.  The
+ * Whether this case pays for the waits that prove the connection's fate.  The
  * answer depends on the request's version and its Connection header and on
- * nothing else, so it is checked once per (method, connection) pair rather
- * than on all several hundred cases -- at a quarter of a second each, doing it
- * everywhere would dominate the run.
+ * nothing else, so it is checked once per (version, method, connection) triple
+ * rather than on all eleven hundred cases -- at a quarter of a second each,
+ * doing it everywhere would dominate the run.
  */
-static int g_persist_checked[3][2];
+static int g_persist_checked[2][3][3];
 
 static void
 check_probe(
@@ -1553,43 +1960,31 @@ check_probe(
            ok ? c->expect_probe : HPROBE_PROBEANY, ok, ok ? NULL : detail);
 } /* check_probe */
 
+/*
+ * Check everything about one response that the case predicts.  Split out from
+ * run_request_case because a pipelined case has two of them to check, and the
+ * second is checked against exactly the same prediction as the first: two
+ * identical requests must draw two identical answers, in order.
+ */
 static void
-run_request_case(const struct http_request_case *c)
+check_response(
+    const struct http_request_case *c,
+    const struct rawrsp            *r,
+    const char                     *body,
+    int                             body_len,
+    int                             which)
 {
-    struct wirebuf wb;
-    struct rawrsp  r;
-    static char    body[BODY_LARGE_LEN];
-    char           detail[512];
-    const char    *echo;
-    int            fd, body_len, actual, want_close, ok;
+    char        detail[512];
+    const char *echo;
+    int         actual = classify(r);
+    int         ok;
 
-    fd = connect_raw();
-
-    if (fd < 0) {
-        fprintf(stderr, "request case: connect failed: %s\n", strerror(errno));
-        g_results.unexpected++;
-        return;
-    }
-
-    g_results.request_run++;
-
-    wb_init(&wb);
-    build_request(&wb, c, body, &body_len);
-
-    want_close                            = !g_persist_checked[c->method][c->conn];
-    g_persist_checked[c->method][c->conn] = 1;
-
-    deliver(fd, &wb, c->delivery);
-
-    read_response(&r, fd, c->expect_body == HBODY_BODYABSENT, want_close);
-
-    actual = classify(&r);
-
-    /* Status. */
-    snprintf(detail, sizeof(detail), "%s %s, %s, %s, %s, %s",
-             http_method_name(c->method), http_uri_name(c->uri),
-             http_hdr_name(c->hdr), http_body_name(c->body),
-             http_conn_name(c->conn), http_delivery_name(c->delivery));
+    snprintf(detail, sizeof(detail), "%s %s %s, %s, %s, %s, %s%s",
+             http_version_name(c->ver), http_method_name(c->method),
+             http_uri_name(c->uri), http_hdr_name(c->hdr),
+             http_body_name(c->body), http_conn_name(c->conn),
+             http_delivery_name(c->delivery),
+             which ? " (second of a pipelined pair)" : "");
 
     ok = actual == c->expect_status;
 
@@ -1599,13 +1994,25 @@ run_request_case(const struct http_request_case *c)
     if (!ok) {
         /* Nothing downstream of the status means anything if the request was
          * not served: there is no echo to compare and no body to check. */
-        goto out;
+        return;
     }
 
-    check_framing(PHASE_REQUEST, c->method, &r);
+    check_framing(PHASE_REQUEST, c->ver, c->ver, r);
+
+    /* RFC 9110 section 10.1.1: an HTTP/1.0 request's 100-continue expectation
+     * MUST be ignored, so a 1xx before the answer is a message the client
+     * cannot tell from the answer itself. */
+    ok = c->expect_interim == HINTERIM_INTERIMALLOWED || r->interim == 0;
+
+    snprintf(detail, sizeof(detail),
+             "%d interim response(s) before the answer to a %s request",
+             r->interim, http_version_name(c->ver));
+
+    record(PHASE_REQUEST, ASPECT_INTERIM, c->ver, VACT_OK,
+           ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
 
     /* What the server understood. */
-    echo = rsp_header(&r, ECHO_METHOD);
+    echo = rsp_header(r, ECHO_METHOD);
     ok   = echo && strcmp(echo, method_echoed(c->method)) == 0;
 
     snprintf(detail, sizeof(detail), "method reflected as '%s', wanted '%s'",
@@ -1614,7 +2021,7 @@ run_request_case(const struct http_request_case *c)
     record(PHASE_REQUEST, ASPECT_ECHO_METHOD, c->method, VACT_OK,
            ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
 
-    echo = rsp_header(&r, ECHO_URI);
+    echo = rsp_header(r, ECHO_URI);
     ok   = echo && strcmp(echo, uri_wire(c->uri)) == 0;
 
     snprintf(detail, sizeof(detail), "uri reflected as '%.64s', wanted '%.64s'",
@@ -1623,57 +2030,211 @@ run_request_case(const struct http_request_case *c)
     record(PHASE_REQUEST, ASPECT_ECHO_URI, c->uri, VACT_OK,
            ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
 
-    check_probe(c, &r);
+    check_probe(c, r);
 
     /* The body. */
     if (c->expect_body == HBODY_BODYABSENT) {
-        ok = r.body_len == 0;
+        ok = r->body_len == 0;
 
         snprintf(detail, sizeof(detail),
-                 "%d body bytes returned for a HEAD request", r.body_len);
+                 "%d body bytes returned for a HEAD request", r->body_len);
 
         record(PHASE_REQUEST, ASPECT_BODY, c->method, HBODY_BODYABSENT,
                ok ? HBODY_BODYABSENT : HBODY_BODYECHOED, ok,
                ok ? NULL : detail);
     } else {
-        ok = r.body_len == body_len &&
-            (body_len == 0 ||
-             memcmp(r.buf + r.hdr_end, body, body_len) == 0);
+        ok = r->body_len == body_len &&
+            (body_len == 0 || memcmp(r->body, body, body_len) == 0);
 
         snprintf(detail, sizeof(detail),
-                 "%d body bytes returned, sent %d", r.body_len, body_len);
+                 "%d body bytes returned, sent %d", r->body_len, body_len);
 
         record(PHASE_REQUEST, ASPECT_BODY, c->method, HBODY_BODYECHOED,
                ok ? HBODY_BODYECHOED : HBODY_BODYANY, ok, ok ? NULL : detail);
     }
 
     /* An HTTP/1.0 server may only say keep-alive to a client that asked. */
-    if (c->conn == HCONN_CONNDEFAULT) {
-        echo = rsp_header(&r, "Connection");
+    if (c->ver == HVER_V10 && c->conn == HCONN_CONNDEFAULT) {
+        echo = rsp_header(r, "Connection");
         ok   = !(echo && strcasecmp(echo, "keep-alive") == 0);
 
         record(PHASE_REQUEST, ASPECT_KEEPALIVE, c->conn, VACT_OK,
                ok ? VACT_OK : VACT_BAD, ok, ok ? NULL :
                "unsolicited 'Connection: keep-alive' on an HTTP/1.0 response");
     }
+} /* check_response */
 
-    /* And it must close unless it did say so. */
-    if (want_close) {
-        if (c->expect_persist == HPERSIST_MUSTCLOSE) {
-            ok = r.eof;
-        } else {
-            echo = rsp_header(&r, "Connection");
-            ok   = r.eof || (echo && strcasecmp(echo, "keep-alive") == 0);
+/*
+ * The MustPersist obligation, which is two things at once (RFC 9112 section
+ * 9.6): a server that is going to close MUST say so, and one that did not say
+ * so has left a connection another request can be sent on.  Checking only the
+ * first would let a server satisfy HTTP/1.1 by announcing a close on every
+ * response, which is HTTP/1.0 with extra words; checking only the second would
+ * fail a server that is entitled to close and said so.
+ */
+static void
+check_reuse(
+    struct reader                  *rd,
+    const struct http_request_case *c,
+    struct wirebuf                 *wb,
+    const char                     *body,
+    int                             body_len)
+{
+    struct rawrsp r;
+    char          detail[256];
+    int           ok, actual;
+
+    /* The caller has already established that the response did not announce a
+     * close, so the connection has to still be there.  Proving that costs a
+     * wait either way: a close that has not arrived yet is indistinguishable
+     * from one that never will until the grace passes. */
+    if (connection_closed(rd, PERSIST_GRACE_MS)) {
+        record(PHASE_REQUEST, ASPECT_REUSE, c->conn, VACT_OK, VACT_BAD, 0,
+               "the connection was closed after an HTTP/1.1 response that "
+               "did not announce a close");
+        return;
+    }
+
+    deliver(rd->fd, wb, HDLV_ONEWRITE);
+
+    read_response(rd, &r, c->expect_body == HBODY_BODYABSENT, 1);
+
+    actual = classify(&r);
+    ok     = actual == c->expect_status;
+
+    snprintf(detail, sizeof(detail),
+             "second request on the same connection answered %s",
+             ok ? "correctly" : outcome_name(actual));
+
+    record(PHASE_REQUEST, ASPECT_REUSE, c->conn, VACT_OK,
+           ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
+
+    if (ok) {
+        check_response(c, &r, body, body_len, 0);
+    }
+} /* check_reuse */
+
+static void
+run_request_case(const struct http_request_case *c)
+{
+    struct wirebuf wb;
+    struct reader *rd;
+    struct rawrsp  r;
+    static char    body[BODY_LARGE_LEN];
+    char           detail[256];
+    const char    *conn_hdr;
+    int            body_len, want_persist, ok, actual;
+
+    rd = calloc(1, sizeof(*rd));
+
+    if (!rd) {
+        fprintf(stderr, "out of memory\n");
+        exit(1);
+    }
+
+    rd->fd = connect_raw();
+
+    if (rd->fd < 0) {
+        fprintf(stderr, "request case: connect failed: %s\n", strerror(errno));
+        g_results.unexpected++;
+        free(rd);
+        return;
+    }
+
+    g_results.request_run++;
+
+    wb_init(&wb);
+    build_request(&wb, c, body, &body_len);
+
+    want_persist                                  = !g_persist_checked[c->ver][c->method][c->conn];
+    g_persist_checked[c->ver][c->method][c->conn] = 1;
+
+    deliver(rd->fd, &wb, c->delivery);
+
+    read_response(rd, &r, c->expect_body == HBODY_BODYABSENT, 1);
+
+    check_response(c, &r, body, body_len, 0);
+
+    actual = classify(&r);
+
+    if (actual != c->expect_status) {
+        goto out;
+    }
+
+    conn_hdr = rsp_header(&r, "Connection");
+
+    /* The second half of a pipelined pair.  RFC 9112 section 9.3.2: "A server
+     * MUST send its responses to those requests in the same order that the
+     * requests were received" -- and, before ordering can mean anything, it
+     * has to send them at all.  A server that stops parsing when one request
+     * is complete never sees the second, because the read event that carried
+     * it has already been delivered. */
+    if (c->delivery == HDLV_PIPELINED) {
+        struct rawrsp r2;
+
+        read_response(rd, &r2, c->expect_body == HBODY_BODYABSENT, 1);
+
+        actual = classify(&r2);
+        ok     = actual == c->expect_status;
+
+        snprintf(detail, sizeof(detail),
+                 "the second of two pipelined requests was answered %s",
+                 outcome_name(actual));
+
+        record(PHASE_REQUEST, ASPECT_PIPELINE, c->ver, VACT_OK,
+               ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
+
+        if (ok) {
+            check_response(c, &r2, body, body_len, 1);
         }
 
-        record(PHASE_REQUEST, ASPECT_PERSIST, c->conn, PACT_CLOSED,
-               r.eof ? PACT_CLOSED : PACT_OPEN, ok, ok ? NULL :
-               "the connection was still open after the response");
+        goto out;
     }
+
+    if (!want_persist) {
+        goto out;
+    }
+
+    switch (c->expect_persist) {
+        case HPERSIST_MUSTCLOSE:
+            ok = connection_closed(rd, CLOSE_TIMEOUT_MS);
+
+            record(PHASE_REQUEST, ASPECT_PERSIST, c->conn, PACT_CLOSED,
+                   ok ? PACT_CLOSED : PACT_OPEN, ok, ok ? NULL :
+                   "the connection was still open after the response");
+            break;
+
+        case HPERSIST_MAYPERSIST:
+            /* An HTTP/1.0 server that holds the connection has to have said
+             * so; one that closes is within its rights either way. */
+            ok = connection_closed(rd, CLOSE_TIMEOUT_MS) ||
+                (conn_hdr && strcasecmp(conn_hdr, "keep-alive") == 0);
+
+            record(PHASE_REQUEST, ASPECT_PERSIST, c->conn, PACT_CLOSED,
+                   rd->eof ? PACT_CLOSED : PACT_OPEN, ok, ok ? NULL :
+                   "the connection was held open without a Keep-Alive "
+                   "acknowledgement");
+            break;
+
+        default:
+            if (conn_hdr && strcasecmp(conn_hdr, "close") == 0) {
+                /* The escape hatch, taken: the server said it was closing, so
+                 * all that is left to check is that it did. */
+                ok = connection_closed(rd, CLOSE_TIMEOUT_MS);
+
+                record(PHASE_REQUEST, ASPECT_PERSIST, c->conn, PACT_CLOSED,
+                       ok ? PACT_CLOSED : PACT_OPEN, ok, ok ? NULL :
+                       "the response announced a close that did not happen");
+            } else {
+                check_reuse(rd, c, &wb, body, body_len);
+            }
+            break;
+    } /* switch */
 
  out:
     wb_free(&wb);
-    close(fd);
+    close(rd->fd);
+    free(rd);
 } /* run_request_case */
 
 static void
@@ -1696,34 +2257,57 @@ run_request_phase(void)
  * say so, because "the client has not finished yet" and "the client will
  * never finish" are different situations and only one of them permits the
  * server to answer nothing.
+ *
+ * `ver` is the version the defect is being tested at, which for most of them
+ * only changes the request line -- but for HostMissing and
+ * PostWithoutContentLength it is the whole of what is under test.
  */
 static void
 build_defect(
     struct wirebuf *wb,
     int             defect,
+    int             ver,
     int            *half_close)
 {
-    char line[256];
-    int  i;
+    char        line[256];
+    const char *v = version_wire(ver);
+    int         i;
 
     *half_close = 0;
 
+    /* Every defect that is not about the request line or the Host header
+     * starts from a well-formed one at the version under test. */
+#define REQ_LINE(method, uri)              \
+        do {                               \
+            wb_str(wb, method " " uri " "); \
+            wb_str(wb, v);                 \
+            wb_str(wb, "\r\n");            \
+            if (ver == HVER_V11) {         \
+                wb_str(wb, "Host: ");      \
+                wb_str(wb, g_host_value);  \
+                wb_str(wb, "\r\n");        \
+            }                              \
+        } while (0)
+
     switch (defect) {
         case HDEF_NODEFECT:
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0\r\n"
-                   PROBE_NAME ": " PROBE_VALUE "\r\n\r\n");
+            REQ_LINE("GET", URI_PATH);
+            wb_str(wb, PROBE_NAME ": " PROBE_VALUE "\r\n\r\n");
             break;
 
         case HDEF_METHODUNKNOWN:
-            wb_str(wb, "FROB " URI_PATH " HTTP/1.0\r\n\r\n");
+            REQ_LINE("FROB", URI_PATH);
+            wb_str(wb, "\r\n");
             break;
 
         case HDEF_METHODLOWERCASE:
-            wb_str(wb, "get " URI_PATH " HTTP/1.0\r\n\r\n");
+            REQ_LINE("get", URI_PATH);
+            wb_str(wb, "\r\n");
             break;
 
         case HDEF_METHODEMPTY:
-            wb_str(wb, " " URI_PATH " HTTP/1.0\r\n\r\n");
+            REQ_LINE("", URI_PATH);
+            wb_str(wb, "\r\n");
             break;
 
         case HDEF_REQUESTLINEONETOKEN:
@@ -1731,13 +2315,23 @@ build_defect(
             break;
 
         case HDEF_REQUESTLINEEXTRATOKEN:
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0 trailing\r\n\r\n");
+            wb_str(wb, "GET " URI_PATH " ");
+            wb_str(wb, v);
+            wb_str(wb, " trailing\r\n\r\n");
             break;
 
         case HDEF_REQUESTLINENOVERSION:
             /* An HTTP/0.9 Simple-Request: the request line alone, with no
              * version and therefore no header block to terminate. */
             wb_str(wb, "GET " URI_PATH "\r\n");
+            break;
+
+        case HDEF_LEADINGCRLFBEFOREREQUESTLINE:
+            /* The stray CRLF a buggy client leaves after a previous body.
+             * RFC 9112 section 2.2 asks a server to skip at least one. */
+            wb_str(wb, "\r\n");
+            REQ_LINE("GET", URI_PATH);
+            wb_str(wb, "\r\n");
             break;
 
         case HDEF_VERSIONMALFORMED:
@@ -1749,35 +2343,41 @@ build_defect(
             break;
 
         case HDEF_VERSIONMINORUNKNOWN:
-            wb_str(wb, "GET " URI_PATH " HTTP/1.9\r\n\r\n");
+            wb_str(wb, "GET " URI_PATH " HTTP/1.9\r\n"
+                   "Host: ");
+            wb_str(wb, g_host_value);
+            wb_str(wb, "\r\n\r\n");
             break;
 
         case HDEF_URITOOLONG:
             wb_str(wb, "GET /");
             wb_fill(wb, 'a', MAX_HEADER_LINE * 2);
-            wb_str(wb, " HTTP/1.0\r\n\r\n");
+            wb_str(wb, " ");
+            wb_str(wb, v);
+            wb_str(wb, "\r\n\r\n");
             break;
 
         case HDEF_HEADERNOCOLON:
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0\r\n"
-                   "ThisIsNotAHeaderField\r\n\r\n");
+            REQ_LINE("GET", URI_PATH);
+            wb_str(wb, "ThisIsNotAHeaderField\r\n\r\n");
             break;
 
         case HDEF_HEADERNAMEEMPTY:
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0\r\n"
-                   ": value\r\n\r\n");
+            REQ_LINE("GET", URI_PATH);
+            wb_str(wb, ": value\r\n\r\n");
             break;
 
         case HDEF_HEADERSPACEBEFORECOLON:
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0\r\n"
-                   PROBE_NAME " : " PROBE_VALUE "\r\n\r\n");
+            REQ_LINE("GET", URI_PATH);
+            wb_str(wb, PROBE_NAME " : " PROBE_VALUE "\r\n\r\n");
             break;
 
         case HDEF_HEADERLINEOVERLONG:
             /* One field longer than the parser's line buffer, but a block
              * that would otherwise be well inside max_header_size: the line
              * is what overflows, not the block. */
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0\r\nX-Long: ");
+            REQ_LINE("GET", URI_PATH);
+            wb_str(wb, "X-Long: ");
             wb_fill(wb, 'a', MAX_HEADER_LINE + 64);
             wb_str(wb, "\r\n\r\n");
             break;
@@ -1785,7 +2385,7 @@ build_defect(
         case HDEF_HEADERBLOCKOVERLONG:
             /* The mirror image: every line is comfortably short, and it is
              * their total that passes max_header_size. */
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0\r\n");
+            REQ_LINE("GET", URI_PATH);
 
             for (i = 0; i * 128 < MAX_HEADER_SIZE + 512; i++) {
                 snprintf(line, sizeof(line), "X-Fill-%03d: ", i);
@@ -1798,44 +2398,138 @@ build_defect(
             break;
 
         case HDEF_HEADERBLOCKUNTERMINATED:
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0\r\n"
-                   PROBE_NAME ": " PROBE_VALUE "\r\n");
+            REQ_LINE("GET", URI_PATH);
+            wb_str(wb, PROBE_NAME ": " PROBE_VALUE "\r\n");
             *half_close = 1;
             break;
 
+        case HDEF_HOSTMISSING:
+            /* Deliberately NOT through REQ_LINE: the absence of the Host is
+             * the defect, and at HTTP/1.0 the same bytes are a perfectly good
+             * request. */
+            wb_str(wb, "GET " URI_PATH " ");
+            wb_str(wb, v);
+            wb_str(wb, "\r\n" PROBE_NAME ": " PROBE_VALUE "\r\n\r\n");
+            break;
+
+        case HDEF_HOSTDUPLICATE:
+            wb_str(wb, "GET " URI_PATH " ");
+            wb_str(wb, v);
+            wb_str(wb, "\r\nHost: ");
+            wb_str(wb, g_host_value);
+            wb_str(wb, "\r\nHost: elsewhere.invalid\r\n\r\n");
+            break;
+
         case HDEF_BARELFLINEENDINGS:
-            wb_str(wb, "GET " URI_PATH " HTTP/1.0\n"
-                   PROBE_NAME ": " PROBE_VALUE "\n\n");
+            wb_str(wb, "GET " URI_PATH " ");
+            wb_str(wb, v);
+            wb_str(wb, "\n");
+
+            if (ver == HVER_V11) {
+                wb_str(wb, "Host: ");
+                wb_str(wb, g_host_value);
+                wb_str(wb, "\n");
+            }
+
+            wb_str(wb, PROBE_NAME ": " PROBE_VALUE "\n\n");
             break;
 
         case HDEF_CONTENTLENGTHNOTNUMERIC:
-            wb_str(wb, "POST " URI_PATH " HTTP/1.0\r\n"
-                   "Content-Length: not-a-number\r\n\r\n");
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Content-Length: not-a-number\r\n\r\n");
             break;
 
         case HDEF_CONTENTLENGTHNEGATIVE:
-            wb_str(wb, "POST " URI_PATH " HTTP/1.0\r\n"
-                   "Content-Length: -1\r\n\r\n");
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Content-Length: -1\r\n\r\n");
             break;
 
         case HDEF_CONTENTLENGTHDUPLICATECONFLICTING:
             /* Two lengths, and the body is as long as the first: a server
              * that takes the second waits forever, one that takes the first
              * leaves three bytes to be read as the next request. */
-            wb_str(wb, "POST " URI_PATH " HTTP/1.0\r\n"
-                   "Content-Length: 5\r\n"
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Content-Length: 5\r\n"
                    "Content-Length: 8\r\n\r\nabcde");
             break;
 
         case HDEF_BODYSHORTOFCONTENTLENGTH:
-            wb_str(wb, "POST " URI_PATH " HTTP/1.0\r\n"
-                   "Content-Length: 32\r\n\r\nshort");
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Content-Length: 32\r\n\r\nshort");
             *half_close = 1;
             break;
 
         case HDEF_POSTWITHOUTCONTENTLENGTH:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, PROBE_NAME ": " PROBE_VALUE "\r\n\r\n");
+            break;
+
+        case HDEF_TRANSFERENCODINGWITHCONTENTLENGTH:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Content-Length: 5\r\n"
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   "5\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_TRANSFERENCODINGCHUNKEDNOTFINAL:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: chunked, gzip\r\n\r\n"
+                   "5\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_TRANSFERENCODINGUNKNOWNCODING:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: gzip, chunked\r\n\r\n"
+                   "5\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_TRANSFERENCODINGONHTTP10:
+            /* A coding HTTP/1.0 does not have, on a request that claims
+             * HTTP/1.0: the two ends cannot agree on where it ends. */
             wb_str(wb, "POST " URI_PATH " HTTP/1.0\r\n"
-                   PROBE_NAME ": " PROBE_VALUE "\r\n\r\n");
+                   "Transfer-Encoding: chunked\r\n\r\n"
+                   "5\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_CHUNKSIZENOTHEX:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: chunked\r\n\r\n"
+                   "zz\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_CHUNKSIZENEGATIVE:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: chunked\r\n\r\n"
+                   "-5\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_CHUNKSIZEOVERFLOW:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: chunked\r\n\r\n"
+                   "FFFFFFFFFFFFFFFFF\r\nabcde\r\n0\r\n\r\n");
+            break;
+
+        case HDEF_CHUNKBADTERMINATOR:
+            /* The CRLF after the chunk data is something else, so a parser
+             * that does not check reads the next size from the middle of the
+             * content. */
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: chunked\r\n\r\n"
+                   "5\r\nabcdeXX0\r\n\r\n");
+            break;
+
+        case HDEF_CHUNKNOLASTCHUNK:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: chunked\r\n\r\n"
+                   "5\r\nabcde\r\n");
+            *half_close = 1;
+            break;
+
+        case HDEF_CHUNKTRUNCATED:
+            REQ_LINE("POST", URI_PATH);
+            wb_str(wb, "Transfer-Encoding: chunked\r\n\r\n"
+                   "20\r\nabcde");
+            *half_close = 1;
             break;
 
         default:
@@ -1843,11 +2537,13 @@ build_defect(
                     "build_defect()\n", defect);
             exit(1);
     } /* switch */
+
+#undef REQ_LINE
 } /* build_defect */
 
 /*
  * Whether an observed outcome satisfies the model's expectation.  Status(n)
- * is exact; NotSuccess is the arm for the shapes RFC 1945 does not pin down,
+ * is exact; NotSuccess is the arm for the shapes the RFCs do not pin down,
  * where refusing and closing are both defensible and only reporting success
  * is not.
  */
@@ -1873,42 +2569,47 @@ static void
 run_defect_case(const struct http_defect_case *c)
 {
     struct wirebuf wb;
+    struct reader *rd;
     struct rawrsp  r;
     char           detail[256];
-    int            fd, half_close, actual, ok;
+    int            half_close, actual, ok;
 
-    fd = connect_raw();
+    rd = calloc(1, sizeof(*rd));
 
-    if (fd < 0) {
+    if (!rd) {
+        fprintf(stderr, "out of memory\n");
+        exit(1);
+    }
+
+    rd->fd = connect_raw();
+
+    if (rd->fd < 0) {
         fprintf(stderr, "defect case %s: connect failed: %s\n",
                 http_defect_name(c->defect), strerror(errno));
         g_results.unexpected++;
+        free(rd);
         return;
     }
 
     g_results.defect_run++;
 
     wb_init(&wb);
-    build_defect(&wb, c->defect, &half_close);
+    build_defect(&wb, c->defect, c->ver, &half_close);
 
-    deliver(fd, &wb, c->delivery);
+    deliver(rd->fd, &wb, c->delivery);
 
     if (half_close) {
-        shutdown(fd, SHUT_WR);
+        shutdown(rd->fd, SHUT_WR);
     }
 
-    /* A defect response never carries an echoed body, and every defect case
-     * expects the connection to close, so the close wait is affordable here
-     * and is what distinguishes "refused and released" from "refused and
-     * held". */
-    read_response(&r, fd, 0, 1);
+    read_response(rd, &r, 0, 1);
 
     actual = classify(&r);
     ok     = outcome_matches(c, actual);
 
-    snprintf(detail, sizeof(detail), "%s, %s -> %s",
-             http_defect_name(c->defect), http_delivery_name(c->delivery),
-             outcome_name(actual));
+    snprintf(detail, sizeof(detail), "%s, %s, %s -> %s",
+             http_defect_name(c->defect), http_version_name(c->ver),
+             http_delivery_name(c->delivery), outcome_name(actual));
 
     /* The expectation key is the required status where the model names one,
      * and the negated outcome tag where it does not -- status codes are
@@ -1918,25 +2619,23 @@ run_defect_case(const struct http_defect_case *c)
            c->expect == HOUT_STATUS ? c->expect_status : -c->expect,
            actual, ok, ok ? NULL : detail);
 
-    check_framing(PHASE_DEFECT, c->defect, &r);
+    check_framing(PHASE_DEFECT, c->defect, c->ver, &r);
 
-    /* RFC 1945 section 1.4: whatever the answer, the connection ends with it.
-     * A server that refuses a request and then holds the connection open has
-     * left a peer it has already decided it cannot talk to holding a
-     * resource. */
+    /* Whatever the answer, a refusal ends the connection with it: a server
+     * that has just said it cannot tell where this message ends cannot tell
+     * where the next one starts either. */
     if (actual != ACT_NORESPONSE && actual != ACT_STALLED) {
-        /* MayPersist is for the one defect that is not an HTTP/1.0 request --
-         * a higher minor version, served as HTTP/1.1 -- where holding the
-         * connection is the default and closing is also allowed. */
-        ok = c->expect_persist == HPERSIST_MAYPERSIST || r.eof;
+        ok = c->expect_persist != HPERSIST_MUSTCLOSE ||
+            connection_closed(rd, CLOSE_TIMEOUT_MS);
 
         record(PHASE_DEFECT, ASPECT_PERSIST, c->defect, PACT_CLOSED,
-               r.eof ? PACT_CLOSED : PACT_OPEN, ok, ok ? NULL :
+               rd->eof ? PACT_CLOSED : PACT_OPEN, ok, ok ? NULL :
                "the connection was still open after the response");
     }
 
     wb_free(&wb);
-    close(fd);
+    close(rd->fd);
+    free(rd);
 } /* run_defect_case */
 
 static void
@@ -1950,37 +2649,41 @@ run_defect_phase(void)
 } /* run_defect_phase */
 
 /* ------------------------------------------------------------------ *
-* Phase 3: the status line, over every status the server can name
+* Phase 3: the status line and the response framing
 *
 * A check that sits outside the model, for the same reason the framing checks
-* do: the code list is libevpl's own table rather than anything RFC 1945
-* enumerates, and the specification content is a single rule --
+* do: the code list is libevpl's own table rather than anything the RFCs
+* enumerate, and the specification content is a small number of rules --
 *
-*     Status-Line = HTTP-Version SP Status-Code SP Reason-Phrase CRLF
-*     Status-Code = 3DIGIT, leading digit 1 through 5   (RFC 1945 6.1.1)
+*     status-line = HTTP-version SP status-code SP [ reason-phrase ]
+*     status-code = 3DIGIT, leading digit 1 through 5     (RFC 9112 4)
+*     no Content-Length or Transfer-Encoding on 1xx or 204   (RFC 9112 6.1)
+*     no Transfer-Encoding towards an HTTP/1.0 request       (RFC 9112 6.1)
+*     a Date on every 2xx, 3xx and 4xx                       (RFC 9110 6.6.1)
 *
 * -- applied to a list of inputs.  Bending forty status codes into the model
 * would say they were a specification when they are a lookup table.
 *
-* The phrases themselves are deliberately NOT checked.  RFC 1945 section 6.1.1
-* makes the Reason-Phrase advisory ("The client is not required to examine or
-* display the Reason-Phrase"), and RFC 2616 section 6.1.1 says outright that
-* the listed phrases "are only recommendations -- they MAY be replaced by
-* local equivalents without affecting the protocol".  Asserting them would be
-* asserting something the RFC explicitly leaves open.
+* The phrases themselves are deliberately NOT checked.  RFC 9112 section 4
+* makes the reason phrase advisory ("A client SHOULD ignore the reason-phrase
+* content"), and RFC 2616 section 6.1.1 said outright that the listed phrases
+* "are only recommendations -- they MAY be replaced by local equivalents
+* without affecting the protocol".  Asserting them would be asserting
+* something the RFC explicitly leaves open.
 *
-* What IS checked is the part the RFC does pin down, and it is the reason this
+* What IS checked is the part the RFCs do pin down, and it is the reason this
 * phase is worth having rather than merely worth measuring: whatever an
-* application asks for, what reaches the wire must be a status line.  The last
-* few entries ask for things that are not statuses at all, where the library
-* -- which owns the wire format, as it does for the HEAD body rule -- is the
-* only component in a position to refuse.
+* application asks for, what reaches the wire must be a message its peer can
+* frame.  The last few status entries ask for things that are not statuses at
+* all, and the chunked variants ask for a framing that is not always available,
+* where the library -- which owns the wire format, as it does for the HEAD body
+* rule -- is the only component in a position to refuse.
 * ------------------------------------------------------------------ */
 
 /* Every code evpl_http_response_status_string names, then two valid 3DIGIT
- * statuses it does not: status codes are extensible (RFC 1945 section 6.1.1),
- * so an unnamed one must still be carried, with whatever phrase the default
- * arm supplies. */
+ * statuses it does not: status codes are extensible (RFC 9110 section 15), so
+ * an unnamed one must still be carried, with whatever phrase the default arm
+ * supplies. */
 static const int status_codes[] = {
     100,
     101,
@@ -2027,7 +2730,7 @@ static const int status_codes[] = {
     451,
 };
 
-/* Not statuses.  A Status-Code is three digits with a leading 1..5, so none of
+/* Not statuses.  A status code is three digits with a leading 1..5, so none of
  * these can be represented, and a peer handed one cannot parse the response at
  * all -- which is what libevpl used to send, straight from whatever the
  * application passed.  What it sends instead is not pinned down here beyond
@@ -2039,23 +2742,43 @@ static const int status_not_codes[] = {
     1000,
 };
 
+/* The statuses the chunked variant is run over: one that may carry content,
+ * one that may not, and one error.  The point is the framing rather than the
+ * status, so a sample is enough. */
+static const int chunked_statuses[] = {
+    200,
+    204,
+    404,
+};
+
 static void
 run_status_case(
     int status,
+    int ver,
+    int chunked,
     int exact)
 {
     struct wirebuf wb;
+    struct reader *rd;
     struct rawrsp  r;
     char           line[128];
     char           detail[256];
-    int            fd, actual, ok;
+    int            actual, ok;
 
-    fd = connect_raw();
+    rd = calloc(1, sizeof(*rd));
 
-    if (fd < 0) {
+    if (!rd) {
+        fprintf(stderr, "out of memory\n");
+        exit(1);
+    }
+
+    rd->fd = connect_raw();
+
+    if (rd->fd < 0) {
         fprintf(stderr, "status case %d: connect failed: %s\n", status,
                 strerror(errno));
         g_results.unexpected++;
+        free(rd);
         return;
     }
 
@@ -2063,30 +2786,55 @@ run_status_case(
 
     wb_init(&wb);
 
-    wb_str(&wb, "GET " URI_PATH " HTTP/1.0\r\n");
-    snprintf(line, sizeof(line), "%s: %d\r\n", RESPOND_STATUS, status);
-    wb_str(&wb, line);
+    wb_str(&wb, "GET " URI_PATH " ");
+    wb_str(&wb, version_wire(ver));
     wb_str(&wb, "\r\n");
 
-    deliver(fd, &wb, HDLV_ONEWRITE);
+    if (ver == HVER_V11) {
+        wb_str(&wb, "Host: ");
+        wb_str(&wb, g_host_value);
+        wb_str(&wb, "\r\n");
+    }
 
-    read_response(&r, fd, 0, 0);
+    /* Nothing here is about connection reuse, so every case asks for the
+     * close it is going to get anyway; that also keeps the reader from waiting
+     * out a close-delimited body's deadline. */
+    wb_str(&wb, "Connection: close\r\n");
+
+    snprintf(line, sizeof(line), "%s: %d\r\n", RESPOND_STATUS, status);
+    wb_str(&wb, line);
+
+    if (chunked) {
+        wb_str(&wb, RESPOND_CHUNKED ": 1\r\n");
+    }
+
+    wb_str(&wb, "\r\n");
+
+    deliver(rd->fd, &wb, HDLV_ONEWRITE);
+
+    /* Interim responses are NOT skipped here.  Everywhere else a 1xx is a note
+     * that the answer is still coming; here the application asked for one as
+     * its answer, so the 1xx is the message under examination and skipping it
+     * would leave the reader waiting for a response that was never going to
+     * be sent. */
+    read_response(rd, &r, 0, 0);
 
     actual = classify(&r);
 
     /* Well-formedness first: three digits in a class the RFC defines, and a
-     * phrase.  check_framing covers the version and the phrase; the range is
-     * this phase's business. */
+     * phrase.  check_framing covers the version, the phrase and the framing
+     * headers; the range is this phase's business. */
     ok = actual >= 100 && actual <= 599;
 
-    snprintf(detail, sizeof(detail), "asked for %d, wire carried %s",
-             status, outcome_name(actual));
+    snprintf(detail, sizeof(detail), "asked for %d at %s%s, wire carried %s",
+             status, http_version_name(ver), chunked ? " chunked" : "",
+             outcome_name(actual));
 
     record(PHASE_STATUS, ASPECT_FRAMING, status, VACT_OK,
            ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
 
     if (ok) {
-        check_framing(PHASE_STATUS, status, &r);
+        check_framing(PHASE_STATUS, status, ver, &r);
     }
 
     /* Then, where the application asked for a real status, that it is the one
@@ -2099,21 +2847,30 @@ run_status_case(
     }
 
     wb_free(&wb);
-    close(fd);
+    close(rd->fd);
+    free(rd);
 } /* run_status_case */
 
 static void
 run_status_phase(void)
 {
     unsigned int i;
+    int          ver;
 
-    for (i = 0; i < sizeof(status_codes) / sizeof(status_codes[0]); i++) {
-        run_status_case(status_codes[i], 1);
-    }
+    for (ver = HVER_V10; ver <= HVER_V11; ver++) {
+        for (i = 0; i < sizeof(status_codes) / sizeof(status_codes[0]); i++) {
+            run_status_case(status_codes[i], ver, 0, 1);
+        }
 
-    for (i = 0; i < sizeof(status_not_codes) / sizeof(status_not_codes[0]);
-         i++) {
-        run_status_case(status_not_codes[i], 0);
+        for (i = 0; i < sizeof(status_not_codes) / sizeof(status_not_codes[0]);
+             i++) {
+            run_status_case(status_not_codes[i], ver, 0, 0);
+        }
+
+        for (i = 0; i < sizeof(chunked_statuses) / sizeof(chunked_statuses[0]);
+             i++) {
+            run_status_case(chunked_statuses[i], ver, 1, 1);
+        }
     }
 } /* run_status_phase */
 
@@ -2127,7 +2884,7 @@ report(void)
     int i;
 
     fprintf(stderr,
-            "\nhttp/1.0 conformance: %d/%u request cases (%d checks, %d "
+            "\nhttp/1.x conformance: %d/%u request cases (%d checks, %d "
             "failed), %d/%u defect cases (%d checks, %d failed), "
             "%d status cases (%d checks, %d failed)\n",
             g_results.request_run, (unsigned int) HTTP_NUM_REQUEST_CASES,
@@ -2138,11 +2895,11 @@ report(void)
             g_results.status_failed);
 
     if (g_num_observed) {
-        fprintf(stderr, "\ndivergences from RFC 1945:\n");
+        fprintf(stderr, "\ndivergences from RFC 1945 / RFC 9112:\n");
     }
 
     for (i = 0; i < g_num_observed; i++) {
-        fprintf(stderr, "  %-6s %-12s %-28s expected %5d, got %5d  x%-4d %s\n",
+        fprintf(stderr, "  %-6s %-12s %-34s expected %5d, got %5d  x%-4d %s\n",
                 g_observed[i].phase == PHASE_REQUEST ? "req" :
                 g_observed[i].phase == PHASE_DEFECT ? "defect" : "status",
                 aspect_name(g_observed[i].aspect),
@@ -2183,6 +2940,10 @@ main(
     snprintf(g_uri_long, sizeof(g_uri_long), "%s/", URI_PATH);
     memset(g_uri_long + strlen(g_uri_long), 'p', URI_LONG_PATH_LEN);
     g_uri_long[sizeof(URI_PATH "/") - 1 + URI_LONG_PATH_LEN] = '\0';
+
+    snprintf(g_host_value, sizeof(g_host_value), "127.0.0.1:%d", port);
+    snprintf(g_uri_absolute, sizeof(g_uri_absolute), "http://%s%s",
+             g_host_value, URI_PATH);
 
     evpl_init(NULL);
 
