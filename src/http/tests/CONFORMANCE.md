@@ -415,22 +415,31 @@ against a clang-instrumented build and reports what they reach. Needs
 `libclang-rt-<version>-dev` installed, or the Coverage build fails to link.
 
 Over `src/http/http.c` and `src/http/http_internal.h` — the HTTP/1.x
-implementation — the two suites reach **100% of functions, 89.4% of lines and
-78.0% of branches**. (The HTTP/1.0 pass reached 96.9% / 81.2% / 70.5%.)
+implementation — the two conformance drivers alone reach **100% of functions,
+93.6% of lines and 80.9% of branches**. The whole `libevpl/http` label, which
+adds the h2, curl and max-header tests, reaches **100% / 94.8% / 80.2%** across
+those two files and `http2.c` as well. (The HTTP/1.0 pass reached 96.9% / 81.2%
+/ 70.5% over the first two.)
 
-The largest remaining blocks are out of scope by construction:
+`src/http/http2.c` is 0% under the conformance-only filter, which an HTTP/1.x
+model cannot be otherwise — it is a different framing layer, and the h2 tests
+alongside it reach 87.4% of its lines.
 
-| Where | Missed lines | Why |
+What is left in `http.c` is 53 lines, and almost none of it is a case anyone
+could write:
+
+| Where | Lines | Why |
 |---|---|---|
-| `evpl_http_conn_connected`, `evpl_http_client_connect`, and the h2 branches of `dispatch` / `add_datav` / `request_create` | ~50 | TLS/ALPN and HTTP/2 protocol selection |
-| `evpl_http_parse_line` | 11 | The `evpl_peek` fallback — see below |
-| `evpl_http_request_type_to_string` | 6 | The PUT and DELETE arms; the model covers the three methods RFC 1945 defines |
-| `evpl_http_conn_set_host` | 5 | An IPv6 literal, and an endpoint that names no authority |
-
-`src/http/http2.c` is 0% under this filter, which an HTTP/1.x model cannot be
-otherwise — it is a different framing layer. The h2 tests alongside it reach
-87.4% of its lines, so the whole `libevpl/http` label together covers 100% of
-functions, 91.5% of lines and 77.8% of branches across all three files.
+| `evpl_http_parse_line`'s `evpl_peek` fallback | 9 | Unreachable at the default 2 MiB `buffer_size` — see below |
+| The `abort()` arms of the two parser state machines and the unhandled-event arm | 7 | Reached only by a state the code cannot be in |
+| `evpl_http_append_line`'s truncation backstop | 5 | The add-time accounting against `max_header_size` is what makes it unreachable, which is the point of having it |
+| The flush loops' early-outs | 4 | Ordering-dependent: a response not yet ready, or a request already sent, at the moment a flush happens to run |
+| TLS/ALPN and h2 protocol selection remnants | 4 | A non-h2 ALPN result, an h2c preface split across reads, the AUTO version's ALPN list |
+| `evpl_http_conn_set_host` | 4 | An endpoint that names no authority, and a peer on the scheme's default port — the second needs a privileged port to test |
+| `evpl_http_server_handle_data`'s "empty request line" | 3 | **Dead**: the leading-CRLF skip consumes an empty line before `strtok_r` sees it, and an all-whitespace line trips the leading-whitespace check first |
+| `evpl_http_fold_header_line`'s value-overflow guard | 1 | A folded value can only pass the 16 KB field limit after the block has passed `max_header_size`, so the block limit always bites first |
+| `evpl_http_request_type_to_string`'s default arm | 2 | An unknown method is refused with 501 before anything can ask for its name |
+| `agent->max_header_size` floor | 1 | Needs `http_max_header_size` configured below 512 |
 
 ### The one piece of dead code the coverage found
 
