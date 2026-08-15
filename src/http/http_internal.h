@@ -5,6 +5,7 @@
 #pragma once
 
 #include <string.h>
+#include <time.h>
 #include <utlist.h>
 
 #include "core/evpl.h"
@@ -172,6 +173,12 @@ struct evpl_http_agent {
     struct evpl_http_conn           *conns; /* live connections; see conn */
     struct evpl                     *evpl;
     unsigned int                     max_header_size;
+    /* The Date header field's value, and the second it was formatted for.
+     * Cached because it changes once a second and is needed on every
+     * response, and formatting it costs a gmtime_r that would otherwise run
+     * per request at whatever rate the server is serving. */
+    time_t                           date_second;
+    char                             date[40];
 };
 
 static inline struct evpl_http_request_header *

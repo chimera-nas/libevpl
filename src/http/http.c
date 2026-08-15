@@ -109,6 +109,51 @@ evpl_http_response_status_string(int status)
     } /* switch */
 } /* evpl_http_response_status_string */
 
+/*
+ * The Date header field's value for right now.
+ *
+ * RFC 9110 section 6.6.1: "An origin server with a clock MUST send a Date
+ * header field in all [responses other than 1xx and 5xx]" -- everything
+ * downstream that reasons about the age of a response starts from it, so a
+ * response without one cannot be cached, revalidated, or have its freshness
+ * computed at all.
+ *
+ * The format is IMF-fixdate (section 5.6.7), which is fixed-width, always
+ * GMT, and always spelled in English regardless of locale.  That last part is
+ * why the names are tables here rather than strftime's %a and %b, which are
+ * locale-dependent: a server running under a French locale would otherwise
+ * put "lun." on the wire and produce a date no recipient can parse.
+ *
+ * Recomputed at most once a second and cached on the agent, because it changes
+ * that often and is needed on every response.
+ */
+static const char *
+evpl_http_date(struct evpl_http_agent *agent)
+{
+    static const char *const days[] = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+    };
+    static const char *const months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    struct tm                tm;
+    time_t                   now = time(NULL);
+
+    if (now != agent->date_second) {
+        gmtime_r(&now, &tm);
+
+        snprintf(agent->date, sizeof(agent->date),
+                 "%s, %02d %s %04d %02d:%02d:%02d GMT",
+                 days[tm.tm_wday], tm.tm_mday, months[tm.tm_mon],
+                 tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+        agent->date_second = now;
+    }
+
+    return agent->date;
+} /* evpl_http_date */
+
 SYMBOL_EXPORT struct evpl_http_agent *
 evpl_http_init(struct evpl *evpl)
 {
@@ -482,12 +527,13 @@ evpl_http_handle_body(
  * outbound header block that are not application-added headers: the status
  * line (<= 47 bytes; a client request line is instead counted exactly at
  * request create time), the Content-Length or Transfer-Encoding line
- * (<= 38), the internally added "Connection: keep-alive\r\n" (24) and the
- * terminating "\r\n" (2).  Enforcing the limit minus this reserve at
+ * (<= 38), the "Date: <IMF-fixdate>\r\n" a response carries (37), the
+ * internally added "Connection: keep-alive\r\n" (24) and the terminating
+ * "\r\n" (2).  Enforcing the limit minus this reserve at
  * evpl_http_request_add_header() time means emission can never overflow
  * the buffer it allocates.
  */
-#define EVPL_HTTP_HEADER_EMIT_RESERVE 128
+#define EVPL_HTTP_HEADER_EMIT_RESERVE 192
 
 /*
  * Stage a header for emission.  With enforce_limit set (the public API),
@@ -872,22 +918,26 @@ evpl_http_parse_status(
  */
 static void
 evpl_http_server_reject(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    int               status,
-    const char       *why)
+    struct evpl_http_conn *conn,
+    int                    status,
+    const char            *why)
 {
-    char rsp[128];
-    int  len;
+    struct evpl_http_agent *agent = conn->agent;
+    struct evpl            *evpl  = agent->evpl;
+    struct evpl_bind       *bind  = conn->bind;
+    char                    rsp[256];
+    int                     len;
 
     evpl_http_debug("refusing request with %d: %s", status, why);
 
     len = snprintf(rsp, sizeof(rsp),
                    "HTTP/1.1 %d %s\r\n"
+                   "Date: %s\r\n"
                    "Content-Length: 0\r\n"
                    "Connection: close\r\n"
                    "\r\n",
-                   status, evpl_http_response_status_string(status));
+                   status, evpl_http_response_status_string(status),
+                   evpl_http_date(agent));
 
     evpl_send(evpl, bind, rsp, len);
     evpl_finish(evpl, bind);
@@ -921,7 +971,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         rc = evpl_http_parse_line(evpl, conn->bind, line, sizeof(line));
 
         if (unlikely(rc == -2)) {
-            evpl_http_server_reject(evpl, bind, 400, "request line too long");
+            evpl_http_server_reject(conn,
+                                    400, "request line too long");
             return;
         }
 
@@ -937,7 +988,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
          * HTTP/1.0" would otherwise parse as a request whose method is the
          * URI. */
         if (line[0] == ' ' || line[0] == '\t') {
-            evpl_http_server_reject(evpl, bind, 400,
+            evpl_http_server_reject(conn,
+                                    400,
                                     "request line starts with whitespace");
             return;
         }
@@ -945,7 +997,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         token = strtok_r(line, " \t", &saveptr);
 
         if (!token) {
-            evpl_http_server_reject(evpl, bind, 400, "empty request line");
+            evpl_http_server_reject(conn,
+                                    400, "empty request line");
             return;
         }
 
@@ -956,13 +1009,15 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
              * case-sensitive, so a lowercased "get" is as unknown as "FROB" --
              * a server that folds case before comparing accepts a request the
              * grammar does not describe. */
-            evpl_http_server_reject(evpl, bind, 501, "unsupported method");
+            evpl_http_server_reject(conn,
+                                    501, "unsupported method");
             return;
         }
 
         token = strtok_r(NULL, " \t", &saveptr);
         if (!token) {
-            evpl_http_server_reject(evpl, bind, 400, "missing uri");
+            evpl_http_server_reject(conn,
+                                    400, "missing uri");
             return;
         }
 
@@ -971,7 +1026,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         token = strtok_r(NULL, " \t", &saveptr);
 
         if (!token) {
-            evpl_http_server_reject(evpl, bind, 400, "missing http version");
+            evpl_http_server_reject(conn,
+                                    400, "missing http version");
             return;
         }
 
@@ -979,7 +1035,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             /* RFC 1945 names no code for a version it cannot serve -- 505 is
              * an HTTP/1.1 addition -- so a request line the grammar does not
              * describe is a malformed one. */
-            evpl_http_server_reject(evpl, bind, 400, "unsupported http version");
+            evpl_http_server_reject(conn,
+                                    400, "unsupported http version");
             return;
         }
 
@@ -993,7 +1050,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         token = strtok_r(NULL, " \t", &saveptr);
 
         if (token) {
-            evpl_http_server_reject(evpl, bind, 400,
+            evpl_http_server_reject(conn,
+                                    400,
                                     "trailing token on the request line");
             return;
         }
@@ -1006,7 +1064,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
         rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
 
         if (unlikely(rc == -2)) {
-            evpl_http_server_reject(evpl, bind, 400,
+            evpl_http_server_reject(conn,
+                                    400,
                                     "header line overflowed the parse buffer");
             return;
         }
@@ -1028,7 +1087,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                 request->request_transfer_encoding ==
                 EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT &&
                 !(request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH)) {
-                evpl_http_server_reject(evpl, bind, 400,
+                evpl_http_server_reject(conn,
+                                        400,
                                         "HTTP/1.0 POST without Content-Length");
                 return;
             }
@@ -1052,7 +1112,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             if (unlikely(request->header_bytes > agent->max_header_size)) {
                 /* As Apache does when its LimitRequestField* limits are
                  * exceeded. */
-                evpl_http_server_reject(evpl, bind, 400,
+                evpl_http_server_reject(conn,
+                                        400,
                                         "header block exceeds max_header_size");
                 return;
             }
@@ -1069,7 +1130,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                     request->request_headers->prev : NULL;
 
                 if (!header) {
-                    evpl_http_server_reject(evpl, bind, 400,
+                    evpl_http_server_reject(conn,
+                                            400,
                                             "continuation line with no field "
                                             "to continue");
                     return;
@@ -1086,7 +1148,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                      * pointer, which a peer sending malformed header lines can
                      * repeat at will. */
                     evpl_http_request_header_free(agent, header);
-                    evpl_http_server_reject(evpl, bind, 400,
+                    evpl_http_server_reject(conn,
+                                            400,
                                             "malformed header line");
                     return;
                 }
@@ -1102,7 +1165,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             if (strcasecmp(header->name, "Content-Length") == 0) {
 
                 if (evpl_http_parse_content_length(header->value, &length) < 0) {
-                    evpl_http_server_reject(evpl, bind, 400,
+                    evpl_http_server_reject(conn,
+                                            400,
                                             "Content-Length is not a decimal "
                                             "number of octets");
                     return;
@@ -1117,7 +1181,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                 if (!folded &&
                     (request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH) &&
                     length != request->request_length) {
-                    evpl_http_server_reject(evpl, bind, 400,
+                    evpl_http_server_reject(conn,
+                                            400,
                                             "conflicting Content-Length");
                     return;
                 }
@@ -1144,7 +1209,8 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                     /* A transfer coding the server does not implement is
                      * exactly what 501 is for (RFC 1945 section 9.5.2), and
                      * the body cannot be delimited without it. */
-                    evpl_http_server_reject(evpl, bind, 501,
+                    evpl_http_server_reject(conn,
+                                            501,
                                             "unsupported transfer encoding");
                     return;
                 }
@@ -1772,6 +1838,14 @@ evpl_http_server_send_headers(
                           http_version_string[request->http_version],
                           request->status,
                           evpl_http_response_status_string(request->status));
+
+    /* RFC 9110 section 6.6.1 requires this on every response outside the 1xx
+     * and 5xx classes, where it is merely allowed.  Sent on all of them: a
+     * caller has no way to add it (the value has to be the moment the response
+     * is written, not the moment the application decided to write one), and
+     * there is nothing to gain from withholding it where it is optional. */
+    evpl_http_append_line(rsp_base, cap, &rsp, "Date: %s\r\n",
+                          evpl_http_date(conn->agent));
 
     DL_FOREACH(request->response_headers, header)
     {
