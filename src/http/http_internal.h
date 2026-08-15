@@ -153,6 +153,11 @@ struct evpl_http_conn {
     struct evpl_http_agent   *agent;
     struct evpl_bind         *bind;
     struct evpl_deferral      flush;
+    /* Server: resume parsing after the pipeline read-ahead cap stopped it.
+     * A deferral rather than a direct call from the flush path, so that
+     * parsing a request never runs inside the loop that is writing a
+     * response. */
+    struct evpl_deferral      parse;
     struct evpl_http_request *current_request;
     struct evpl_http_request *pending_requests;
     struct evpl_http2_conn   *h2;          /* NULL unless proto == H2 */

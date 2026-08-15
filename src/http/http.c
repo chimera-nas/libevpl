@@ -1243,6 +1243,32 @@ evpl_http_request_framing(
 } /* evpl_http_request_framing */
 
 /*
+ * How many requests the server will read ahead of the responses it has sent.
+ *
+ * Pipelining is worth supporting -- RFC 9112 section 9.3.2 permits a client to
+ * send the next request without waiting, and requires the responses in order
+ * -- but each request read ahead is a request struct held for however long the
+ * peer chooses to take, so an unbounded read-ahead lets a peer turn one large
+ * write into an allocation per request in it.  Small on purpose: pipelining
+ * exists to hide round-trip latency, and a handful in flight does that.
+ */
+#define EVPL_HTTP_MAX_PIPELINE 8
+
+static int
+evpl_http_pipeline_depth(struct evpl_http_conn *conn)
+{
+    struct evpl_http_request *request;
+    int                       depth = 0;
+
+    DL_FOREACH(conn->pending_requests, request)
+    {
+        depth++;
+    }
+
+    return depth;
+} /* evpl_http_pipeline_depth */
+
+/*
  * Refuse a request the parser cannot use, and close.
  *
  * RFC 1945 section 9.4.1 (400 Bad Request, "the request could not be
@@ -1577,11 +1603,53 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                                          request->notify_data,
                                          server->private_data);
             }
+
+            /*
+             * Keep parsing.  RFC 9112 section 9.3.2 lets a client send its
+             * next request without waiting for this response, and requires the
+             * server to answer "in the same order that the requests were
+             * received" -- but before ordering can mean anything the server
+             * has to notice the second request at all, and stopping here would
+             * leave it in a buffer with no read event left to announce it.  A
+             * client that pipelined two requests in one write would then wait
+             * for a response the server has decided not to look for.
+             *
+             * Bounded, because every request read ahead is a request struct
+             * held for as long as the peer chooses: a megabyte of pipelined
+             * requests in a single write must not turn into a request per
+             * request.  Parsing resumes as the responses drain, which
+             * evpl_http_server_flush arranges.
+             */
+            if (evpl_http_pipeline_depth(conn) < EVPL_HTTP_MAX_PIPELINE) {
+                conn->current_request       = evpl_http_request_alloc(agent);
+                conn->current_request->conn = conn;
+                request                     = conn->current_request;
+                goto again;
+            }
         }
     } else {
         abort();
     }
 } /* evpl_http_server_handle_data */
+
+/*
+ * The pipeline read-ahead cap stopped parsing and a response has since
+ * drained, so there may be a request waiting in a buffer that no read event
+ * will announce again.  Deferred rather than called from the flush path
+ * directly, so that parsing a request never runs inside the loop writing a
+ * response.
+ */
+static void
+evpl_http_parse_deferred(
+    struct evpl *evpl,
+    void        *arg)
+{
+    struct evpl_http_conn *conn = arg;
+
+    if (conn->bind && conn->is_server) {
+        evpl_http_server_handle_data(conn);
+    }
+} /* evpl_http_parse_deferred */
 
 static void
 evpl_http_client_handle_data(struct evpl_http_conn *conn)
@@ -1860,6 +1928,18 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
             }
 
             evpl_http_request_free(agent, request);
+
+            /* The next response may already be in the buffer.  A caller that
+             * dispatched two requests before either was answered gets both
+             * replies in whatever writes the server chose, and quite possibly
+             * in one -- at which point the read event that carried the second
+             * has already been delivered and no further one is coming.
+             * Stopping here would strand the second caller for good. */
+            if (conn->pending_requests) {
+                conn->current_request = conn->pending_requests;
+                request               = conn->current_request;
+                goto again;
+            }
         }
     } else {
         abort();
@@ -1974,6 +2054,13 @@ evpl_http_event(
         case EVPL_NOTIFY_DISCONNECTED:
         {
             struct evpl_http_request *request, *next;
+
+            /* A deferral armed on this connection would otherwise run after it
+             * is gone: the array holds the pointer, and nothing else takes it
+             * out.  Both are pointless now in any case -- there is no bind
+             * left to write a response to or read a request from. */
+            evpl_remove_deferral(evpl, &http_conn->flush);
+            evpl_remove_deferral(evpl, &http_conn->parse);
 
 #ifdef HAVE_NGHTTP2
             if (http_conn->proto == EVPL_HTTP_PROTO_H2) {
@@ -2421,6 +2508,11 @@ evpl_http_server_flush(
             DL_DELETE(conn->pending_requests, request);
             evpl_http_request_free(conn->agent, request);
 
+            /* A slot in the read-ahead window has just been freed, and the
+             * request that would fill it may already be buffered with no read
+             * event left to announce it. */
+            evpl_defer(evpl, &conn->parse);
+
             if (!keep_alive) {
                 /* RFC 1945 section 1.4: an HTTP/1.0 exchange ends with the
                  * connection unless the peer asked for Keep-Alive.  evpl_finish
@@ -2539,6 +2631,7 @@ evpl_http_accept(
     *conn_private_data   = http_conn;
 
     evpl_deferral_init(&http_conn->flush, evpl_http_flush, http_conn);
+    evpl_deferral_init(&http_conn->parse, evpl_http_parse_deferred, http_conn);
 
     DL_APPEND(server->agent->conns, http_conn);
 
