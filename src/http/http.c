@@ -662,16 +662,18 @@ evpl_http_handle_body(
 
 /*
  * Fixed overhead reserved out of max_header_size for the parts of the
- * outbound header block that are not application-added headers: the status
- * line (<= 47 bytes; a client request line is instead counted exactly at
- * request create time), the Content-Length or Transfer-Encoding line
- * (<= 38), the "Date: <IMF-fixdate>\r\n" a response carries (37), the
+ * outbound header block that are not application-added headers.  A response
+ * carries the status line (<= 47 bytes), the Content-Length or
+ * Transfer-Encoding line (<= 38), the "Date: <IMF-fixdate>\r\n" (37), the
  * internally added "Connection: keep-alive\r\n" (24) and the terminating
- * "\r\n" (2).  Enforcing the limit minus this reserve at
- * evpl_http_request_add_header() time means emission can never overflow
- * the buffer it allocates.
+ * "\r\n" (2); a request carries the framing line, a generated "Host: ...\r\n"
+ * (<= 136, the conn's host buffer plus the field name) and the terminator,
+ * with its request line instead counted exactly at create time.  The reserve
+ * covers the larger of the two.  Enforcing the limit minus it at
+ * evpl_http_request_add_header() time means emission can never overflow the
+ * buffer it allocates.
  */
-#define EVPL_HTTP_HEADER_EMIT_RESERVE 192
+#define EVPL_HTTP_HEADER_EMIT_RESERVE 256
 
 /*
  * Stage a header for emission.  With enforce_limit set (the public API),
@@ -2377,6 +2379,44 @@ evpl_http_server_send_headers(
     evpl_sendv(evpl, bind, &iov, 1, iov.length, EVPL_SEND_FLAG_TAKE_REF);
 } /* evpl_http_server_send_headers */
 
+/*
+ * Record the authority a client connection was opened to, in the form RFC 9110
+ * section 7.2 gives Host: "uri-host optionally followed by a colon and port
+ * number", with the port left out when it is the default for the scheme.
+ *
+ * An IPv6 literal is bracketed, because the colons in the address would
+ * otherwise be indistinguishable from the one before the port.
+ */
+static void
+evpl_http_conn_set_host(
+    struct evpl_http_conn *conn,
+    struct evpl_endpoint  *endpoint,
+    enum evpl_protocol_id  protocol_id)
+{
+    const char *address = evpl_endpoint_address(endpoint);
+    int         port    = evpl_endpoint_port(endpoint);
+    int         tls     = protocol_id == EVPL_STREAM_SOCKET_TLS;
+    int         literal;
+
+    if (!address || !*address) {
+        /* A local or in-process endpoint names no authority.  Something has to
+         * go on the wire, and this is what a peer that does not route by
+         * authority will accept. */
+        snprintf(conn->host, sizeof(conn->host), "localhost");
+        return;
+    }
+
+    literal = strchr(address, ':') != NULL;
+
+    if (port == (tls ? 443 : 80)) {
+        snprintf(conn->host, sizeof(conn->host), literal ? "[%s]" : "%s",
+                 address);
+    } else {
+        snprintf(conn->host, sizeof(conn->host),
+                 literal ? "[%s]:%d" : "%s:%d", address, port);
+    }
+} /* evpl_http_conn_set_host */
+
 static void
 evpl_http_client_send_headers(
     struct evpl              *evpl,
@@ -2400,6 +2440,21 @@ evpl_http_client_send_headers(
     evpl_http_append_line(rsp_base, cap, &rsp, "%s %s HTTP/1.1\r\n",
                           evpl_http_method_to_wire(request->request_type),
                           request->uri);
+
+    /*
+     * RFC 9112 section 3.2: "A client MUST send a Host header field in all
+     * HTTP/1.1 request messages" -- and this client sends HTTP/1.1 on the
+     * request line above whatever the caller does, so it is the component the
+     * obligation falls on.  Section 3.2 also makes a server's answer to a
+     * request without one a 400, so a caller that did not know to add one was
+     * making requests that a conforming peer must refuse.
+     *
+     * Only when the caller did not add one: two Host fields are refused by the
+     * same rule as none.
+     */
+    if (!evpl_http_request_header(request, "Host")) {
+        evpl_http_append_line(rsp_base, cap, &rsp, "Host: %s\r\n", conn->host);
+    }
 
     DL_FOREACH(request->request_headers, header)
     {
@@ -2765,6 +2820,8 @@ evpl_http_client_connect(
     conn->connected    = 0;
     conn->agent        = agent;
     conn->private_data = private_data;
+
+    evpl_http_conn_set_host(conn, endpoint, protocol_id);
 
     evpl_deferral_init(&conn->flush, evpl_http_flush, conn);
 

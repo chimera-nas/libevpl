@@ -165,8 +165,8 @@ struct evpl_http_conn {
      * they close, so the disconnect that follows can tell each pending request
      * which of the two happened. */
     int                       error;
-    enum evpl_http_proto proto;
-    enum evpl_http_version version;        /* requested version (client) */
+    enum evpl_http_proto      proto;
+    enum evpl_http_version    version;     /* requested version (client) */
     int                       connected;   /* bind handshake/connect done */
     struct evpl_http_server  *server;
     struct evpl_http_agent   *agent;
@@ -181,6 +181,11 @@ struct evpl_http_conn {
     struct evpl_http_request *pending_requests;
     struct evpl_http2_conn   *h2;          /* NULL unless proto == H2 */
     void                     *private_data;
+    /* Client: the authority this connection was opened to, in the form RFC
+     * 9110 section 7.2 gives Host -- uri-host optionally followed by ":" port.
+     * Kept because the request that needs it is written long after the
+     * endpoint that names it was consulted. */
+    char                      host[128];
     /* Agent-wide live-connection list (agent->conns): every conn's bind holds
      * notify callbacks that dereference the agent, so evpl_http_destroy must
      * be able to find and retire them before the agent is freed. */
