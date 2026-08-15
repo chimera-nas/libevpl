@@ -98,6 +98,27 @@ time: every state transition a byte-at-a-time delivery can expose is inside
 that, and dribbling eight kilobytes of body afterwards costs a syscall per byte
 and proves nothing further.
 
+### Phase 3: the status line
+
+A third phase walks every status code `evpl_http_response_status_string` names,
+plus two valid ones it does not and four values that are not statuses at all,
+answering each through the echo application. It sits outside the model
+deliberately: the code list is libevpl's own table rather than anything RFC
+1945 enumerates, and the specification content is a single rule — a status line
+carries three digits in a defined class, and the code the application chose —
+applied to a list of inputs.
+
+The reason phrases are not checked. RFC 1945 §6.1.1 makes the Reason-Phrase
+advisory ("The client is not required to examine or display the
+Reason-Phrase") and RFC 2616 §6.1.1 says the listed phrases "are only
+recommendations", so asserting them would assert something the RFC leaves open.
+
+Mostly this is coverage of a lookup table. It did find one real defect:
+`evpl_http_server_dispatch_default` took any `int` and formatted it straight
+into the status line, so an application asking for `0` or `600` produced a
+response the peer could not parse. The library owns the outbound framing, so a
+status it cannot send is now answered `500` with the original logged.
+
 ### Checks that sit outside the model
 
 Three things the driver asserts are properties of any response to an HTTP/1.0
@@ -337,19 +358,18 @@ against a clang-instrumented build and reports what they reach. Needs
 `libclang-rt-<version>-dev` installed, or the Coverage build fails to link.
 
 Over `src/http/http.c` and `src/http/http_internal.h` — the HTTP/1.x
-implementation — the two suites reach **96.9% of functions, 75.8% of lines and
-65.3% of branches**.
+implementation — the two suites reach **96.9% of functions, 81.2% of lines and
+70.5% of branches**.
 
 The two functions never called are `evpl_http_client_set_request_chunked` and
 `evpl_http_server_set_response_chunked`, which is the intended stopping point:
 the only uncovered API surface is the part that is out of scope.
 
-Most of the missing lines are out of scope for the same reason:
+Nearly all the missing lines are out of scope for the same reason:
 
 | Where | Missed lines | Why |
 |---|---|---|
 | `evpl_http_handle_body`, `evpl_http_send_body` | 77 | Chunked transfer coding, both directions — HTTP/1.1 |
-| `evpl_http_response_status_string` | 78 | The status→reason lookup switch; `case` arms for codes the model never sends. Not a gap, but it costs ~5 points of this file's line coverage on its own |
 | `evpl_http_conn_connected`, `evpl_http_client_connect`, and the h2 branches of `dispatch`/`flush`/`add_datav`/`request_create` | ~50 | TLS/ALPN and HTTP/2 protocol selection |
 | `evpl_http_parse_line` | 11 | The `evpl_peek` fallback — see below |
 | `evpl_http_request_type_to_string` | 6 | The PUT and DELETE arms; RFC 1945 defines GET, HEAD and POST |
