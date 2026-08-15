@@ -753,6 +753,36 @@ evpl_http_response_keeps_alive(struct evpl_http_request *request)
 } /* evpl_http_response_keeps_alive */
 
 /*
+ * Parse a Status-Code.  Returns 0 and the value, or -1.
+ *
+ * RFC 1945 section 6.1.1: "Status-Code = 3DIGIT", and section 6.1.1 assigns
+ * meaning by the leading digit, 1 through 5.  atoi accepts a great deal more
+ * and reports none of it: "abc" reads as 0, "99" as 99, "700" as 700, and all
+ * three used to be handed to the caller as though the peer had said them.  A
+ * caller testing `status < 400` treats 0 as a success.
+ */
+static int
+evpl_http_parse_status(
+    const char *token,
+    int        *out)
+{
+    if (!isdigit((unsigned char) token[0]) ||
+        !isdigit((unsigned char) token[1]) ||
+        !isdigit((unsigned char) token[2]) ||
+        token[3] != '\0') {
+        return -1;
+    }
+
+    if (token[0] < '1' || token[0] > '5') {
+        return -1;
+    }
+
+    *out = (token[0] - '0') * 100 + (token[1] - '0') * 10 + (token[2] - '0');
+
+    return 0;
+} /* evpl_http_parse_status */
+
+/*
  * Refuse a request the parser cannot use, and close.
  *
  * RFC 1945 section 9.4.1 (400 Bad Request, "the request could not be
@@ -1085,6 +1115,7 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
     struct evpl_http_request_header *header;
     char                             line[4096];
     int                              rc;
+    unsigned int                     major, minor;
     uint64_t                         length;
     char                            *token, *saveptr;
 
@@ -1114,6 +1145,15 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
             return;
         }
 
+        /* Status-Line = HTTP-Version SP Status-Code SP Reason-Phrase (RFC 1945
+         * section 6.1), and as on the request line a leading run of LWS is not
+         * between fields, so strtok_r must not be allowed to skip it. */
+        if (evpl_http_is_lws(line[0])) {
+            evpl_http_debug("status line starts with whitespace");
+            evpl_close(evpl, bind);
+            return;
+        }
+
         token = strtok_r(line, " \t", &saveptr);
 
         if (!token) {
@@ -1122,15 +1162,17 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
             return;
         }
 
-        if (strncmp(token, "HTTP/1.1", 8) == 0) {
-            request->http_version = EVPL_HTTP_REQUEST_HTTP_VERSION_1_1;
-        } else if (strncmp(token, "HTTP/1.0", 8) == 0) {
-            request->http_version = EVPL_HTTP_REQUEST_HTTP_VERSION_1_0;
-        } else {
+        if (evpl_http_parse_version(token, &major, &minor) < 0 || major != 1) {
             evpl_http_debug("unsupported http version: %s", token);
             evpl_close(evpl, bind);
             return;
         }
+
+        /* RFC 2145 section 2.3, the mirror of the request-side rule: a higher
+         * minor version is a response to be read at the highest 1.x this
+         * client speaks, not one to refuse. */
+        request->http_version = minor ? EVPL_HTTP_REQUEST_HTTP_VERSION_1_1
+                                      : EVPL_HTTP_REQUEST_HTTP_VERSION_1_0;
 
         token = strtok_r(NULL, " \t", &saveptr);
 
@@ -1140,7 +1182,17 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
             return;
         }
 
-        request->status        = atoi(token);
+        if (evpl_http_parse_status(token, &request->status) < 0) {
+            evpl_http_debug("malformed status code: %s", token);
+            evpl_close(evpl, bind);
+            return;
+        }
+
+        /* The Reason-Phrase, if any, is whatever is left.  RFC 1945 section
+         * 6.1: "The client is not required to examine or display the
+         * Reason-Phrase" -- so a response that omits it is understood, and
+         * one that carries anything at all is equally understood. */
+
         request->request_state = EVPL_HTTP_REQUEST_STATE_HEADERS;
 
         /* header_bytes counted the outbound request block; reuse it for

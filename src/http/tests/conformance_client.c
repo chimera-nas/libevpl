@@ -251,6 +251,21 @@ static const struct known_divergence known_divergences[] = {
       .actual = ACT_SILENT,
       .note   = "negative Content-Length: refused, not reported" },
 
+    /* Detected but unreportable for the same reason: the status line is now
+     * parsed to the grammar (evpl_http_parse_status), so a code that is not
+     * three digits in 1xx..5xx is refused rather than delivered -- and the
+     * refusal, like the rest of this group, reaches the caller as silence. */
+    { .aspect = ASPECT_OUTCOME,
+      .defect = HCDEF_RSPSTATUSNOTNUMERIC,
+      .expect = EXP_FAILED,
+      .actual = ACT_SILENT,
+      .note   = "non-numeric status: refused, not reported" },
+    { .aspect = ASPECT_OUTCOME,
+      .defect = HCDEF_RSPSTATUSOUTOFRANGE,
+      .expect = EXP_FAILED,
+      .actual = ACT_SILENT,
+      .note   = "status outside 1xx..5xx: refused, not reported" },
+
     /* The same gap, reached the other way: the status arrived, so the caller
      * has been told a response is coming, and then the body it was promised
      * never does.  Worse than silence, because the caller has evidence that
@@ -260,40 +275,6 @@ static const struct known_divergence known_divergences[] = {
       .expect = EXP_FAILED,
       .actual = ACT_HEADERS_ONLY,
       .note   = "truncated body: the status arrived, the completion never did" },
-
-    /* ---------------------------------------------------------------- *
-    * The response status line is parsed as loosely as the request line
-    * used to be.
-    *
-    * evpl_http_client_handle_data matches the version with strncmp against
-    * exactly "HTTP/1.1" and "HTTP/1.0" and reads the code with atoi.  The
-    * request side got evpl_http_parse_version and a strict code parse; the
-    * response side kept neither, so a status that is not a number reads as
-    * zero and one outside the range reads as itself, and both are handed to
-    * the caller as though the peer had said them.  A caller testing
-    * `status < 400` treats 0 as a success.
-    * ---------------------------------------------------------------- */
-
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPSTATUSNOTNUMERIC,
-      .expect = EXP_FAILED,
-      .actual = 0,
-      .note   = "atoi turns a non-numeric status into 0 and delivers it" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPSTATUSOUTOFRANGE,
-      .expect = EXP_FAILED,
-      .actual = 99,
-      .note   = "a status below 100 is delivered as itself" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPSTATUSOUTOFRANGE,
-      .expect = EXP_FAILED,
-      .actual = 700,
-      .note   = "a status above 599 is delivered as itself" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPMINORVERSIONUNKNOWN,
-      .expect = 200,
-      .actual = ACT_SILENT,
-      .note   = "HTTP/1.9 is refused rather than read as HTTP/1.1" },
 
     /* ---------------------------------------------------------------- *
     * Response body framing.
