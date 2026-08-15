@@ -548,6 +548,11 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
 
             if (!token) {
                 evpl_http_debug("malformed header line");
+                /* Not on the request's list yet, so nothing else will ever
+                 * reach it: dropping it here strands the header AND the tail
+                 * of the free list still hanging off its next pointer, which
+                 * a peer sending malformed header lines can repeat at will. */
+                evpl_http_request_header_free(agent, header);
                 evpl_close(evpl, bind);
                 return;
             }
@@ -558,6 +563,7 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
 
             if (!token) {
                 evpl_http_debug("missing header value");
+                evpl_http_request_header_free(agent, header);
                 evpl_close(evpl, bind);
                 return;
             }
@@ -725,6 +731,9 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
 
             if (!token) {
                 evpl_http_debug("malformed header line");
+                /* As on the request path: the header is not on any list yet,
+                 * so dropping it strands it and the free-list tail behind it. */
+                evpl_http_request_header_free(agent, header);
                 evpl_close(evpl, bind);
                 return;
             }
@@ -735,6 +744,7 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
 
             if (!token) {
                 evpl_http_debug("missing header value");
+                evpl_http_request_header_free(agent, header);
                 evpl_close(evpl, bind);
                 return;
             }
