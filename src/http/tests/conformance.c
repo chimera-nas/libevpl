@@ -2623,8 +2623,11 @@ build_defect(
             break;
 
         case HDEF_TRANSFERENCODINGUNKNOWNCODING:
+            /* Spaced either side of the comma, since RFC 9110 section 5.6.1
+             * allows optional whitespace around a list element and a parser
+             * that keeps it compares "gzip " against "gzip". */
             REQ_LINE("POST", URI_PATH);
-            wb_str(wb, "Transfer-Encoding: gzip, chunked\r\n\r\n"
+            wb_str(wb, "Transfer-Encoding: gzip , chunked\r\n\r\n"
                    "5\r\nabcde\r\n0\r\n\r\n");
             break;
 
