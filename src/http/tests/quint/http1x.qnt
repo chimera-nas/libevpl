@@ -788,13 +788,16 @@ module http1x_defects {
          * message with a transfer coding it does not understand SHOULD
          * respond with 501 (Not Implemented)." */
         | TransferEncodingUnknownCoding
-        /* "A client MUST NOT send a request containing Transfer-Encoding
-         * unless it knows the server will handle HTTP/1.1 (or later)
-         * requests."  A request that claims HTTP/1.0 and then uses a coding
-         * HTTP/1.0 does not have is a message whose framing the two ends
-         * cannot agree on -- and a front end that reads the version and a
-         * back end that reads the coding disagree about where it ends, which
-         * is the smuggling primitive again. */
+        /* Section 6.1: "A client MUST NOT send a request containing
+         * Transfer-Encoding unless it knows the server will handle HTTP/1.1
+         * (or later) requests."  That is a rule for the client; what a server
+         * should do with such a request is not stated, so the 400 below is
+         * this model's reading rather than a quoted requirement.  The reading:
+         * a request that claims HTTP/1.0 and then uses a coding HTTP/1.0 does
+         * not have is a message whose framing the two ends cannot agree on,
+         * and a front end that reads the version while a back end reads the
+         * coding disagree about where it ends -- the smuggling primitive
+         * again.  Refusing is the only answer that cannot be got wrong. */
         | TransferEncodingOnHttp10
 
         /* --- the chunked coding itself (RFC 9112 section 7.1) ----------- */

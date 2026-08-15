@@ -150,7 +150,10 @@ The phase closes with one case that is not about a status at all: an
 application header whose value carries a CRLF, and one whose name is not a
 token. Neither can arrive from the wire — the parser splits lines on LF, so a
 parsed value never contains one — so the echo application is asked to try, and
-the driver checks that nothing was smuggled into the response.
+the driver checks that nothing was smuggled into the response. The same case
+has the application supply its own `Date`, which is the only place in the suite
+where the one-`Date` rule can be broken: everywhere else the library is the
+only source of one.
 
 ### Checks that sit outside the model
 
@@ -161,7 +164,9 @@ they are held in the driver rather than bent into the case table:
 - `Transfer-Encoding` only towards an HTTP/1.1 request (RFC 9112 §6.1).
 - Never `Content-Length` and `Transfer-Encoding` together (RFC 9110 §8.6).
 - Neither on a 1xx or a 204 (RFC 9110 §8.6 and RFC 9112 §6.1).
-- A `Date` on every 2xx, 3xx and 4xx (RFC 9110 §6.6.1).
+- A `Date` on every 2xx, 3xx and 4xx (RFC 9110 §6.6.1), and exactly one of
+  them: §5.3 forbids two field lines with the same name unless the field is a
+  list, which `Date` is not.
 - A server may only answer `Connection: keep-alive` to an HTTP/1.0 client that
   asked for it (RFC 2068 §19.7.1.1).
 
@@ -330,6 +335,12 @@ the protocol:
 - **A header value carrying a CRLF was emitted verbatim**, which is response
   splitting: RFC 9110 §5.5 calls such a value "invalid and dangerous" and puts
   it outside the field-value grammar, and §5.1 makes a field name a token.
+
+One thing the pass introduced and then had to fix: dating every response
+unconditionally gives an application that already sets a `Date` — chimera's S3
+server does — two of them, which §5.3 forbids. The library now supplies one
+only where the response does not already carry one, the same way it supplies
+`Host`.
 
 **What the client got wrong:**
 
