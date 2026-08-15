@@ -91,6 +91,17 @@ static int port = 8096;
 
 #define BODY_MAX          4096
 
+/*
+ * The request body the POST cases carry, and how much of it the caller hands
+ * over at a time when it streams.
+ *
+ * Larger than the streaming chunk on purpose: a body that fits in one piece
+ * never leaves libevpl asking for the rest, so it never reaches the WANT_DATA
+ * path an application streaming a file of unknown size depends on.
+ */
+#define REQUEST_BODY_LEN  4000
+#define REQUEST_CHUNK     1500
+
 /* ------------------------------------------------------------------ *
 * Outcomes the driver can observe that the model has no name for
 * ------------------------------------------------------------------ */
@@ -106,6 +117,7 @@ static int port = 8096;
 #define ASPECT_PROBE      2
 #define ASPECT_ONCE       3     /* exactly one completion, never two */
 #define ASPECT_REASON     4     /* which EVPL_HTTP_ERROR_* a failure carried */
+#define ASPECT_REQUEST    5     /* the request body the peer actually received */
 
 /* ASPECT_BODY / ASPECT_ONCE actuals. */
 #define VACT_OK           0
@@ -120,6 +132,7 @@ aspect_name(int aspect)
         case ASPECT_PROBE:   return "probe";
         case ASPECT_ONCE:    return "once";
         case ASPECT_REASON:  return "reason";
+        case ASPECT_REQUEST: return "request";
         default:             return "?";
     } /* switch */
 } /* aspect_name */
@@ -543,6 +556,17 @@ build_response(
                    "Content-Length: 27\r\n\r\n");
             break;
 
+        case HCDEF_RSPTOPOSTWITHBODY:
+        case HCDEF_RSPTOSTREAMEDPOST:
+            /* An ordinary response.  These two cases are about the request,
+             * not the reply -- what is under test is that the body the caller
+             * handed over reached the peer intact, which drain_request checks
+             * before this runs. */
+            wb_str(wb, "HTTP/1.0 200 OK\r\n"
+                   PROBE_NAME ": " PROBE_VALUE "\r\n"
+                   "Content-Length: 27\r\n\r\n" RESPONSE_BODY);
+            break;
+
         case HCDEF_RSPPEERCLOSESWITHOUTRESPONSE:
             break;
 
@@ -648,9 +672,32 @@ deliver(
     } /* switch */
 } /* deliver */
 
-/* Whether the buffer holds a terminated header block yet. */
+/*
+ * The request body, as a repeating pattern rather than a constant: a client
+ * that sends the right number of the wrong octets is caught.
+ */
+static char         g_request_body[REQUEST_BODY_LEN];
+
+/* What the hostile server made of the request body it was sent, read by the
+ * driver after the case completes. */
+static volatile int g_request_body_len;
+static volatile int g_request_body_ok;
+
+static void
+fill_request_body(void)
+{
+    int i;
+
+    for (i = 0; i < REQUEST_BODY_LEN; i++) {
+        g_request_body[i] = (char) ('A' + (i % 26));
+    }
+} /* fill_request_body */
+
+/* The offset just past the header block's terminator, or -1 if it has not
+ * arrived yet.  Doubles as "is the block complete", and tells the caller where
+ * the body starts. */
 static int
-has_header_terminator(
+header_terminator_end(
     const char *buf,
     int         len)
 {
@@ -659,12 +706,12 @@ has_header_terminator(
     for (i = 0; i + 3 < len; i++) {
         if (buf[i] == '\r' && buf[i + 1] == '\n' &&
             buf[i + 2] == '\r' && buf[i + 3] == '\n') {
-            return 1;
+            return i + 4;
         }
     }
 
-    return 0;
-} /* has_header_terminator */
+    return -1;
+} /* header_terminator_end */
 
 /*
  * Read the client's request far enough to know it has finished sending one.
@@ -673,21 +720,40 @@ has_header_terminator(
  * block before the response goes out.
  */
 static void
-drain_request(int fd)
+drain_request(
+    int fd,
+    int expect_body)
 {
     struct pollfd   pfd;
-    char            buf[8192];
-    int             len = 0, n;
+    char            buf[16384];
+    const char     *cl, *body;
+    int             len = 0, n, want = 0, hdr_end = -1;
     int64_t         deadline;
     struct timespec ts;
+
+    g_request_body_len = 0;
+    g_request_body_ok  = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
     deadline = (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000 +
         CASE_TIMEOUT_MS;
 
     for (;;) {
-        if (has_header_terminator(buf, len)) {
-            return;
+        if (hdr_end < 0) {
+            hdr_end = header_terminator_end(buf, len);
+
+            if (hdr_end >= 0 && expect_body) {
+                /* The request line and headers are NUL-terminated in place so
+                 * the Content-Length can be found with plain string search;
+                 * the body starts past the terminator either way. */
+                buf[hdr_end - 1] = '\0';
+                cl               = strcasestr(buf, "Content-Length:");
+                want             = cl ? atoi(cl + 15) : 0;
+            }
+        }
+
+        if (hdr_end >= 0 && (!expect_body || len - hdr_end >= want)) {
+            break;
         }
 
         clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -695,7 +761,7 @@ drain_request(int fd)
                    ((int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000));
 
         if (n <= 0) {
-            return;
+            break;
         }
 
         pfd.fd      = fd;
@@ -703,20 +769,33 @@ drain_request(int fd)
         pfd.revents = 0;
 
         if (poll(&pfd, 1, n) <= 0) {
-            return;
+            break;
         }
 
         n = read(fd, buf + len, (int) sizeof(buf) - len);
 
         if (n <= 0) {
-            return;
+            break;
         }
 
         len += n;
 
         if (len == (int) sizeof(buf)) {
-            return;
+            break;
         }
+    }
+
+    if (expect_body && hdr_end >= 0) {
+        /* The oracle for the client's own outbound framing: the peer must
+         * receive exactly the octets the caller handed over, under a
+         * Content-Length that describes them.  Every other case in this suite
+         * takes the request on trust. */
+        body               = buf + hdr_end;
+        g_request_body_len = len - hdr_end;
+        g_request_body_ok  = want == REQUEST_BODY_LEN &&
+            g_request_body_len == REQUEST_BODY_LEN &&
+            memcmp(body, g_request_body,
+                   REQUEST_BODY_LEN) == 0;
     }
 } /* drain_request */
 
@@ -738,7 +817,9 @@ raw_server_function(void *ptr)
         raw->ready = 0;
 
         if (fd >= 0) {
-            drain_request(fd);
+            drain_request(fd,
+                          http_client_cases[raw->case_index].supply !=
+                          HCSUP_SUPPLYNONE);
 
             wb_init(&wb);
             build_response(&wb, &http_client_cases[raw->case_index],
@@ -776,6 +857,8 @@ raw_server_function(void *ptr)
 * ------------------------------------------------------------------ */
 
 struct req_ctx {
+    int  supply;         /* HCSUP_*: how the request body is handed over */
+    int  sent;           /* how much of it has been handed over so far   */
     int  n_headers;      /* RESPONSE_HEADERS callbacks                  */
     int  n_complete;     /* RECEIVE_COMPLETE callbacks                  */
     /* EVPL_HTTP_NOTIFY_FAILED callbacks, and the reason the last one
@@ -850,6 +933,41 @@ client_drain(
     }
 } /* client_drain */
 
+/*
+ * Hand libevpl the next piece of the request body.
+ *
+ * Whole for SupplyWhole, REQUEST_CHUNK at a time for SupplyStreamed.  The
+ * request on the wire is identical either way -- same octets, same
+ * Content-Length -- so the model predicts the same response for both; what
+ * differs is that the streamed form leaves the send ring partly drained, which
+ * is what makes libevpl ask for the rest.
+ */
+static void
+client_send_body(
+    struct evpl              *evpl,
+    struct evpl_http_request *request,
+    struct req_ctx           *ctx)
+{
+    struct evpl_iovec iov;
+    int               chunk = REQUEST_BODY_LEN - ctx->sent;
+
+    if (ctx->supply == HCSUP_SUPPLYNONE || chunk <= 0) {
+        return;
+    }
+
+    if (ctx->supply == HCSUP_SUPPLYSTREAMED && chunk > REQUEST_CHUNK) {
+        chunk = REQUEST_CHUNK;
+    }
+
+    evpl_iovec_alloc(evpl, chunk, 0, 1, 0, &iov);
+    memcpy(iov.data, g_request_body + ctx->sent, chunk);
+    iov.length = chunk;
+
+    evpl_http_request_add_datav(request, &iov, 1);
+
+    ctx->sent += chunk;
+} /* client_send_body */
+
 static void
 client_notify(
     struct evpl                *evpl,
@@ -905,6 +1023,12 @@ client_notify(
             ctx->error = evpl_http_request_status(request);
             break;
         case EVPL_HTTP_NOTIFY_WANT_DATA:
+            /* libevpl has taken what it was given and the request body is not
+             * finished: hand over the next piece.  Only the streaming cases
+             * get here, which is the point of having them -- a body handed
+             * over whole completes in one pass and never asks. */
+            client_send_body(evpl, request, ctx);
+            break;
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
             break;
     } /* switch */
@@ -994,6 +1118,8 @@ run_client_case(
     request = evpl_http_request_create(conn,
                                        c->method == HCMETH_CHEAD ?
                                        EVPL_HTTP_REQUEST_TYPE_HEAD :
+                                       c->method == HCMETH_CPOST ?
+                                       EVPL_HTTP_REQUEST_TYPE_POST :
                                        EVPL_HTTP_REQUEST_TYPE_GET,
                                        REQUEST_URI);
 
@@ -1007,7 +1133,16 @@ run_client_case(
     }
 
     evpl_http_request_add_header(request, "Host", "localhost");
-    evpl_http_client_set_request_length(request, 0);
+
+    ctx->supply = c->supply;
+
+    if (c->supply == HCSUP_SUPPLYNONE) {
+        evpl_http_client_set_request_length(request, 0);
+    } else {
+        /* RFC 1945 section 8.3: an HTTP/1.0 POST must declare its length. */
+        evpl_http_client_set_request_length(request, REQUEST_BODY_LEN);
+        client_send_body(evpl, request, ctx);
+    }
 
     evpl_http_request_dispatch(request, client_notify, ctx);
 
@@ -1089,6 +1224,23 @@ run_client_case(
 
     record(ASPECT_ONCE, c->defect, VACT_OK, ok ? VACT_OK : VACT_BAD, ok,
            ok ? NULL : detail);
+
+    /*
+     * Outside the model, and the only check here that looks at the request
+     * rather than the response: the peer must have received exactly the body
+     * the caller handed over, under a Content-Length that describes it.  Every
+     * other case takes the client's outbound framing on trust.
+     */
+    if (c->supply != HCSUP_SUPPLYNONE) {
+        ok = g_request_body_ok;
+
+        snprintf(detail, sizeof(detail),
+                 "peer received %d request body bytes, sent %d",
+                 g_request_body_len, REQUEST_BODY_LEN);
+
+        record(ASPECT_REQUEST, c->defect, REQUEST_BODY_LEN,
+               g_request_body_len, ok, ok ? NULL : detail);
+    }
 
     if (c->expect == HCOUT_CBCOMPLETE && actual == c->expect_status) {
 
@@ -1225,6 +1377,8 @@ main(
     /* The hostile server hangs up mid-conversation on purpose; a late write
      * must not take the harness down with it. */
     signal(SIGPIPE, SIG_IGN);
+
+    fill_request_body();
 
     while ((opt = getopt(argc, argv, "p:")) != -1) {
         switch (opt) {

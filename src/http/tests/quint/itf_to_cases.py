@@ -62,7 +62,9 @@ CLIENT_OUTCOMES = ["CbComplete", "CbFailed"]
 
 CLIENT_BODIES = ["BodyDelivered", "BodyNone", "BodyUnchecked"]
 
-CLIENT_METHODS = ["CGet", "CHead"]
+CLIENT_METHODS = ["CGet", "CHead", "CPost"]
+
+CLIENT_SUPPLIES = ["SupplyNone", "SupplyWhole", "SupplyStreamed"]
 
 CLIENT_DEFECTS = [
     "RspWellFormed",
@@ -90,6 +92,8 @@ CLIENT_DEFECTS = [
     "RspBodyShortOfContentLength",
     "RspBodyLongerThanContentLength",
     "RspHeadWithContentLength",
+    "RspToPostWithBody",
+    "RspToStreamedPost",
     "RspPeerClosesWithoutResponse",
     "RspPeerClosesMidStatusLine",
     "RspPeerClosesMidHeaders",
@@ -234,6 +238,8 @@ def collect_client(paths):
             index_of(PROBE_EXPECTS, tag_of(state["expectProbe"]),
                      "probe expectation"),
             index_of(CLIENT_METHODS, tag_of(state["expectMethod"]), "method"),
+            index_of(CLIENT_SUPPLIES, tag_of(state["expectSupply"]),
+                     "request body supply"),
         )
         if key not in seen:
             seen.add(key)
@@ -351,6 +357,7 @@ def main():
     emit_enum(o, "http_client_outcome", "HCOUT", CLIENT_OUTCOMES)
     emit_enum(o, "http_client_body", "HCBODY", CLIENT_BODIES)
     emit_enum(o, "http_client_method", "HCMETH", CLIENT_METHODS)
+    emit_enum(o, "http_client_supply", "HCSUP", CLIENT_SUPPLIES)
     emit_enum(o, "http_client_defect", "HCDEF", CLIENT_DEFECTS)
 
     emit_names(o, "http_delivery_name", "http_delivery", DELIVERIES)
@@ -417,17 +424,18 @@ def main():
     o.append("    uint8_t expect_body;   /* HCBODY_*                         */")
     o.append("    uint8_t expect_probe;  /* HPROBE_*                         */")
     o.append("    uint8_t method;        /* HCMETH_*                         */")
+    o.append("    uint8_t supply;        /* HCSUP_*: how the body is handed over */")
     o.append("    int16_t param;         /* defect payload, -1 when none     */")
     o.append("    int16_t expect_status; /* status for HCOUT_CBCOMPLETE      */")
     o.append("};")
     o.append("")
 
     o.append("static const struct http_client_case http_client_cases[] = {")
-    for (defect, param, delivery, outcome, status, body, probe,
-         method) in client:
-        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d }," %
-                 (defect, delivery, outcome, body, probe, method, param,
-                  status))
+    for (defect, param, delivery, outcome, status, body, probe, method,
+         supply) in client:
+        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d }," %
+                 (defect, delivery, outcome, body, probe, method, supply,
+                  param, status))
     o.append("};")
     o.append("")
     o.append("#define HTTP_NUM_CLIENT_CASES "

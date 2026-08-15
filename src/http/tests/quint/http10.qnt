@@ -782,11 +782,27 @@ module http10_client {
         | BodyNone         /* the response has none, and none may be reported */
         | BodyUnchecked    /* a failed request says nothing about a body */
 
-    /// Which method the request used.  Only the HEAD rule needs it, but it
-    /// changes what the response means, so it travels with the case.
+    /// Which method the request used.  The HEAD rule needs it because it
+    /// changes what the response means; POST because it is the one method
+    /// RFC 1945 gives a request body, and a request body is the client's own
+    /// outbound framing rather than anything the peer chose.
     type ClientMethod =
         | CGet
         | CHead
+        | CPost
+
+    /// How the caller hands the request body to the library.
+    ///
+    /// Invisible on the wire -- the same octets under the same
+    /// Content-Length either way -- so this is not a protocol statement.  It
+    /// is here because the two shapes are different code: handing the whole
+    /// body over at once completes the request in one pass, while handing it
+    /// over in pieces leaves the library asking for the rest, and an
+    /// application streaming a file of unknown size can only do the second.
+    type ClientSupply =
+        | SupplyNone
+        | SupplyWhole
+        | SupplyStreamed
 
     type Defect =
         /* --- baseline: proves the hostile server can build a VALID reply -- */
@@ -859,6 +875,17 @@ module http10_client {
          * waits for the bytes that length promises waits forever. */
         | RspHeadWithContentLength
 
+        /* --- the client's own outbound framing --------------------------- */
+        /* A POST carrying a body, answered normally.  The response is not the
+         * subject here: what is under test is that the request the peer
+         * receives is the one the caller asked for, which is the half of the
+         * exchange every other case takes on trust.  RFC 1945 section 8.3
+         * requires the length, so this is also the only shape in which an
+         * HTTP/1.0 client may send a body at all. */
+        | RspToPostWithBody
+        /* The same request, handed to the library a piece at a time. */
+        | RspToStreamedPost
+
         /* --- the transport ---------------------------------------------- */
         | RspPeerClosesWithoutResponse
         | RspPeerClosesMidStatusLine
@@ -871,6 +898,7 @@ module http10_client {
     var expectBody: ClientBody
     var expectProbe: ProbeExpect
     var expectMethod: ClientMethod
+    var expectSupply: ClientSupply
 
     // ------------------------------------------------------------------
     // The specification: defect -> required client behaviour
@@ -908,6 +936,8 @@ module http10_client {
             | RspBodyCloseDelimited => CbComplete(200)
             | RspBodyLongerThanContentLength => CbComplete(200)
             | RspHeadWithContentLength => CbComplete(200)
+            | RspToPostWithBody => CbComplete(200)
+            | RspToStreamedPost => CbComplete(200)
 
             | RspContentLengthNotNumeric => CbFailed
             | RspContentLengthNegative => CbFailed
@@ -944,7 +974,16 @@ module http10_client {
     pure def methodRequired(d: Defect): ClientMethod =
         match d {
             | RspHeadWithContentLength => CHead
+            | RspToPostWithBody => CPost
+            | RspToStreamedPost => CPost
             | _ => CGet
+        }
+
+    pure def supplyRequired(d: Defect): ClientSupply =
+        match d {
+            | RspToPostWithBody => SupplyWhole
+            | RspToStreamedPost => SupplyStreamed
+            | _ => SupplyNone
         }
 
     action use(d: Defect, v: Delivery): bool = all {
@@ -952,7 +991,8 @@ module http10_client {
         expected' = required(d),
         expectBody' = bodyRequired(d),
         expectProbe' = probeRequired(d),
-        expectMethod' = methodRequired(d)
+        expectMethod' = methodRequired(d),
+        expectSupply' = supplyRequired(d)
     }
 
     // ------------------------------------------------------------------
@@ -987,6 +1027,8 @@ module http10_client {
         RspBodyShortOfContentLength,
         RspBodyLongerThanContentLength,
         RspHeadWithContentLength,
+        RspToPostWithBody,
+        RspToStreamedPost,
         RspPeerClosesWithoutResponse,
         RspPeerClosesMidStatusLine,
         RspPeerClosesMidHeaders
@@ -1049,9 +1091,16 @@ module http10_client {
             | BodyDelivered => expected != CbFailed
         }
 
+    /// A request body belongs to POST and to nothing else: RFC 1945 defines
+    /// no semantics for one on GET or HEAD, and section 8.3 makes the length
+    /// mandatory on the method that does have one.
+    val requestBodyOnlyOnPost =
+        (expectSupply == SupplyNone) iff (expectMethod != CPost)
+
     val safety =
         outcomeIsSpecified and noRequestIsAbandoned and
-        truncatedResponsesAreNotResults and bodyOnlyWhereTheResponseHasOne
+        truncatedResponsesAreNotResults and bodyOnlyWhereTheResponseHasOne and
+        requestBodyOnlyOnPost
 
     // ------------------------------------------------------------------
     // Scenario tests: the outcomes most likely to be got wrong
@@ -1112,6 +1161,20 @@ module http10_client {
             .expect(expected == CbFailed and truncatedResponsesAreNotResults)
             .then(use(RspBodyLongerThanContentLength, OneWrite))
             .expect(expected == CbComplete(200) and expectBody == BodyDelivered)
+
+    /// The client's own outbound framing, which every other case takes on
+    /// trust: the peer must receive the request the caller asked for,
+    /// whichever way the caller handed the body over.
+    run requestBodiesArriveTest =
+        init
+            .then(use(RspToPostWithBody, OneWrite))
+            .expect(expectMethod == CPost and expectSupply == SupplyWhole
+                    and expected == CbComplete(200))
+            .then(use(RspToStreamedPost, TwoWrites))
+            .expect(expectMethod == CPost and expectSupply == SupplyStreamed
+                    and requestBodyOnlyOnPost)
+            .then(use(RspWellFormed, OneWrite))
+            .expect(expectSupply == SupplyNone and requestBodyOnlyOnPost)
 
     run everyDefectHasAnOutcomeTest =
         init
