@@ -24,6 +24,14 @@ evpl_deferral_init(
     deferral_callback_t   callback,
     void                 *private_data);
 
+/*
+ * Arm a deferral: its callback runs once, on the next pass of the event loop.
+ *
+ * Arming one that is already armed is a no-op, so any number of calls before
+ * the loop next runs produce exactly one callback.  Arming from inside the
+ * callback is legal and produces another, since the deferral is disarmed
+ * before it is called.
+ */
 void
 evpl_defer(
     struct evpl          *evpl,
@@ -31,7 +39,9 @@ evpl_defer(
 
 /*
  * Disarm a deferral that has been armed but has not yet run.  A no-op on one
- * that is not armed.
+ * that is not armed, including one that has already run, so a caller tearing
+ * down state need not track whether it armed anything.  Must be called on the
+ * thread that armed it.
  *
  * Needed by anything that frees the object a deferral points at: the event
  * loop holds the pointer until the deferral fires, so tearing the object down

@@ -155,9 +155,6 @@ struct evpl_vfio_device {
     pthread_mutex_t             lock;
 };
 
-void evpl_remove_deferral(
-    struct evpl          *evpl,
-    struct evpl_deferral *deferral);
 
 static uint64_t
 evpl_vfio_now_ms(void)
