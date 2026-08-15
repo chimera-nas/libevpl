@@ -105,6 +105,7 @@ static int port = 8096;
 #define ASPECT_BODY       1
 #define ASPECT_PROBE      2
 #define ASPECT_ONCE       3     /* exactly one completion, never two */
+#define ASPECT_REASON     4     /* which EVPL_HTTP_ERROR_* a failure carried */
 
 /* ASPECT_BODY / ASPECT_ONCE actuals. */
 #define VACT_OK           0
@@ -118,6 +119,7 @@ aspect_name(int aspect)
         case ASPECT_BODY:    return "body";
         case ASPECT_PROBE:   return "probe";
         case ASPECT_ONCE:    return "once";
+        case ASPECT_REASON:  return "reason";
         default:             return "?";
     } /* switch */
 } /* aspect_name */
@@ -154,137 +156,13 @@ static const struct known_divergence known_divergences[] = {
      * consciously deferred, with a note saying why -- an unlisted one fails
      * the test.
      *
-     * The unmatchable first row keeps the array non-empty when every real
-     * entry has been retired, which is the state to aim for. */
+     * The unmatchable first row keeps the array non-empty, which is where it
+     * stands: every divergence this suite found has been fixed. */
     { .aspect = -1,
       .defect = -1,
       .expect = -1,
       .actual = -1,
       .note   = NULL },
-
-    /* ---------------------------------------------------------------- *
-    * A request that will not complete cannot be reported at all.
-    *
-    * evpl_http_notify_type has five arms and none of them means "this
-    * request is over and there is no response".  So when the client
-    * correctly refuses a response -- and on most of these it does refuse it,
-    * promptly and for the right reason -- it closes the connection, and
-    * evpl_http_event's EVPL_NOTIFY_DISCONNECTED arm frees every pending
-    * request without invoking one callback.  The caller is left waiting on a
-    * completion that can no longer arrive.
-    *
-    * This is the same defect the RPC2 suite found on its client
-    * (EVPL_RPC2_REPLY_CONN_LOST was the fix there), and it needs the same
-    * kind of remedy: somewhere for a failure to be delivered.  That is an
-    * API addition rather than a bug fix -- a new notify type is a new value
-    * in a public enum, which every switch over it has to grow an arm for --
-    * so it is recorded here rather than done in passing.
-    *
-    * Every row below is that one gap.  They are listed per defect rather
-    * than collapsed, so that a defect which starts failing a DIFFERENT way
-    * still fails the test.
-    * ---------------------------------------------------------------- */
-
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPPEERCLOSESWITHOUTRESPONSE,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "the peer hung up and the caller was never told" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPPEERCLOSESMIDSTATUSLINE,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "truncated status line: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPPEERCLOSESMIDHEADERS,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "truncated header block: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPNOSTATUSLINE,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "HTTP/0.9 Simple-Response: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPSTATUSMISSING,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "status line with no code: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPVERSIONMALFORMED,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "unparseable version: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPMAJORVERSIONUNSUPPORTED,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "unsupported major version: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPHEADERNOCOLON,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "malformed header field: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPHEADERNAMEEMPTY,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "empty field-name: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPHEADERSPACEBEFORECOLON,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "whitespace before the colon: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPHEADERBLOCKOVERLONG,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "oversized header block: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPCONTENTLENGTHNOTNUMERIC,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "non-numeric Content-Length: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPCONTENTLENGTHNEGATIVE,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "negative Content-Length: refused, not reported" },
-
-    /* Detected but unreportable for the same reason: the status line is now
-     * parsed to the grammar (evpl_http_parse_status), so a code that is not
-     * three digits in 1xx..5xx is refused rather than delivered -- and the
-     * refusal, like the rest of this group, reaches the caller as silence. */
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPSTATUSNOTNUMERIC,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "non-numeric status: refused, not reported" },
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPSTATUSOUTOFRANGE,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "status outside 1xx..5xx: refused, not reported" },
-
-    /* Refused for the right reason, and unreportable for the same one: the
-     * response path now rejects two Content-Lengths that disagree, as the
-     * request path already did. */
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPCONTENTLENGTHDUPLICATECONFLICTING,
-      .expect = EXP_FAILED,
-      .actual = ACT_SILENT,
-      .note   = "conflicting Content-Lengths: refused, not reported" },
-
-    /* The same gap, reached the other way: the status arrived, so the caller
-     * has been told a response is coming, and then the body it was promised
-     * never does.  Worse than silence, because the caller has evidence that
-     * the request is progressing. */
-    { .aspect = ASPECT_OUTCOME,
-      .defect = HCDEF_RSPBODYSHORTOFCONTENTLENGTH,
-      .expect = EXP_FAILED,
-      .actual = ACT_HEADERS_ONLY,
-      .note   = "truncated body: the status arrived, the completion never did" },
-
 };
 
 static int
@@ -881,10 +759,11 @@ raw_server_function(void *ptr)
 struct req_ctx {
     int  n_headers;      /* RESPONSE_HEADERS callbacks                  */
     int  n_complete;     /* RECEIVE_COMPLETE callbacks                  */
-    /* Callbacks telling the caller the request will not complete.  There is
-     * no notify type that means this, so nothing sets it; see the outcome
-     * check in run_client_case. */
+    /* EVPL_HTTP_NOTIFY_FAILED callbacks, and the reason the last one
+     * carried.  This is what makes a CbFailed expectation satisfiable at
+     * all: without it the driver can only observe that nothing happened. */
     int  n_failed;
+    int  error;
     int  status;
     int  body_len;
     int  probe_present;
@@ -956,6 +835,10 @@ client_notify(
         case EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE:
             client_drain(evpl, request, ctx);
             ctx->n_complete++;
+            break;
+        case EVPL_HTTP_NOTIFY_FAILED:
+            ctx->n_failed++;
+            ctx->error = evpl_http_request_status(request);
             break;
         case EVPL_HTTP_NOTIFY_WANT_DATA:
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
@@ -1083,16 +966,12 @@ run_client_case(
      * The outcome.
      *
      * CbFailed leaves the spelling open but not the substance: the caller has
-     * to be told the request is over.  None of the three things the driver can
-     * observe today says that.  RECEIVE_COMPLETE on its own would say the
-     * request SUCCEEDED, RESPONSE_HEADERS on its own says a status arrived and
-     * nothing about whether more is coming, and silence says nothing at all --
-     * in every one of those the caller is still waiting.
-     *
-     * So the check is ctx->n_failed, which nothing sets, because
-     * evpl_http_notify_type has no arm meaning "this request will not
-     * complete".  That is the finding rather than a mis-stated expectation,
-     * and one line in client_notify makes this live the day the API grows one.
+     * to be told the request is over.  Neither of the other two observable
+     * ends says that -- RECEIVE_COMPLETE on its own would say the request
+     * SUCCEEDED, RESPONSE_HEADERS on its own says a status arrived and nothing
+     * about whether more is coming -- and silence says nothing at all.  So the
+     * check is EVPL_HTTP_NOTIFY_FAILED, and the reason it carries is checked
+     * separately below.
      */
     if (c->expect == HCOUT_CBCOMPLETE) {
         ok = actual == c->expect_status;
@@ -1101,6 +980,41 @@ run_client_case(
     }
 
     record(ASPECT_OUTCOME, c->defect, expect, actual, ok, ok ? NULL : detail);
+
+    /*
+     * Outside the model: which failure it was.
+     *
+     * The model leaves the spelling of CbFailed open, because requiring a
+     * particular code would be requiring an API rather than stating a protocol
+     * obligation.  Now that there is one, the driver can hold it to account --
+     * and the distinction is worth holding, since it is the whole reason for
+     * having two codes.  A peer that went away may be worth retrying; a peer
+     * whose response cannot be parsed will send the same one next time.
+     */
+    if (c->expect != HCOUT_CBCOMPLETE && ctx->n_failed) {
+        /* CONN_LOST is for the cases where the connection ended before the
+         * client had anything complete to judge.  RspNoStatusLine belongs with
+         * them rather than with the parse failures, which reads oddly until
+         * you look at what an HTTP/0.9 Simple-Response is on the wire: a body,
+         * with no line terminator anywhere in it.  The client is still waiting
+         * for the end of a status line when the peer hangs up, so it never had
+         * one to reject, and "the connection ended before a response arrived"
+         * is exactly what happened. */
+        int want = (c->defect == HCDEF_RSPPEERCLOSESWITHOUTRESPONSE ||
+                    c->defect == HCDEF_RSPPEERCLOSESMIDSTATUSLINE ||
+                    c->defect == HCDEF_RSPPEERCLOSESMIDHEADERS ||
+                    c->defect == HCDEF_RSPBODYSHORTOFCONTENTLENGTH ||
+                    c->defect == HCDEF_RSPNOSTATUSLINE) ?
+            EVPL_HTTP_ERROR_CONN_LOST : EVPL_HTTP_ERROR_BAD_RESPONSE;
+
+        ok = ctx->error == want;
+
+        snprintf(detail, sizeof(detail), "failed with %d, wanted %d",
+                 ctx->error, want);
+
+        record(ASPECT_REASON, c->defect, want, ctx->error, ok,
+               ok ? NULL : detail);
+    }
 
     /* Exactly one completion, whatever else happened: a second is a caller
      * whose callback runs twice on state it has already released. */

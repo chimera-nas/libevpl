@@ -85,6 +85,11 @@ server_notify(
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
             fprintf(stderr, "notify response complete\n");
             break;
+        case EVPL_HTTP_NOTIFY_FAILED:
+            /* A clean exchange: nothing here should ever be abandoned. */
+            fprintf(stderr, "request failed unexpectedly (%d)\n",
+                    evpl_http_request_status(request));
+            exit(1);
     } /* switch */
 } /* server_notify */
 

@@ -105,6 +105,10 @@ server_notify(
         case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
             break;
+        case EVPL_HTTP_NOTIFY_FAILED:
+            /* The raw peers in this test hang up mid-conversation on purpose,
+             * so a request that never completes is expected here. */
+            break;
     } /* switch */
 } /* server_notify */
 
@@ -166,6 +170,7 @@ server_function(void *ptr)
 
 struct req_ctx {
     int  done;
+    int  failed;   /* EVPL_HTTP_ERROR_* if the request was abandoned */
     int  status;
     int  body_len;
     char body[256];
@@ -222,6 +227,12 @@ client_notify(
             break;
         case EVPL_HTTP_NOTIFY_WANT_DATA:
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
+            break;
+        case EVPL_HTTP_NOTIFY_FAILED:
+            /* Part 3's raw server answers with an oversized header block, so
+             * this is the notification that the request is over -- which is
+             * what the part asserts, now that there is one. */
+            rc->failed = evpl_http_request_status(request);
             break;
     } /* switch */
 } /* client_notify */
@@ -476,7 +487,15 @@ test_inbound_client_limit(struct evpl *evpl)
         return 1;
     }
 
-    fprintf(stderr, "inbound-client: ok (connection abandoned)\n");
+    /* Not completing is only half of it: the caller has to be told the request
+     * is over, or it waits on a completion that can no longer arrive. */
+    if (rc.failed != EVPL_HTTP_ERROR_BAD_RESPONSE) {
+        fprintf(stderr, "inbound-client: expected the request to be reported "
+                "failed with BAD_RESPONSE, got %d\n", rc.failed);
+        return 1;
+    }
+
+    fprintf(stderr, "inbound-client: ok (request reported failed)\n");
 
     return 0;
 } /* test_inbound_client_limit */

@@ -295,6 +295,27 @@ evpl_http_recv_chunk(uint64_t left)
 } /* evpl_http_recv_chunk */
 
 /*
+ * Give up on a client connection whose peer's response cannot be parsed.
+ *
+ * The reason is recorded on the connection so that the disconnect which
+ * follows completes each outstanding request with it rather than with the
+ * generic CONN_LOST.  "The peer sent something I cannot read" and "the peer
+ * went away" ask for different things from a caller, and only one of them is
+ * worth retrying against the same peer.
+ */
+static void
+evpl_http_client_abandon(
+    struct evpl_http_conn *conn,
+    const char            *why)
+{
+    evpl_http_debug("unusable response: %s", why);
+
+    conn->error = EVPL_HTTP_ERROR_BAD_RESPONSE;
+
+    evpl_close(conn->agent->evpl, conn->bind);
+} /* evpl_http_client_abandon */
+
+/*
  * Whether this response carries no message-body, whatever its headers say.
  *
  * RFC 1945 section 8.2: "The HEAD method is identical to GET except that the
@@ -1170,7 +1191,7 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
         rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
 
         if (unlikely(rc == -2)) {
-            evpl_close(evpl, bind);
+            evpl_http_client_abandon(conn, "status line too long");
             return;
         }
 
@@ -1182,22 +1203,19 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
          * section 6.1), and as on the request line a leading run of LWS is not
          * between fields, so strtok_r must not be allowed to skip it. */
         if (evpl_http_is_lws(line[0])) {
-            evpl_http_debug("status line starts with whitespace");
-            evpl_close(evpl, bind);
+            evpl_http_client_abandon(conn, "status line starts with whitespace");
             return;
         }
 
         token = strtok_r(line, " \t", &saveptr);
 
         if (!token) {
-            evpl_http_debug("missing status line version");
-            evpl_close(evpl, bind);
+            evpl_http_client_abandon(conn, "missing status line version");
             return;
         }
 
         if (evpl_http_parse_version(token, &major, &minor) < 0 || major != 1) {
-            evpl_http_debug("unsupported http version: %s", token);
-            evpl_close(evpl, bind);
+            evpl_http_client_abandon(conn, "unsupported http version");
             return;
         }
 
@@ -1210,14 +1228,12 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
         token = strtok_r(NULL, " \t", &saveptr);
 
         if (!token) {
-            evpl_http_debug("missing status code");
-            evpl_close(evpl, bind);
+            evpl_http_client_abandon(conn, "missing status code");
             return;
         }
 
         if (evpl_http_parse_status(token, &request->status) < 0) {
-            evpl_http_debug("malformed status code: %s", token);
-            evpl_close(evpl, bind);
+            evpl_http_client_abandon(conn, "malformed status code");
             return;
         }
 
@@ -1238,7 +1254,7 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
         rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
 
         if (unlikely(rc == -2)) {
-            evpl_close(evpl, bind);
+            evpl_http_client_abandon(conn, "header line too long");
             return;
         }
 
@@ -1288,9 +1304,8 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
             request->header_bytes += strlen(line) + 2;
 
             if (unlikely(request->header_bytes > agent->max_header_size)) {
-                evpl_http_debug(
-                    "inbound response header block exceeds max_header_size");
-                evpl_close(evpl, bind);
+                evpl_http_client_abandon(conn,
+                                         "header block exceeds max_header_size");
                 return;
             }
 
@@ -1303,9 +1318,8 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
                     request->response_headers->prev : NULL;
 
                 if (!header) {
-                    evpl_http_debug("continuation line with no field to "
-                                    "continue");
-                    evpl_close(evpl, bind);
+                    evpl_http_client_abandon(conn,
+                                             "continuation line with no field");
                     return;
                 }
 
@@ -1314,12 +1328,11 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
                 header = evpl_http_request_header_alloc(agent);
 
                 if (evpl_http_parse_header_line(line, header) < 0) {
-                    evpl_http_debug("malformed header line");
                     /* As on the request path: the header is not on any list
                      * yet, so dropping it strands it and the free-list tail
                      * behind it. */
                     evpl_http_request_header_free(agent, header);
-                    evpl_close(evpl, bind);
+                    evpl_http_client_abandon(conn, "malformed header line");
                     return;
                 }
 
@@ -1334,17 +1347,16 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
                  * after it begins would be the peer's choice.  A client has no
                  * status to answer with, so the connection goes. */
                 if (evpl_http_parse_content_length(header->value, &length) < 0) {
-                    evpl_http_debug("response Content-Length is not a decimal "
-                                    "number of octets");
-                    evpl_close(evpl, bind);
+                    evpl_http_client_abandon(conn,
+                                             "Content-Length is not a decimal number of octets");
                     return;
                 }
 
                 if (!folded &&
                     (request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH) &&
                     length != request->request_length) {
-                    evpl_http_debug("conflicting response Content-Length");
-                    evpl_close(evpl, bind);
+                    evpl_http_client_abandon(conn,
+                                             "conflicting Content-Length");
                     return;
                 }
 
@@ -1523,6 +1535,58 @@ evpl_http_event(
                                              request->notify_data,
                                              http_conn->private_data);
                 }
+            }
+
+            /*
+             * Everything still outstanding is over and cannot complete: no
+             * response can arrive for a client's requests now, and a server
+             * has nowhere left to send the ones it was answering.  Tell each
+             * caller so, rather than freeing the request behind its back --
+             * a callback that never runs leaves an application waiting on a
+             * completion that is already impossible, and still holding
+             * whatever it attached to the request.
+             *
+             * The reason separates a peer that went away from one that sent
+             * something unparseable, which the parse paths record on the
+             * connection before they close.
+             */
+            DL_FOREACH_SAFE(http_conn->pending_requests, request, next)
+            {
+                if (request->request_state ==
+                    EVPL_HTTP_REQUEST_STATE_COMPLETE) {
+                    /* The close-delimited case just above: answered, not
+                     * abandoned. */
+                    continue;
+                }
+
+                request->status = http_conn->error ? http_conn->error :
+                    EVPL_HTTP_ERROR_CONN_LOST;
+
+                if (request->notify_callback) {
+                    request->notify_callback(evpl, http_conn->agent, request,
+                                             EVPL_HTTP_NOTIFY_FAILED,
+                                             request->request_type,
+                                             request->uri,
+                                             request->notify_data,
+                                             evpl_http_priv(http_conn));
+                }
+            }
+
+            /* A request the server was still parsing has a caller only if it
+             * was dispatched, which happens when its header block completes;
+             * before that nobody is waiting on it. */
+            request = http_conn->current_request;
+
+            if (request && request != http_conn->pending_requests &&
+                request->notify_callback) {
+                request->status = http_conn->error ? http_conn->error :
+                    EVPL_HTTP_ERROR_CONN_LOST;
+
+                request->notify_callback(evpl, http_conn->agent, request,
+                                         EVPL_HTTP_NOTIFY_FAILED,
+                                         request->request_type, request->uri,
+                                         request->notify_data,
+                                         evpl_http_priv(http_conn));
             }
 
             /* Release any request still in flight on this connection: a

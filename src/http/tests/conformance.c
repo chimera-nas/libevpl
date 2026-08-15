@@ -559,6 +559,13 @@ server_notify(
         case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
             break;
+        case EVPL_HTTP_NOTIFY_FAILED:
+            /* The defect phase closes on the server mid-exchange all the time,
+             * so a request that can no longer be answered is expected here.
+             * What matters is that the notification arrives at all: this is
+             * where an application would release whatever it hung off the
+             * request, and before it existed there was nowhere to do that. */
+            break;
     } /* switch */
 } /* server_notify */
 

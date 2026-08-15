@@ -49,6 +49,23 @@ HTTP event notifications:
 | `EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE` | Request fully received |
 | `EVPL_HTTP_NOTIFY_WANT_DATA` | Server ready for more response data |
 | `EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE` | Response fully sent |
+| `EVPL_HTTP_NOTIFY_RESPONSE_HEADERS` | Client: status line and response headers received |
+| `EVPL_HTTP_NOTIFY_FAILED` | The request is over and will not complete |
+
+Exactly one of `RECEIVE_COMPLETE` (client), `RESPONSE_COMPLETE` (server) or
+`FAILED` reaches a given request, so `FAILED` is where an application releases
+whatever it attached to one. Every request still outstanding on a connection
+gets it when the connection goes down, so a caller is never left waiting on a
+completion that can no longer happen. `evpl_http_request_status()` carries the
+reason:
+
+| Reason | Meaning |
+|------|-------------|
+| `EVPL_HTTP_ERROR_CONN_LOST` | The connection was lost before the request completed |
+| `EVPL_HTTP_ERROR_BAD_RESPONSE` | Client: the peer's response could not be parsed |
+
+The request is freed as soon as the callback returns, so nothing may reference
+it afterwards.
 
 ### `enum evpl_http_request_type`
 

@@ -279,26 +279,41 @@ Four of its findings are fixed, in the commits alongside this file:
 - **Conflicting `Content-Length`s were resolved rather than refused**, which the
   request path already refused.
 
-### What is left, and why it is not fixed here
+### The failure notification
 
-Seventeen entries, and all of them are one gap: **there is nowhere to report a
-request that will not complete.**
+The suite's largest finding was that there was nowhere to report a request
+that will not complete. `evpl_http_notify_type` had five arms and none of them
+meant "this request is over and there is no response", so when the client
+refused a malformed response — which, after the fixes above, it does promptly
+and for the right reason on every one of these cases — it closed the
+connection, and `EVPL_NOTIFY_DISCONNECTED` freed every pending request without
+invoking one callback. The caller waited on a completion that could no longer
+arrive.
 
-`evpl_http_notify_type` has five arms and none of them means "this request is
-over and there is no response". So when the client refuses a malformed response
-— which, after the fixes above, it now does promptly and for the right reason
-on every one of these cases — it closes the connection, and
-`evpl_http_event`'s `EVPL_NOTIFY_DISCONNECTED` arm frees every pending request
-without invoking one callback. The caller waits on a completion that can no
-longer arrive.
+`EVPL_HTTP_NOTIFY_FAILED` closes that, the way `EVPL_RPC2_REPLY_CONN_LOST`
+closed the same gap in the RPC2 client. Exactly one of `RECEIVE_COMPLETE`,
+`RESPONSE_COMPLETE` or `FAILED` reaches a given request, so it is also where an
+application releases whatever it attached to one. `evpl_http_request_status()`
+carries the reason, negative so it cannot collide with an HTTP status:
+`EVPL_HTTP_ERROR_CONN_LOST` when the peer went away, `EVPL_HTTP_ERROR_BAD_RESPONSE`
+when it sent something unparseable. The distinction is the point of having two:
+one is worth retrying against the same peer and the other is not. Which code
+each case must carry is checked in the driver rather than the model, since the
+model deliberately leaves the spelling of a failure open.
 
-This is the same defect the RPC2 suite found on its client, where the fix was
-`EVPL_RPC2_REPLY_CONN_LOST` plus a `status` parameter on the generated dispatch.
-The HTTP equivalent is a new value in a public enum, which every `switch` over
-it has to grow an arm for, so it is an API change rather than a bug fix and is
-recorded rather than done in passing.
+It fires in both directions. A server whose peer disconnects mid-response has
+the same problem in reverse — the request it was answering is freed and the
+application never learns, so per-request state it allocated is leaked. Nothing
+in libevpl noticed because libevpl attaches nothing; an application that does
+(chimera's S3 server frees its own request struct in `RESPONSE_COMPLETE`) leaks
+one per dropped connection until it handles `FAILED`.
 
-A second, related gap is not in the case table because it kills the harness
+### What is left
+
+Nothing in the case table: every divergence this suite found has been fixed,
+and `known_divergences[]` holds only its unmatchable placeholder row.
+
+One thing is still open and is not in the table, because it kills the harness
 rather than failing a case: **an application cannot tell that a connection has
 been retired.** `evpl_http_event` frees the `evpl_http_conn` on disconnect and
 there is no notification to register for, so the pointer
@@ -307,10 +322,13 @@ observe, and `evpl_http_client_close` on it is a use-after-free — which is wha
 the first run of this harness did. The driver works around it by never closing
 a connection it did not just successfully use.
 
-Both want the same shape of answer: a connection/request lifecycle
-notification. Until there is one, an HTTP client written against this API
-cannot distinguish "still waiting" from "will never complete", which is the
-same thing as saying it cannot implement a timeout correctly.
+`FAILED` narrows this considerably, since a caller with a request outstanding
+now learns that the exchange is over, and in the one-request-per-connection
+case that is the same news. It does not close it: a client that keeps an idle
+connection for reuse still has no way to know the peer has gone. The RPC2
+equivalent is the thread-level notify callback, which reports
+`EVPL_RPC2_NOTIFY_CONNECTED` and `DISCONNECTED`; the HTTP client has no
+analogue.
 
 ## What the suite does not cover
 

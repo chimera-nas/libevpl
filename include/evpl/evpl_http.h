@@ -30,7 +30,44 @@ enum evpl_http_notify_type {
      * received and may be queried (evpl_http_request_status /
      * evpl_http_response_header).  Fired before any RECEIVE_DATA. */
     EVPL_HTTP_NOTIFY_RESPONSE_HEADERS,
+    /*
+     * The request is over and will not complete.
+     *
+     * Every request still outstanding on a connection is completed with this
+     * when the connection goes down, so that a caller is never left waiting on
+     * a completion that can no longer happen.  Client-side it also covers a
+     * response the library could not parse.
+     *
+     * Exactly one of RECEIVE_COMPLETE (client), RESPONSE_COMPLETE (server) or
+     * FAILED reaches a given request, so this is the place to release whatever
+     * the application attached to it.  evpl_http_request_status() carries the
+     * reason (see EVPL_HTTP_ERROR_* below).
+     *
+     * The request is freed as soon as the callback returns, so nothing may
+     * reference it afterwards.
+     */
+    EVPL_HTTP_NOTIFY_FAILED,
 };
+
+/*
+ * Reasons reported through evpl_http_request_status() when a request is
+ * completed by EVPL_HTTP_NOTIFY_FAILED rather than by a response.  Negative so
+ * they cannot collide with an HTTP status code, which is 100..599.
+ */
+
+/*
+ * The connection was lost before the request completed.  The peer may simply
+ * have gone away, so a retry against it is not obviously futile.
+ */
+#define EVPL_HTTP_ERROR_CONN_LOST     (-1)
+
+/*
+ * Client direction: the peer's response could not be parsed -- a status line
+ * that is not one, a header field that is not one, or a Content-Length that is
+ * not a length.  Distinct from CONN_LOST because retrying against the same
+ * peer will produce the same unparseable response.
+ */
+#define EVPL_HTTP_ERROR_BAD_RESPONSE  (-2)
 
 /* Protocol version selection for a client connection. */
 enum evpl_http_version {
@@ -205,6 +242,11 @@ evpl_http_request_dispatch(
     evpl_http_notify_callback_t notify_callback,
     void                       *notify_data);
 
+/*
+ * The response status, 100..599, once EVPL_HTTP_NOTIFY_RESPONSE_HEADERS has
+ * fired.  On a request completed by EVPL_HTTP_NOTIFY_FAILED this carries the
+ * reason instead, as one of the negative EVPL_HTTP_ERROR_* codes.
+ */
 int
 evpl_http_request_status(
     struct evpl_http_request *request);

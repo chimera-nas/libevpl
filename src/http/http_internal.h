@@ -129,6 +129,11 @@ struct evpl_http_request {
 
 struct evpl_http_conn {
     int                       is_server;
+    /* Why this connection is going down, as an EVPL_HTTP_ERROR_* code, or 0
+     * for the default (the peer went away).  Set by the parse paths before
+     * they close, so the disconnect that follows can tell each pending request
+     * which of the two happened. */
+    int                       error;
     enum evpl_http_proto proto;
     enum evpl_http_version version;        /* requested version (client) */
     int                       connected;   /* bind handshake/connect done */
