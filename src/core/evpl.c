@@ -508,13 +508,22 @@ evpl_continue(struct evpl *evpl)
 
                 if (remain > 0) {
                     /* Timer not yet due; convert the remaining ticks to the
-                     * millisecond wait only here, off the busy path. */
+                     * millisecond wait only here, off the busy path.
+                     *
+                     * The break is unconditional: the timers are a min-heap,
+                     * so the head not being due means none of them is, and
+                     * falling through would fire a timer before its deadline.
+                     * Only the wait is conditional -- a caller that asked for
+                     * a shorter wait_ms than this timer's remaining time
+                     * still gets the shorter wait, and the timer fires on a
+                     * later pass once it is genuinely due. */
                     remain = (int64_t) (evpl_ticks_to_ns((uint64_t) remain) / 1000000);
 
                     if (remain < msecs || msecs == -1) {
                         msecs = remain;
-                        break;
                     }
+
+                    break;
                 }
 
                 if (timer->oneshot) {
