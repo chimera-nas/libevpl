@@ -5,6 +5,7 @@
 #pragma once
 
 #include <string.h>
+#include <time.h>
 #include <utlist.h>
 
 #include "core/evpl.h"
@@ -41,6 +42,24 @@ enum evpl_http_request_transfer_encoding {
     EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED,
 };
 
+/*
+ * How the outbound message's content is delimited on the wire.
+ *
+ * Not the same question as which framing the application asked for: RFC 9112
+ * section 6.1 forbids a transfer coding towards a peer whose version does not
+ * have one, and forbids either framing header on a status that carries no
+ * content at all.  So the application says what it wants and this says what it
+ * gets, decided once when the message is dispatched and used by both the
+ * header emission and the body loop -- which have to agree, or the message and
+ * its declared framing describe different things.
+ */
+enum evpl_http_framing {
+    EVPL_HTTP_FRAMING_LENGTH,   /* a Content-Length delimits it            */
+    EVPL_HTTP_FRAMING_CHUNKED,  /* the chunked transfer coding does        */
+    EVPL_HTTP_FRAMING_CLOSE,    /* the connection close does               */
+    EVPL_HTTP_FRAMING_NONE,     /* the message carries no content at all   */
+};
+
 /* Protocol spoken on a connection.  UNKNOWN until decided (by ALPN on TLS or
  * the h2c client preface / requested version on TCP). */
 enum evpl_http_proto {
@@ -64,6 +83,28 @@ struct evpl_http_request_header {
 /* Client: the request (headers + body) has been fully written to the wire and
  * is now awaiting its response. */
 #define EVPL_HTTP_REQUEST_REQUEST_SENT      0x20
+/* A Content-Length has been seen and request_length is what it said.  Kept
+ * apart from "request_length is zero" because the two mean different things:
+ * RFC 1945 section 8.3 requires an HTTP/1.0 POST to carry a length, and a
+ * second Content-Length that disagrees with the first leaves the message with
+ * no single length at all. */
+#define EVPL_HTTP_REQUEST_HAVE_LENGTH       0x40
+/* What the request's Connection header asked for.  Which of them decides the
+ * connection's fate depends on the version, since HTTP/1.0 and HTTP/1.1
+ * default opposite ways -- see evpl_http_response_keeps_alive. */
+#define EVPL_HTTP_REQUEST_CONN_CLOSE        0x80
+#define EVPL_HTTP_REQUEST_CONN_KEEPALIVE    0x100
+/* Client: the response declared no length and carries no transfer coding, so
+ * its body is whatever arrives before the connection closes (RFC 1945 section
+ * 7.2.2).  The only framing HTTP/1.0 has for a body whose size the server does
+ * not know in advance, and the one where the FIN is part of the message rather
+ * than the end of the conversation. */
+#define EVPL_HTTP_REQUEST_CLOSE_DELIMITED   0x200
+/* The chunked body's last-chunk has been read, so what follows is the trailer
+ * section (RFC 9112 section 7.1.2) rather than another chunk.  Kept as state
+ * because it has to survive across reads like everything else in the parser:
+ * the trailer can arrive in as many pieces as anything else. */
+#define EVPL_HTTP_REQUEST_IN_TRAILER        0x400
 
 /* Per-stream HTTP/2 bookkeeping, embedded in every request.  Only meaningful
  * when request->conn->proto == EVPL_HTTP_PROTO_H2. */
@@ -81,6 +122,7 @@ struct evpl_http_request {
     enum evpl_http_request_http_version      http_version;
     enum evpl_http_request_transfer_encoding request_transfer_encoding;
     enum evpl_http_request_transfer_encoding response_transfer_encoding;
+    enum evpl_http_framing                   response_framing;
     evpl_http_notify_callback_t              notify_callback;
     void                                    *notify_data;
     uint64_t                                 request_length;
@@ -112,17 +154,38 @@ struct evpl_http_request {
 
 struct evpl_http_conn {
     int                       is_server;
-    enum evpl_http_proto proto;
-    enum evpl_http_version version;        /* requested version (client) */
+    /* Client connections only: the application has called
+     * evpl_http_client_close() and is no longer holding the handle, so the
+     * struct may be freed.  Until then a dropped connection is retired --
+     * bind cleared, requests failed -- but kept, because its owner has a
+     * pointer to it and no way to be told the pointer has gone stale. */
+    int                       released;
+    /* Why this connection is going down, as an EVPL_HTTP_ERROR_* code, or 0
+     * for the default (the peer went away).  Set by the parse paths before
+     * they close, so the disconnect that follows can tell each pending request
+     * which of the two happened. */
+    int                       error;
+    enum evpl_http_proto      proto;
+    enum evpl_http_version    version;     /* requested version (client) */
     int                       connected;   /* bind handshake/connect done */
     struct evpl_http_server  *server;
     struct evpl_http_agent   *agent;
     struct evpl_bind         *bind;
     struct evpl_deferral      flush;
+    /* Server: resume parsing after the pipeline read-ahead cap stopped it.
+     * A deferral rather than a direct call from the flush path, so that
+     * parsing a request never runs inside the loop that is writing a
+     * response. */
+    struct evpl_deferral      parse;
     struct evpl_http_request *current_request;
     struct evpl_http_request *pending_requests;
     struct evpl_http2_conn   *h2;          /* NULL unless proto == H2 */
     void                     *private_data;
+    /* Client: the authority this connection was opened to, in the form RFC
+     * 9110 section 7.2 gives Host -- uri-host optionally followed by ":" port.
+     * Kept because the request that needs it is written long after the
+     * endpoint that names it was consulted. */
+    char                      host[128];
     /* Agent-wide live-connection list (agent->conns): every conn's bind holds
      * notify callbacks that dereference the agent, so evpl_http_destroy must
      * be able to find and retire them before the agent is freed. */
@@ -144,6 +207,12 @@ struct evpl_http_agent {
     struct evpl_http_conn           *conns; /* live connections; see conn */
     struct evpl                     *evpl;
     unsigned int                     max_header_size;
+    /* The Date header field's value, and the second it was formatted for.
+     * Cached because it changes once a second and is needed on every
+     * response, and formatting it costs a gmtime_r that would otherwise run
+     * per request at whatever rate the server is serving. */
+    time_t                           date_second;
+    char                             date[40];
 };
 
 static inline struct evpl_http_request_header *
@@ -190,6 +259,7 @@ evpl_http_request_alloc(struct evpl_http_agent *agent)
     request->http_version               = EVPL_HTTP_REQUEST_HTTP_VERSION_1_1;
     request->request_transfer_encoding  = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT;
     request->response_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT;
+    request->response_framing           = EVPL_HTTP_FRAMING_LENGTH;
     request->request_length             = 0;
     request->request_left               = 0;
     request->request_chunk_left         = 0;
@@ -299,6 +369,13 @@ evpl_http_priv(struct evpl_http_conn *conn)
 {
     return conn->is_server ? conn->server->private_data : conn->private_data;
 } /* evpl_http_priv */
+
+/* The Date field value for right now, in IMF-fixdate (RFC 9110 section 5.6.7),
+ * cached on the agent to the second.  Both protocol paths need it: section
+ * 6.6.1's requirement is about HTTP rather than about a version of it. */
+const char *
+evpl_http_date(
+    struct evpl_http_agent *agent);
 
 /* The single flush deferral entry point; dispatches by protocol/direction. */
 void

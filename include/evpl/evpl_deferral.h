@@ -28,3 +28,16 @@ void
 evpl_defer(
     struct evpl          *evpl,
     struct evpl_deferral *deferral);
+
+/*
+ * Disarm a deferral that has been armed but has not yet run.  A no-op on one
+ * that is not armed.
+ *
+ * Needed by anything that frees the object a deferral points at: the event
+ * loop holds the pointer until the deferral fires, so tearing the object down
+ * without this leaves the callback to run against freed memory.
+ */
+void
+evpl_remove_deferral(
+    struct evpl          *evpl,
+    struct evpl_deferral *deferral);

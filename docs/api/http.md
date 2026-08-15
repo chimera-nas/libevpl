@@ -17,13 +17,40 @@ over arbitrary supported protocols possibly with zero-copy transfer.
 
 libevpl's HTTP support provides:
 
-- **HTTP/1.1 server** - Handle GET, POST, PUT, DELETE, HEAD requests
+- **HTTP/1.0 and HTTP/1.1 server** - Handle GET, POST, PUT, DELETE, HEAD
+  requests, at whichever version the request claims
 - **Streaming** - Support for chunked transfer encoding and content-length
 - **Zero-copy** - Use iovecs for efficient data transfer
 - **Header manipulation** - Add custom request/response headers
 - **Multiple protocols** - Run HTTP over TCP, XLIO, or RDMA
 
 **Supported methods:** GET, HEAD, POST, PUT, DELETE
+
+### What the library decides for you
+
+Message framing belongs to the library, not the application: it is the only
+part that knows both what the peer asked for and what is about to reach the
+wire. Specifically —
+
+- **`Date`** is added to every response (RFC 9110 §6.6.1 makes it a MUST on
+  2xx, 3xx and 4xx). Do not add one; two would be a malformed message.
+- **`Host`** is added to every client request that does not already carry one
+  (RFC 9112 §3.2 makes it a MUST on HTTP/1.1). Add one only to override the
+  authority the endpoint implies.
+- **The framing headers** are chosen from the status and the request's
+  version, not only from what the application asked for. A 1xx or 204 response
+  carries neither `Content-Length` nor `Transfer-Encoding` (RFC 9110 §8.6 and
+  RFC 9112 §6.1); a chunked response to an HTTP/1.0 request is sent
+  close-delimited instead, because that version has no chunked coding to
+  decode.
+- **The content of a response to HEAD, and of a 1xx, 204 or 304**, is
+  suppressed: the header fields a GET would have returned are still sent, and
+  the octets are not (RFC 9112 §6.3).
+- **A status that is not a status** — outside 100..599 — is answered `500`
+  with the original logged, since it cannot be put on the wire at all.
+
+A conformance suite for all of this lives in `src/http/tests`; see
+`src/http/tests/CONFORMANCE.md`.
 
 ## Types
 
@@ -49,6 +76,23 @@ HTTP event notifications:
 | `EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE` | Request fully received |
 | `EVPL_HTTP_NOTIFY_WANT_DATA` | Server ready for more response data |
 | `EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE` | Response fully sent |
+| `EVPL_HTTP_NOTIFY_RESPONSE_HEADERS` | Client: status line and response headers received |
+| `EVPL_HTTP_NOTIFY_FAILED` | The request is over and will not complete |
+
+Exactly one of `RECEIVE_COMPLETE` (client), `RESPONSE_COMPLETE` (server) or
+`FAILED` reaches a given request, so `FAILED` is where an application releases
+whatever it attached to one. Every request still outstanding on a connection
+gets it when the connection goes down, so a caller is never left waiting on a
+completion that can no longer happen. `evpl_http_request_status()` carries the
+reason:
+
+| Reason | Meaning |
+|------|-------------|
+| `EVPL_HTTP_ERROR_CONN_LOST` | The connection was lost before the request completed |
+| `EVPL_HTTP_ERROR_BAD_RESPONSE` | Client: the peer's response could not be parsed |
+
+The request is freed as soon as the callback returns, so nothing may reference
+it afterwards.
 
 ### `enum evpl_http_request_type`
 
@@ -321,18 +365,29 @@ Read request body data into iovecs.
 #### `evpl_http_request_add_header`
 
 ```c
-void evpl_http_request_add_header(
+int evpl_http_request_add_header(
     struct evpl_http_request *request,
     const char               *name,
     const char               *value);
 ```
 
-Add a response header.
+Add a header to the outbound block — response headers on a server connection,
+request headers on a client one.
 
 **Parameters:**
 - `request` - HTTP request
 - `name` - Header name
 - `value` - Header value
+
+**Returns:** 0, or -1 with the header not added if either:
+
+- it would push the block past the configured `http_max_header_size`, or
+- the name is not a token (RFC 9110 §5.1), or the value contains CR or LF,
+  which §5.5 calls "invalid and dangerous" and puts outside the field-value
+  grammar. A CRLF in a value ends the field, so everything after it would be read
+  as further fields and then as content — one message becoming two, the second
+  chosen by whoever supplied the value. Worth testing the return wherever a
+  value comes from outside the program.
 
 ---
 
@@ -405,6 +460,48 @@ Send a default response with a status code.
 - `status` - HTTP status code (200, 404, 500, etc.)
 
 **Use case:** Quick responses for errors or simple status pages.
+
+---
+
+### Client Connections
+
+#### `evpl_http_client_connect`
+
+```c
+struct evpl_http_conn *evpl_http_client_connect(
+    struct evpl_http_agent *agent,
+    enum evpl_protocol_id   protocol_id,
+    struct evpl_endpoint   *endpoint,
+    enum evpl_http_version  version,
+    void                   *private_data);
+```
+
+Open a client connection. The handle belongs to the caller until
+`evpl_http_client_close`.
+
+---
+
+#### `evpl_http_client_close`
+
+```c
+void evpl_http_client_close(
+    struct evpl_http_agent *agent,
+    struct evpl_http_conn  *conn);
+```
+
+Release a client connection.
+
+The handle stays valid even after the peer has gone away: a dropped connection
+is retired but not freed, so the pointer its owner holds never becomes stale at
+a moment the owner cannot observe. Every request outstanding on it is completed
+with `EVPL_HTTP_NOTIFY_FAILED` when that happens, which is how the owner learns.
+
+Calling this on a connection whose peer has already gone is therefore fine, and
+is how such a connection is finally released. Dispatching a request on one is
+also safe: it completes immediately with `EVPL_HTTP_NOTIFY_FAILED`, before
+`evpl_http_request_dispatch` returns.
+
+The handle must not be used afterwards.
 
 ---
 

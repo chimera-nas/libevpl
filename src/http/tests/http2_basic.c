@@ -60,6 +60,7 @@ server_notify(
         case EVPL_HTTP_NOTIFY_WANT_DATA:
         case EVPL_HTTP_NOTIFY_RESPONSE_HEADERS:
         case EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE:
+        case EVPL_HTTP_NOTIFY_FAILED:
             break;
     } /* switch */
 } /* server_notify */
