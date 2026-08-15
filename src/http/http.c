@@ -801,6 +801,46 @@ evpl_http_parse_content_length(
 } /* evpl_http_parse_content_length */
 
 /*
+ * Step over one element of a comma-separated field value (RFC 9110 section
+ * 5.6.1's "#rule"), advancing *pp past it.  Returns the element with its
+ * surrounding whitespace stripped and its length through *len, or NULL once
+ * the list is exhausted.  Empty elements are legal in a #rule and are skipped
+ * rather than reported.
+ */
+static const char *
+evpl_http_next_element(
+    const char **pp,
+    size_t      *len)
+{
+    const char *p = *pp, *start, *end;
+
+    while (evpl_http_is_lws(*p) || *p == ',') {
+        p++;
+    }
+
+    if (!*p) {
+        *pp = p;
+        return NULL;
+    }
+
+    start = end = p;
+
+    while (*end && *end != ',') {
+        end++;
+    }
+
+    *pp = *end ? end + 1 : end;
+
+    while (end > start && evpl_http_is_lws(*(end - 1))) {
+        end--;
+    }
+
+    *len = (size_t) (end - start);
+
+    return start;
+} /* evpl_http_next_element */
+
+/*
  * Whether a comma-separated field value contains `token`.  Connection is such
  * a list ("keep-alive, Upgrade" is ordinary), so comparing the whole value
  * against one name would miss the case that matters.
@@ -810,38 +850,26 @@ evpl_http_value_has_token(
     const char *value,
     const char *token)
 {
-    const char *p = value, *end;
-    size_t      len = strlen(token);
+    const char *p = value, *element;
+    size_t      len, want = strlen(token);
 
-    while (*p) {
-
-        while (evpl_http_is_lws(*p) || *p == ',') {
-            p++;
-        }
-
-        end = p;
-
-        while (*end && *end != ',') {
-            end++;
-        }
-
-        while (end > p && evpl_http_is_lws(*(end - 1))) {
-            end--;
-        }
-
-        if ((size_t) (end - p) == len && strncasecmp(p, token, len) == 0) {
+    while ((element = evpl_http_next_element(&p, &len)) != NULL) {
+        if (len == want && strncasecmp(element, token, want) == 0) {
             return 1;
-        }
-
-        p = end;
-
-        if (*p) {
-            p++;
         }
     }
 
     return 0;
 } /* evpl_http_value_has_token */
+
+/* Whether a list element is the chunked transfer coding. */
+static inline int
+evpl_http_element_is_chunked(
+    const char *element,
+    size_t      len)
+{
+    return len == 7 && strncasecmp(element, "chunked", 7) == 0;
+} /* evpl_http_element_is_chunked */
 
 /*
  * Whether the connection survives this request's response.
@@ -900,6 +928,143 @@ evpl_http_parse_status(
 } /* evpl_http_parse_status */
 
 /*
+ * Decide how the request's content is delimited, once the whole header block
+ * has arrived.
+ *
+ * Every rule here is about the block as a whole -- how many Host fields it
+ * carried, which transfer codings it named and in what order, whether both
+ * ways of delimiting content appear -- so it runs once at the end rather than
+ * field by field as they arrive.  Doing it incrementally gets the ordering
+ * questions wrong: a Content-Length that follows a Transfer-Encoding is the
+ * same defect as one that precedes it, and whether the chunked coding is final
+ * is not knowable until the list is finished.
+ *
+ * Returns 0, having set request_transfer_encoding, or the status to refuse the
+ * request with and *why filled in.
+ */
+static int
+evpl_http_request_framing(
+    struct evpl_http_request *request,
+    const char              **why)
+{
+    struct evpl_http_request_header *header;
+    const char                      *p, *element;
+    size_t                           len;
+    int                              hosts = 0, coded = 0;
+    int                              chunked_last = 0, extra = 0, not_final = 0;
+
+    DL_FOREACH(request->request_headers, header)
+    {
+        if (strcasecmp(header->name, "Host") == 0) {
+            hosts++;
+            continue;
+        }
+
+        if (strcasecmp(header->name, "Transfer-Encoding") != 0) {
+            continue;
+        }
+
+        coded = 1;
+        p     = header->value;
+
+        /* A transfer coding list may be split across several fields, so the
+         * codings are walked in the order they appear across all of them:
+         * "Transfer-Encoding: gzip" followed by "Transfer-Encoding: chunked"
+         * says the same thing as one field naming both. */
+        while ((element = evpl_http_next_element(&p, &len)) != NULL) {
+
+            if (chunked_last) {
+                /* Something follows a chunked, so chunked was not final. */
+                not_final = 1;
+            }
+
+            if (evpl_http_element_is_chunked(element, len)) {
+                chunked_last = 1;
+            } else {
+                chunked_last = 0;
+                extra        = 1;
+            }
+        }
+    }
+
+    /* RFC 9112 section 3.2: "A server MUST respond with a 400 (Bad Request)
+     * status code to any HTTP/1.1 request message that lacks a Host header
+     * field and to any request message that contains more than one Host header
+     * field."  The routing decision depends on it, and a request that leaves
+     * it ambiguous is one a front end and a back end can route differently.
+     * HTTP/1.0 has no Host at all, so the same bytes are a perfectly good
+     * HTTP/1.0 request. */
+    if (request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_1 &&
+        hosts != 1) {
+        *why = hosts ? "more than one Host field on an HTTP/1.1 request"
+                     : "HTTP/1.1 request with no Host field";
+        return 400;
+    }
+
+    if (!coded) {
+        /* RFC 1945 section 8.3: "A valid Content-Length is required on all
+         * HTTP/1.0 POST requests.  An HTTP/1.0 server should respond with a
+         * 400 (bad request) message if it cannot determine the length of the
+         * request message's content."  HTTP/1.1 gave a request with no length
+         * a defined meaning instead -- no content at all (RFC 9112 section
+         * 6.3) -- so this applies to 1.0 alone. */
+        if (request->request_type == EVPL_HTTP_REQUEST_TYPE_POST &&
+            request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_0 &&
+            !(request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH)) {
+            *why = "HTTP/1.0 POST without Content-Length";
+            return 400;
+        }
+
+        return 0;
+    }
+
+    /* RFC 9112 section 6.1: "A client MUST NOT send a request containing
+     * Transfer-Encoding unless it knows the server will handle HTTP/1.1 (or
+     * later) requests."  HTTP/1.0 has no transfer codings, so a request that
+     * claims HTTP/1.0 and then uses one has no framing the two ends can agree
+     * on -- and a front end that reads the version while a back end reads the
+     * coding disagree about where the message ends, which is the whole of a
+     * request-smuggling attack. */
+    if (request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_0) {
+        *why = "Transfer-Encoding on an HTTP/1.0 request";
+        return 400;
+    }
+
+    /* Section 6.1 again: a message carrying both "might indicate an attempt to
+     * perform request smuggling ... and ought to be handled as an error".  Two
+     * framings that disagree is the same defect as two Content-Lengths that
+     * disagree, and gets the same answer. */
+    if (request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH) {
+        *why = "both Content-Length and Transfer-Encoding";
+        return 400;
+    }
+
+    /* "If a Transfer-Encoding header field is present in a request and the
+     * chunked transfer coding is not the final encoding, the message body
+     * length cannot be determined reliably; the server MUST respond with the
+     * 400 (Bad Request) status code and then close the connection." */
+    if (!chunked_last || not_final) {
+        *why = "the chunked coding is not the final transfer coding";
+        return 400;
+    }
+
+    /* Chunked is final, so the message can be delimited -- but a coding inside
+     * it that the server does not implement leaves it unable to do anything
+     * with the content.  "A server that receives a request message with a
+     * transfer coding it does not understand SHOULD respond with 501 (Not
+     * Implemented)." */
+    if (extra) {
+        *why = "unsupported transfer coding";
+        return 501;
+    }
+
+    request->request_transfer_encoding =
+        EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
+
+    return 0;
+} /* evpl_http_request_framing */
+
+/*
  * Refuse a request the parser cannot use, and close.
  *
  * RFC 1945 section 9.4.1 (400 Bad Request, "the request could not be
@@ -952,8 +1117,9 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
     struct evpl_http_request        *request;
     struct evpl_http_request_header *header;
     struct evpl                     *evpl = agent->evpl;
+    const char                      *why;
     char                             line[4096];
-    int                              rc, folded;
+    int                              rc, folded, status;
     unsigned int                     major, minor;
     uint64_t                         length;
     char                            *token, *saveptr;
@@ -1076,20 +1242,12 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
 
         if (line[0] == '\0') {
 
-            /* RFC 1945 section 8.3: "A valid Content-Length is required on
-             * all HTTP/1.0 POST requests.  An HTTP/1.0 server should respond
-             * with a 400 (bad request) message if it cannot determine the
-             * length of the request message's content."  HTTP/1.1 gave a
-             * request with no length a defined meaning instead -- no body at
-             * all (RFC 7230 section 3.3.3) -- so this applies to 1.0 alone. */
-            if (request->request_type == EVPL_HTTP_REQUEST_TYPE_POST &&
-                request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_0 &&
-                request->request_transfer_encoding ==
-                EVPL_HTTP_REQUEST_TRANSFER_ENCODING_DEFAULT &&
-                !(request->request_flags & EVPL_HTTP_REQUEST_HAVE_LENGTH)) {
-                evpl_http_server_reject(conn,
-                                        400,
-                                        "HTTP/1.0 POST without Content-Length");
+            /* The block is complete, so the framing rules that are about the
+             * block as a whole can be applied. */
+            status = evpl_http_request_framing(request, &why);
+
+            if (status) {
+                evpl_http_server_reject(conn, status, why);
                 return;
             }
 
@@ -1098,7 +1256,14 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
             request->header_bytes  = 0;
             request->request_state = EVPL_HTTP_REQUEST_STATE_BODY;
 
-            if (request->request_flags & EVPL_HTTP_REQUEST_WANTS_CONTINUE) {
+            /* RFC 9110 section 10.1.1: "A server that receives a 100-continue
+             * expectation in an HTTP/1.0 request MUST ignore that
+             * expectation."  An HTTP/1.0 client has no way to tell an interim
+             * response from the answer -- 1xx is an HTTP/1.1 concept -- so it
+             * reads the 100 as the response to its request and everything
+             * after it as content. */
+            if ((request->request_flags & EVPL_HTTP_REQUEST_WANTS_CONTINUE) &&
+                request->http_version == EVPL_HTTP_REQUEST_HTTP_VERSION_1_1) {
                 evpl_send(evpl, bind, "HTTP/1.1 100 Continue\r\n\r\n", 25);
             }
 
@@ -1202,19 +1367,12 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
                 if (evpl_http_value_has_token(header->value, "keep-alive")) {
                     request->request_flags |= EVPL_HTTP_REQUEST_CONN_KEEPALIVE;
                 }
-            } else if (strcasecmp(header->name, "Transfer-Encoding") == 0) {
-                if (strcasecmp(header->value, "chunked") == 0) {
-                    request->request_transfer_encoding = EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED;
-                } else {
-                    /* A transfer coding the server does not implement is
-                     * exactly what 501 is for (RFC 1945 section 9.5.2), and
-                     * the body cannot be delimited without it. */
-                    evpl_http_server_reject(conn,
-                                            501,
-                                            "unsupported transfer encoding");
-                    return;
-                }
             }
+
+            /* Host and Transfer-Encoding are deliberately NOT handled here:
+             * what they mean depends on the whole header block rather than on
+             * one field, so evpl_http_request_framing decides both once the
+             * block is complete. */
         }
 
         goto again;
