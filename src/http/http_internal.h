@@ -82,6 +82,11 @@ struct evpl_http_request_header {
  * not know in advance, and the one where the FIN is part of the message rather
  * than the end of the conversation. */
 #define EVPL_HTTP_REQUEST_CLOSE_DELIMITED   0x200
+/* The chunked body's last-chunk has been read, so what follows is the trailer
+ * section (RFC 9112 section 7.1.2) rather than another chunk.  Kept as state
+ * because it has to survive across reads like everything else in the parser:
+ * the trailer can arrive in as many pieces as anything else. */
+#define EVPL_HTTP_REQUEST_IN_TRAILER        0x400
 
 /* Per-stream HTTP/2 bookkeeping, embedded in every request.  Only meaningful
  * when request->conn->proto == EVPL_HTTP_PROTO_H2. */

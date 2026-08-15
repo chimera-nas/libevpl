@@ -231,6 +231,13 @@ evpl_http_destroy(struct evpl_http_agent *agent)
     evpl_free(agent);
 } /* evpl_http_destroy */
 
+/* Linear white space, RFC 1945 section 2.2. */
+static inline int
+evpl_http_is_lws(char c)
+{
+    return c == ' ' || c == '\t';
+} /* evpl_http_is_lws */
+
 /* How many iovecs the line scan looks at before falling back to a contiguous
  * copy.  Enough that an ordinary request never needs the fallback. */
 #define EVPL_HTTP_PARSE_IOV 8
@@ -401,17 +408,83 @@ evpl_http_response_has_no_body(struct evpl_http_request *request)
 #define EVPL_HTTP_CLOSE_DELIMITED_CHUNK 65536
 
 /*
- * Parse a body (Content-Length or chunked) from the wire into request->recv_ring
- * and emit RECEIVE_DATA / RECEIVE_COMPLETE notifications.  Shared by the server
- * (request body) and client (response body) HTTP/1.x paths: the only
- * differences are which list the request lives on when complete (the caller
- * handles that via the COMPLETE transition) and the private data passed to the
- * callback.  Returns 0 on success, -1 if the connection was closed.
+ * Parse a chunk-size line.  Returns 0 and the size, or -1.
+ *
+ * RFC 9112 section 7.1:
+ *
+ *     chunk      = chunk-size [ chunk-ext ] CRLF chunk-data CRLF
+ *     chunk-size = 1*HEXDIG
+ *     chunk-ext  = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
+ *
+ * so the line is hex digits and then either nothing or a semicolon.  strtoul
+ * accepts a great deal more than that and reports none of it: a sign, leading
+ * whitespace, any trailing junk, and -- the one that matters -- a line with no
+ * digits at all, which it reads as zero.  Zero is the last-chunk, so a size
+ * the sender spelled "zz" ends the content early and everything after it is
+ * read as the start of the next request.  That is the chunked spelling of the
+ * Content-Length desync, and it is why this needs a parser rather than a
+ * library call that cannot fail.
+ *
+ * Section 7.1.1 has a recipient "ignore unrecognized chunk extensions", so
+ * anything from the semicolon on is skipped without being understood.
+ */
+static int
+evpl_http_parse_chunk_size(
+    const char *line,
+    uint64_t   *out)
+{
+    const char *p = line;
+    uint64_t    v = 0, digit;
+
+    if (!isxdigit((unsigned char) *p)) {
+        return -1;
+    }
+
+    while (isxdigit((unsigned char) *p)) {
+        digit = (uint64_t) (isdigit((unsigned char) *p) ? *p - '0' :
+                            (tolower((unsigned char) *p) - 'a' + 10));
+        p++;
+
+        if (v > (UINT64_MAX - digit) / 16) {
+            return -1;
+        }
+
+        v = v * 16 + digit;
+    }
+
+    /* Only a chunk extension may follow, and it may be preceded by bad
+     * whitespace (RFC 9112 section 7.1's BWS). */
+    while (evpl_http_is_lws(*p)) {
+        p++;
+    }
+
+    if (*p && *p != ';') {
+        return -1;
+    }
+
+    *out = v;
+
+    return 0;
+} /* evpl_http_parse_chunk_size */
+
+/*
+ * Parse content (Content-Length or chunked) from the wire into
+ * request->recv_ring and emit RECEIVE_DATA / RECEIVE_COMPLETE notifications.
+ * Shared by the server (request content) and client (response content)
+ * HTTP/1.x paths: the only differences are which list the request lives on
+ * when complete (the caller handles that via the COMPLETE transition) and the
+ * private data passed to the callback.
+ *
+ * Returns 0 on success, or -1 if the chunked framing is malformed -- which the
+ * caller has to answer, because a server owes the peer a status and a client
+ * has nobody to give one to.  *why says which malformation, for the caller's
+ * message.
  */
 static int
 evpl_http_handle_body(
     struct evpl_http_conn    *conn,
-    struct evpl_http_request *request)
+    struct evpl_http_request *request,
+    const char              **why)
 {
     struct evpl_http_agent *agent = conn->agent;
     struct evpl            *evpl  = agent->evpl;
@@ -483,7 +556,7 @@ evpl_http_handle_body(
                 rc = evpl_http_parse_line(evpl, bind, line, sizeof(line));
 
                 if (unlikely(rc == -2)) {
-                    evpl_close(evpl, bind);
+                    *why = "chunked framing line too long";
                     return -1;
                 }
 
@@ -492,21 +565,47 @@ evpl_http_handle_body(
                 }
 
                 if (request->request_flags & EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL) {
+                    /* The CRLF that closes a chunk's data.  Anything else and
+                     * the declared size did not describe the data, so the next
+                     * size line would be read from inside the content. */
                     if (line[0] != '\0') {
-                        evpl_close(evpl, bind);
+                        *why = "chunk data is not followed by CRLF";
                         return -1;
                     }
                     request->request_flags &= ~EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL;
                     continue;
                 }
 
-                request->request_chunk_left = strtoul(line, NULL, 16);
-                request->request_flags     |= EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL;
+                if (request->request_flags & EVPL_HTTP_REQUEST_IN_TRAILER) {
+                    /* RFC 9112 section 7.1.2's trailer section: zero or more
+                     * field lines, then the empty one that ends the coding.
+                     * Consuming it is not optional even though nothing here
+                     * reads it -- a trailer left in the stream is read as the
+                     * start of the next request on a connection HTTP/1.1
+                     * keeps open by default.  The fields themselves are
+                     * discarded: section 6.5 says a recipient MAY do that, and
+                     * there is no API to surface them through. */
+                    if (line[0] == '\0') {
+                        request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
+                        break;
+                    }
+                    continue;
+                }
+
+                if (evpl_http_parse_chunk_size(line,
+                                               &request->request_chunk_left) < 0) {
+                    *why = "chunk size is not a hexadecimal number of octets";
+                    return -1;
+                }
 
                 if (request->request_chunk_left == 0) {
-                    request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
-                    break;
+                    /* The last-chunk carries no data and so no CRLF of its
+                     * own: what follows is the trailer section. */
+                    request->request_flags |= EVPL_HTTP_REQUEST_IN_TRAILER;
+                    continue;
                 }
+
+                request->request_flags |= EVPL_HTTP_REQUEST_EXPECT_CHUNK_NL;
             }
         }
 
@@ -654,13 +753,6 @@ evpl_http_copy_field(
     strncpy(dst, src, cap - 1);
     dst[cap - 1] = '\0';
 } /* evpl_http_copy_field */
-
-/* Linear white space, RFC 1945 section 2.2. */
-static inline int
-evpl_http_is_lws(char c)
-{
-    return c == ' ' || c == '\t';
-} /* evpl_http_is_lws */
 
 /*
  * Strip leading and trailing LWS from a NUL-terminated value in place, and
@@ -1379,7 +1471,12 @@ evpl_http_server_handle_data(struct evpl_http_conn *conn)
 
     } else if (request->request_state == EVPL_HTTP_REQUEST_STATE_BODY) {
 
-        if (evpl_http_handle_body(conn, request) < 0) {
+        if (evpl_http_handle_body(conn, request, &why) < 0) {
+            /* A malformed chunked framing is a request the server cannot find
+             * the end of, which is a 400 like any other syntax it cannot parse
+             * -- and closing without a status leaves the client unable to tell
+             * a refused request from a broken server. */
+            evpl_http_server_reject(conn, 400, why);
             return;
         }
 
@@ -1408,6 +1505,7 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
     struct evpl_bind                *bind  = conn->bind;
     struct evpl_http_request        *request;
     struct evpl_http_request_header *header;
+    const char                      *why;
     char                             line[4096];
     int                              rc, folded;
     unsigned int                     major, minor;
@@ -1615,7 +1713,11 @@ evpl_http_client_handle_data(struct evpl_http_conn *conn)
 
     } else if (request->request_state == EVPL_HTTP_REQUEST_STATE_BODY) {
 
-        if (evpl_http_handle_body(conn, request) < 0) {
+        if (evpl_http_handle_body(conn, request, &why) < 0) {
+            /* A client has no status to answer with, so the connection goes --
+             * and the reason travels with it, so the caller learns that the
+             * peer sent something unreadable rather than that it went away. */
+            evpl_http_client_abandon(conn, why);
             return;
         }
 
