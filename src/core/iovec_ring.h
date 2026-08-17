@@ -95,7 +95,7 @@ evpl_iovec_ring_resize(struct evpl_iovec_ring *ring)
     }
 
     ring->head  = ring->size - 1;
-    ring->waist = ((ring->waist + ring->size)  - ring->tail) - ring->size;
+    ring->waist = ((ring->waist + ring->size) - ring->tail) & ring->mask;
     ring->tail  = 0;
 
     evpl_free(old_iovec);
