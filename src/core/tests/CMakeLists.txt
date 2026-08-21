@@ -31,6 +31,10 @@ foreach(mech ${EVPL_MECHANISMS})
                          PROPERTIES TIMEOUT 10)
 endforeach()
 
+# Growing an iovec ring with a wrapped waist.  Drives the ring directly rather
+# than through a protocol, since the waist is only advanced by the RDMA CM one.
+unit_test(core iovec_ring_resize iovec_ring_resize.c)
+
 # Local (AF_UNIX) endpoints: addressed by socket name, so no namespace needed.
 unit_test_local(core endpoint_local endpoint_local.c)
 
