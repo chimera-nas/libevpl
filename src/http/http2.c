@@ -116,6 +116,53 @@ evpl_http2_notify(
 
 /* ----- outbound DATA: zero-copy from request->send_ring ----- */
 
+/*
+ * Submit the staged trailer section as the stream's trailing HEADERS frame.
+ * Called from inside the data provider once the body is done, which is the
+ * pattern nghttp2 documents for trailers: the provider marks its final frame
+ * NGHTTP2_DATA_FLAG_NO_END_STREAM so the END_STREAM travels on the HEADERS
+ * submitted here instead.
+ */
+static void
+evpl_http2_submit_trailers(
+    nghttp2_session          *session,
+    struct evpl_http_request *request)
+{
+    struct evpl_http_request_header *trailer;
+    nghttp2_nv                       nva[64];
+    size_t                           nvlen = 0;
+    int                              rc;
+
+    if (request->h2.trailers_submitted) {
+        return;
+    }
+
+    request->h2.trailers_submitted = 1;
+
+    DL_FOREACH(request->send_trailers, trailer)
+    {
+        evpl_http2_lower(trailer->name);
+
+        if (nvlen >= 64) {
+            break;
+        }
+
+        nva[nvlen].name     = (uint8_t *) trailer->name;
+        nva[nvlen].namelen  = strlen(trailer->name);
+        nva[nvlen].value    = (uint8_t *) trailer->value;
+        nva[nvlen].valuelen = strlen(trailer->value);
+        nva[nvlen].flags    = NGHTTP2_NV_FLAG_NONE;
+        nvlen++;
+    }
+
+    rc = nghttp2_submit_trailer(session, request->h2.stream_id, nva, nvlen);
+
+    if (rc != 0) {
+        evpl_http_error("nghttp2 submit_trailer error: %s",
+                        nghttp2_strerror(rc));
+    }
+} /* evpl_http2_submit_trailers */
+
 static ssize_t
 evpl_http2_data_read(
     nghttp2_session     *session,
@@ -135,6 +182,12 @@ evpl_http2_data_read(
     if (avail == 0) {
         if (request->h2.eof || (!chunked && request->response_left == 0)) {
             *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+
+            if (request->send_trailers) {
+                *data_flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+                evpl_http2_submit_trailers(session, request);
+            }
+
             return 0;
         }
 
@@ -155,6 +208,11 @@ evpl_http2_data_read(
     if ((chunked && request->h2.eof && n == avail) ||
         (!chunked && n == request->response_left)) {
         *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+
+        if (request->send_trailers) {
+            *data_flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+            evpl_http2_submit_trailers(session, request);
+        }
     }
 
     return (ssize_t) n;
@@ -264,6 +322,25 @@ evpl_http2_on_begin_headers(
         nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, request);
     }
 
+    /* Decide here, once per frame, whether its fields are trailers.  An
+     * HCAT_HEADERS frame is one that opens nothing: on a server every such
+     * frame is the request's trailer section, and on a client it is the
+     * response's -- unless the response so far is an interim 1xx, in which
+     * case nghttp2 files the *final* response HEADERS in this category too,
+     * and only the status already parsed before this frame tells the two
+     * apart.  Deciding per frame matters for exactly that case: by the time
+     * the final response's regular fields arrive, its own :status has
+     * already overwritten the interim one, so a per-field test would take
+     * them for trailers. */
+    if (frame->headers.cat == NGHTTP2_HCAT_HEADERS) {
+        request = nghttp2_session_get_stream_user_data(session,
+                                                       frame->hd.stream_id);
+
+        if (request && (conn->is_server || request->status >= 200)) {
+            request->h2.in_trailers = 1;
+        }
+    }
+
     return 0;
 } /* evpl_http2_on_begin_headers */
 
@@ -327,6 +404,14 @@ evpl_http2_on_header(
     memcpy(header->value, value, n);
     header->value[n] = '\0';
 
+    /* Routing decided per frame in on_begin_headers -- see the comment
+     * there.  Trailer fields carry no framing, so the content-length
+     * bookkeeping below is for real header blocks alone. */
+    if (request->h2.in_trailers) {
+        DL_APPEND(request->recv_trailers, header);
+        return 0;
+    }
+
     if (conn->is_server) {
         DL_APPEND(request->request_headers, header);
     } else {
@@ -368,7 +453,10 @@ evpl_http2_on_frame_recv(
                                                 &request->notify_data,
                                                 conn->server->private_data);
             }
-        } else {
+        } else if (!request->h2.in_trailers) {
+            /* Not for a trailer frame: those end the response rather than
+             * announce it, and the END_STREAM they carry is what fires
+             * RECEIVE_COMPLETE below. */
             evpl_http2_notify(request, EVPL_HTTP_NOTIFY_RESPONSE_HEADERS);
         }
     }
@@ -652,9 +740,14 @@ evpl_http2_submit_response(struct evpl_http_request *request)
         nvlen++;
     }
 
+    /* Staged trailers force a data provider even on a bodiless message: the
+     * provider is where the trailing HEADERS is submitted, so without one the
+     * initial HEADERS would carry END_STREAM and the section could never
+     * follow. */
     has_body = (request->response_transfer_encoding ==
                 EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) ||
-        request->response_left > 0;
+        request->response_left > 0 ||
+        request->send_trailers != NULL;
 
     if (has_body) {
         prd.source.ptr    = request;
@@ -752,9 +845,12 @@ evpl_http2_submit_request(struct evpl_http_request *request)
         nvlen++;
     }
 
+    /* Staged trailers force a data provider even on a bodiless message --
+     * same reasoning as in evpl_http2_submit_response. */
     has_body = (request->response_transfer_encoding ==
                 EVPL_HTTP_REQUEST_TRANSFER_ENCODING_CHUNKED) ||
-        request->response_left > 0;
+        request->response_left > 0 ||
+        request->send_trailers != NULL;
 
     if (has_body) {
         prd.source.ptr    = request;
@@ -780,6 +876,15 @@ void
 evpl_http2_dispatch(struct evpl_http_request *request)
 {
     struct evpl_http_conn *conn = request->conn;
+
+    /* A body finished with add_datav(NULL, 0) before the connection had
+     * settled on h2 recorded that only in the protocol-independent flag: the
+     * h2 branch of add_datav was not taken because conn->proto was still
+     * UNKNOWN.  Carry it over now, or the data provider waits forever for an
+     * end it was already given. */
+    if (request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED) {
+        request->h2.eof = 1;
+    }
 
     if (conn->is_server) {
         evpl_http2_submit_response(request);

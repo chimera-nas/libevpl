@@ -110,10 +110,12 @@ struct evpl_http_request_header {
  * when request->conn->proto == EVPL_HTTP_PROTO_H2. */
 struct evpl_http2_stream {
     int32_t stream_id;
-    int     headers_submitted;  /* nghttp2_submit_response/request already done */
-    int     deferred;           /* data provider returned NGHTTP2_ERR_DEFERRED  */
-    int     want_data;          /* provider needs more body; fire WANT_DATA      */
-    int     eof;                /* outgoing body finished (add_datav(NULL,0))    */
+    int     headers_submitted;   /* nghttp2_submit_response/request already done */
+    int     deferred;            /* data provider returned NGHTTP2_ERR_DEFERRED  */
+    int     want_data;           /* provider needs more body; fire WANT_DATA      */
+    int     eof;                 /* outgoing body finished (add_datav(NULL,0))    */
+    int     trailers_submitted;  /* nghttp2_submit_trailer already done          */
+    int     in_trailers;         /* inbound HEADERS now carry trailer fields     */
 };
 
 struct evpl_http_request {
@@ -141,11 +143,24 @@ struct evpl_http_request {
      * request line at create time (client) or 0 (server response) and
      * grows as headers are added. */
     unsigned int                             header_bytes;
+    /* Wire bytes of each trailer section, counted like header_bytes but
+     * against their own limits: the outbound section is staged while
+     * header_bytes may already be accounting the outbound header block, and
+     * the inbound one arrives after that repurposing, so neither can share
+     * the counter. */
+    unsigned int                             send_trailer_bytes;
+    unsigned int                             recv_trailer_bytes;
     struct evpl_http_conn                   *conn;
     struct evpl_iovec_ring                   send_ring;
     struct evpl_iovec_ring                   recv_ring;
     struct evpl_http_request_header         *request_headers;
     struct evpl_http_request_header         *response_headers;
+    /* Trailer fields by direction: send_trailers is the outbound message's
+     * section (the response's on a server, the request's on a client), staged
+     * by evpl_http_request_add_trailer; recv_trailers is the peer's, read
+     * back through evpl_http_request_trailer once receive completes. */
+    struct evpl_http_request_header         *send_trailers;
+    struct evpl_http_request_header         *recv_trailers;
     struct evpl_http2_stream                 h2;
     struct evpl_http_request                *prev;
     struct evpl_http_request                *next;
@@ -269,10 +284,14 @@ evpl_http_request_alloc(struct evpl_http_agent *agent)
     request->status                     = 0;
     request->uri_len                    = 0;
     request->header_bytes               = 0;
+    request->send_trailer_bytes         = 0;
+    request->recv_trailer_bytes         = 0;
     request->notify_callback            = NULL;
     request->notify_data                = NULL;
     request->request_headers            = NULL;
     request->response_headers           = NULL;
+    request->send_trailers              = NULL;
+    request->recv_trailers              = NULL;
     memset(&request->h2, 0, sizeof(request->h2));
     return request;
 } /* evpl_http_request_alloc */
@@ -293,6 +312,18 @@ evpl_http_request_free(
     while (request->response_headers) {
         header = request->response_headers;
         DL_DELETE(request->response_headers, header);
+        evpl_http_request_header_free(agent, header);
+    }
+
+    while (request->send_trailers) {
+        header = request->send_trailers;
+        DL_DELETE(request->send_trailers, header);
+        evpl_http_request_header_free(agent, header);
+    }
+
+    while (request->recv_trailers) {
+        header = request->recv_trailers;
+        DL_DELETE(request->recv_trailers, header);
         evpl_http_request_header_free(agent, header);
     }
 
