@@ -515,6 +515,55 @@ evpl_http_parse_chunk_size(
 } /* evpl_http_parse_chunk_size */
 
 /*
+ * Keep one line of an inbound HTTP/1.x trailer section (RFC 9112 section
+ * 7.1.2), which has the field-line form of a header.  A line that does not
+ * parse as one, or a field past the max_header_size accounting, is consumed
+ * without being kept -- see the trailer loop in evpl_http_handle_body for why
+ * that is tolerance rather than an error.
+ */
+static void
+evpl_http_store_trailer_line(
+    struct evpl_http_request *request,
+    char                     *line)
+{
+    struct evpl_http_agent          *agent = request->conn->agent;
+    struct evpl_http_request_header *header;
+    char                            *name, *value, *saveptr;
+    unsigned int                     line_bytes;
+
+    name = strtok_r(line, ":", &saveptr);
+
+    if (!name) {
+        return;
+    }
+
+    value = strtok_r(NULL, "", &saveptr);
+
+    if (!value) {
+        return;
+    }
+
+    while (*value == ' ') {
+        value++;
+    }
+
+    line_bytes = strlen(name) + strlen(value) + 4;
+
+    if (request->recv_trailer_bytes + line_bytes > agent->max_header_size) {
+        return;
+    }
+
+    request->recv_trailer_bytes += line_bytes;
+
+    header = evpl_http_request_header_alloc(agent);
+
+    strncpy(header->name, name, sizeof(header->name) - 1);
+    strncpy(header->value, value, sizeof(header->value) - 1);
+
+    DL_APPEND(request->recv_trailers, header);
+} /* evpl_http_store_trailer_line */
+
+/*
  * Parse content (Content-Length or chunked) from the wire into
  * request->recv_ring and emit RECEIVE_DATA / RECEIVE_COMPLETE notifications.
  * Shared by the server (request content) and client (response content)
@@ -643,16 +692,25 @@ evpl_http_handle_body(
                 if (request->request_flags & EVPL_HTTP_REQUEST_IN_TRAILER) {
                     /* RFC 9112 section 7.1.2's trailer section: zero or more
                      * field lines, then the empty one that ends the coding.
-                     * Consuming it is not optional even though nothing here
-                     * reads it -- a trailer left in the stream is read as the
+                     * Consuming it is not optional even where nothing reads
+                     * it -- a trailer left in the stream is read as the
                      * start of the next request on a connection HTTP/1.1
-                     * keeps open by default.  The fields themselves are
-                     * discarded: section 6.5 says a recipient MAY do that, and
-                     * there is no API to surface them through. */
+                     * keeps open by default.
+                     *
+                     * Fields that parse are kept, for the application to read
+                     * back through evpl_http_request_trailer once receive
+                     * completes.  Lines that are not field lines are consumed
+                     * without becoming fields, as are fields past the
+                     * accounting limit: section 6.5 allows a recipient to
+                     * discard trailers, and a malformed line here -- unlike
+                     * one in the header block -- delimits nothing, so
+                     * tolerating it loses only the field it failed to be. */
                     if (line[0] == '\0') {
                         request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
                         break;
                     }
+
+                    evpl_http_store_trailer_line(request, line);
                     continue;
                 }
 
@@ -2674,17 +2732,39 @@ evpl_http_send_body(
         }
 
         if (request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED) {
-            niov = evpl_iovec_alloc(evpl, 5, 0, 1, 0, &iov);
+            /* The last-chunk, then the trailer section if one was staged --
+            * RFC 9112 section 7.1.2 puts its field lines between the
+            * last-chunk and the CRLF that ends the coding.  The staged
+            * fields were validated and accounted (send_trailer_bytes is
+            * their exact emitted size) by evpl_http_request_add_trailer. */
+            struct evpl_http_request_header *trailer;
+            char                            *p;
+            unsigned int                     term_bytes;
+
+            term_bytes = 3 + request->send_trailer_bytes + 2;
+
+            niov = evpl_iovec_alloc(evpl, term_bytes, 0, 1, 0, &iov);
 
             evpl_http_abort_if(niov < 0, "failed to allocate iovec");
 
-            ((char *) iov.data)[0] = '0';
-            ((char *) iov.data)[1] = '\r';
-            ((char *) iov.data)[2] = '\n';
-            ((char *) iov.data)[3] = '\r';
-            ((char *) iov.data)[4] = '\n';
+            p    = iov.data;
+            *p++ = '0';
+            *p++ = '\r';
+            *p++ = '\n';
 
-            evpl_sendv(evpl, bind, &iov, 1, 5, EVPL_SEND_FLAG_TAKE_REF);
+            DL_FOREACH(request->send_trailers, trailer)
+            {
+                p += snprintf(p, term_bytes - (p - (char *) iov.data),
+                              "%s: %s\r\n", trailer->name, trailer->value);
+            }
+
+            *p++ = '\r';
+            *p++ = '\n';
+
+            evpl_http_abort_if((unsigned int) (p - (char *) iov.data) != term_bytes,
+                               "chunked terminator accounting mismatch");
+
+            evpl_sendv(evpl, bind, &iov, 1, term_bytes, EVPL_SEND_FLAG_TAKE_REF);
 
             return 1;
         }
@@ -3083,6 +3163,56 @@ evpl_http_request_add_header(
     return evpl_http_request_add_header_common(request, name, value, 1);
 } /* evpl_http_request_add_header */
 
+SYMBOL_EXPORT int
+evpl_http_request_add_trailer(
+    struct evpl_http_request *request,
+    const char               *name,
+    const char               *value)
+{
+    struct evpl_http_agent          *agent = request->conn->agent;
+    struct evpl_http_request_header *header;
+    unsigned int                     line_bytes;
+
+    /* The section travels with the last piece of the message, so once the
+     * application has said there is nothing more to send there is nothing
+     * for a trailer to travel with. */
+    if (unlikely(request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_FINISHED)) {
+        evpl_http_error("refusing trailer '%s': the message is already finished",
+                        name);
+        return -1;
+    }
+
+    /* The same grammar rules as a header, for the same reason: a field the
+     * peer would read as something else is an injection point, and a trailer
+     * section is made of field lines like any other. */
+    if (unlikely(!evpl_http_field_name_is_token(name) ||
+                 !evpl_http_field_value_is_safe(value))) {
+        evpl_http_error("refusing to emit trailer '%s': "
+                        "not a field name and value", name);
+        return -1;
+    }
+
+    header = evpl_http_request_header_alloc(agent);
+
+    strncpy(header->name, name, sizeof(header->name) - 1);
+    strncpy(header->value, value, sizeof(header->value) - 1);
+
+    /* accounted as emitted: "<name>: <value>\r\n", using the stored
+     * (possibly truncated) field lengths */
+    line_bytes = strlen(header->name) + strlen(header->value) + 4;
+
+    if (request->send_trailer_bytes + line_bytes > agent->max_header_size) {
+        evpl_http_request_header_free(agent, header);
+        return -1;
+    }
+
+    request->send_trailer_bytes += line_bytes;
+
+    DL_APPEND(request->send_trailers, header);
+
+    return 0;
+} /* evpl_http_request_add_trailer */
+
 SYMBOL_EXPORT void
 evpl_http_request_add_datav(
     struct evpl_http_request *request,
@@ -3342,6 +3472,44 @@ evpl_http_response_header_iterate(
         callback(header->name, header->value, private_data);
     }
 } /* evpl_http_response_header_iterate */
+
+SYMBOL_EXPORT const char *
+evpl_http_request_trailer(
+    struct evpl_http_request *request,
+    const char               *name)
+{
+    struct evpl_http_request_header *header;
+
+    DL_FOREACH(request->recv_trailers, header)
+    {
+        if (strncasecmp(header->name, name, sizeof(header->name) - 1) == 0) {
+            return header->value;
+        }
+    }
+
+    return NULL;
+} /* evpl_http_request_trailer */
+
+SYMBOL_EXPORT void
+evpl_http_request_trailer_iterate(
+    struct evpl_http_request     *request,
+    evpl_http_request_header_cb_t callback,
+    void                         *private_data)
+{
+    struct evpl_http_request_header *header;
+
+    DL_FOREACH(request->recv_trailers, header)
+    {
+        callback(header->name, header->value, private_data);
+    }
+} /* evpl_http_request_trailer_iterate */
+
+SYMBOL_EXPORT enum evpl_http_protocol
+evpl_http_request_protocol(struct evpl_http_request *request)
+{
+    return request->conn->proto == EVPL_HTTP_PROTO_H2 ?
+           EVPL_HTTP_PROTOCOL_HTTP2 : EVPL_HTTP_PROTOCOL_HTTP1;
+} /* evpl_http_request_protocol */
 
 SYMBOL_EXPORT uint64_t
 evpl_http_request_get_data_avail(struct evpl_http_request *request)

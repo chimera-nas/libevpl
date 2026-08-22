@@ -77,6 +77,24 @@ enum evpl_http_version {
                                * require "h2" via ALPN on TLS) */
 };
 
+/* The protocol a request is actually travelling over, as distinct from the
+ * enum above, which is what a client asked for before the connection knew. */
+enum evpl_http_protocol {
+    EVPL_HTTP_PROTOCOL_HTTP1,
+    EVPL_HTTP_PROTOCOL_HTTP2,
+};
+
+/*
+ * Which protocol carries this request.  Meaningful from the moment the
+ * request reaches the application (dispatch on a server, create on a client
+ * whose connection has settled its version), for callers whose behaviour
+ * depends on the transport's capabilities -- a gRPC endpoint, say, which
+ * exists only over HTTP/2.
+ */
+enum evpl_http_protocol
+evpl_http_request_protocol(
+    struct evpl_http_request *request);
+
 enum evpl_http_request_type {
     EVPL_HTTP_REQUEST_TYPE_UNKNOWN,
     EVPL_HTTP_REQUEST_TYPE_GET,
@@ -166,6 +184,56 @@ typedef void (*evpl_http_request_header_cb_t)(
 
 void
 evpl_http_request_header_iterate(
+    struct evpl_http_request     *request,
+    evpl_http_request_header_cb_t callback,
+    void                         *private_data);
+
+/*
+ * Stage a trailer field on the outbound message (the response on a server
+ * connection, the request on a client connection).  Trailers are fields that
+ * travel after the content instead of before it (RFC 9110 section 6.5), for
+ * values that are not known until the content has been produced -- a checksum,
+ * a signature, a final status.
+ *
+ * All trailers must be staged before the end of the content is signalled with
+ * evpl_http_request_add_datav(request, NULL, 0) (or, for a length-delimited
+ * message, before the final bytes of the declared length are staged): the
+ * trailer section travels with the last piece of the message, so a trailer
+ * added after that has nothing left to travel with.  Returns -1 with the
+ * trailer not added once the message is finished, and under the same two
+ * refusals as evpl_http_request_add_header -- the accounting limit and the
+ * field grammar.
+ *
+ * Where the trailer section lands depends on the message's framing, which is
+ * the library's to decide:
+ *
+ *   - HTTP/2: a trailing HEADERS frame, on any message.
+ *   - HTTP/1.x chunked: the trailer section of RFC 9112 section 7.1.2.
+ *   - HTTP/1.x with a Content-Length (or close-delimited): the coding has no
+ *     place for trailers, so staged ones are not sent.  A caller that needs
+ *     trailers on HTTP/1.x asks for a chunked message.
+ */
+int
+evpl_http_request_add_trailer(
+    struct evpl_http_request *request,
+    const char               *name,
+    const char               *value);
+
+/*
+ * The value of a trailer field received from the peer (the response's trailers
+ * on a client connection, the request's on a server connection), or NULL if
+ * the peer sent no such trailer.  Trailers arrive with the end of the content,
+ * so they are complete once EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE has fired and
+ * not before.  A peer speaking HTTP/1.x only carries them on a chunked
+ * message; HTTP/2 carries them on any.
+ */
+const char *
+evpl_http_request_trailer(
+    struct evpl_http_request *request,
+    const char               *name);
+
+void
+evpl_http_request_trailer_iterate(
     struct evpl_http_request     *request,
     evpl_http_request_header_cb_t callback,
     void                         *private_data);

@@ -18,6 +18,11 @@ target_link_libraries(http_client evpl_http)
 unit_test(http max_headers http_max_headers.c)
 target_link_libraries(http_max_headers evpl_http)
 
+# Trailer fields in both directions over HTTP/1.1 chunked framing (the h2
+# variant of the same file is registered below with the other nghttp2 tests)
+unit_test(http trailers http_trailers.c)
+target_link_libraries(http_trailers evpl_http)
+
 # ---------------------------------------------------------------------------
 # Model-based HTTP/1.x conformance test
 #
@@ -105,6 +110,10 @@ if (HAVE_NGHTTP2)
 
     unit_test(http h2_client_tls http2_client_tls.c)
     target_link_libraries(http_h2_client_tls evpl_http)
+
+    # the http_trailers exchanges over h2c: trailing HEADERS frames
+    unit_test(http h2_trailers http2_trailers.c)
+    target_link_libraries(http_h2_trailers evpl_http)
 
     # libevpl HTTP/2 server driven by libcurl (reference client)
     unit_test(http h2_basic http2_basic.c)
