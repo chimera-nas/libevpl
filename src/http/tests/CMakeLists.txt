@@ -120,6 +120,15 @@ if (HAVE_NGHTTP2)
     unit_test(http h2_abort http2_abort.c)
     target_link_libraries(http_h2_abort evpl_http)
 
+    # consumption-driven flow control: transfers complete because draining
+    # earns window, and buffering stays within one window -- at the default
+    # 65535 and at a configured 256KB
+    unit_test(http h2_flow http2_flow.c)
+    target_link_libraries(http_h2_flow evpl_http)
+
+    unit_test(http h2_flow_window http2_flow_window.c)
+    target_link_libraries(http_h2_flow_window evpl_http)
+
     # libevpl HTTP/2 server driven by libcurl (reference client)
     unit_test(http h2_basic http2_basic.c)
     target_link_libraries(http_h2_basic evpl_http curl)

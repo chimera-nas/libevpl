@@ -115,6 +115,21 @@ void evpl_global_config_set_http_max_header_size(
     struct evpl_global_config *config,
     unsigned int               size);
 
+/*
+ * Initial HTTP/2 flow-control window in bytes, applied to both the
+ * per-stream window (via SETTINGS_INITIAL_WINDOW_SIZE) and the connection
+ * window of every HTTP/2 session.  0 (the default) keeps the protocol
+ * default of 65535 bytes.  The window is how much inbound content the peer
+ * may have in flight beyond what the application has drained with
+ * evpl_http_request_get_datav, so it bounds per-stream buffering and, for
+ * high-bandwidth streams, bounds throughput to window / round-trip-time --
+ * raise it when a single stream must carry bulk data at rate.  Values above
+ * RFC 9113's 2^31-1 maximum are clamped.
+ */
+void evpl_global_config_set_http2_window_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
 struct evpl_thread_config *
 evpl_thread_config_init(
     void);

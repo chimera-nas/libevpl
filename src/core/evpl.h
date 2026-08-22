@@ -113,6 +113,7 @@ struct evpl_global_config {
     int                       tls_ktls_enabled;
 
     unsigned int              http_max_header_size;
+    unsigned int              http2_window_size;
 };
 
 /* Read the configured HTTP header block limit from the live global config.
@@ -120,6 +121,11 @@ struct evpl_global_config {
  * hidden evpl_shared symbol) can fetch it at agent init. */
 unsigned int
 evpl_global_config_get_http_max_header_size(
+    void);
+
+/* Read the configured HTTP/2 flow-control window, same arrangement. */
+unsigned int
+evpl_global_config_get_http2_window_size(
     void);
 
 typedef void (*evpl_accept_callback_t)(
