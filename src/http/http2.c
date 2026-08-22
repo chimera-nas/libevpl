@@ -464,6 +464,14 @@ evpl_http2_on_frame_recv(
     if ((frame->hd.type == NGHTTP2_HEADERS || frame->hd.type == NGHTTP2_DATA) &&
         (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
         request->request_state = EVPL_HTTP_REQUEST_STATE_COMPLETE;
+
+        /* For a client this is the terminal notification -- the response has
+         * arrived, nothing more is owed.  A server's request still owes its
+         * response, so its terminal point is RESPONSE_COMPLETE instead. */
+        if (!conn->is_server) {
+            request->h2.complete = 1;
+        }
+
         evpl_http2_notify(request, EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE);
     }
 
@@ -521,7 +529,12 @@ evpl_http2_on_frame_send(
 
     if (request) {
         /* The local message (response on the server, request on the client) has
-         * been fully transmitted. */
+         * been fully transmitted.  For a server that is the terminal
+         * notification -- the exchange it owed is done. */
+        if (((struct evpl_http_conn *) user)->is_server) {
+            request->h2.complete = 1;
+        }
+
         evpl_http2_notify(request, EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE);
     }
 
@@ -547,6 +560,18 @@ evpl_http2_on_stream_close(
     nghttp2_session_set_stream_user_data(session, stream_id, NULL);
 
     DL_DELETE(conn->h2->streams, request);
+
+    /* A stream that closed before the request's terminal notification fired
+     * ends an exchange nobody finished: reset by the peer, refused by a
+     * GOAWAY, or torn down by a protocol error.  The application holding the
+     * request has to hear that it is over before the free below -- a request
+     * freed behind its back leaves it waiting on a completion that can no
+     * longer happen, and still holding whatever it attached.  The connection
+     * itself lives on, which is what STREAM_RESET says. */
+    if (!request->h2.complete && request->notify_callback) {
+        request->status = EVPL_HTTP_ERROR_STREAM_RESET;
+        evpl_http2_notify(request, EVPL_HTTP_NOTIFY_FAILED);
+    }
 
     evpl_http_request_free(conn->agent, request);
 
@@ -601,9 +626,22 @@ evpl_http2_conn_destroy(struct evpl_http_conn *conn)
         return;
     }
 
+    /* The connection is going down with these exchanges unfinished: no
+     * response can arrive for a client's streams now, and a server has
+     * nowhere left to send the ones it was answering.  Tell each caller so
+     * before the free, exactly as the HTTP/1.x teardown does for its lists --
+     * nghttp2_session_del below runs no stream-close callbacks, so this walk
+     * is the only place these applications can hear it. */
     while (h2->streams) {
         request = h2->streams;
         DL_DELETE(h2->streams, request);
+
+        if (!request->h2.complete && request->notify_callback) {
+            request->status = conn->error ? conn->error :
+                EVPL_HTTP_ERROR_CONN_LOST;
+            evpl_http2_notify(request, EVPL_HTTP_NOTIFY_FAILED);
+        }
+
         evpl_http_request_free(conn->agent, request);
     }
 
@@ -910,3 +948,17 @@ evpl_http2_submit(struct evpl_http_request *request)
 
     evpl_defer(conn->agent->evpl, &conn->flush);
 } /* evpl_http2_submit */
+
+void
+evpl_http2_cancel(struct evpl_http_request *request)
+{
+    struct evpl_http_conn *conn = request->conn;
+
+    nghttp2_submit_rst_stream(conn->h2->session, NGHTTP2_FLAG_NONE,
+                              request->h2.stream_id, NGHTTP2_CANCEL);
+
+    /* The request is freed when nghttp2 processes the reset and closes the
+     * stream (evpl_http2_on_stream_close); its notify callback is already
+     * cleared, so nothing is delivered from there. */
+    evpl_defer(conn->agent->evpl, &conn->flush);
+} /* evpl_http2_cancel */

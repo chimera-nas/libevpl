@@ -116,6 +116,12 @@ struct evpl_http2_stream {
     int     eof;                 /* outgoing body finished (add_datav(NULL,0))    */
     int     trailers_submitted;  /* nghttp2_submit_trailer already done          */
     int     in_trailers;         /* inbound HEADERS now carry trailer fields     */
+    /* The request's terminal success notification has fired: RECEIVE_COMPLETE
+     * on a client (the response arrived), RESPONSE_COMPLETE on a server (the
+     * response was sent).  A stream that closes before this owes its
+     * application EVPL_HTTP_NOTIFY_FAILED instead -- exactly one of the two
+     * reaches every request. */
+    int     complete;
 };
 
 struct evpl_http_request {
@@ -446,6 +452,13 @@ evpl_http2_dispatch(
  * body data via evpl_http_request_add_datav on an h2 connection. */
 void
 evpl_http2_submit(
+    struct evpl_http_request *request);
+
+/* Reset the request's stream (RST_STREAM with CANCEL) for
+ * evpl_http_request_cancel.  The caller has already cleared the notify
+ * callback; the request is freed when the stream close is processed. */
+void
+evpl_http2_cancel(
     struct evpl_http_request *request);
 
 #endif /* HAVE_NGHTTP2 */

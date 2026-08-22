@@ -115,6 +115,11 @@ if (HAVE_NGHTTP2)
     unit_test(http h2_trailers http2_trailers.c)
     target_link_libraries(http_h2_trailers evpl_http)
 
+    # the abort lifecycle: cancel and connection loss deliver FAILED to
+    # whichever side was left holding an unfinished exchange
+    unit_test(http h2_abort http2_abort.c)
+    target_link_libraries(http_h2_abort evpl_http)
+
     # libevpl HTTP/2 server driven by libcurl (reference client)
     unit_test(http h2_basic http2_basic.c)
     target_link_libraries(http_h2_basic evpl_http curl)

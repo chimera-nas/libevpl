@@ -2298,10 +2298,15 @@ evpl_http_event(
              */
             DL_FOREACH_SAFE(http_conn->pending_requests, request, next)
             {
-                if (request->request_state ==
+                if (!http_conn->is_server &&
+                    request->request_state ==
                     EVPL_HTTP_REQUEST_STATE_COMPLETE) {
                     /* The close-delimited case just above: answered, not
-                     * abandoned. */
+                     * abandoned.  Client side only -- on a server, COMPLETE
+                     * says the request message arrived, not that the
+                     * exchange finished, and a request still on this list
+                     * has a response unfinished.  Its application is holding
+                     * it and has to hear that it is over. */
                     continue;
                 }
 
@@ -3250,6 +3255,43 @@ evpl_http_request_add_datav(
         evpl_defer(request->conn->agent->evpl, &request->conn->flush);
     }
 } /* evpl_http_request_add_datav */
+
+SYMBOL_EXPORT void
+evpl_http_request_cancel(struct evpl_http_request *request)
+{
+    struct evpl_http_conn  *conn  = request->conn;
+    struct evpl_http_agent *agent = conn->agent;
+
+    /* No notification of any kind follows a cancel: the caller has declared
+     * it is done with the request, so even the FAILED the teardown paths owe
+     * an abandoned request is not owed here. */
+    request->notify_callback = NULL;
+
+    /* A client request that was never dispatched is on no list and has no
+     * stream -- nothing on the wire or in the connection refers to it, so it
+     * is simply released. */
+    if (!conn->is_server &&
+        !(request->request_flags & EVPL_HTTP_REQUEST_RESPONSE_READY)) {
+        evpl_http_request_free(agent, request);
+        return;
+    }
+
+#ifdef HAVE_NGHTTP2
+    if (conn->proto == EVPL_HTTP_PROTO_H2) {
+        evpl_http2_cancel(request);
+        return;
+    }
+#endif /* ifdef HAVE_NGHTTP2 */
+
+    /* HTTP/1.x (or a connection whose protocol is not yet decided): the only
+     * wire action that ends one exchange early is ending the connection.
+     * The teardown that follows frees this request -- its callback is
+     * already cleared -- and completes every other outstanding request with
+     * FAILED, exactly as for a connection the peer closed. */
+    if (conn->bind) {
+        evpl_close(agent->evpl, conn->bind);
+    }
+} /* evpl_http_request_cancel */
 
 SYMBOL_EXPORT void
 evpl_http_server_set_response_length(

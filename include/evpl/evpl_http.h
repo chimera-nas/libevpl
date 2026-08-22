@@ -35,7 +35,9 @@ enum evpl_http_notify_type {
      *
      * Every request still outstanding on a connection is completed with this
      * when the connection goes down, so that a caller is never left waiting on
-     * a completion that can no longer happen.  Client-side it also covers a
+     * a completion that can no longer happen.  On HTTP/2 it also completes a
+     * request whose stream ended without it (reset by the peer, or refused by
+     * a GOAWAY) while the connection lives on, and client-side it covers a
      * response the library could not parse.
      *
      * Exactly one of RECEIVE_COMPLETE (client), RESPONSE_COMPLETE (server) or
@@ -68,6 +70,15 @@ enum evpl_http_notify_type {
  * peer will produce the same unparseable response.
  */
 #define EVPL_HTTP_ERROR_BAD_RESPONSE  (-2)
+
+/*
+ * HTTP/2 only: the request's stream ended without the request completing --
+ * the peer reset it (a client cancelled, a server refused), or the stream was
+ * refused by a GOAWAY -- while the connection itself remains usable.  Distinct
+ * from CONN_LOST because nothing else on the connection is affected: other
+ * requests proceed, and new ones may be dispatched.
+ */
+#define EVPL_HTTP_ERROR_STREAM_RESET  (-3)
 
 /* Protocol version selection for a client connection. */
 enum evpl_http_version {
@@ -254,6 +265,29 @@ evpl_http_request_add_datav(
     struct evpl_http_request *request,
     struct evpl_iovec        *iov,
     int                       niov);
+
+/*
+ * Abandon a request.  The caller is declaring it is done with the exchange:
+ * the request pointer is invalid once this returns, and no notification of
+ * any kind follows -- not even the EVPL_HTTP_NOTIFY_FAILED the teardown
+ * paths otherwise owe an abandoned request, since the caller abandoned it
+ * itself.
+ *
+ * On HTTP/2 the request's stream is reset (RST_STREAM with CANCEL) and the
+ * connection is untouched: other requests in flight proceed, and new ones
+ * may be dispatched.  The peer sees the reset and completes its side of the
+ * exchange with EVPL_HTTP_ERROR_STREAM_RESET.
+ *
+ * HTTP/1.x has no way to abandon one exchange within a connection -- the
+ * only wire action that can end a message early is ending the connection --
+ * so there the connection closes, and every other request outstanding on it
+ * is completed with EVPL_HTTP_NOTIFY_FAILED exactly as for a connection the
+ * peer closed.  A client request that was created but never dispatched is
+ * simply released, on either protocol.
+ */
+void
+evpl_http_request_cancel(
+    struct evpl_http_request *request);
 
 void
 evpl_http_server_set_response_length(
