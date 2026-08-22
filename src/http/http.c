@@ -171,6 +171,8 @@ evpl_http_init(struct evpl *evpl)
         agent->max_header_size = 512;
     }
 
+    agent->http2_window_size = evpl_global_config_get_http2_window_size();
+
     return agent;
 } /* evpl_http_init */
 
@@ -3566,5 +3568,27 @@ evpl_http_request_get_datav(
     struct evpl_iovec        *iov,
     int                       length)
 {
-    return evpl_iovec_ring_copyv(evpl, iov, &request->recv_ring, length);
+    int      niov;
+
+#ifdef HAVE_NGHTTP2
+    uint64_t before = evpl_iovec_ring_bytes(&request->recv_ring);
+#endif /* ifdef HAVE_NGHTTP2 */
+
+    niov = evpl_iovec_ring_copyv(evpl, iov, &request->recv_ring, length);
+
+#ifdef HAVE_NGHTTP2
+    /* Draining is what earns the peer more flow-control window: on h2 the
+     * bytes taken here are reported to the session, which answers with
+     * WINDOW_UPDATE.  This is the backpressure path -- an application that
+     * stops draining stops the peer within a window. */
+    if (request->conn->proto == EVPL_HTTP_PROTO_H2) {
+        uint64_t drained = before - evpl_iovec_ring_bytes(&request->recv_ring);
+
+        if (drained > 0) {
+            evpl_http2_consume(request, drained);
+        }
+    }
+#endif /* ifdef HAVE_NGHTTP2 */
+
+    return niov;
 } /* evpl_http_request_get_datav */

@@ -494,6 +494,13 @@ evpl_http2_on_data_chunk(
     request = nghttp2_session_get_stream_user_data(session, stream_id);
 
     if (!request || len == 0) {
+        /* Data for a stream nobody holds (reset locally, or already closed)
+         * still occupied the connection window; with auto window updates off
+         * it has to be consumed here or that share of the window is lost for
+         * the connection's remaining life. */
+        if (len > 0) {
+            nghttp2_session_consume_connection(session, len);
+        }
         return 0;
     }
 
@@ -561,6 +568,14 @@ evpl_http2_on_stream_close(
 
     DL_DELETE(conn->h2->streams, request);
 
+    /* Whatever the application never drained still occupied the connection
+     * window; give that share back before the request (and its ring) is
+     * freed.  The stream's own window dies with the stream. */
+    if (evpl_iovec_ring_bytes(&request->recv_ring) > 0) {
+        nghttp2_session_consume_connection(session,
+                                           evpl_iovec_ring_bytes(&request->recv_ring));
+    }
+
     /* A stream that closed before the request's terminal notification fired
      * ends an exchange nobody finished: reset by the peer, refused by a
      * GOAWAY, or torn down by a protocol error.  The application holding the
@@ -585,7 +600,10 @@ evpl_http2_conn_init(struct evpl_http_conn *conn)
 {
     struct evpl_http2_conn    *h2;
     nghttp2_session_callbacks *callbacks;
-    nghttp2_settings_entry     iv[1];
+    nghttp2_option            *option;
+    nghttp2_settings_entry     iv[2];
+    size_t                     niv;
+    unsigned int               window = conn->agent->http2_window_size;
 
     h2       = evpl_zalloc(sizeof(*h2));
     h2->conn = conn;
@@ -602,18 +620,42 @@ evpl_http2_conn_init(struct evpl_http_conn *conn)
     nghttp2_session_callbacks_set_on_frame_send_callback(callbacks, evpl_http2_on_frame_send);
     nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, evpl_http2_on_stream_close);
 
+    /* Inbound flow control follows the application's consumption rather than
+     * the library's arrival processing: WINDOW_UPDATE goes out as data is
+     * drained through evpl_http_request_get_datav (nghttp2_session_consume),
+     * so a peer can have at most a window of content in flight beyond what
+     * the application has taken.  With the default auto-update the library
+     * acknowledges data the moment it buffers it, and a stream fed faster
+     * than its application drains buffers without bound. */
+    nghttp2_option_new(&option);
+    nghttp2_option_set_no_auto_window_update(option, 1);
+
     if (conn->is_server) {
-        nghttp2_session_server_new3(&h2->session, callbacks, conn, NULL, &evpl_http2_mem);
+        nghttp2_session_server_new3(&h2->session, callbacks, conn, option, &evpl_http2_mem);
     } else {
-        nghttp2_session_client_new3(&h2->session, callbacks, conn, NULL, &evpl_http2_mem);
+        nghttp2_session_client_new3(&h2->session, callbacks, conn, option, &evpl_http2_mem);
     }
 
     nghttp2_session_callbacks_del(callbacks);
+    nghttp2_option_del(option);
 
     iv[0].settings_id = NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS;
     iv[0].value       = 100;
+    niv               = 1;
 
-    nghttp2_submit_settings(h2->session, NGHTTP2_FLAG_NONE, iv, 1);
+    if (window) {
+        iv[niv].settings_id = NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE;
+        iv[niv].value       = window;
+        niv++;
+
+        /* The setting covers stream windows; the connection window (stream
+         * 0) is adjusted directly, or it would stay at the 65535-byte
+         * protocol default and cap all streams together. */
+        nghttp2_session_set_local_window_size(h2->session, NGHTTP2_FLAG_NONE,
+                                              0, (int32_t) window);
+    }
+
+    nghttp2_submit_settings(h2->session, NGHTTP2_FLAG_NONE, iv, niv);
 } /* evpl_http2_conn_init */
 
 void
@@ -948,6 +990,19 @@ evpl_http2_submit(struct evpl_http_request *request)
 
     evpl_defer(conn->agent->evpl, &conn->flush);
 } /* evpl_http2_submit */
+
+void
+evpl_http2_consume(
+    struct evpl_http_request *request,
+    uint64_t                  bytes)
+{
+    struct evpl_http_conn *conn = request->conn;
+
+    nghttp2_session_consume(conn->h2->session, request->h2.stream_id, bytes);
+
+    /* the WINDOW_UPDATEs this earns go out with the next send pass */
+    evpl_defer(conn->agent->evpl, &conn->flush);
+} /* evpl_http2_consume */
 
 void
 evpl_http2_cancel(struct evpl_http_request *request)

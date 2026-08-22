@@ -51,6 +51,7 @@ evpl_global_config_init(void)
     }
 
     config->http_max_header_size = 8192;
+    config->http2_window_size    = 0;
 
     config->io_uring_enabled = 1;
     config->io_uring_entries = 8192;
@@ -308,6 +309,25 @@ evpl_global_config_get_http_max_header_size(void)
 {
     return evpl_shared->config->http_max_header_size;
 } /* evpl_global_config_get_http_max_header_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_http2_window_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    /* RFC 9113 section 6.9.1 caps a flow-control window at 2^31-1 */
+    if (size > 0x7fffffffU) {
+        size = 0x7fffffffU;
+    }
+
+    config->http2_window_size = size;
+} /* evpl_global_config_set_http2_window_size */
+
+SYMBOL_EXPORT unsigned int
+evpl_global_config_get_http2_window_size(void)
+{
+    return evpl_shared->config->http2_window_size;
+} /* evpl_global_config_get_http2_window_size */
 
 SYMBOL_EXPORT struct evpl_thread_config *
 evpl_thread_config_init(void)

@@ -228,6 +228,9 @@ struct evpl_http_agent {
     struct evpl_http_conn           *conns; /* live connections; see conn */
     struct evpl                     *evpl;
     unsigned int                     max_header_size;
+    /* Configured HTTP/2 flow-control window; 0 keeps the protocol default.
+     * See evpl_global_config_set_http2_window_size. */
+    unsigned int                     http2_window_size;
     /* The Date header field's value, and the second it was formatted for.
      * Cached because it changes once a second and is needed on every
      * response, and formatting it costs a gmtime_r that would otherwise run
@@ -460,5 +463,13 @@ evpl_http2_submit(
 void
 evpl_http2_cancel(
     struct evpl_http_request *request);
+
+/* Report bytes the application drained from the request's recv_ring, so the
+ * session can widen the peer's flow-control windows accordingly
+ * (nghttp2_session_consume).  Called from evpl_http_request_get_datav. */
+void
+evpl_http2_consume(
+    struct evpl_http_request *request,
+    uint64_t                  bytes);
 
 #endif /* HAVE_NGHTTP2 */
