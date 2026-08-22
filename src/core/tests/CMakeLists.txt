@@ -35,6 +35,18 @@ endforeach()
 # than through a protocol, since the waist is only advanced by the RDMA CM one.
 unit_test(core iovec_ring_resize iovec_ring_resize.c)
 
+# The public fd-event API against a pipe: latched readiness, quiescence after
+# drain, mark_readable without a kernel edge, and retiring an event from its
+# own callback.  Touches no network.  A regression that keeps a drained event
+# active shows up as a spin, one that strands it shows up as a hang; the
+# bounded timeout catches both.
+unit_test_all_mechs(core fd_event_pipe fd_event_pipe.c)
+
+foreach(mech ${EVPL_MECHANISMS})
+    set_tests_properties(libevpl/core/fd_event_pipe_${mech}
+                         PROPERTIES TIMEOUT 10)
+endforeach()
+
 # Local (AF_UNIX) endpoints: addressed by socket name, so no namespace needed.
 unit_test_local(core endpoint_local endpoint_local.c)
 

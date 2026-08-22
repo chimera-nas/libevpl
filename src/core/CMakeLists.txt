@@ -16,6 +16,7 @@ set(CORE_SRC
     logging.c
     memory.c
     doorbell.c
+    fd_event.c
     listen.c
     timer.c
     deferral.c
