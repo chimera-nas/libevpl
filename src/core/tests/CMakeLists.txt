@@ -31,6 +31,17 @@ foreach(mech ${EVPL_MECHANISMS})
                          PROPERTIES TIMEOUT 10)
 endforeach()
 
+# Retiring one poller must leave the other pollers' handles meaning what they
+# meant before.  Touches no network, so it needs neither a namespace nor the
+# port lock, and it identifies pollers by value, so it fails the same way in a
+# Release build as under AddressSanitizer.
+unit_test_all_mechs(core poll_remove poll_remove.c)
+
+foreach(mech ${EVPL_MECHANISMS})
+    set_tests_properties(libevpl/core/poll_remove_${mech}
+                         PROPERTIES TIMEOUT 10)
+endforeach()
+
 # Growing an iovec ring with a wrapped waist.  Drives the ring directly rather
 # than through a protocol, since the waist is only advanced by the RDMA CM one.
 unit_test(core iovec_ring_resize iovec_ring_resize.c)

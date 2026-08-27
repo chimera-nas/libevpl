@@ -502,7 +502,9 @@ evpl_continue(struct evpl *evpl)
 
         for (i = 0; i < evpl->num_poll; ++i) {
             poll = &evpl->poll[i];
-            poll->callback(evpl, poll->private_data);
+            if (poll->callback) {
+                poll->callback(evpl, poll->private_data);
+            }
         }
 
         evpl->poll_iterations++;
