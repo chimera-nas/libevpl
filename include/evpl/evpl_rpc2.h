@@ -210,3 +210,27 @@ evpl_rpc2_conn_set_private_data(
 void *
 evpl_rpc2_conn_get_private_data(
     struct evpl_rpc2_conn *conn);
+
+/*
+ * The XID a client connection will place on its next call, and a way to choose
+ * it.  RFC 5531 makes the XID the caller's property: it exists so the caller
+ * can match a reply to a call, and a retransmission of a call carries the XID
+ * of the original.  A caller that has to reproduce a call exactly -- a
+ * retransmit after a timeout, a proxy forwarding a client's own XID -- needs to
+ * say which XID that is, and a caller that wants to recognise the reply later
+ * needs to read the one about to be used.
+ *
+ * Reading is always safe.  Setting only affects the next call issued on `conn`,
+ * so the usual shape is to save the counter, set it, make the call, and restore
+ * it.  Two calls outstanding on one connection must not share an XID: replies
+ * are matched by XID, so the second would displace the first's pending record
+ * and the first reply would be dropped as unknown.
+ */
+uint32_t
+evpl_rpc2_conn_get_next_xid(
+    struct evpl_rpc2_conn *conn);
+
+void
+evpl_rpc2_conn_set_next_xid(
+    struct evpl_rpc2_conn *conn,
+    uint32_t               xid);
