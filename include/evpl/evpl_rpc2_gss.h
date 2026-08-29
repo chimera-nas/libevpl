@@ -28,6 +28,7 @@
 #include <stddef.h>
 
 struct evpl_rpc2_thread;
+struct evpl_iovec;
 
 /* RPCSEC_GSS services (rpc_gss_service_t, RFC 2203 sec 5). */
 #define EVPL_RPC2_GSS_SVC_NONE      1   /* krb5  -- authentication only      */
@@ -97,6 +98,25 @@ struct evpl_rpc2_gss_provider {
         size_t      in_len,
         void      **out,
         size_t     *out_len);
+
+    /* Optional: verify a MIC over a scattered message (gss_verify_mic_iov).
+     *
+     * Present so krb5i can check the integrity databody where it already
+     * lies in the receive buffers.  The databody covers the whole call
+     * arguments -- an NFS WRITE payload included -- so gathering it into one
+     * contiguous block to satisfy verify_mic() means copying the entire
+     * payload on every request.  A provider that leaves this NULL still
+     * works; rpc2 falls back to gathering.
+     *
+     * Returns 0 when the MIC verifies, non-zero otherwise.
+     */
+    int  (*verify_mic_iov)(
+        void                    *provider_arg,
+        void                    *gss_ctx,
+        const struct evpl_iovec *iov,
+        int                      niov,
+        const void              *mic,
+        size_t                   mic_len);
 
     /* Destroy a context (gss_delete_sec_context). */
     void (*destroy)(

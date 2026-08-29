@@ -436,6 +436,44 @@ evpl_rpc2_iovec_skip(
 } /* evpl_rpc2_iovec_skip */
 
 /*
+ * Truncate a cloned iovec view to `len` bytes, releasing the refs of whatever
+ * falls off the end.  Pairs with evpl_rpc2_iovec_skip to carve a byte range
+ * out of a received message without copying its payload.
+ */
+static int
+evpl_rpc2_iovec_limit(
+    struct evpl       *evpl,
+    struct evpl_iovec *iov,
+    int                niov,
+    uint32_t           len)
+{
+    uint32_t left = len;
+    int      i;
+
+    for (i = 0; i < niov; i++) {
+        if (left == 0) {
+            evpl_iovecs_release(evpl, &iov[i], niov - i);
+            return i;
+        }
+        if (iov[i].length > left) {
+            iov[i].length = left;
+            left          = 0;
+        } else {
+            left -= iov[i].length;
+        }
+    }
+
+    if (left) {
+        /* The view is shorter than the caller was promised, so the framing
+         * lied about a length.  Drop every ref before failing. */
+        evpl_iovecs_release(evpl, iov, niov);
+        return -1;
+    }
+
+    return niov;
+} /* evpl_rpc2_iovec_limit */
+
+/*
  * Collapse a heavily fragmented payload into a minimal contiguous copy.
  *
  * A peer that splits one RPC into hundreds of tiny record-mark fragments
@@ -1449,6 +1487,13 @@ evpl_rpc2_gss_seq_check(
  * (*iov_p, *niov_p, *len_p) to the inner proc arguments (databody after the
  * 4-byte seq), so normal program dispatch sees the unwrapped call.
  *
+ * databody spans the whole call arguments, so for a WRITE it is the payload:
+ * this runs without copying it.  The verified range is a ref-counted view of
+ * the receive buffers, and the inner arguments are that view trimmed past the
+ * seq -- the same zero-copy shape the unauthenticated path gets from
+ * evpl_rpc2_iovec_skip.  Only a provider that cannot verify a scattered MIC
+ * falls back to gathering, and then from the bulk allocator.
+ *
  * Must be called with evpl_rpc2_gss_lock held (it touches ctx->gss_ctx).
  * Returns 0 on success, -1 on a framing/verification failure.
  */
@@ -1469,9 +1514,9 @@ evpl_rpc2_gss_unwrap_integrity(
     uint8_t                  lenbuf[4];
     const uint8_t           *lp;
     uint32_t                 db_len, ck_off, ck_len, embedded, inner_len;
-    uint8_t                 *databody, *checksum;
-    struct evpl_iovec       *inner;
-    int                      ninner;
+    uint8_t                 *checksum;
+    struct evpl_iovec       *body, *inner;
+    int                      nbody, ninner, rc;
 
     /* databody length prefix */
     if (evpl_rpc2_iov_gather(iov, niov, 0, lenbuf, 4)) {
@@ -1482,12 +1527,9 @@ evpl_rpc2_gss_unwrap_integrity(
         return -1;
     }
 
-    databody = xdr_dbuf_alloc_space(db_len, dbuf);
-    if (!databody || evpl_rpc2_iov_gather(iov, niov, 4, databody, db_len)) {
-        return -1;
-    }
-
-    /* checksum opaque follows the (padded) databody */
+    /* checksum opaque follows the (padded) databody.  Small and needed
+     * contiguously by the MIC call, so the request arena is its right home --
+     * unlike the databody, which is the whole call arguments. */
     ck_off = 4 + evpl_rpc2_gss_pad4(db_len);
     if (evpl_rpc2_iov_gather(iov, niov, ck_off, lenbuf, 4)) {
         return -1;
@@ -1499,47 +1541,91 @@ evpl_rpc2_gss_unwrap_integrity(
         return -1;
     }
 
-    if (thread->gss_provider->verify_mic(thread->gss_provider_arg, ctx->gss_ctx,
-                                         databody, db_len, checksum, ck_len)) {
-        evpl_rpc2_debug("rpcsec_gss: integ databody MIC failed db_len=%u "
-                        "ck_len=%u niov=%d", db_len, ck_len, niov);
+    /* The seq embedded in databody must match the credential seq. */
+    if (evpl_rpc2_iov_gather(iov, niov, 4, lenbuf, 4)) {
         return -1;
     }
-
-    /* The seq embedded in databody must match the credential seq. */
-    lp = databody;
-    evpl_rpc2_gss_rd_u32(&lp, databody + 4, &embedded);
+    lp = lenbuf;
+    evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &embedded);
     if (embedded != seq) {
         evpl_rpc2_debug("rpcsec_gss: integ seq mismatch embedded=%u cred=%u",
                         embedded, seq);
         return -1;
     }
 
-    /* The inner proc arguments are databody after the 4-byte seq.  Copy them
-     * into a fresh, ref-counted iovec: the generated unmarshallers zero-copy
-     * clone opaque fields (e.g. WRITE payload), which requires a real buffer
-     * reference -- a view into the dbuf would have none.  Swap it into the msg
-     * so the existing teardown releases it. */
+    /* The databody is the entire call arguments -- an NFS WRITE payload
+     * included -- so it is never gathered into the arena: that is a scratch
+     * allocator for small encode/decode odds and ends, not for bulk payload.
+     * Carve a ref-counted view of [4, 4 + db_len) out of the received iovecs
+     * instead and verify the MIC where the bytes already lie.  Only the small
+     * array of struct evpl_iovec comes from the arena. */
+    body = xdr_dbuf_alloc_space(sizeof(*body) * niov, dbuf);
+    if (!body) {
+        return -1;
+    }
+    nbody = evpl_rpc2_iovec_skip(body, iov, niov, 4);
+    nbody = evpl_rpc2_iovec_limit(evpl, body, nbody, db_len);
+    if (nbody < 0) {
+        return -1;
+    }
+
+    if (thread->gss_provider->verify_mic_iov) {
+        rc = thread->gss_provider->verify_mic_iov(thread->gss_provider_arg,
+                                                  ctx->gss_ctx, body, nbody,
+                                                  checksum, ck_len);
+    } else {
+        /* A provider without the scattered entry point still has to see one
+         * contiguous block.  Take it from the bulk allocator rather than the
+         * arena, so the ceiling is a buffer rather than the arena's scratch
+         * budget, and free it as soon as the MIC is checked. */
+        struct evpl_iovec flat;
+        int               nflat;
+
+        nflat = evpl_iovec_alloc(evpl, db_len, 8, 1, 0, &flat);
+        if (nflat != 1) {
+            evpl_iovecs_release(evpl, body, nbody);
+            return -1;
+        }
+        if (evpl_rpc2_iov_gather(body, nbody, 0, flat.data, db_len)) {
+            evpl_iovec_release(evpl, &flat);
+            evpl_iovecs_release(evpl, body, nbody);
+            return -1;
+        }
+        rc = thread->gss_provider->verify_mic(thread->gss_provider_arg,
+                                              ctx->gss_ctx, flat.data, db_len,
+                                              checksum, ck_len);
+        evpl_iovec_release(evpl, &flat);
+    }
+
+    if (rc) {
+        evpl_rpc2_debug("rpcsec_gss: integ databody MIC failed db_len=%u "
+                        "ck_len=%u niov=%d", db_len, ck_len, niov);
+        evpl_iovecs_release(evpl, body, nbody);
+        return -1;
+    }
+
+    /* The inner proc arguments are the databody past its 4-byte seq.  Trim
+     * the verified view rather than building a second one, so dispatch reads
+     * the payload straight out of the receive buffers. */
     inner_len = db_len - 4;
-    inner     = xdr_dbuf_alloc_space(sizeof(*inner), dbuf);
+    inner     = xdr_dbuf_alloc_space(sizeof(*inner) * nbody, dbuf);
     if (!inner) {
+        evpl_iovecs_release(evpl, body, nbody);
         return -1;
     }
-    ninner = evpl_iovec_alloc(evpl, inner_len ? inner_len : 1, 8, 1, 0, inner);
-    if (ninner != 1) {
+    ninner = evpl_rpc2_iovec_skip(inner, body, nbody, 4);
+    ninner = evpl_rpc2_iovec_limit(evpl, inner, ninner, inner_len);
+    evpl_iovecs_release(evpl, body, nbody);
+    if (ninner < 0) {
         return -1;
-    }
-    inner->length = inner_len;
-    if (inner_len) {
-        memcpy(inner->data, databody + 4, inner_len);
     }
 
     evpl_iovecs_release(evpl, request->msg->req_iov, request->msg->req_niov);
     request->msg->req_iov  = inner;
-    request->msg->req_niov = 1;
+    request->msg->req_niov = ninner;
 
     *iov_p  = inner;
-    *niov_p = 1;
+    *niov_p = ninner;
     *len_p  = (int) inner_len;
     return 0;
 } /* evpl_rpc2_gss_unwrap_integrity */
