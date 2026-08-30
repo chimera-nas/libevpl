@@ -53,6 +53,12 @@ add_subdirectory(socket)
 set(CORE_SRC ${CORE_SRC} inproc/inproc.c inproc/inproc.h)
 add_subdirectory(inproc)
 
+# Block I/O over plain pread()/pwrite() on a per-device service thread.  Needs
+# no kernel async facility either, so it is the block backend that exists
+# everywhere -- notably macOS, which has nothing io_uring/libaio-shaped.
+set(CORE_SRC ${CORE_SRC} pread/pread_block.c pread/pread.h)
+add_subdirectory(pread)
+
 # TLS is available wherever OpenSSL is (HAVE_TLS is set at the top level).  Its
 # kTLS zero-copy path is Linux-only; on other platforms BIO_get_ktls_*() simply
 # reports unavailable and the normal SSL_read/SSL_write path is used.

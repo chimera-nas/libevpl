@@ -76,6 +76,8 @@ evpl_global_config_init(void)
     config->libaio_enabled     = 1;
     config->libaio_max_pending = 256;
 
+    config->pread_enabled = 1;
+
     config->preallocate_slabs   = 0;
     config->preallocate_threads = 0;
 
@@ -548,6 +550,14 @@ evpl_global_config_set_libaio_max_pending(
 {
     config->libaio_max_pending = max_pending;
 } /* evpl_global_config_set_libaio_max_pending */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_pread_enabled(
+    struct evpl_global_config *config,
+    unsigned int               enabled)
+{
+    config->pread_enabled = enabled;
+} /* evpl_global_config_set_pread_enabled */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_hf_time_mode(
