@@ -108,6 +108,8 @@ module rpc2_defects {
         | GssPrivDataValid            /* krb5p: well-formed priv_data      */
         | GssPrivSealCorrupt          /* krb5p: token will not unseal      */
         | GssPrivSeqMismatch          /* krb5p: sealed seq != cred seq     */
+        | GssPrivSplitAcrossFragments /* krb5p: token arrives scattered    */
+        | GssPrivEmptyArgs            /* krb5p: NULLPROC, seq-only token   */
         | GssDestroyContext           /* DESTROY of a context we hold      */
         | GssDestroyUnauthenticated   /* DESTROY with no valid header MIC  */
         /* --- RPCSEC_GSS replay window (RFC 2203 section 5.3.3.1) ------- */
@@ -329,6 +331,19 @@ module rpc2_defects {
          * -- and it fails argument decoding like any other. */
         | GssPrivSeqMismatch => GarbageArgs
 
+        /* A sealed call split across record-mark fragments arrives as several
+         * buffers, and gss_unwrap needs one.  RFC 2203 says nothing about
+         * this -- it is a property of how the token is carried, not of the
+         * service -- so the requirement is simply that framing must not change
+         * the answer. */
+        | GssPrivSplitAcrossFragments => Success
+
+        /* NULLPROC under privacy: the token seals a seq_num and no arguments.
+         * Mandatory (RFC 5531 section 11.1) and the first krb5p call a real
+         * client makes, so the empty inner call is a case rather than an
+         * edge. */
+        | GssPrivEmptyArgs => Success
+
         /* RFC 2203 section 5.4: the client retires a context with a control
          * message carrying gss_proc RPCSEC_GSS_DESTROY over NULLPROC and no
          * arguments; "the server sends a response as it would to a data
@@ -490,6 +505,7 @@ module rpc2_defects {
         GssMicWrong, GssSeqReplayed,
         GssIntegDataValid, GssIntegChecksumWrong, GssIntegSeqMismatch,
         GssPrivDataValid, GssPrivSealCorrupt, GssPrivSeqMismatch,
+        GssPrivSplitAcrossFragments, GssPrivEmptyArgs,
         GssDestroyContext, GssDestroyUnauthenticated,
         GssSeqAboveMax, GssSeqWindowJump, GssSeqTooOld, GssSeqOutOfOrder,
         GssCredTruncated, GssCredHandleOverruns,

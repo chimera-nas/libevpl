@@ -84,6 +84,51 @@ macro(unit_test_rpc2_instance_named test_name protocol)
     endforeach()
 endmacro()
 
+# Real-Kerberos RPCSEC_GSS: the conformance cases signed by an actual
+# mechanism rather than by the deterministic stub.  Needs MIT krb5 -- both the
+# GSSAPI library and the ticket-minting entry points krb5_local.c uses -- and
+# is simply not registered without it, so a host with no krb5 builds and runs
+# everything else as before.
+#
+# On macOS krb5 is keg-only, so its pkgconfig has to be pointed at explicitly;
+# the system gssapi there is Heimdal, which is not what this wants.
+if(APPLE)
+    set(ENV{PKG_CONFIG_PATH}
+        "${HOMEBREW_PREFIX}/opt/krb5/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+endif()
+
+find_package(PkgConfig QUIET)
+
+if(PkgConfig_FOUND)
+    pkg_check_modules(KRB5_GSSAPI QUIET krb5-gssapi krb5)
+endif()
+
+if(KRB5_GSSAPI_FOUND)
+    message(STATUS "RPC2 krb5 conformance enabled (krb5 ${KRB5_GSSAPI_VERSION})")
+else()
+    message(STATUS "RPC2 krb5 conformance disabled (no MIT krb5)")
+endif()
+
+# As unit_test_rpc2_instance, but names the instance after the auth flavor it
+# drives and passes the flag that selects it.  The flavors are separate ctest
+# instances rather than one run that loops, so a failure names the mechanism
+# and one flavor going missing on a host does not hide the others.
+macro(unit_test_rpc2_instance_flavor test_name protocol port flavor flag)
+    foreach(mech ${EVPL_MECHANISMS})
+        set(_test libevpl/rpc2/${test_name}_${flavor}_${protocol}_${mech})
+
+        add_test(NAME ${_test}
+                 COMMAND ${RPC2_TEST_EXE_${test_name}} -r ${protocol}
+                         -p ${port} ${flag})
+
+        set_tests_properties(${_test} PROPERTIES
+            RESOURCE_LOCK evpl_net
+            ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=${mech}"
+            SKIP_RETURN_CODE 77
+            TIMEOUT 30)
+    endforeach()
+endmacro()
+
 # Build RPC2 test executables
 unit_test_rpc2(hello_world hello_world.x hello_world.c)
 unit_test_rpc2(builtin_bool builtin_bool.x builtin_bool.c)
@@ -162,8 +207,23 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
 
     add_custom_target(conformance_cases DEPENDS ${CONFORMANCE_CASES})
 
-    unit_test_rpc2(conformance conformance.x conformance.c gss_stub.c)
+    if(KRB5_GSSAPI_FOUND)
+        unit_test_rpc2(conformance conformance.x conformance.c gss_stub.c
+                       krb5_local.c)
+    else()
+        unit_test_rpc2(conformance conformance.x conformance.c gss_stub.c
+                       krb5_local_none.c)
+    endif()
+
     target_link_libraries(evpl_rpc2_conformance m)
+
+    if(KRB5_GSSAPI_FOUND)
+        target_include_directories(evpl_rpc2_conformance PRIVATE
+                                   ${KRB5_GSSAPI_INCLUDE_DIRS})
+        target_link_directories(evpl_rpc2_conformance PRIVATE
+                                ${KRB5_GSSAPI_LIBRARY_DIRS})
+        target_link_libraries(evpl_rpc2_conformance ${KRB5_GSSAPI_LIBRARIES})
+    endif()
     target_sources(evpl_rpc2_conformance PRIVATE ${CONFORMANCE_CASES})
 
     # The ERR_VERS check builds an RPC-over-RDMA transport header by hand, so
@@ -185,6 +245,21 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     target_include_directories(evpl_rpc2_conformance PRIVATE ${QUINT_WORK_DIR})
 
     unit_test_rpc2_instance(conformance STREAM_SOCKET_TCP 8104)
+
+    # The same cases again, signed by real Kerberos instead of the stub.  Only
+    # over TCP: what changes is who computes the MICs, not the transport, so
+    # running it against every transport would buy nothing.  Skips (77) where
+    # krb5 is absent or refuses to mint a realm.
+    if(KRB5_GSSAPI_FOUND)
+        unit_test_rpc2_instance_flavor(conformance STREAM_SOCKET_TCP 8106
+                                       krb5 -k)
+
+        # And again with the scattered MIC entry point withheld, so rpc2's
+        # gathering fallback is exercised rather than left to whether the
+        # host's krb5 happens to have the IOV extension.
+        unit_test_rpc2_instance_flavor(conformance STREAM_SOCKET_TCP 8107
+                                       krb5_gather -K)
+    endif()
 
     # Also over RDMA-on-TCP: that transport needs no RDMA hardware or verbs but
     # does carry the RPC-over-RDMA framing, so it reaches the chunk-negotiation

@@ -91,6 +91,7 @@ DEFECTS = [
     "AuthSysValid",
     "GssIntegDataValid", "GssIntegChecksumWrong", "GssIntegSeqMismatch",
     "GssPrivDataValid", "GssPrivSealCorrupt", "GssPrivSeqMismatch",
+    "GssPrivSplitAcrossFragments", "GssPrivEmptyArgs",
     "GssDestroyContext", "GssDestroyUnauthenticated",
     "GssSeqAboveMax", "GssSeqWindowJump", "GssSeqTooOld", "GssSeqOutOfOrder",
     "GssCredTruncated", "GssCredHandleOverruns",
