@@ -35,14 +35,17 @@ mkdir -p "${WORK_DIR}"
 # enough to reach every (defect, delivery) pair.  The case count printed at the
 # end is the check on that: it must equal the size of the cross product the
 # model declares, minus the pairs the converter collapses.
-SEEDS=(0xc1 0xc2 0xc3 0xc4 0xc5 0xc6)
+#
+# One quint invocation for the whole group: nearly all of a quint run is
+# parsing and typechecking the model, so the cost is per PROCESS rather than
+# per trace, and --n-traces pays it once.
+CLIENT_TRACES=6
+CLIENT_SEED=0xc1
 
-TRACES=()
-for s in "${SEEDS[@]}"; do
-    f="${WORK_DIR}/client-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/client.qnt" \
-        --seed="$s" --max-steps=400 --out-itf="$f" > /dev/null
-    TRACES+=("$f")
-done
+"${QUINT}" run "${SRC_DIR}/client.qnt" --max-steps=400 \
+    --max-samples="${CLIENT_TRACES}" --n-traces="${CLIENT_TRACES}" \
+    --seed="${CLIENT_SEED}" \
+    --out-itf="${WORK_DIR}/client-{seq}.itf.json" > /dev/null
 
-"${PYTHON}" "${SRC_DIR}/itf_to_client_cases.py" "${OUT_HEADER}" "${TRACES[@]}"
+"${PYTHON}" "${SRC_DIR}/itf_to_client_cases.py" "${OUT_HEADER}" \
+    "${WORK_DIR}"/client-*.itf.json

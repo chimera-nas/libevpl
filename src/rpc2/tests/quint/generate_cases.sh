@@ -31,30 +31,37 @@ OUT_HEADER="${5:?}"
 
 mkdir -p "${WORK_DIR}"
 
-# The value matrix is a wide cross-product, so it is sampled: several seeds,
-# long traces, de-duplicated by the converter.  The defect taxonomy is small
-# and enumerable, so its traces only need to be long enough to reach every
+# The value matrix is a wide cross-product, so it is sampled: several traces,
+# long ones, de-duplicated by the converter.  The defect taxonomy is small and
+# enumerable, so its traces only need to be long enough to reach every
 # (defect, target) pair -- the case count printed at the end is the check on
 # that.
-VALUE_SEEDS=(0xa1 0xa2 0xa3 0xa4 0xa5 0xa6 0xa7 0xa8)
-DEFECT_SEEDS=(0xb1 0xb2 0xb3 0xb4)
+#
+# One quint invocation per model rather than one per trace: nearly all of a
+# quint run is parsing and typechecking, so the cost is per PROCESS and
+# --n-traces pays it once for the group.  The two models are independent and
+# run concurrently.
+VALUE_TRACES=10
+DEFECT_TRACES=4
 
-VALUE_TRACES=()
-for s in "${VALUE_SEEDS[@]}"; do
-    f="${WORK_DIR}/values-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/values.qnt" \
-        --seed="$s" --max-steps=200 --out-itf="$f" > /dev/null
-    VALUE_TRACES+=("$f")
-done
+VALUE_SEED=0xa1
+DEFECT_SEED=0xb1
 
-DEFECT_TRACES=()
-for s in "${DEFECT_SEEDS[@]}"; do
-    f="${WORK_DIR}/defects-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/defects.qnt" \
-        --seed="$s" --max-steps=400 --out-itf="$f" > /dev/null
-    DEFECT_TRACES+=("$f")
-done
+"${QUINT}" run "${SRC_DIR}/values.qnt" --max-steps=200 \
+    --max-samples="${VALUE_TRACES}" --n-traces="${VALUE_TRACES}" \
+    --seed="${VALUE_SEED}" \
+    --out-itf="${WORK_DIR}/values-{seq}.itf.json" > /dev/null &
+values_pid=$!
+
+"${QUINT}" run "${SRC_DIR}/defects.qnt" --max-steps=400 \
+    --max-samples="${DEFECT_TRACES}" --n-traces="${DEFECT_TRACES}" \
+    --seed="${DEFECT_SEED}" \
+    --out-itf="${WORK_DIR}/defects-{seq}.itf.json" > /dev/null &
+defects_pid=$!
+
+wait "${values_pid}" || { echo "quint run failed (values)" >&2; exit 1; }
+wait "${defects_pid}" || { echo "quint run failed (defects)" >&2; exit 1; }
 
 "${PYTHON}" "${SRC_DIR}/itf_to_cases.py" "${OUT_HEADER}" \
-    --values "${VALUE_TRACES[@]}" \
-    --defects "${DEFECT_TRACES[@]}"
+    --values "${WORK_DIR}"/values-*.itf.json \
+    --defects "${WORK_DIR}"/defects-*.itf.json
