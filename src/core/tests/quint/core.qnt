@@ -80,6 +80,20 @@ module evpl_core {
 
     pure val END_SLOTS = CONN_SLOTS.map(c => SIDES.map(s => sideSlot(c, s))).flatten()
 
+    /// Block queues, all on one device.  Two rather than one: a queue owns
+    /// its own completion path and a backend threads each completion back to
+    /// the queue that submitted it, so a second queue is what makes
+    /// "delivered to the right one" a claim at all.
+    pure val NUM_BLOCK_QUEUE = 2
+    pure val BLOCK_QUEUE_SLOTS = 0.to(NUM_BLOCK_QUEUE - 1)
+
+    /// The device is cut into fixed regions and every data op addresses
+    /// exactly one whole region.  Content is then a property of a region
+    /// rather than of an arbitrary extent, which is what makes "what does
+    /// this read return" answerable without modelling a byte map.
+    pure val NUM_REGION = 4
+    pure val REGION_SLOTS = 0.to(NUM_REGION - 1)
+
     /// Ops per program, not counting the OpReset that opens it.  Short on
     /// purpose: a failure at step 380 of a 400-step program is not
     /// debuggable, so this buys coverage with many short programs rather than
@@ -128,6 +142,19 @@ module evpl_core {
             | QShort => 10
             | QLong => 100
         }
+
+    /// Every block request submitted on a queue owes exactly one completion,
+    /// and owes it in the window it was submitted in.  Exactly, not at least:
+    /// a request whose callback fires twice has run the caller's completion
+    /// handling twice, which is the same class of bug as one that never fires
+    /// and just as quiet.
+    ///
+    /// There is no ordering claim.  The API queues requests and says nothing
+    /// about the order they finish in, so what is owed is a COUNT.
+    pure def blockExpect(q: int, owes: int): Set[Expect] =
+        if (owes > 0)
+            Set({ kind: EvBlock, slot: q, mult: MExactly, count: owes })
+        else Set()
 
     /// Order is only claimed between deadlines at least this far apart.  Two
     /// timers due within a millisecond of each other are ordered by the heap's
@@ -236,6 +263,39 @@ module evpl_core {
          * flag. */
         | OpPollPin
         | OpPollUnpin
+
+        /* --- block I/O (evpl_block.h) ---------------------------------- */
+        /* Open a per-thread queue on the program's device, and close it.
+         * The device itself is not an op: it is opened once per program by
+         * the driver, because a program with no device has no block
+         * behaviour to state and nothing else varies with it. */
+        | OpOpenQueue
+        /* Closing is only legal with nothing outstanding -- a request in
+         * flight still names the queue it was submitted on -- so the model
+         * never generates it otherwise.  That is the contract, not a
+         * limitation of the model. */
+        | OpCloseQueue
+        | OpBlockRead
+        | OpBlockWrite
+        /* The same write with sync set.  A separate op rather than a flag on
+         * OpBlockWrite so that op coverage says whether the durable path was
+         * reached; nothing else observable distinguishes them, since whether
+         * a write survives a crash is not a question this suite can put. */
+        | OpBlockWriteSync
+        | OpBlockFlush
+        /* Documented as a data guarantee: the range reads back as zeros. */
+        | OpBlockWriteZeroes
+        /* The same, over the whole device rather than one region.  A separate
+         * op because the range is what makes it interesting: a backend
+         * without native zeroing emulates it by writing a zero buffer, and a
+         * range larger than one buffer is what makes that emulation loop. */
+        | OpBlockWriteZeroesAll
+        /* Documented as advisory: the backend may drop the range or ignore
+         * the hint, and what reads back afterwards is unspecified.  So the
+         * model asserts the completion and then stops claiming to know what
+         * is there -- asserting either outcome would be inventing a promise
+         * the header explicitly declines to make. */
+        | OpBlockDiscard
 
         /* --- the loop -------------------------------------------------- */
         | OpQuiesce
@@ -359,6 +419,25 @@ module evpl_core {
     /// removing it at teardown and stepping over a stale predecessor.
     pure def isLocal(k: TransportKind): bool = k == TStreamUnix
 
+    /// How many iovecs a block request is scattered across.  One is the
+    /// contiguous case; the others make the backend walk a list, and 16 is
+    /// past the point where a backend that keeps a small inline array has to
+    /// allocate one instead.
+    type SegCls = | BSeg1 | BSeg4 | BSeg16
+
+    pure def segCount(s: SegCls): int =
+        match s {
+            | BSeg1 => 1
+            | BSeg4 => 4
+            | BSeg16 => 16
+        }
+
+    /// What a region holds, as a byte value: CONTENT_UNKNOWN when nothing is
+    /// claimed (never written, or discarded), CONTENT_ZERO after
+    /// write_zeroes, and otherwise the byte a write filled it with.
+    pure val CONTENT_UNKNOWN = -1
+    pure val CONTENT_ZERO = 0
+
     type Step = {
         op: OpKind,
         slot: int,
@@ -371,6 +450,14 @@ module evpl_core {
         size: SizeCls,
         send: SendMode,
         drain: DrainMode,
+        /* Block I/O: which queue, which region, how many segments, and the
+         * byte the region is filled with (a write) or must read back as (a
+         * read).  CONTENT_UNKNOWN on a read means the model has no claim to
+         * make about the bytes, only about the completion. */
+        queue: int,
+        region: int,
+        segs: SegCls,
+        pattern: int,
         /* Model time at the END of this step.  Only a quiesce advances it;
          * the driver uses it as the absolute deadline to run that quiesce
          * to. */
@@ -381,7 +468,9 @@ module evpl_core {
         op: OpReset, slot: 0, timerKind: TOneshot, delay: DFast,
         budget: QShort, conn: 0, side: SIDE_CLIENT, transport: TStreamInproc,
         size: SzTiny,
-        send: SendBuf, drain: DrainRecv, atMs: 0
+        send: SendBuf, drain: DrainRecv,
+        queue: 0, region: 0, segs: BSeg1, pattern: CONTENT_UNKNOWN,
+        atMs: 0
     }
 
     // ------------------------------------------------------------------
@@ -419,6 +508,10 @@ module evpl_core {
         /* One of the three loop hooks ran; the slot says which.  Logged once
          * per window, like EvPoll, since they fire on every pass. */
         | EvHook
+        /* One block request completed, on the queue it was submitted on.
+         * Counted exactly: an asynchronous I/O that completes twice is as
+         * wrong as one that never completes, and both are silent. */
+        | EvBlock
 
     /// MExactly is a closed claim, MAtLeast an open one.  The distinction is
     /// not laziness: a periodic timer's firing count over a wall-clock window
@@ -497,6 +590,13 @@ module evpl_core {
          * applies to it. */
         | ShapeUdp
         | ShapeTimers
+        /* Opens a queue and writes a region, then reads it back in a later
+         * window.  A shape for the same reason ShapeTransport is one: the
+         * read-back property needs a write, a quiesce and a read in that
+         * order on the same region, and a uniform walk over thirty-odd
+         * enabled actions inside a twelve-op program draws that sequence
+         * about as often as it draws a live connection. */
+        | ShapeBlock
 
     var shape: Shape
 
@@ -533,6 +633,25 @@ module evpl_core {
     var transport: TransportKind
     var pendingMsgs: int -> int
 
+    /// A block queue is open on the program's device or it is not.
+    type BlockQSt = | BQAbsent | BQOpen
+
+    var blockQSt: int -> BlockQSt
+    /// Completions this queue is owed and has not yet been given.
+    var blockOwes: int -> int
+
+    /// Settled region content: what a read issued in a later window must
+    /// return.  CONTENT_UNKNOWN where the model has no claim.
+    var regionContent: int -> int
+    /// What this window's op leaves the region holding, applied at the
+    /// quiesce that closes the window.
+    var regionPending: int -> int
+    /// A region already addressed in this window.  At most one data op per
+    /// region per window: two would be concurrently outstanding against each
+    /// other, and the API orders concurrent requests in no particular way, so
+    /// whatever the second one saw would be unspecified rather than wrong.
+    var regionBusy: int -> bool
+
     var listening: bool
     var connSt: int -> ConnSt
     /// Bytes sent to an end and not yet required to have arrived.  Indexed by
@@ -547,6 +666,10 @@ module evpl_core {
     pure val ALL_DOORBELLS_ABSENT = DOORBELL_SLOTS.mapBy(_ => BAbsent)
     pure val ALL_DOORBELLS_UNRUNG = DOORBELL_SLOTS.mapBy(_ => false)
     pure val ALL_DOORBELLS_ZERO = DOORBELL_SLOTS.mapBy(_ => 0)
+    pure val ALL_QUEUES_ABSENT = BLOCK_QUEUE_SLOTS.mapBy(_ => BQAbsent)
+    pure val ALL_QUEUES_ZERO = BLOCK_QUEUE_SLOTS.mapBy(_ => 0)
+    pure val ALL_REGIONS_UNKNOWN = REGION_SLOTS.mapBy(_ => CONTENT_UNKNOWN)
+    pure val ALL_REGIONS_IDLE = REGION_SLOTS.mapBy(_ => false)
     pure val ALL_CONNS_FREE = CONN_SLOTS.mapBy(_ => CFree)
     pure val ALL_ENDS_DRAINED = END_SLOTS.mapBy(_ => 0)
     pure val ALL_ENDS_UNNOTIFIED = END_SLOTS.mapBy(_ => false)
@@ -699,6 +822,14 @@ module evpl_core {
         doorbellSt' = ALL_DOORBELLS_ABSENT,
         doorbellOwes' = ALL_DOORBELLS_ZERO,
         doorbellRung' = ALL_DOORBELLS_UNRUNG,
+        blockQSt' = ALL_QUEUES_ABSENT,
+        blockOwes' = ALL_QUEUES_ZERO,
+        /* A fresh device every program: the driver re-creates the backing
+         * file at each reset, so nothing is known about any region until this
+         * program writes it. */
+        regionContent' = ALL_REGIONS_UNKNOWN,
+        regionPending' = ALL_REGIONS_UNKNOWN,
+        regionBusy' = ALL_REGIONS_IDLE,
         listening' = false,
         connSt' = ALL_CONNS_FREE,
         pendingBytes' = ALL_ENDS_DRAINED,
@@ -745,9 +876,19 @@ module evpl_core {
         doorbellRung' = doorbellRung,
     }
 
+    action keepBlock = all {
+        blockQSt' = blockQSt, blockOwes' = blockOwes,
+        regionContent' = regionContent, regionPending' = regionPending,
+        regionBusy' = regionBusy,
+    }
+
     /// Ops other than a quiesce do not run the loop, so no callback can fire
     /// during one and the clock does not move.
-    action emit(s: Step): bool = all {
+    ///
+    /// Split from `emit` so the block ops, which are the only ones that touch
+    /// the block state themselves, can reuse it without assigning those vars
+    /// twice.  Every other op wants `emit`.
+    action emitCore(s: Step): bool = all {
         current' = s.with("atMs", elapsedMs).with("transport", transport),
         expects' = Set(),
         orders' = Set(),
@@ -755,6 +896,11 @@ module evpl_core {
         elapsedMs' = elapsedMs,
         shape' = shape,
         transport' = transport,
+    }
+
+    action emit(s: Step): bool = all {
+        emitCore(s),
+        keepBlock,
     }
 
     action addTimer(s: int, k: TimerKind, d: DelayCls): bool = all {
@@ -1228,6 +1374,142 @@ module evpl_core {
         keepPolls,
     }
 
+    // ------------------------------------------------------------------
+    // Block I/O (evpl_block.h)
+    //
+    // The device belongs to the program rather than to any op: the driver
+    // creates a fresh one at each reset and tears it down at the end, so what
+    // varies here is the queues opened on it and the requests put through
+    // them.
+    //
+    // Two things are claimed.  One is the completion: every request owes
+    // exactly one callback, in the window it was submitted in -- an
+    // asynchronous API's only universal promise, and the one whose breach
+    // presents as a hang rather than as a wrong answer.  The other is the
+    // data: a region written in one window must read back as what was written
+    // when a later window reads it.  Both are properties of the API and not
+    // of any backend, which is why they live here rather than in a backend's
+    // own test.
+    // ------------------------------------------------------------------
+
+    action keepRegions = all {
+        regionContent' = regionContent, regionPending' = regionPending,
+        regionBusy' = regionBusy,
+    }
+
+    action keepOthers = all {
+        keepTimers, keepDeferrals, keepDoorbells, keepTransport, keepPolls,
+        keepHooks,
+    }
+
+    action openQueue(q: int): bool = all {
+        blockQSt.get(q) == BQAbsent,
+        emitCore(NOP_STEP.with("op", OpOpenQueue).with("queue", q)),
+        blockQSt' = blockQSt.set(q, BQOpen),
+        blockOwes' = blockOwes.set(q, 0),
+        keepRegions,
+        keepOthers,
+    }
+
+    /// Only ever with nothing outstanding.  A request in flight still names
+    /// the queue it was submitted on, so closing under one is a use-after-free
+    /// waiting to happen rather than a case to test -- the contract is that
+    /// the caller waits for its callbacks, and the model keeps to it.
+    action closeQueue(q: int): bool = all {
+        blockQSt.get(q) == BQOpen,
+        blockOwes.get(q) == 0,
+        emitCore(NOP_STEP.with("op", OpCloseQueue).with("queue", q)),
+        blockQSt' = blockQSt.set(q, BQAbsent),
+        blockOwes' = blockOwes,
+        keepRegions,
+        keepOthers,
+    }
+
+    /// What every request has in common: an open queue, and one more
+    /// completion owed on it.
+    action submit(q: int, s: Step): bool = all {
+        blockQSt.get(q) == BQOpen,
+        emitCore(s.with("queue", q)),
+        blockQSt' = blockQSt,
+        blockOwes' = blockOwes.set(q, blockOwes.get(q) + 1),
+    }
+
+    /// The byte a write fills its region with, keyed to where in the program
+    /// it happens so that two writes in one program are distinguishable and a
+    /// read that came back with the wrong one is caught as such rather than
+    /// merely as "not zeros".
+    pure def writePattern(st: int): int = 1 + st
+
+    action blockWrite(q: int, r: int, sc: SegCls, kind: OpKind): bool = all {
+        not(regionBusy.get(r)),
+        submit(q, NOP_STEP.with("op", kind).with("region", r).with("segs", sc)
+                   .with("pattern", writePattern(programStep))),
+        regionContent' = regionContent,
+        regionPending' = regionPending.set(r, writePattern(programStep)),
+        regionBusy' = regionBusy.set(r, true),
+        keepOthers,
+    }
+
+    /// Carries what the region is known to hold, or CONTENT_UNKNOWN where
+    /// nothing is known -- a region never written, or one a discard has since
+    /// been allowed to drop.  The driver checks the bytes only in the first
+    /// case; in the second the completion is still owed and still checked.
+    action blockRead(q: int, r: int, sc: SegCls): bool = all {
+        not(regionBusy.get(r)),
+        submit(q, NOP_STEP.with("op", OpBlockRead).with("region", r)
+                   .with("segs", sc).with("pattern", regionContent.get(r))),
+        regionContent' = regionContent,
+        regionPending' = regionPending.set(r, regionContent.get(r)),
+        regionBusy' = regionBusy.set(r, true),
+        keepOthers,
+    }
+
+    /// A data guarantee, unlike discard: the header promises the range reads
+    /// back as zeros, so the model claims it and a later read checks it.
+    action blockWriteZeroes(q: int, r: int): bool = all {
+        not(regionBusy.get(r)),
+        submit(q, NOP_STEP.with("op", OpBlockWriteZeroes).with("region", r)
+                   .with("pattern", CONTENT_ZERO)),
+        regionContent' = regionContent,
+        regionPending' = regionPending.set(r, CONTENT_ZERO),
+        regionBusy' = regionBusy.set(r, true),
+        keepOthers,
+    }
+
+    /// Zero the whole device.  Every region must be idle for the same reason
+    /// one has to be for a single-region op, and every region is left holding
+    /// zeros.
+    action blockWriteZeroesAll(q: int): bool = all {
+        REGION_SLOTS.forall(r => not(regionBusy.get(r))),
+        submit(q, NOP_STEP.with("op", OpBlockWriteZeroesAll)
+                   .with("pattern", CONTENT_ZERO)),
+        regionContent' = regionContent,
+        regionPending' = REGION_SLOTS.mapBy(_ => CONTENT_ZERO),
+        regionBusy' = REGION_SLOTS.mapBy(_ => true),
+        keepOthers,
+    }
+
+    /// Advisory.  The completion is owed like any other, but afterwards the
+    /// model stops claiming to know what the region holds: the header says
+    /// the data read back is unspecified, and asserting either outcome would
+    /// be inventing a promise it explicitly declines to make.
+    action blockDiscard(q: int, r: int): bool = all {
+        not(regionBusy.get(r)),
+        submit(q, NOP_STEP.with("op", OpBlockDiscard).with("region", r)),
+        regionContent' = regionContent,
+        regionPending' = regionPending.set(r, CONTENT_UNKNOWN),
+        regionBusy' = regionBusy.set(r, true),
+        keepOthers,
+    }
+
+    /// Addresses no region, so it makes no claim about content -- only that
+    /// it completes.
+    action blockFlush(q: int): bool = all {
+        submit(q, NOP_STEP.with("op", OpBlockFlush)),
+        keepRegions,
+        keepOthers,
+    }
+
     /// Run the loop to the end of this window and collect what fell out.  The
     /// obligations are computed here, at the point where they are checked,
     /// and travel in the trace: the C driver consumes the trace, not the
@@ -1272,6 +1554,8 @@ module evpl_core {
                     recvMsgExpect(transport, e, pendingMsgs.get(e))).flatten())
                 .union(END_SLOTS.map(e =>
                     sentExpect(e, sentNotify.get(e), pendingSent.get(e))).flatten())
+                .union(BLOCK_QUEUE_SLOTS.map(q =>
+                    blockExpect(q, blockOwes.get(q))).flatten())
                 .union(pollExpects)
                 .union(if (hooksInstalled)
                            HOOK_SLOTS.map(h => { kind: EvHook, slot: h,
@@ -1304,6 +1588,19 @@ module evpl_core {
 
             deferralSt' = ALL_DEFERRALS_IDLE,
             deferralOwes' = ALL_DEFERRALS_ZERO,
+
+            /* Every request submitted in this window has completed by the end
+             * of it, so the queues owe nothing going into the next.  A region
+             * this window wrote now holds what was written -- that is the
+             * point at which the claim becomes checkable, since only a
+             * completed write has a defined result. */
+            blockQSt' = blockQSt,
+            blockOwes' = ALL_QUEUES_ZERO,
+            regionContent' = REGION_SLOTS.mapBy(r =>
+                if (regionBusy.get(r)) regionPending.get(r)
+                else regionContent.get(r)),
+            regionPending' = ALL_REGIONS_UNKNOWN,
+            regionBusy' = ALL_REGIONS_IDLE,
 
             doorbellSt' = dbSt,
             doorbellOwes' = ALL_DOORBELLS_ZERO,
@@ -1367,6 +1664,9 @@ module evpl_core {
          * API offers, and excluded because exercising them leaks. */
         nondet sm = Set(SendBuf, SendV, SendVTakeRef, SendReserveCommit,
                         SendGlobal).oneOf()
+        nondet bq = BLOCK_QUEUE_SLOTS.oneOf()
+        nondet br = REGION_SLOTS.oneOf()
+        nondet bg = Set(BSeg1, BSeg4, BSeg16).oneOf()
         any {
             addTimer(ts, tk, td),
             removeTimer(ts),
@@ -1397,6 +1697,15 @@ module evpl_core {
             send(cs, sd, sz, sm),
             close(cs, sd),
             finish(cs, sd),
+            openQueue(bq),
+            closeQueue(bq),
+            blockRead(bq, br, bg),
+            blockWrite(bq, br, bg, OpBlockWrite),
+            blockWrite(bq, br, bg, OpBlockWriteSync),
+            blockWriteZeroes(bq, br),
+            blockWriteZeroesAll(bq),
+            blockDiscard(bq, br),
+            blockFlush(bq),
             quiesce(b),
         }
     }
@@ -1428,11 +1737,28 @@ module evpl_core {
         connect(0, d)
     }
 
+    /// Fill region 0 on the prologue's queue, scattered any way the model
+    /// allows -- including across more segments than a backend is likely to
+    /// keep inline.
+    action blockWriteAny = {
+        nondet g = Set(BSeg1, BSeg4, BSeg16).oneOf()
+        nondet k = Set(OpBlockWrite, OpBlockWriteSync).oneOf()
+        blockWrite(0, 0, g, k)
+    }
+
+    /// And read it back.  The gather on the way out and the scatter on the
+    /// way in are chosen independently, since a backend has no business
+    /// requiring them to match.
+    action blockReadAny = {
+        nondet g = Set(BSeg1, BSeg4, BSeg16).oneOf()
+        blockRead(0, 0, g)
+    }
+
     action resetUdp = doReset(ShapeUdp, TDatagramUdp)
 
     action resetAny = {
         nondet sh = Set(ShapeMixed, ShapeTransport, ShapeTransportNotify,
-                        ShapeTimers).oneOf()
+                        ShapeTimers, ShapeBlock).oneOf()
         nondet k = Set(TStreamInproc, TDatagramInproc, TStreamTcp,
                        TStreamUnix).oneOf()
         doReset(if (sh == ShapeUdp) ShapeMixed else sh, k)
@@ -1509,6 +1835,11 @@ module evpl_core {
         else if (shape == ShapeUdp and programStep == 1) sendAnyEp
         else if (shape == ShapeUdp and programStep == 2) quiesce(QShort)
         else if (shape == ShapeTimers and programStep < 3) addTimerAny(programStep)
+        else if (shape == ShapeBlock and programStep == 0) openQueue(0)
+        else if (shape == ShapeBlock and programStep == 1) blockWriteAny
+        else if (shape == ShapeBlock and programStep == 2) quiesce(QShort)
+        else if (shape == ShapeBlock and programStep == 3) blockReadAny
+        else if (shape == ShapeBlock and programStep == 4) quiesce(QShort)
         else pickOp
 
     // ------------------------------------------------------------------
@@ -1547,6 +1878,15 @@ module evpl_core {
         | OpSend => true
         | OpClose => true
         | OpFinish => true
+        | OpOpenQueue => true
+        | OpCloseQueue => true
+        | OpBlockRead => true
+        | OpBlockWrite => true
+        | OpBlockWriteSync => true
+        | OpBlockFlush => true
+        | OpBlockWriteZeroes => true
+        | OpBlockWriteZeroesAll => true
+        | OpBlockDiscard => true
         | OpQuiesce => true
     }
 
@@ -1960,4 +2300,72 @@ module evpl_core {
                 { kind: EvRecvMsg, slot: sideSlot(0, SIDE_SERVER), mult: MExactly, count: 1 },
                 { kind: EvRecv, slot: sideSlot(0, SIDE_CLIENT), mult: MExactly, count: 1 },
                 { kind: EvRecvMsg, slot: sideSlot(0, SIDE_CLIENT), mult: MExactly, count: 1 }))
+
+    /// Every request owes exactly one completion, and owes it in the window
+    /// it was submitted in.  Three requests in one window owe three; the
+    /// window after owes none, which is what makes a completion that fires
+    /// twice a failure rather than a shrug.
+    run blockRequestOwesOneCompletionTest =
+        init
+            .then(openQueue(0))
+            .then(blockWrite(0, 0, BSeg1, OpBlockWrite))
+            .then(blockWrite(0, 1, BSeg4, OpBlockWriteSync))
+            .then(blockFlush(0))
+            .then(quiesce(QShort))
+            .expect(expects == Set({ kind: EvBlock, slot: 0, mult: MExactly, count: 3 }))
+            .then(quiesce(QShort))
+            .expect(expects == Set())
+
+    /// A region reads back what was written to it, whatever the two calls
+    /// scattered their buffers across.  The claim only exists once the write
+    /// has completed -- before the quiesce there is nothing to read back.
+    run blockReadReturnsWhatWasWrittenTest =
+        init
+            .then(openQueue(0))
+            .then(blockWrite(0, 0, BSeg16, OpBlockWrite))
+            .then(quiesce(QShort))
+            .then(blockRead(0, 0, BSeg1))
+            .expect(current.pattern == writePattern(1))
+            .then(quiesce(QShort))
+            .expect(expects == Set({ kind: EvBlock, slot: 0, mult: MExactly, count: 1 }))
+
+    /// write_zeroes is a data guarantee: the range reads back as zeros.
+    /// discard is not one -- it is advisory, and what is there afterwards is
+    /// unspecified -- so the model goes back to claiming nothing about the
+    /// region while still requiring the completion.
+    run blockZeroesAndDiscardDifferTest =
+        init
+            .then(openQueue(0))
+            .then(blockWriteZeroes(0, 2))
+            .then(quiesce(QShort))
+            .then(blockRead(0, 2, BSeg4))
+            .expect(current.pattern == CONTENT_ZERO)
+            .then(quiesce(QShort))
+            .then(blockWriteZeroesAll(0))
+            .then(quiesce(QShort))
+            .then(blockRead(0, 3, BSeg1))
+            .expect(current.pattern == CONTENT_ZERO)
+            .then(quiesce(QShort))
+            .then(blockDiscard(0, 2))
+            .then(quiesce(QShort))
+            .then(blockRead(0, 2, BSeg4))
+            .expect(current.pattern == CONTENT_UNKNOWN)
+
+    /// Two queues on one device are independent: each is owed exactly what
+    /// was submitted on it, which is the claim a backend breaks by handing a
+    /// completion to whichever queue it finds first.
+    run blockQueuesAreIndependentTest =
+        init
+            .then(openQueue(0))
+            .then(openQueue(1))
+            .then(blockWrite(0, 0, BSeg1, OpBlockWrite))
+            .then(blockWrite(1, 1, BSeg1, OpBlockWrite))
+            .then(blockFlush(1))
+            .then(quiesce(QShort))
+            .expect(expects == Set(
+                { kind: EvBlock, slot: 0, mult: MExactly, count: 1 },
+                { kind: EvBlock, slot: 1, mult: MExactly, count: 2 }))
+            .then(closeQueue(0))
+            .then(quiesce(QShort))
+            .expect(expects == Set())
 }

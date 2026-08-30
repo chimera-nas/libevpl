@@ -421,8 +421,6 @@ evpl_pread_doorbell(
 
         req = next;
     }
-
-    evpl_activity(evpl);
 } /* evpl_pread_doorbell */
 
 static void

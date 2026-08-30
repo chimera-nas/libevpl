@@ -41,6 +41,7 @@
  * anything else fails.
  */
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,6 +129,39 @@
 #define NUM_EVENT_KIND   CORE_NUM_EVENT_KIND
 
 /*
+ * Block I/O.  The model cuts the device into regions and addresses one whole
+ * region per data op, so these are the two numbers that have to agree with
+ * NUM_REGION and NUM_BLOCK_QUEUE over there.
+ *
+ * The backend is the pread one, unconditionally.  It is the only block
+ * backend present on every platform, and a conformance test of the block API
+ * wants the same programs to run everywhere; the backends with a kernel
+ * dependency keep their own tests.  EVPL_TEST_BLOCK_PROTOCOL overrides it by
+ * name, which is how the same programs can be pointed at io_uring or libaio
+ * on a host that has them.
+ */
+#define NUM_BLOCK_QUEUE  2
+#define NUM_REGION       4
+/* A whole region has to fit in one buffer: the driver allocates each segment
+ * as a single iovec, so that the model's segment count is exactly the
+ * request's iovec count.  CONF_BUFFER_SIZE is deliberately small (see there),
+ * and this is half of it -- which also makes the whole device two buffers,
+ * and so makes the write-zeroes emulation loop rather than finish in one
+ * chunk.  Checked against CONF_BUFFER_SIZE below, where it is defined. */
+#define REGION_BYTES     (16 * 1024)
+#define DEVICE_BYTES     ((uint64_t) NUM_REGION * REGION_BYTES)
+
+/* Segments a request may be scattered across -- BSeg16 is the largest the
+ * model generates, and is deliberately past the point where a backend with a
+ * small inline iovec array has to allocate one instead. */
+#define MAX_BLOCK_SEGS   16
+
+/* What a read buffer is filled with before it is submitted, so that a read
+ * which quietly returns without touching the buffer fails on content rather
+ * than passing on whatever was already there. */
+#define BLOCK_POISON     0xa5
+
+/*
  * Poll mode, as the driver configures it.
  *
  * poll_iterations is deliberately 1 rather than the default 1000.  The loop
@@ -158,6 +192,11 @@
  * test.
  */
 #define CONF_BUFFER_SIZE (32 * 1024)
+
+/* See REGION_BYTES: a block segment is one iovec, so the largest one the
+ * driver allocates must come out of a single buffer. */
+_Static_assert(REGION_BYTES <= CONF_BUFFER_SIZE,
+               "a block region must fit in one buffer");
 
 /* Must match core.qnt's SPIN_MS.  Set rather than assumed: the model's poll
  * transitions are computed against it. */
@@ -249,6 +288,21 @@ struct doorbell_slot {
     int                  remove_in_cb;
 };
 
+/*
+ * One block request in flight.  Allocated per submission and freed by its own
+ * completion, so a request that never completes leaks -- which is exactly
+ * what it is, and the model's obligation check reports it first.
+ */
+struct block_req {
+    struct prog_state *ps;
+    int                queue;
+    int                niov;
+    /* -1 when the model makes no claim about the bytes; otherwise the byte
+     * every one of them must be. */
+    int                pattern;
+    struct evpl_iovec  iov[MAX_BLOCK_SEGS];
+};
+
 /* What a notify callback needs to know about the end it was registered for.
  * A bind carries no slot of its own, so this is how a callback finds its way
  * back into the model's object space. */
@@ -279,6 +333,14 @@ struct prog_state {
     struct timer_slot             timers[MAX_SLOT];
     struct deferral_slot          deferrals[MAX_SLOT];
     struct doorbell_slot          doorbells[MAX_SLOT];
+
+    /* The program's block device and the queues opened on it.  The device is
+     * created fresh at the start of each program, so a region holds nothing
+     * anyone can predict until this program writes it -- which is what the
+     * model assumes. */
+    struct evpl_block_device     *bdev;
+    struct evpl_block_queue      *bqueue[NUM_BLOCK_QUEUE];
+    char                          device_path[128];
 
     struct evpl_listener         *listener;
     struct evpl_listener_binding *binding;
@@ -438,6 +500,15 @@ op_name(uint8_t op)
         case COP_OPSEND: return "Send";
         case COP_OPCLOSE: return "Close";
         case COP_OPFINISH: return "Finish";
+        case COP_OPOPENQUEUE: return "OpenQueue";
+        case COP_OPCLOSEQUEUE: return "CloseQueue";
+        case COP_OPBLOCKREAD: return "BlockRead";
+        case COP_OPBLOCKWRITE: return "BlockWrite";
+        case COP_OPBLOCKWRITESYNC: return "BlockWriteSync";
+        case COP_OPBLOCKFLUSH: return "BlockFlush";
+        case COP_OPBLOCKWRITEZEROES: return "BlockWriteZeroes";
+        case COP_OPBLOCKWRITEZEROESALL: return "BlockWriteZeroesAll";
+        case COP_OPBLOCKDISCARD: return "BlockDiscard";
         case COP_OPQUIESCE: return "Quiesce";
         default: return "?";
     } /* switch */
@@ -459,6 +530,7 @@ event_name(uint8_t kind)
         case CEV_EVRECVMSG: return "recv-messages";
         case CEV_EVSENT: return "sent-bytes";
         case CEV_EVHOOK: return "loop-hook";
+        case CEV_EVBLOCK: return "block-completion";
         default: return "?";
     } /* switch */
 } /* event_name */
@@ -1117,9 +1189,8 @@ do_quiesce(
     int                     stepno)
 {
     uint64_t target = ps->base_ns + (uint64_t) step->at_ms * TICK_NS;
-    int      i;
+    int      i, failures;
 
-    ps->window      = ps->nlog;
     ps->poll_logged = 0;
 
     memset(ps->hook_logged, 0, sizeof(ps->hook_logged));
@@ -1147,7 +1218,18 @@ do_quiesce(
 
     g_results.quiesces++;
 
-    return check_window(ps, step, prog, stepno);
+    failures = check_window(ps, step, prog, stepno);
+
+    /* The next window starts here rather than at the next quiesce.  Almost
+     * every callback arrives from inside the loop, so the two are usually the
+     * same point -- but not always: a block backend with no native discard
+     * answers evpl_block_discard() by calling back inline, before the
+     * submitting call has even returned.  Closing the window at the check
+     * rather than opening it at the next quiesce is what keeps a completion
+     * delivered that way inside the window that is owed it. */
+    ps->window = ps->nlog;
+
+    return failures;
 } /* do_quiesce */
 
 /* ------------------------------------------------------------------ */
@@ -1438,6 +1520,251 @@ do_send(
     cs->tx_off[dest] += len;
 } /* do_send */
 
+
+/*
+ * ---------------------------------------------------------------------------
+ * Block I/O
+ *
+ * The device is the program's, not any op's: it is created at the start and
+ * torn down at the end, so every program starts from a device whose contents
+ * nothing has any business predicting.  What the ops vary is the queues on it
+ * and the requests put through them.
+ * ---------------------------------------------------------------------------
+ */
+
+/* Which backend the programs run against.  Defaults to pread, which exists
+ * everywhere; the override is what lets the same programs be pointed at a
+ * kernel-backed one on a host that has it. */
+static enum evpl_block_protocol_id
+block_protocol(void)
+{
+    const char *name = getenv("EVPL_TEST_BLOCK_PROTOCOL");
+
+    if (!name || !*name || strcmp(name, "pread") == 0) {
+        return EVPL_BLOCK_PROTOCOL_PREAD;
+    }
+
+    if (strcmp(name, "io_uring") == 0) {
+        return EVPL_BLOCK_PROTOCOL_IO_URING;
+    }
+
+    if (strcmp(name, "libaio") == 0) {
+        return EVPL_BLOCK_PROTOCOL_LIBAIO;
+    }
+
+    evpl_test_abort("EVPL_TEST_BLOCK_PROTOCOL names no backend the driver "
+                    "knows: %s", name);
+    return EVPL_BLOCK_PROTOCOL_PREAD;
+} /* block_protocol */
+
+/*
+ * A fresh backing file per program, sized to hold every region.  Named by pid
+ * as well as by program so that concurrent instances -- one per core
+ * mechanism, and one per network namespace under netns testing -- cannot
+ * collide on it.
+ */
+static void
+block_device_open(
+    struct prog_state *ps,
+    int                prog)
+{
+    int fd;
+
+    snprintf(ps->device_path, sizeof(ps->device_path),
+             "core_conf_block-%d-%d.img", (int) getpid(), prog);
+
+    fd = open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+
+    evpl_test_abort_if(fd < 0, "could not create %s", ps->device_path);
+    evpl_test_abort_if(ftruncate(fd, DEVICE_BYTES) < 0,
+                       "could not size %s", ps->device_path);
+    close(fd);
+
+    ps->bdev = evpl_block_open_device(block_protocol(), ps->device_path);
+
+    evpl_test_abort_if(!ps->bdev, "could not open %s as a block device",
+                       ps->device_path);
+
+    /* Both are pure functions of the device and neither has an ordering to
+     * get wrong, so they are checked here rather than modelled: a device that
+     * misreports its size would have every offset the model chose land
+     * somewhere else. */
+    evpl_test_abort_if(evpl_block_size(ps->bdev) != DEVICE_BYTES,
+                       "block device reports %lu bytes, expected %lu",
+                       (unsigned long) evpl_block_size(ps->bdev),
+                       (unsigned long) DEVICE_BYTES);
+
+    evpl_test_abort_if(evpl_block_max_request_size(ps->bdev) < REGION_BYTES,
+                       "block device takes at most %lu bytes per request, "
+                       "less than one region",
+                       (unsigned long) evpl_block_max_request_size(ps->bdev));
+} /* block_device_open */
+
+static void
+block_device_close(struct prog_state *ps)
+{
+    int q;
+
+    for (q = 0; q < NUM_BLOCK_QUEUE; q++) {
+        if (ps->bqueue[q]) {
+            evpl_block_close_queue(ps->evpl, ps->bqueue[q]);
+            ps->bqueue[q] = NULL;
+        }
+    }
+
+    if (ps->bdev) {
+        evpl_block_close_device(ps->bdev);
+        ps->bdev = NULL;
+    }
+
+    if (ps->device_path[0]) {
+        unlink(ps->device_path);
+        ps->device_path[0] = 0;
+    }
+} /* block_device_close */
+
+/*
+ * One completion.  Logged against the queue it was submitted on, which is
+ * what makes "delivered to the right queue" checkable at all, and -- for a
+ * read the model had a claim about -- checked byte by byte before the request
+ * is retired.
+ */
+static void
+block_complete(
+    struct evpl *evpl,
+    int          status,
+    void        *private_data)
+{
+    struct block_req  *req = private_data;
+    struct prog_state *ps  = req->ps;
+    int                i;
+
+    evpl_test_abort_if(status, "block request on queue %d failed: %d",
+                       req->queue, status);
+
+    if (req->pattern >= 0) {
+        for (i = 0; i < req->niov; i++) {
+            const unsigned char *p = req->iov[i].data;
+            unsigned int         n = req->iov[i].length, j;
+
+            for (j = 0; j < n; j++) {
+                evpl_test_abort_if(p[j] != (unsigned char) req->pattern,
+                                   "block read segment %d byte %u is 0x%02x, "
+                                   "expected 0x%02x", i, j, p[j],
+                                   (unsigned char) req->pattern);
+            }
+        }
+    }
+
+    for (i = 0; i < req->niov; i++) {
+        evpl_iovec_release(evpl, &req->iov[i]);
+    }
+
+    log_event(ps, CEV_EVBLOCK, req->queue, 1);
+
+    free(req);
+} /* block_complete */
+
+/* Everything a request has in common: an allocated record on an open queue,
+ * with its segments carved out and filled. */
+static struct block_req *
+block_req_alloc(
+    struct prog_state      *ps,
+    const struct core_step *step,
+    int                     nsegs,
+    int                     fill)
+{
+    struct block_req *req;
+    unsigned int      seglen = REGION_BYTES / nsegs;
+    int               i;
+
+    evpl_test_abort_if(!ps->bqueue[step->queue],
+                       "block op on queue %d, which is not open", step->queue);
+
+    req = calloc(1, sizeof(*req));
+    evpl_test_abort_if(!req, "out of memory");
+
+    req->ps      = ps;
+    req->queue   = step->queue;
+    req->niov    = nsegs;
+    req->pattern = -1;
+
+    for (i = 0; i < nsegs; i++) {
+        evpl_test_abort_if(evpl_iovec_alloc(ps->evpl, seglen, 0, 1, 0,
+                                            &req->iov[i]) != 1,
+                           "a %u byte iovec came back in more than one piece",
+                           seglen);
+        memset(req->iov[i].data, fill, seglen);
+    }
+
+    return req;
+} /* block_req_alloc */
+
+static int
+block_nsegs(const struct core_step *step)
+{
+    switch (step->segs) {
+        case CSEG_BSEG1: return 1;
+        case CSEG_BSEG4: return 4;
+        case CSEG_BSEG16: return 16;
+        default:
+            evpl_test_abort("segment class %d has no arm in the driver",
+                            step->segs);
+            return 1;
+    } /* switch */
+} /* block_nsegs */
+
+static void
+do_block_io(
+    struct prog_state      *ps,
+    const struct core_step *step)
+{
+    struct block_req *req;
+    uint64_t          offset = (uint64_t) step->region * REGION_BYTES;
+    int               nsegs  = block_nsegs(step);
+
+    if (step->op == COP_OPBLOCKREAD) {
+        /* Poisoned rather than zeroed: a read that returns without writing
+         * anything must fail, and zeros are a value the model can legitimately
+         * expect. */
+        req          = block_req_alloc(ps, step, nsegs, BLOCK_POISON);
+        req->pattern = step->pattern;
+
+        evpl_block_read(ps->evpl, ps->bqueue[step->queue], req->iov, req->niov,
+                        offset, block_complete, req);
+    } else {
+        req = block_req_alloc(ps, step, nsegs, step->pattern);
+
+        evpl_block_write(ps->evpl, ps->bqueue[step->queue], req->iov,
+                         req->niov, offset,
+                         step->op == COP_OPBLOCKWRITESYNC,
+                         block_complete, req);
+    }
+} /* do_block_io */
+
+/* flush, write_zeroes and discard carry no buffers, so their request record
+ * exists only to name the queue the completion belongs to. */
+static struct block_req *
+block_req_bare(
+    struct prog_state      *ps,
+    const struct core_step *step)
+{
+    struct block_req *req;
+
+    evpl_test_abort_if(!ps->bqueue[step->queue],
+                       "block op on queue %d, which is not open", step->queue);
+
+    req = calloc(1, sizeof(*req));
+    evpl_test_abort_if(!req, "out of memory");
+
+    req->ps      = ps;
+    req->queue   = step->queue;
+    req->niov    = 0;
+    req->pattern = -1;
+
+    return req;
+} /* block_req_bare */
+
 static int
 run_step(
     struct prog_state      *ps,
@@ -1449,11 +1776,17 @@ run_step(
     struct deferral_slot *ds;
     struct doorbell_slot *bs;
     struct conn_slot     *cs;
+    struct block_req     *br;
 
     g_results.steps++;
 
     evpl_test_abort_if(step->slot >= MAX_SLOT || step->conn >= MAX_CONN,
                        "program %d step %d: object index outside the driver's "
+                       "tables", prog, stepno);
+
+    evpl_test_abort_if(step->queue >= NUM_BLOCK_QUEUE ||
+                       step->region >= NUM_REGION,
+                       "program %d step %d: block index outside the driver's "
                        "tables", prog, stepno);
 
     switch (step->op) {
@@ -1626,6 +1959,54 @@ run_step(
             evpl_finish(ps->evpl, cs->bind[step->side]);
             break;
 
+        case COP_OPOPENQUEUE:
+            evpl_test_abort_if(ps->bqueue[step->queue],
+                               "queue %d is open already", step->queue);
+            ps->bqueue[step->queue] = evpl_block_open_queue(ps->evpl, ps->bdev);
+            evpl_test_abort_if(!ps->bqueue[step->queue],
+                               "could not open block queue %d", step->queue);
+            break;
+
+        case COP_OPCLOSEQUEUE:
+            evpl_test_abort_if(!ps->bqueue[step->queue],
+                               "close on queue %d, which is not open",
+                               step->queue);
+            evpl_block_close_queue(ps->evpl, ps->bqueue[step->queue]);
+            ps->bqueue[step->queue] = NULL;
+            break;
+
+        case COP_OPBLOCKREAD:
+        case COP_OPBLOCKWRITE:
+        case COP_OPBLOCKWRITESYNC:
+            do_block_io(ps, step);
+            break;
+
+        case COP_OPBLOCKFLUSH:
+            br = block_req_bare(ps, step);
+            evpl_block_flush(ps->evpl, ps->bqueue[step->queue],
+                             block_complete, br);
+            break;
+
+        case COP_OPBLOCKWRITEZEROES:
+            br = block_req_bare(ps, step);
+            evpl_block_write_zeroes(ps->evpl, ps->bqueue[step->queue],
+                                    (uint64_t) step->region * REGION_BYTES,
+                                    REGION_BYTES, block_complete, br);
+            break;
+
+        case COP_OPBLOCKWRITEZEROESALL:
+            br = block_req_bare(ps, step);
+            evpl_block_write_zeroes(ps->evpl, ps->bqueue[step->queue], 0,
+                                    DEVICE_BYTES, block_complete, br);
+            break;
+
+        case COP_OPBLOCKDISCARD:
+            br = block_req_bare(ps, step);
+            evpl_block_discard(ps->evpl, ps->bqueue[step->queue],
+                               (uint64_t) step->region * REGION_BYTES,
+                               REGION_BYTES, block_complete, br);
+            break;
+
         case COP_OPQUIESCE:
             return do_quiesce(ps, step, prog, stepno);
 
@@ -1677,6 +2058,12 @@ teardown_program(struct prog_state *ps)
     if (ps->poll) {
         evpl_remove_poll(ps->evpl, ps->poll);
     }
+
+    /* Queues first, then the device: a queue outlives nothing, and the
+     * device's service thread is only joinable once none is left.  Nothing
+     * can still be in flight here -- every program ends with a quiesce, and
+     * the model never leaves a request outstanding across one. */
+    block_device_close(ps);
 
     /* The owning reference on each global buffer, given back exactly once.
     * Clones the send path took are non-owning and must not be released. */
@@ -1768,6 +2155,8 @@ run_program(
             evpl_test_abort("program %d names a transport the driver has no "
                             "arm for", prog);
     } /* switch */
+
+    block_device_open(ps, prog);
 
     /* Where this program's model clock starts.  The clock is process-wide and
      * monotonic, so each program takes a base rather than resetting it. */
