@@ -37,33 +37,39 @@ mkdir -p "${WORK_DIR}"
 # small and enumerable, so its traces only need to be long enough to reach
 # every (defect, version, delivery) triple -- the case count printed at the end
 # is the check on that, and must equal the size of that cross product.
-REQUEST_SEEDS=(0x21 0x22 0x23 0x24 0x25 0x26)
-DEFECT_SEEDS=(0x41 0x42 0x43 0x44 0x45 0x46 0x47 0x48 0x0009 0x1234 0xdead 0x0777)
-CLIENT_SEEDS=(0x61 0x62 0x63 0x64 0x65 0x66 0x67 0x68 0x0009 0x1234 0xdead 0x0777)
+#
+# One quint invocation per group rather than one per trace.  Nearly all of a
+# quint run is parsing and typechecking the model -- for this one, 2.1s of a
+# 2.2s invocation -- so the cost is per PROCESS, not per trace, and --n-traces
+# pays it once for the whole group instead of once each.  The three groups then
+# run concurrently because they are independent.
+REQUEST_TRACES=6
+DEFECT_TRACES=12
+CLIENT_TRACES=12
 
-REQUEST_TRACES=()
-for s in "${REQUEST_SEEDS[@]}"; do
-    f="${WORK_DIR}/requests-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/http1x.qnt" --main=http1x_requests \
-        --seed="$s" --max-steps=200 --out-itf="$f" > /dev/null
-    REQUEST_TRACES+=("$f")
-done
+REQUEST_SEED=0x21
+DEFECT_SEED=0x41
+CLIENT_SEED=0x61
 
-DEFECT_TRACES=()
-for s in "${DEFECT_SEEDS[@]}"; do
-    f="${WORK_DIR}/defects-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/http1x.qnt" --main=http1x_defects \
-        --seed="$s" --max-steps=300 --out-itf="$f" > /dev/null
-    DEFECT_TRACES+=("$f")
-done
+# gen MAIN STEPS NTRACES SEED PREFIX
+gen() {
+    "${QUINT}" run "${SRC_DIR}/http1x.qnt" --main="$1" \
+        --max-steps="$2" --max-samples="$3" --n-traces="$3" --seed="$4" \
+        --out-itf="${WORK_DIR}/$5-{seq}.itf.json" > /dev/null
+}
 
-CLIENT_TRACES=()
-for s in "${CLIENT_SEEDS[@]}"; do
-    f="${WORK_DIR}/client-${s}.itf.json"
-    "${QUINT}" run "${SRC_DIR}/http1x.qnt" --main=http1x_client \
-        --seed="$s" --max-steps=300 --out-itf="$f" > /dev/null
-    CLIENT_TRACES+=("$f")
+gen http1x_requests 200 "${REQUEST_TRACES}" "${REQUEST_SEED}" requests &
+pids="$!"
+gen http1x_defects  300 "${DEFECT_TRACES}"  "${DEFECT_SEED}"  defects  &
+pids="${pids} $!"
+gen http1x_client   300 "${CLIENT_TRACES}"  "${CLIENT_SEED}"  client   &
+pids="${pids} $!"
+
+for pid in ${pids}; do
+    wait "${pid}" || { echo "quint run failed" >&2; exit 1; }
 done
 
 "${PYTHON}" "${SRC_DIR}/itf_to_cases.py" "${OUT_HEADER}" \
-    "${REQUEST_TRACES[@]}" -- "${DEFECT_TRACES[@]}" -- "${CLIENT_TRACES[@]}"
+    "${WORK_DIR}"/requests-*.itf.json -- \
+    "${WORK_DIR}"/defects-*.itf.json -- \
+    "${WORK_DIR}"/client-*.itf.json

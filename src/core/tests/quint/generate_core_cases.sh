@@ -40,21 +40,31 @@ mkdir -p "${WORK_DIR}"
 # advances of libevpl's virtual clock rather than sleeps, so a 100ms window is
 # a few hundred non-blocking passes of the event loop and the whole suite runs
 # in well under a second.  On a real clock this many programs would be minutes.
-SEEDS=(0xe1 0xe2 0xe3 0xe4 0xe5 0xe6 0xe7 0xe8 0xe9 0xea)
+#
+# Split across a few seeds, several traces each, rather than one trace per
+# seed.  Two costs are in play: quint parses and typechecks the model once per
+# PROCESS, and simulates once per TRACE.  This model is big enough that the
+# simulation is not lost in the noise, so neither extreme is right -- one
+# process per trace pays the parse ten times, and one process for all ten
+# serialises the simulation.  A handful of processes, each producing a
+# handful of traces, pays the parse once per core and still runs them at once.
+SEEDS=(0xe1 0xe2 0xe3 0xe4 0xe5)
+TRACES_PER_SEED=2
 STEPS=260
 
-# The seeds are independent, so they run concurrently -- serially this is the
-# slowest step of the build by an order of magnitude, and it is pure waiting on
-# a simulator that uses about one and a half cores.
 TRACES=()
 PIDS=()
 
 for s in "${SEEDS[@]}"; do
-    f="${WORK_DIR}/core-${s}.itf.json"
     "${QUINT}" run "${SRC_DIR}/core.qnt" \
-        --seed="$s" --max-steps="${STEPS}" --out-itf="$f" > /dev/null &
+        --seed="$s" --max-steps="${STEPS}" \
+        --max-samples="${TRACES_PER_SEED}" --n-traces="${TRACES_PER_SEED}" \
+        --out-itf="${WORK_DIR}/core-${s}-{seq}.itf.json" > /dev/null &
     PIDS+=($!)
-    TRACES+=("$f")
+
+    for i in $(seq 0 $((TRACES_PER_SEED - 1))); do
+        TRACES+=("${WORK_DIR}/core-${s}-${i}.itf.json")
+    done
 done
 
 for pid in "${PIDS[@]}"; do
