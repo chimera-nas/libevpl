@@ -53,6 +53,15 @@ OPS = [
     "OpSend",
     "OpClose",
     "OpFinish",
+    "OpOpenQueue",
+    "OpCloseQueue",
+    "OpBlockRead",
+    "OpBlockWrite",
+    "OpBlockWriteSync",
+    "OpBlockFlush",
+    "OpBlockWriteZeroes",
+    "OpBlockWriteZeroesAll",
+    "OpBlockDiscard",
     "OpQuiesce",
 ]
 
@@ -65,10 +74,11 @@ TRANSPORTS = ["TStreamInproc", "TDatagramInproc", "TStreamTcp", "TStreamUnix",
               "TDatagramUdp"]
 SENDS = ["SendBuf", "SendV", "SendVTakeRef", "SendToEp", "SendToEpV",
          "SendReserveCommit", "SendGlobal"]
+SEGS = ["BSeg1", "BSeg4", "BSeg16"]
 EVENTS = ["EvTimer", "EvDeferral", "EvDoorbell",
           "EvConnected", "EvDisconnected", "EvRecv",
           "EvPollEnter", "EvPollExit", "EvPoll", "EvRecvMsg", "EvSent",
-          "EvHook"]
+          "EvHook", "EvBlock"]
 MULTS = ["MExactly", "MAtLeast"]
 
 # OpReset is the program delimiter, not something the driver runs, so it is
@@ -154,6 +164,10 @@ def read_step(state):
             index_of(SIZES, tag_of(cur["size"]), "size class"),
             index_of(SENDS, tag_of(cur["send"]), "send mode"),
             index_of(DRAINS, tag_of(cur["drain"]), "drain mode"),
+            itf_int(cur["queue"]),
+            itf_int(cur["region"]),
+            index_of(SEGS, tag_of(cur["segs"]), "segment class"),
+            itf_int(cur["pattern"]),
             itf_int(cur["atMs"]),
             tuple(read_expects(state)),
             tuple(read_orders(state)))
@@ -237,12 +251,14 @@ def main():
     for prog in programs:
         first_step = len(steps)
         for (op_tag, op, slot, tk, delay, budget, conn, side, transport, size,
-             send, drain, at_ms, exps, ords) in prog:
+             send, drain, queue, region, segs, pattern, at_ms,
+             exps, ords) in prog:
             reached.add(op_tag)
             ef, ec = intern(expect_rows, expect_index, exps)
             of, oc = intern(order_rows, order_index, ords)
             steps.append((op, slot, tk, delay, budget, conn, side, transport,
-                          size, send, drain, at_ms, ef, ec, of, oc))
+                          size, send, drain, queue, region, segs, pattern,
+                          at_ms, ef, ec, of, oc))
         prog_rows.append((first_step, len(steps) - first_step))
 
     missing = sorted(set(OPS) - COVERAGE_EXEMPT - reached)
@@ -283,6 +299,7 @@ def main():
     emit_enum(o, "core_size", "CSZ", SIZES)
     emit_enum(o, "core_send", "CSND", SENDS)
     emit_enum(o, "core_drain", "CDRN", DRAINS)
+    emit_enum(o, "core_segs", "CSEG", SEGS)
     emit_enum(o, "core_event", "CEV", EVENTS)
 
     # The driver indexes per-event-kind arrays by this, so it is emitted
@@ -328,6 +345,13 @@ def main():
     o.append("    uint8_t  size;        /* OpSend only    */")
     o.append("    uint8_t  send;        /* OpSend only    */")
     o.append("    uint8_t  drain;       /* OpConnect only */")
+    o.append("    uint8_t  queue;       /* block ops only */")
+    o.append("    uint8_t  region;      /* block data ops only */")
+    o.append("    uint8_t  segs;        /* block read/write only */")
+    o.append("    /* The byte a block write fills its region with, or the one")
+    o.append("     * a read must find there.  Negative means the model makes")
+    o.append("     * no claim about the bytes -- only about the completion. */")
+    o.append("    int16_t  pattern;")
     o.append("    /* Model time in milliseconds at the end of this step,")
     o.append("     * measured from the start of the program.  A quiesce runs")
     o.append("     * to this as an ABSOLUTE deadline, so real and model time")
@@ -364,10 +388,12 @@ def main():
 
     o.append("static const struct core_step core_steps[] = {")
     for (op, slot, tk, delay, budget, conn, side, transport, size, send, drain,
-         at_ms, ef, ec, of, oc) in steps:
-        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d },"
+         queue, region, segs, pattern, at_ms, ef, ec, of, oc) in steps:
+        o.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, "
+                 "%d, %d, %d, %d, %d, %d, %d, %d, %d },"
                  % (op, slot, tk, delay, budget, conn, side, transport, size,
-                    send, drain, at_ms, ef, ec, of, oc))
+                    send, drain, queue, region, segs, pattern, at_ms,
+                    ef, ec, of, oc))
     o.append("};")
     o.append("")
 

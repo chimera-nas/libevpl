@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include <errno.h>
 #include <pthread.h>
 #include <time.h>
 #include <string.h>
@@ -446,9 +447,21 @@ evpl_block_write_zeroes(
 
     /* No native support: write a zero buffer through the ordinary write path,
      * chunked at the device's maximum request size.  The underlying writes
-     * carry their own op-tracking/metrics, so no block_op is taken here. */
+     * carry their own op-tracking/metrics, so no block_op is taken here.
+     *
+     * Also chunked at one buffer.  The zero chunk is a SINGLE iovec, and
+     * evpl_iovec_alloc places at most max_iovecs pieces: asked for more than
+     * one buffer's worth in one, it reports -1 and leaves the iovec
+     * untouched rather than handing back a short one.  Without this clamp a
+     * caller zeroing a range larger than a buffer -- entirely legal, and
+     * ordinary with the small buffer sizes tests configure -- would have
+     * dereferenced that untouched iovec. */
     chunk = (unsigned int) (length < queue->device->max_request_size ?
                             length : queue->device->max_request_size);
+
+    if (chunk > evpl_shared->config->buffer_size) {
+        chunk = evpl_shared->config->buffer_size;
+    }
 
     e               = evpl_zalloc(sizeof(*e));
     e->queue        = queue;
@@ -459,7 +472,14 @@ evpl_block_write_zeroes(
     e->callback     = callback;
     e->private_data = private_data;
 
-    evpl_iovec_alloc(evpl, chunk, 4096, 1, 0, &e->zero);
+    /* Belt and braces on the clamp above: a buffer that cannot be had at all
+     * is a failed request, not a null dereference. */
+    if (evpl_iovec_alloc(evpl, chunk, 4096, 1, 0, &e->zero) != 1) {
+        evpl_free(e);
+        callback(evpl, ENOMEM, private_data);
+        return;
+    }
+
     memset(e->zero.data, 0, chunk);
 
     evpl_block_wz_emul_step(evpl, e);

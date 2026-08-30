@@ -13,12 +13,14 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
 #include "tests/test_common.h"
 
 #define DEVICE_PATH "pread_basic.img"
+#define FIFO_PATH   "pread_basic.fifo"
 #define DEVICE_SIZE (16 * 1024 * 1024)
 #define CHUNK       4096
 #define TEST_OFFSET (1024 * 1024)
@@ -35,6 +37,20 @@ block_callback(
 
     (*pending)--;
 } /* block_callback */
+
+static void
+expect_failure(
+    struct evpl *evpl,
+    int          status,
+    void        *private_data)
+{
+    int *pending = private_data;
+
+    evpl_test_abort_if(!status,
+                       "a read running off the end of the device succeeded");
+
+    (*pending)--;
+} /* expect_failure */
 
 static void
 run_until_idle(
@@ -146,6 +162,16 @@ main(
 
     run_until_idle(evpl, &pending);
 
+    /* Past the end of the device.  A transfer that ends short of what was
+     * asked for is an error and not a short success -- the callback has no
+     * way to say "some of it", so a backend that reported success here would
+     * be telling the caller its buffer was filled. */
+    pending++;
+    evpl_block_read(evpl, queue, riov, 1, DEVICE_SIZE - CHUNK / 2,
+                    expect_failure, &pending);
+
+    run_until_idle(evpl, &pending);
+
     for (i = 0; i < 2; i++) {
         evpl_iovec_release(evpl, &wiov[i]);
         evpl_iovec_release(evpl, &riov[i]);
@@ -153,6 +179,24 @@ main(
 
     evpl_block_close_queue(evpl, queue);
     evpl_block_close_device(bdev);
+
+    /* A path that is not there at all, and one that is there but cannot be
+     * addressed by offset.  Both are ordinary operating conditions rather
+     * than programming errors, so both report failure instead of aborting --
+     * and neither may leave the device thread or the descriptor behind. */
+    evpl_test_abort_if(evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD,
+                                              "pread_basic_absent.img"),
+                       "opening a nonexistent path produced a device");
+
+    unlink(FIFO_PATH);
+
+    if (mkfifo(FIFO_PATH, 0644) == 0) {
+        evpl_test_abort_if(evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD,
+                                                  FIFO_PATH),
+                           "opening a fifo produced a device");
+        unlink(FIFO_PATH);
+    }
+
     evpl_destroy(evpl);
 
     unlink(DEVICE_PATH);
