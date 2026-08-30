@@ -237,6 +237,13 @@ void evpl_global_config_set_libaio_max_pending(
     struct evpl_global_config *config,
     unsigned int               max_pending);
 
+/* The pread block backend, which services a device from its own thread with
+ * blocking pread()/pwrite().  Enabled by default: it depends on nothing but
+ * POSIX, so unlike the other block backends it is always compiled in. */
+void evpl_global_config_set_pread_enabled(
+    struct evpl_global_config *config,
+    unsigned int               enabled);
+
 void evpl_global_config_set_hf_time_mode(
     struct evpl_global_config *config,
     unsigned int               mode);

@@ -100,6 +100,8 @@ struct evpl_global_config {
     unsigned int              libaio_enabled;
     unsigned int              libaio_max_pending;
 
+    unsigned int              pread_enabled;
+
     unsigned int              preallocate_slabs;
     unsigned int              preallocate_threads;
 

@@ -44,7 +44,8 @@ enum evpl_block_protocol_id {
     EVPL_BLOCK_PROTOCOL_VFIO          = 1,
     EVPL_BLOCK_PROTOCOL_LIBAIO        = 2,
     EVPL_BLOCK_PROTOCOL_IO_URING_NVME = 3,
-    EVPL_NUM_BLOCK_PROTOCOL           = 4
+    EVPL_BLOCK_PROTOCOL_PREAD         = 4,
+    EVPL_NUM_BLOCK_PROTOCOL           = 5
 };
 
 struct evpl;

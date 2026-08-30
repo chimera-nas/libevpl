@@ -17,7 +17,7 @@ libevpl's Block I/O subsystem offers:
 
 - **Asynchronous operations** - Read, write, and flush integrate with the event loop
 - **Zero-copy I/O** - Uses iovec-based scatter-gather
-- **Multiple backends** - io_uring and VFIO-NVMe for maximum performance
+- **Multiple backends** - io_uring and VFIO-NVMe for maximum performance, pread everywhere else
 - **High IOPS** - Optimized for NVMe SSDs (millions of IOPS)
 - **Per-thread queues** - Lock-free operation within event loops
 
@@ -52,6 +52,35 @@ libevpl's Block I/O subsystem offers:
 
 **Use cases:** Ultra-low latency storage, maximum IOPS, dedicated storage devices
 
+### libaio
+
+**Description:** Linux native asynchronous I/O (io_submit/io_getevents)
+
+**Availability:** Linux with libaio
+
+**Characteristics:**
+- Kernel-mediated I/O, completions delivered through an eventfd
+- Requires O_DIRECT; unaligned buffers are bounced through an aligned copy
+
+**Use cases:** Kernels or distributions without io_uring
+
+### pread
+
+**Description:** Blocking pread()/pwrite() on a service thread per device
+
+**Availability:** Everywhere -- it depends on nothing beyond POSIX
+
+**Characteristics:**
+- One dedicated thread per device services a single submission queue
+- Completions are posted back to the issuing thread's queue and delivered
+  through a doorbell, so callers never block
+- Requests are serviced one at a time: portability and correctness rather
+  than depth
+- Buffered I/O, so there are no alignment rules and nothing is ever bounced
+
+**Use cases:** macOS and any other platform with no asynchronous I/O facility;
+development and test on machines without io_uring, libaio or VFIO
+
 ## Types
 
 ### `struct evpl_block_device`
@@ -70,6 +99,8 @@ Identifies block device backend:
 |----------|-------------|
 | `EVPL_BLOCK_PROTOCOL_IO_URING` | Linux io_uring |
 | `EVPL_BLOCK_PROTOCOL_VFIO` | VFIO-NVMe direct access |
+| `EVPL_BLOCK_PROTOCOL_LIBAIO` | Linux native AIO |
+| `EVPL_BLOCK_PROTOCOL_PREAD` | Blocking pread/pwrite on a per-device thread |
 
 ### `evpl_block_callback_t`
 
@@ -287,15 +318,15 @@ For io_uring, performs a sync(), for VFIO-NVME performs an NVMe flush operation.
 
 ## Backend Comparison
 
-| Feature | io_uring | VFIO-NVMe |
-|---------|----------|-----------|
-| **Latency** | Low  | Ultra-low |
-| **IOPS** | Very High | Maximum |
-| **CPU Usage** | Low | Very Low |
-| **Setup** | Simple | Complex (device unbind) |
-| **Permissions** | Standard | Root or VFIO setup |
-| **Device Support** | All block devices | NVMe only |
-| **Kernel Dependency** | Yes | No (userspace) |
+| Feature | io_uring | VFIO-NVMe | pread |
+|---------|----------|-----------|-------|
+| **Latency** | Low  | Ultra-low | Moderate |
+| **IOPS** | Very High | Maximum | Low (one request in flight per device) |
+| **CPU Usage** | Low | Very Low | One thread per device |
+| **Setup** | Simple | Complex (device unbind) | Simple |
+| **Permissions** | Standard | Root or VFIO setup | Standard |
+| **Device Support** | All block devices | NVMe only | All block devices and files |
+| **Kernel Dependency** | Yes | No (userspace) | No (POSIX only) |
 
 ## Choosing a Backend
 
@@ -304,6 +335,11 @@ For io_uring, performs a sync(), for VFIO-NVME performs an NVMe flush operation.
 - You want simple setup and configuration
 - You're using standard filesystems or partitions
 - You need kernel features (filesystem, encryption, etc.)
+
+### Use pread when:
+- The platform has no asynchronous I/O facility at all (macOS)
+- io_uring, libaio and VFIO are all unavailable or undesirable
+- You want a backend with no alignment requirements
 
 ### Use VFIO-NVMe when:
 - You need absolute minimum latency
@@ -320,6 +356,9 @@ io_uring genereally requires page and block aligned I/O to allow DMA.
 
 VFIO-NVMe alignment dependency varies device to device. All NVMe devices require
 sector-aligned I/O, but many do not have any memory alignment requirement.
+
+pread imposes no alignment requirement of its own: it is buffered I/O, so any
+address and length work and no bounce buffer is ever taken.
 
 All else being equal, use page aligned memory when possible.
 

@@ -119,10 +119,17 @@ evpl_block_open_device(
         return NULL;
     }
 
-    evpl_attach_framework_shared(protocol->framework->id);
+    /* A block protocol needs a framework only if it has process-wide or
+     * per-thread state to stand up; the pread backend keeps everything on the
+     * device and queue it owns, so its framework pointer is NULL. */
+    if (protocol->framework) {
+        evpl_attach_framework_shared(protocol->framework->id);
 
-    protocol_private_data = evpl_shared->framework_private[protocol->framework->
-                                                           id];
+        protocol_private_data = evpl_shared->framework_private[protocol->
+                                                               framework->id];
+    } else {
+        protocol_private_data = NULL;
+    }
 
     blockdev = protocol->open_device(uri, protocol_private_data);
 
@@ -191,7 +198,9 @@ evpl_block_open_queue(
 {
     struct evpl_block_queue *queue;
 
-    evpl_attach_framework(evpl, blockdev->protocol->framework->id);
+    if (blockdev->protocol->framework) {
+        evpl_attach_framework(evpl, blockdev->protocol->framework->id);
+    }
 
     queue = blockdev->open_queue(evpl, blockdev);
 
