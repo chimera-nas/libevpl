@@ -3680,3 +3680,17 @@ evpl_rpc2_conn_get_private_data(struct evpl_rpc2_conn *conn)
 {
     return conn->private_data;
 } /* evpl_rpc2_conn_get_private_data */
+
+SYMBOL_EXPORT uint32_t
+evpl_rpc2_conn_get_next_xid(struct evpl_rpc2_conn *conn)
+{
+    return conn->next_xid;
+} /* evpl_rpc2_conn_get_next_xid */
+
+SYMBOL_EXPORT void
+evpl_rpc2_conn_set_next_xid(
+    struct evpl_rpc2_conn *conn,
+    uint32_t               xid)
+{
+    conn->next_xid = xid;
+} /* evpl_rpc2_conn_set_next_xid */
