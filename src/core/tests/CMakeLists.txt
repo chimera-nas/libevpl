@@ -31,6 +31,22 @@ foreach(mech ${EVPL_MECHANISMS})
                          PROPERTIES TIMEOUT 10)
 endforeach()
 
+# Ringing a doorbell after it has been removed.  The abort itself is not new;
+# what this pins is that its message still names BOTH call sites -- the site
+# that rang and the site that removed -- because that pair is the whole
+# diagnosis for a fault that surfaces on another thread, long after the fact,
+# and does not reproduce on demand.
+#
+# The test forks, aborts in the child and checks the text in the parent, so it
+# is an ordinary passing test rather than one that asks ctest to interpret a
+# death -- which is not portable: a raw SIGABRT is an "exception" that
+# PASS_REGULAR_EXPRESSION does not rescue on macOS, while on Linux the
+# sanitizer turns the same abort into an ordinary exit.
+unit_test(core doorbell_ring_after_remove doorbell_ring_after_remove.c)
+
+set_tests_properties(libevpl/core/doorbell_ring_after_remove PROPERTIES
+    TIMEOUT 10)
+
 # Retiring one poller must leave the other pollers' handles meaning what they
 # meant before.  Touches no network, so it needs neither a namespace nor the
 # port lock, and it identifies pollers by value, so it fails the same way in a
