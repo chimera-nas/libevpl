@@ -95,14 +95,27 @@ struct evpl_rpc2_rdma_segment_list {
  * freed.  This gives applications a chance to copy out the encoded reply
  * bytes for later replay (NFS4.1 session replay cache).
  *
- * The iov array is the complete RPC reply (header + body).  Pointers are
- * valid only for the duration of the callback; the callback must copy any
- * bytes it wishes to retain.
+ * The iov array spans the whole outgoing message and total_length is its
+ * length.  rpc_offset is how many leading bytes of that are TRANSPORT framing
+ * rather than RPC: 4 for the record marker over a stream transport, and the
+ * length of the RPC-over-RDMA header over an RDMA one.  A caller that wants
+ * the RPC reply itself -- which is what a replay cache stores, since the
+ * framing has to be rebuilt for the retransmit anyway -- skips rpc_offset
+ * bytes.  Ignoring it yields a buffer whose framing only happens to be
+ * parseable on the transport it was captured from.
+ *
+ * The callback runs before any Reply-chunk reduction, so the RPC reply is
+ * always present in full here even when the wire form sends its body by RDMA
+ * write and leaves only the header inline.
+ *
+ * Pointers are valid only for the duration of the callback; the callback must
+ * copy any bytes it wishes to retain.
  */
 typedef void (*evpl_rpc2_reply_capture_cb_t)(
     const struct evpl_iovec *iov,
     int                      niov,
     int                      total_length,
+    uint32_t                 rpc_offset,
     void                    *private_data);
 
 /*

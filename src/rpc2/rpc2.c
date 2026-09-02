@@ -1025,6 +1025,25 @@ evpl_rpc2_send_reply(
         prometheus_time_histogram_sample(request->metric, &request->timestamp);
     }
 
+    /* If the application requested reply capture (e.g. for an NFS4.1 SEQUENCE
+     * replay cache or an NFSv3 duplicate-request cache), invoke the callback
+     * now.
+     *
+     * Before the Reply-chunk reduction below, not after: that path clones only
+     * the first `offset` header bytes into final_reply_iov and RDMA-writes the
+     * body straight to the requester, so a callback run afterwards would see a
+     * header with no reply behind it.  Here msg_iov still spans the whole
+     * message, and `offset` is the transport framing ahead of the RPC reply --
+     * 4 for a stream record marker, marshall_length_rdma_msg() for RDMA. */
+    if (request->encoding.reply_capture_cb) {
+        request->encoding.reply_capture_cb(
+            msg_iov,
+            msg_niov,
+            length,
+            (uint32_t) offset,
+            request->encoding.reply_capture_private);
+    }
+
     if (reduce) {
 
         final_reply_iov = xdr_dbuf_alloc_space(sizeof(*final_reply_iov), &request->msg->dbuf);
@@ -1070,18 +1089,6 @@ evpl_rpc2_send_reply(
         final_reply_iov    = msg_iov;
         final_reply_niov   = msg_niov;
         final_reply_length = length;
-    }
-
-    /* If the application requested reply capture (e.g. for an NFS4.1
-     * SEQUENCE replay cache), invoke the callback now -- the iovec
-     * array is fully populated and still valid; dispatch_reply will
-     * free the request (and therefore the iovec metadata) below. */
-    if (request->encoding.reply_capture_cb) {
-        request->encoding.reply_capture_cb(
-            final_reply_iov,
-            final_reply_niov,
-            final_reply_length,
-            request->encoding.reply_capture_private);
     }
 
     evpl_rpc2_dispatch_reply(evpl, request, final_reply_iov, final_reply_niov, final_reply_length);
