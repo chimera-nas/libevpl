@@ -26,9 +26,18 @@ on:
 # to GitHub-hosted runners: this workflow runs on `pull_request`, and a pull
 # request from a fork gets a read-only GITHUB_TOKEN that cannot write a package
 # -- which is how contributions actually arrive here.  What crosses the network
-# now is only the buildx layer cache, read from a GHCR package by every run and
-# written back only by a push to main.  With an unchanged Dockerfile a "build"
-# is therefore a layer pull, which is what the registry round trip cost anyway.
+# now is only the buildx layer cache, read by every run and written back only by
+# a push to main.  With an unchanged Dockerfile a "build" is therefore a layer
+# restore, which is what the registry round trip cost anyway.
+#
+# That cache lives in the GitHub Actions cache (type=gha) rather than a
+# registry, because with nothing pushed there is no registry left to justify.
+# The Actions cache also scopes by branch, which does for free what a registry
+# needs an explicit ref guard for -- a pull request reads the default branch's
+# scope and writes only its own, so it cannot poison main -- and its read works
+# from a fork's read-only token without depending on how package permissions
+# resolve there.  This workflow now touches GHCR for exactly one thing: pulling
+# the mirrored darwin ccache binary on the macOS job.
 #
 # Cancel superseded runs on a branch: a PR that is pushed to twice does not
 # need the first matrix to finish.
@@ -37,10 +46,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Where the buildx layer caches live.  The read below is authenticated with
-  # the run's own token, so this works from a fork whether or not the packages
-  # have been made public.
-  IMAGE_CACHE_PREFIX: ghcr.io/chimera-nas
   # Compiler cache ceiling.  A repository gets 10 GB of Actions cache at no
   # cost, evicting least-recently-used entries to stay inside it, and only a
   # paid plan can raise that as billed storage.  This matrix saves 16 entries
@@ -62,10 +67,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      # Read to import the layer cache.  Write is only ever exercised by a push
-      # to main; a fork's pull_request token is capped at read regardless of
-      # what is asked for here, which is the whole point of the shape above.
-      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -98,15 +99,26 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
+      # One scope per image AND arch.  buildx defaults to a single scope for the
+      # whole workflow, so six images building concurrently would overwrite each
+      # other's cache and sit silently at a 0% hit rate -- a failure that costs
+      # the full build time while looking exactly like a cold start.
+      #
+      # mode=min, not max: these Dockerfiles are essentially one package-install
+      # layer rather than a chain of intermediate stages, so min caches
+      # substantially the same thing at a fraction of the size.  That matters
+      # here, because these scopes share a per-repository cache quota with the
+      # 16 ccache entries below.
+      #
       # cache-to only from a push to main, so a pull request reads the shared
-      # cache but can never poison it.
+      # cache but never writes it.  Branch scoping would enforce that anyway;
+      # the guard also stops a PR consuming quota for a scope nothing can read.
+      #
+      # And only from the Release cell.  Release and Debug differ solely in the
+      # cmake invocation INSIDE the container -- the image is byte-identical --
+      # so letting both export means two uploads of the same layers racing for
+      # last-writer on every scope.  Which of the two writes is arbitrary; that
+      # exactly one does is not.
       - name: Build the ${{ matrix.image_name }} image
         uses: docker/build-push-action@v6
         with:
@@ -115,8 +127,8 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: ${{ matrix.image_name }}:${{ github.sha }}-${{ matrix.arch }}
-          cache-from: type=registry,ref=${{ env.IMAGE_CACHE_PREFIX }}/${{ matrix.cache }}:buildcache-${{ matrix.arch }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=registry,ref={0}/{1}:buildcache-{2},mode=max', env.IMAGE_CACHE_PREFIX, matrix.cache, matrix.arch) || '' }}
+          cache-from: type=gha,scope=${{ matrix.cache }}-${{ matrix.arch }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && matrix.build_type == 'Release' && format('type=gha,scope={0}-{1},mode=min', matrix.cache, matrix.arch) || '' }}
 
       # A local ccache directory, mounted into the container, in place of the
       # HTTP remote backend that used to point at self-hosted infrastructure.
@@ -226,7 +238,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -244,15 +255,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # cache-from only: the test cells already write this tag from main, and
-      # an analysis build has nothing to add to it.
+      # cache-from only, and the same scope the devcontainer test cells write:
+      # they already populate it from main, and an analysis build has nothing to
+      # add that they have not.
       - name: Build the devcontainer image
         uses: docker/build-push-action@v6
         with:
@@ -261,7 +266,7 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: devcontainer:${{ github.sha }}-${{ matrix.arch }}
-          cache-from: type=registry,ref=${{ env.IMAGE_CACHE_PREFIX }}/libevpl-dev:buildcache-${{ matrix.arch }}
+          cache-from: type=gha,scope=libevpl-dev-${{ matrix.arch }}
 
       # IO_URING_NVME_ENABLED=OFF matches chimera, and is what that option's
       # own help text recommends: the NVMe uring_cmd path sends the analyzer
