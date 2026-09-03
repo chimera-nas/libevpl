@@ -156,18 +156,29 @@ jobs:
             -w /build \
             ${{ matrix.image_name }}:${{ github.sha }}-${{ matrix.arch }} \
             bash -euxc '
-              # ccache keeps its counters inside the cache directory, so a
-              # restored one carries the statistics of the run that made it.
-              # Zero them so --show-stats describes this run alone.
-              ccache -z > /dev/null
               # CMAKE_C_COMPILER_LAUNCHER explicitly: libevpl, unlike chimera,
               # has no find_program(ccache) in its CMakeLists, and the compiler
               # symlinks the distro ccache package installs are not on PATH in a
               # non-login shell.  Without this the cache is inert -- which is
               # what the previous CCACHE_REMOTE_STORAGE setup was, and why its
               # hit rate was never worth reading.
+              #
+              # Guarded rather than assumed.  Every image is expected to carry
+              # ccache now, but an image that does not must build uncached
+              # rather than fail: an unconditional `ccache -z` is how this broke
+              # the four devcontainer cells while every distro cell passed.
+              if command -v ccache > /dev/null; then
+                # ccache keeps its counters inside the cache directory, so a
+                # restored one carries the statistics of the run that made it.
+                # Zero them so --show-stats describes this run alone.
+                ccache -z > /dev/null
+                launcher=-DCMAKE_C_COMPILER_LAUNCHER=ccache
+              else
+                echo "::warning::ccache not found in this image; building uncached"
+                launcher=
+              fi
               cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-                    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                    ${launcher} \
                     -DREQUIRE_NETNS_TESTS=ON ${{ matrix.cmake_extra }} /workspace
               ninja
               ccache --show-stats || true

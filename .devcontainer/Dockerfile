@@ -2,6 +2,31 @@
 #
 # SPDX-License-Identifier: Unlicense
 
+# The pinned quint toolchain, mirrored into GHCR by chimera's Mirror quint
+# workflow, rather than an npm install here.  Same pin, but the image build no
+# longer reaches the npm registry -- and it no longer downloads quint's Rust
+# evaluator either, which is the fetch that has killed CI runs before when it
+# arrived truncated or rate-limited.
+#
+# Both trees are taken: /opt/quint is node + quint, and /quint-home is the
+# pre-warmed Rust evaluator.  quint downloads that evaluator on first simulate
+# and ABORTS rather than falling back when the download fails, so shipping it in
+# the image is what stops every conformance generation depending on a network
+# fetch at test time.  That is the same reason the npm install this replaces was
+# followed by a warm-up step.
+ARG QUINT_REGISTRY=ghcr.io/chimera-nas/quint
+ARG QUINT_VERSION=0.32.0
+FROM ${QUINT_REGISTRY}:${QUINT_VERSION} AS quint
+
+# ccache, from the same mirror.  This image had none at all -- every other image
+# here installs the distro package -- so the compiler cache the workflow
+# configures had nothing to run.  Taking the pinned upstream binary rather than
+# apt's also removes the version skew across bases: ubuntu 22.04 and rocky 9
+# ship 4.6, old enough to differ from the rest in what it honours.
+ARG CCACHE_REGISTRY=ghcr.io/chimera-nas/ccache
+ARG CCACHE_VERSION=4.14
+FROM ${CCACHE_REGISTRY}:${CCACHE_VERSION} AS ccache
+
 ARG DOCKER_MIRROR=""
 FROM ${DOCKER_MIRROR}ubuntu:24.04
 ARG APT_MIRROR=""
@@ -38,28 +63,16 @@ RUN apt-get -y update && \
     libssl-dev openssl clangd uthash-dev libnuma-dev && \
     gem install jekyll bundler && \
     bundler install && \
-    npm install -g @anthropic-ai/claude-code && \
-    # Quint drives the RPC2 conformance test: cmake detects it and generates
-    # that test's cases from the models at build time, so the version is pinned
-    # -- trace generation is seeded and reproducible for a given release, but
-    # different releases may sample the state space differently.
-    npm install -g @informalsystems/quint@0.32.0
+    npm install -g @anthropic-ai/claude-code
 
-# quint downloads its Rust evaluator the first time it simulates, into
-# ~/.quint.  CI runners reach the network through internal mirrors only, so
-# that download arrives truncated and every conformance-test generation fails.
-# Warm the cache here, where the network is available and the result is baked
-# into the image.
-# Double quotes, so quint's prime operator (n') needs no escaping: inside
-# single quotes a backslash is literal and would end the string early.
-#
-# The closing ls is the check: if the evaluator did not land, fail here where
-# it is fixable rather than in every test and analysis job downstream.
-RUN printf "module warm {\n  var n: int\n  action init = n' = 0\n  action step = n' = n + 1\n}\n" \
-        > /tmp/warm.qnt && \
-    quint run /tmp/warm.qnt --max-steps=1 --max-samples=1 > /dev/null 2>&1 || true; \
-    rm -f /tmp/warm.qnt; \
-    ls -d /root/.quint/rust-evaluator-*/quint_evaluator
+# quint drives the Core/HTTP/RPC2 conformance tests: cmake detects it and
+# generates their case tables from the models at build time.  Without it those
+# suites, and the quint_model checks, silently disable themselves.
+COPY --from=quint /opt/quint  /opt/quint
+COPY --from=quint /quint-home /root/.quint
+ENV PATH=/opt/quint/bin:$PATH
+
+COPY --from=ccache /ccache /usr/local/bin/ccache
 
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
