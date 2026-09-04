@@ -2,32 +2,36 @@
 #
 # SPDX-License-Identifier: Unlicense
 
-# The pinned quint toolchain, mirrored into GHCR by chimera's Mirror quint
-# workflow, rather than an npm install here.  Same pin, but the image build no
-# longer reaches the npm registry -- and it no longer downloads quint's Rust
-# evaluator either, which is the fetch that has killed CI runs before when it
-# arrived truncated or rate-limited.
-#
-# Both trees are taken: /opt/quint is node + quint, and /quint-home is the
-# pre-warmed Rust evaluator.  quint downloads that evaluator on first simulate
-# and ABORTS rather than falling back when the download fails, so shipping it in
-# the image is what stops every conformance generation depending on a network
-# fetch at test time.  That is the same reason the npm install this replaces was
-# followed by a warm-up step.
+# Every ARG that a FROM interpolates has to be declared before the FIRST FROM.
+# An ARG below one belongs to that stage instead, so a later FROM sees it empty
+# -- which buildkit reports as `failed to parse stage name ":"`, several levels
+# away from the line that is actually wrong.  Hence one block, all of them, up
+# here, before anything else.
+ARG DOCKER_MIRROR=""
 ARG QUINT_REGISTRY=ghcr.io/chimera-nas/quint
 ARG QUINT_VERSION=0.32.0
+ARG CCACHE_REGISTRY=ghcr.io/chimera-nas/ccache
+ARG CCACHE_VERSION=4.14
+
+# The pinned quint toolchain, mirrored into GHCR by chimera's Mirror quint
+# workflow, rather than an npm install here.  Same pin, but the image build no
+# longer reaches the npm registry.
+#
+# Both trees are copied below: /opt/quint is node + quint, and /quint-home is
+# the pre-warmed Rust evaluator.  quint downloads that evaluator on first
+# simulate and ABORTS rather than falling back when the download fails, so
+# shipping it in the image is what stops every conformance generation depending
+# on a network fetch at test time -- the same reason the npm install this
+# replaces was followed by a warm-up step.
 FROM ${QUINT_REGISTRY}:${QUINT_VERSION} AS quint
 
 # ccache, from the same mirror.  This image had none at all -- every other image
 # here installs the distro package -- so the compiler cache the workflow
 # configures had nothing to run.  Taking the pinned upstream binary rather than
-# apt's also removes the version skew across bases: ubuntu 22.04 and rocky 9
-# ship 4.6, old enough to differ from the rest in what it honours.
-ARG CCACHE_REGISTRY=ghcr.io/chimera-nas/ccache
-ARG CCACHE_VERSION=4.14
+# apt's also removes version skew across bases: ubuntu 22.04 and rocky 9 ship
+# 4.6, old enough to differ from the rest in what it honours.
 FROM ${CCACHE_REGISTRY}:${CCACHE_VERSION} AS ccache
 
-ARG DOCKER_MIRROR=""
 FROM ${DOCKER_MIRROR}ubuntu:24.04
 ARG APT_MIRROR=""
 
