@@ -129,6 +129,8 @@ jobs:
           tags: ${{ matrix.image_name }}:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,scope=${{ matrix.cache }}-${{ matrix.arch }}
           cache-to: ${{ github.ref == 'refs/heads/main' && matrix.build_type == 'Release' && format('type=gha,scope={0}-{1},mode=min', matrix.cache, matrix.arch) || '' }}
+          build-args: |
+            UBUNTU_MIRROR=azure
 
       # A local ccache directory, mounted into the container, in place of the
       # HTTP remote backend that used to point at self-hosted infrastructure.
@@ -278,6 +280,8 @@ jobs:
           load: true
           tags: devcontainer:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,scope=libevpl-dev-${{ matrix.arch }}
+          build-args: |
+            UBUNTU_MIRROR=azure
 
       # IO_URING_NVME_ENABLED=OFF matches chimera, and is what that option's
       # own help text recommends: the NVMe uring_cmd path sends the analyzer
