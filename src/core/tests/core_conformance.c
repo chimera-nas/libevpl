@@ -60,8 +60,8 @@
  * that armed a different delay would be checking a different program from the
  * one that was generated.
  */
-#define DELAY_FAST_US    1000
-#define DELAY_SLOW_US    50000
+#define DELAY_FAST_US     1000
+#define DELAY_SLOW_US     50000
 
 /*
  * The clock is advanced a millisecond at a time rather than in one jump per
@@ -70,7 +70,7 @@
  * would stop meaning anything, and a periodic timer would fire once for the
  * window instead of throughout it.
  */
-#define TICK_NS          1000000ull
+#define TICK_NS           1000000ull
 
 /*
  * How many consecutive passes of the loop must produce nothing before it is
@@ -83,7 +83,7 @@
  * generous is a few more non-blocking passes, and the cost of being mean is a
  * missed callback reported as a conformance failure.
  */
-#define SETTLE_PASSES    8
+#define SETTLE_PASSES     8
 
 /*
  * A backstop on settling.  With the clock frozen the loop has a bounded
@@ -91,7 +91,7 @@
  * producing events without end -- and a loop that never settles is a hang,
  * which is the least debuggable way for a test to fail.
  */
-#define SETTLE_LIMIT     200000
+#define SETTLE_LIMIT      200000
 
 /*
  * How long to keep driving the loop at the end of a window for obligations
@@ -147,18 +147,18 @@
  * carries a little slack so that widening the model is a one-line change
  * there.  Connection ends share the slot space with the rest, two per
  * connection -- see END_SLOT. */
-#define MAX_SLOT         4
-#define MAX_CONN         2
+#define MAX_SLOT          4
+#define MAX_CONN          2
 
-#define SIDE_CLIENT      0
-#define SIDE_SERVER      1
-#define NUM_SIDE         2
+#define SIDE_CLIENT       0
+#define SIDE_SERVER       1
+#define NUM_SIDE          2
 
 #define END_SLOT(conn, side) ((conn) * NUM_SIDE + (side))
 #define PEER(side)           (1 - (side))
 
 /* Comes from the generated header; see CORE_NUM_EVENT_KIND. */
-#define NUM_EVENT_KIND   CORE_NUM_EVENT_KIND
+#define NUM_EVENT_KIND    CORE_NUM_EVENT_KIND
 
 /*
  * Block I/O.  The model cuts the device into regions and addresses one whole
@@ -172,26 +172,26 @@
  * name, which is how the same programs can be pointed at io_uring or libaio
  * on a host that has them.
  */
-#define NUM_BLOCK_QUEUE  2
-#define NUM_REGION       4
+#define NUM_BLOCK_QUEUE   2
+#define NUM_REGION        4
 /* A whole region has to fit in one buffer: the driver allocates each segment
  * as a single iovec, so that the model's segment count is exactly the
  * request's iovec count.  CONF_BUFFER_SIZE is deliberately small (see there),
  * and this is half of it -- which also makes the whole device two buffers,
  * and so makes the write-zeroes emulation loop rather than finish in one
  * chunk.  Checked against CONF_BUFFER_SIZE below, where it is defined. */
-#define REGION_BYTES     (16 * 1024)
-#define DEVICE_BYTES     ((uint64_t) NUM_REGION * REGION_BYTES)
+#define REGION_BYTES      (16 * 1024)
+#define DEVICE_BYTES      ((uint64_t) NUM_REGION * REGION_BYTES)
 
 /* Segments a request may be scattered across -- BSeg16 is the largest the
  * model generates, and is deliberately past the point where a backend with a
  * small inline iovec array has to allocate one instead. */
-#define MAX_BLOCK_SEGS   16
+#define MAX_BLOCK_SEGS    16
 
 /* What a read buffer is filled with before it is submitted, so that a read
  * which quietly returns without touching the buffer fails on content rather
  * than passing on whatever was already there. */
-#define BLOCK_POISON     0xa5
+#define BLOCK_POISON      0xa5
 
 /*
  * Poll mode, as the driver configures it.
@@ -204,11 +204,11 @@
  * One keeps the poll callback firing regularly while leaving a full pass
  * between each, which is the same state machine at a legible cadence.
  */
-#define POLL_ITERATIONS  1
+#define POLL_ITERATIONS   1
 
 /* The largest number of iovecs a payload is allowed to arrive in or be sent
  * as; ample for the largest size class at any sane buffer size. */
-#define MAX_SEND_IOV     64
+#define MAX_SEND_IOV      64
 
 /*
  * Buffer size for the run, well below the largest payload class on purpose.
@@ -223,7 +223,7 @@
  * quarter of the largest class turns evpl_send into an abort rather than a
  * test.
  */
-#define CONF_BUFFER_SIZE (32 * 1024)
+#define CONF_BUFFER_SIZE  (32 * 1024)
 
 /* See REGION_BYTES: a block segment is one iovec, so the largest one the
  * driver allocates must come out of a single buffer. */
@@ -232,7 +232,7 @@ _Static_assert(REGION_BYTES <= CONF_BUFFER_SIZE,
 
 /* Must match core.qnt's SPIN_MS.  Set rather than assumed: the model's poll
  * transitions are computed against it. */
-#define CONF_SPIN_NS     1000000UL
+#define CONF_SPIN_NS      1000000UL
 
 /*
  * Where AF_UNIX socket files go.
@@ -1071,7 +1071,7 @@ window_count(
  * what should NOT have arrived; that is check_window's business, and the
  * clock's. */
 /* Real elapsed time, for the cross-thread backstop only.  CLOCK_MONOTONIC so
- * it cannot be moved by the virtual clock or by the system clock changing. */
+* it cannot be moved by the virtual clock or by the system clock changing. */
 static uint64_t
 monotonic_ns(void)
 {
