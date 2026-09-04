@@ -2,7 +2,30 @@
 #
 # SPDX-License-Identifier: Unlicense
 
+# Every ARG that a FROM interpolates has to be declared before the FIRST FROM.
+# An ARG below one belongs to that stage instead, so a later FROM sees it empty
+# -- which buildkit reports as `failed to parse stage name ":"`, several levels
+# away from the line that is actually wrong.  Hence one block, all of them, up
+# here, before anything else.
 ARG DOCKER_MIRROR=""
+ARG QUINT_REGISTRY=ghcr.io/chimera-nas/quint
+ARG QUINT_VERSION=0.32.0
+
+# The pinned quint toolchain, mirrored into GHCR by chimera's Mirror quint
+# workflow.  quint drives the Core/HTTP/RPC2 conformance tests: cmake detects
+# it and generates their case tables from the models at build time, and without
+# it those suites and the quint_model checks silently disable themselves.
+#
+# Not on ubuntu 22.04 or rocky 9.  quint's Rust evaluator is published only as
+# *-unknown-linux-gnu against glibc 2.39, with no musl build to mirror, so it
+# cannot load on their 2.35 and 2.34.  The TypeScript backend needs no
+# evaluator and would run there, but it is 2.4x slower on these models and
+# generates a different corpus from the same seed -- so those two images would
+# be compiling a different case table from every other platform, which is
+# testing something else rather than testing more widely.  They keep skipping
+# these suites, as they always have.
+FROM ${QUINT_REGISTRY}:${QUINT_VERSION} AS quint
+
 FROM ${DOCKER_MIRROR}ubuntu:24.04
 ARG APT_MIRROR=""
 
@@ -30,6 +53,15 @@ RUN apt-get -y update && \
     libssl-dev openssl \
     liburing-dev libaio-dev librdmacm-dev libnuma-dev libunwind-dev \
     libnghttp2-dev libcurl4-openssl-dev libprotobuf-c-dev protobuf-c-compiler \
-    uthash-dev uuid-dev && \
+    uthash-dev uuid-dev \
+    python3 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Both trees: /opt/quint is node + quint, /quint-home the pre-warmed Rust
+# evaluator.  quint downloads that evaluator on first simulate and ABORTS
+# rather than falling back when the download fails, so shipping it here is what
+# keeps case generation off the network at build time.
+COPY --from=quint /opt/quint  /opt/quint
+COPY --from=quint /quint-home /root/.quint
+ENV PATH=/opt/quint/bin:$PATH

@@ -21,21 +21,37 @@ set -euo pipefail
 
 QUINT="${1:?usage: check_models.sh QUINT SRC_DIR}"
 SRC_DIR="${2:?}"
+NODE="${3:-node}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODEL="${SRC_DIR}/http1x.qnt"
 
-"${QUINT}" test "${MODEL}" --main=http1x_requests
-"${QUINT}" test "${MODEL}" --main=http1x_defects
-"${QUINT}" test "${MODEL}" --main=http1x_client
-
-# Random simulation against the invariants: the positive matrix must only ever
-# emit requests the RFCs require a server to serve -- at the version each shape
-# belongs to -- every defect must carry an outcome that is both specified and
-# consistent with the rule that a complete request is always answered, and
-# every response defect must resolve to a completion the caller can observe.
-"${QUINT}" run "${MODEL}" --main=http1x_requests \
-    --invariant=wellFormed --max-samples=500 --max-steps=50
-"${QUINT}" run "${MODEL}" --main=http1x_defects \
-    --invariant=safety --max-samples=500 --max-steps=50
-"${QUINT}" run "${MODEL}" --main=http1x_client \
-    --invariant=safety --max-samples=500 --max-steps=50
+# One elaboration for all six checks.  Each `quint test` / `quint run` is a
+# separate process that re-parses and re-typechecks http1x.qnt, and that costs
+# 3.53s against roughly 4s of actual checking -- so five of the six
+# elaborations here were pure waste.  scripts/quint_batch.js drives quint's
+# staged API instead: load/parse/typecheck once, then every check against the
+# same typechecked model.  These ran sequentially before, so nothing is
+# serialised that was not already.
+#
+# The random simulations below check that the positive matrix only ever emits
+# requests the RFCs require a server to serve -- at the version each shape
+# belongs to -- that every defect carries an outcome both specified and
+# consistent with the rule that a complete request is always answered, and that
+# every response defect resolves to a completion the caller can observe.
+"${NODE}" "${SCRIPT_DIR}/../../../../scripts/quint_batch.js" "${QUINT}" <<SPEC
+{
+  "model": "${MODEL}",
+  "backend": "rust",
+  "tests": [
+    { "main": "http1x_requests" },
+    { "main": "http1x_defects" },
+    { "main": "http1x_client" }
+  ],
+  "runs": [
+    { "main": "http1x_requests", "invariant": "wellFormed", "maxSamples": 500, "maxSteps": 50 },
+    { "main": "http1x_defects",  "invariant": "safety",     "maxSamples": 500, "maxSteps": 50 },
+    { "main": "http1x_client",   "invariant": "safety",     "maxSamples": 500, "maxSteps": 50 }
+  ]
+}
+SPEC
