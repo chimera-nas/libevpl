@@ -14,16 +14,30 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Two phases rather than chimera's three.  chimera compiles, ships the build
-# tree to a Nexus scratch repo, and pulls it back down in sharded test jobs,
-# because its suite takes long enough to be worth splitting.  libevpl's runs in
-# seconds, so compiling and testing in the same job is both simpler and faster
-# than moving a build tree across the network to save nothing.
+# One phase, not two.  Each cell builds the container image it needs and loads
+# it into that runner's docker daemon, then compiles and tests inside it:
 #
-#   1. Build    container images                (build-<image>)
-#   2. Test      compile + ctest                 (test)
-#      Analyze   scan-build                      (static-analysis)
-#      macOS     compile + ctest, hosted runner  (macos)
+#   Test      build image + compile + ctest    (test)
+#   Analyze   build image + scan-build         (static-analysis)
+#   macOS     compile + ctest, hosted runner   (macos)
+#
+# There used to be a separate phase that built each image once and pushed it to
+# a registry for the test cells to pull.  That shape does not survive the move
+# to GitHub-hosted runners: this workflow runs on `pull_request`, and a pull
+# request from a fork gets a read-only GITHUB_TOKEN that cannot write a package
+# -- which is how contributions actually arrive here.  What crosses the network
+# now is only the buildx layer cache, read by every run and written back only by
+# a push to main.  With an unchanged Dockerfile a "build" is therefore a layer
+# restore, which is what the registry round trip cost anyway.
+#
+# That cache lives in the GitHub Actions cache (type=gha) rather than a
+# registry, because with nothing pushed there is no registry left to justify.
+# The Actions cache also scopes by branch, which does for free what a registry
+# needs an explicit ref guard for -- a pull request reads the default branch's
+# scope and writes only its own, so it cannot poison main -- and its read works
+# from a fork's read-only token without depending on how package permissions
+# resolve there.  This workflow now touches GHCR for exactly one thing: pulling
+# the mirrored darwin ccache binary on the macOS job.
 #
 # Cancel superseded runs on a branch: a PR that is pushed to twice does not
 # need the first matrix to finish.
@@ -32,109 +46,16 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Same self-hosted infrastructure chimera uses: an internal registry for the
-  # images, an apt mirror, and a shared ccache backend.  The ccache URL carries
-  # upload credentials and so lives in a repository secret; without it the build
-  # still works, just local-only.
-  DEV_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-dev
-  U26_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26
-  U24_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24
-  U22_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22
-  R9_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-rocky9
-  R10_IMAGE_TAG_PREFIX: repository.mdh.quantum.com:5004/cache/libevpl-rocky10
-  APT_MIRROR: http://repository.mdh.quantum.com/repository/pkgs/ubuntu
-  DOCKER_MIRROR: repository.mdh.quantum.com/
+  # Compiler cache ceiling.  A repository gets 10 GB of Actions cache at no
+  # cost, evicting least-recently-used entries to stay inside it, and only a
+  # paid plan can raise that as billed storage.  This matrix saves 16 entries
+  # per push to main, so the ceiling below is what keeps them comfortably
+  # inside the free budget.
+  CCACHE_MAXSIZE: 1G
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Phase 1: container images.
-  #
-  # One job per image so they build in parallel.  amd64 and arm64 for the
-  # devcontainer, amd64 only for the distro images -- the distros exist to check
-  # that libevpl builds against the library versions they ship, which is not
-  # architecture-specific, while the devcontainer is where the tests actually
-  # run on both.
-  # ---------------------------------------------------------------------------
-  build-devcontainer:
-    name: Build devcontainer ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            runner: arc-amd64
-            arch: amd64
-          - platform: linux/arm64
-            runner: arc-arm64
-            arch: arm64
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push devcontainer image
-        uses: docker/build-push-action@v6
-        with:
-          # docs/, not .devcontainer/: the Dockerfile ADDs the Gemfile that the
-          # docs build needs, and that lives under docs/.  devcontainer.json
-          # says the same thing with "context": "../docs".
-          context: docs
-          file: .devcontainer/Dockerfile
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: ${{ env.DEV_IMAGE_TAG_PREFIX }}:${{ github.sha }}-${{ matrix.arch }}
-          build-args: |
-            DOCKER_MIRROR=${{ env.DOCKER_MIRROR }}
-            APT_MIRROR=${{ env.APT_MIRROR }}
-          cache-from: type=registry,ref=${{ env.DEV_IMAGE_TAG_PREFIX }}:buildcache-${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ env.DEV_IMAGE_TAG_PREFIX }}:buildcache-${{ matrix.arch }},mode=max
-
-  build-distro:
-    name: Build ${{ matrix.image_name }} ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { image_name: ubuntu26, dockerfile: Dockerfile.ubuntu26.04, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", platform: linux/amd64, runner: arc-amd64, arch: amd64 }
-          - { image_name: ubuntu24, dockerfile: Dockerfile.ubuntu24.04, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", platform: linux/amd64, runner: arc-amd64, arch: amd64 }
-          - { image_name: ubuntu22, dockerfile: Dockerfile.ubuntu22.04, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", platform: linux/amd64, runner: arc-amd64, arch: amd64 }
-          - { image_name: rocky9,   dockerfile: Dockerfile.rocky9,      tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9",   platform: linux/amd64, runner: arc-amd64, arch: amd64 }
-          - { image_name: rocky10,  dockerfile: Dockerfile.rocky10,     tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10",  platform: linux/amd64, runner: arc-amd64, arch: amd64 }
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push ${{ matrix.image_name }} image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: ${{ matrix.tag_prefix }}:${{ github.sha }}-${{ matrix.arch }}
-          build-args: |
-            DOCKER_MIRROR=${{ env.DOCKER_MIRROR }}
-            APT_MIRROR=${{ env.APT_MIRROR }}
-          cache-from: type=registry,ref=${{ matrix.tag_prefix }}:buildcache-${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ matrix.tag_prefix }}:buildcache-${{ matrix.arch }},mode=max
-
-  # ---------------------------------------------------------------------------
-  # Phase 2: compile and run the suite, in one job per image/arch/build type.
+  # Compile and run the suite, one job per image/arch/build type.
   #
   # --privileged because the tests put each network-listening case in its own
   # network namespace; REQUIRE_NETNS_TESTS=ON makes configure fail rather than
@@ -143,7 +64,6 @@ jobs:
   # ---------------------------------------------------------------------------
   test:
     name: Test ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
-    needs: [build-devcontainer, build-distro]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -151,42 +71,120 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
-          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
-          - { image_name: ubuntu26, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
-          - { image_name: ubuntu26, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu26", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
-          - { image_name: ubuntu24, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
-          - { image_name: ubuntu24, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu24", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
-          - { image_name: ubuntu22, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "-DIO_URING_ENABLED=OFF" }
-          - { image_name: ubuntu22, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-ubuntu22", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "-DIO_URING_ENABLED=OFF" }
-          - { image_name: rocky9, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
-          - { image_name: rocky9, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky9", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
-          - { image_name: rocky10, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10", arch: amd64, runner: arc-amd64, build_type: Release , cmake_extra: "" }
-          - { image_name: rocky10, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-rocky10", arch: amd64, runner: arc-amd64, build_type: Debug , cmake_extra: "" }
+          # docs/, not .devcontainer/, for the devcontainer context: the
+          # Dockerfile ADDs the Gemfile that the docs build needs, and that
+          # lives under docs/.  devcontainer.json says the same thing with
+          # "context": "../docs".
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
+          - { image_name: ubuntu26, context: ".", dockerfile: Dockerfile.ubuntu26.04, cache: libevpl-ubuntu26, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
+          - { image_name: ubuntu26, context: ".", dockerfile: Dockerfile.ubuntu26.04, cache: libevpl-ubuntu26, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
+          - { image_name: ubuntu24, context: ".", dockerfile: Dockerfile.ubuntu24.04, cache: libevpl-ubuntu24, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
+          - { image_name: ubuntu24, context: ".", dockerfile: Dockerfile.ubuntu24.04, cache: libevpl-ubuntu24, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
+          - { image_name: ubuntu22, context: ".", dockerfile: Dockerfile.ubuntu22.04, cache: libevpl-ubuntu22, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DIO_URING_ENABLED=OFF" }
+          - { image_name: ubuntu22, context: ".", dockerfile: Dockerfile.ubuntu22.04, cache: libevpl-ubuntu22, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DIO_URING_ENABLED=OFF" }
+          - { image_name: rocky9, context: ".", dockerfile: Dockerfile.rocky9, cache: libevpl-rocky9, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
+          - { image_name: rocky9, context: ".", dockerfile: Dockerfile.rocky9, cache: libevpl-rocky9, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
+          - { image_name: rocky10, context: ".", dockerfile: Dockerfile.rocky10, cache: libevpl-rocky10, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
+          - { image_name: rocky10, context: ".", dockerfile: Dockerfile.rocky10, cache: libevpl-rocky10, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
           # The devcontainer is the one image tested on both architectures.
-          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: arm64, runner: arc-arm64, build_type: Release , cmake_extra: "" }
-          - { image_name: devcontainer, tag_prefix: "repository.mdh.quantum.com:5004/cache/libevpl-dev", arch: arm64, runner: arc-arm64, build_type: Debug , cmake_extra: "" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Release, cmake_extra: "" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Debug, cmake_extra: "" }
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # One scope per image AND arch.  buildx defaults to a single scope for the
+      # whole workflow, so six images building concurrently would overwrite each
+      # other's cache and sit silently at a 0% hit rate -- a failure that costs
+      # the full build time while looking exactly like a cold start.
+      #
+      # mode=min, not max: these Dockerfiles are essentially one package-install
+      # layer rather than a chain of intermediate stages, so min caches
+      # substantially the same thing at a fraction of the size.  That matters
+      # here, because these scopes share a per-repository cache quota with the
+      # 16 ccache entries below.
+      #
+      # cache-to only from a push to main, so a pull request reads the shared
+      # cache but never writes it.  Branch scoping would enforce that anyway;
+      # the guard also stops a PR consuming quota for a scope nothing can read.
+      #
+      # And only from the Release cell.  Release and Debug differ solely in the
+      # cmake invocation INSIDE the container -- the image is byte-identical --
+      # so letting both export means two uploads of the same layers racing for
+      # last-writer on every scope.  Which of the two writes is arbitrary; that
+      # exactly one does is not.
+      - name: Build the ${{ matrix.image_name }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: ${{ matrix.image_name }}:${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.cache }}-${{ matrix.arch }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && matrix.build_type == 'Release' && format('type=gha,scope={0}-{1},mode=min', matrix.cache, matrix.arch) || '' }}
+          build-args: |
+            UBUNTU_MIRROR=azure
+
+      # A local ccache directory, mounted into the container, in place of the
+      # HTTP remote backend that used to point at self-hosted infrastructure.
+      # Actions caches are branch-scoped: a run reads its own ref's scope and
+      # the default branch's, and this workflow runs on push to main, so what a
+      # main build saves is what every pull request restores.  A miss is a cold
+      # build, never a failed job.
+      - name: Restore the ccache directory
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.image_name }}-${{ matrix.arch }}-${{ matrix.build_type }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.image_name }}-${{ matrix.arch }}-${{ matrix.build_type }}-
+
       - name: Configure, build and test inside the container
         run: |
-          mkdir -p "${{ github.workspace }}/ctest-results"
+          mkdir -p "${{ github.workspace }}/ctest-results" "${{ runner.temp }}/ccache"
           docker run --rm --privileged \
-            -e CCACHE_DIR=/build/ccache \
-            -e CCACHE_REMOTE_STORAGE="${{ secrets.CCACHE_REMOTE_STORAGE }}" \
+            -e CCACHE_DIR=/ccache \
+            -e CCACHE_MAXSIZE \
+            -v "${{ runner.temp }}/ccache:/ccache" \
             -v "${{ github.workspace }}:/workspace" \
             -v /build \
             -w /build \
-            ${{ matrix.tag_prefix }}:${{ github.sha }}-${{ matrix.arch }} \
+            ${{ matrix.image_name }}:${{ github.sha }}-${{ matrix.arch }} \
             bash -euxc '
+              # CMAKE_C_COMPILER_LAUNCHER explicitly: libevpl, unlike chimera,
+              # has no find_program(ccache) in its CMakeLists, and the compiler
+              # symlinks the distro ccache package installs are not on PATH in a
+              # non-login shell.  Without this the cache is inert -- which is
+              # what the previous CCACHE_REMOTE_STORAGE setup was, and why its
+              # hit rate was never worth reading.
+              #
+              # Guarded rather than assumed.  Every image is expected to carry
+              # ccache now, but an image that does not must build uncached
+              # rather than fail: an unconditional `ccache -z` is how this broke
+              # the four devcontainer cells while every distro cell passed.
+              if command -v ccache > /dev/null; then
+                # ccache keeps its counters inside the cache directory, so a
+                # restored one carries the statistics of the run that made it.
+                # Zero them so --show-stats describes this run alone.
+                ccache -z > /dev/null
+                launcher=-DCMAKE_C_COMPILER_LAUNCHER=ccache
+              else
+                echo "::warning::ccache not found in this image; building uncached"
+                launcher=
+              fi
               cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+                    ${launcher} \
                     -DREQUIRE_NETNS_TESTS=ON ${{ matrix.cmake_extra }} /workspace
               ninja
               ccache --show-stats || true
+              ccache --trim-max-size ${CCACHE_MAXSIZE} || true
               rc=0
               ctest --output-on-failure --test-output-size-failed 65536 \
                     --timeout 300 -j "$(nproc)" \
@@ -203,6 +201,24 @@ jobs:
                 fi
               fi
               exit $rc'
+
+      # The container runs as root, so the cache it wrote is root-owned and the
+      # runner user cannot tar it up.
+      - name: Take ownership of the ccache directory
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
+        run: sudo chown -R "$(id -u):$(id -g)" "${{ runner.temp }}/ccache"
+
+      # Only from main, and even when the suite failed: the cache reflects a
+      # build that happened, and withholding it would make every later run pay
+      # for a test failure that has nothing to do with compilation.  A pull
+      # request's own ref scope is unreadable by anything else, so saving there
+      # would only consume the repository's cache budget.
+      - name: Save the ccache directory
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.image_name }}-${{ matrix.arch }}-${{ matrix.build_type }}-${{ github.sha }}
 
       - name: Upload test results
         if: always()
@@ -232,7 +248,6 @@ jobs:
   # ---------------------------------------------------------------------------
   static-analysis:
     name: Analyze ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
-    needs: [build-devcontainer]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -240,15 +255,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: amd64, runner: arc-amd64, build_type: Release, image_name: devcontainer }
-          - { arch: amd64, runner: arc-amd64, build_type: Debug,   image_name: devcontainer }
-          - { arch: arm64, runner: arc-arm64, build_type: Release, image_name: devcontainer }
-          - { arch: arm64, runner: arc-arm64, build_type: Debug,   image_name: devcontainer }
+          - { arch: amd64, runner: ubuntu-24.04, build_type: Release, image_name: devcontainer }
+          - { arch: amd64, runner: ubuntu-24.04, build_type: Debug,   image_name: devcontainer }
+          - { arch: arm64, runner: ubuntu-24.04-arm, build_type: Release, image_name: devcontainer }
+          - { arch: arm64, runner: ubuntu-24.04-arm, build_type: Debug,   image_name: devcontainer }
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # cache-from only, and the same scope the devcontainer test cells write:
+      # they already populate it from main, and an analysis build has nothing to
+      # add that they have not.
+      - name: Build the devcontainer image
+        uses: docker/build-push-action@v6
+        with:
+          context: docs
+          file: .devcontainer/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: devcontainer:${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=libevpl-dev-${{ matrix.arch }}
+          build-args: |
+            UBUNTU_MIRROR=azure
 
       # IO_URING_NVME_ENABLED=OFF matches chimera, and is what that option's
       # own help text recommends: the NVMe uring_cmd path sends the analyzer
@@ -264,7 +297,7 @@ jobs:
             -v "${{ github.workspace }}/scan-report:/scan-report" \
             -v /build \
             -w /build \
-            ${{ env.DEV_IMAGE_TAG_PREFIX }}:${{ github.sha }}-${{ matrix.arch }} \
+            devcontainer:${{ github.sha }}-${{ matrix.arch }} \
             bash -euxc '\
               scan-build --status-bugs -o /scan-report \
               sh -c "cmake -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} -D IO_URING_NVME_ENABLED=OFF -B /build -S /workspace -G Ninja && ninja -C /build"' \
@@ -304,17 +337,50 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
+        env:
+          # The same pinned upstream ccache the Linux images install, from the
+          # public package chimera's mirror-ccache workflow republishes -- so
+          # every platform in this matrix runs one known build rather than
+          # whatever its packager happened to ship.  Upstream's darwin asset is
+          # a single universal binary, covering Intel and Apple Silicon alike.
+          CCACHE_REF: ghcr.io/chimera-nas/ccache:4.14-darwin
         run: |
           brew update
           # openssl@3 and nghttp2 are keg-only; CMakeLists.txt already adds the
           # Homebrew prefixes for them.  uthash is headers only.
-          brew install cmake ninja ccache openssl@3 nghttp2 uthash protobuf-c
+          brew install cmake ninja openssl@3 nghttp2 uthash protobuf-c oras
+          oras pull "${CCACHE_REF}" --output "${RUNNER_TEMP}"
+          install -m 0755 "${RUNNER_TEMP}/ccache-darwin" /usr/local/bin/ccache
+          ccache --version | head -1
+
+      - name: Restore the ccache directory
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-macos-${{ matrix.build_type }}-${{ github.sha }}
+          restore-keys: |
+            ccache-macos-${{ matrix.build_type }}-
 
       - name: Configure and build
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
         run: |
+          # Counters ride along in the restored cache; zero them so the stats
+          # below describe this run alone.
+          ccache -z > /dev/null
           cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
                 -S "${{ github.workspace }}" -B "${{ runner.temp }}/build"
           ninja -C "${{ runner.temp }}/build"
+          ccache --show-stats || true
+          ccache --trim-max-size "${CCACHE_MAXSIZE}" || true
+
+      - name: Save the ccache directory
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-macos-${{ matrix.build_type }}-${{ github.sha }}
 
       # No REQUIRE_NETNS_TESTS here: network namespaces are a Linux feature, so
       # the suite falls back to its serialised shared-port path on Darwin.
@@ -356,7 +422,7 @@ jobs:
     name: CI complete
     if: always()
     needs: [test, static-analysis, macos]
-    runs-on: arc-small
+    runs-on: ubuntu-24.04
     steps:
       - name: Check matrix results
         run: |

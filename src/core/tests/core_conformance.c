@@ -60,8 +60,8 @@
  * that armed a different delay would be checking a different program from the
  * one that was generated.
  */
-#define DELAY_FAST_US    1000
-#define DELAY_SLOW_US    50000
+#define DELAY_FAST_US     1000
+#define DELAY_SLOW_US     50000
 
 /*
  * The clock is advanced a millisecond at a time rather than in one jump per
@@ -70,7 +70,7 @@
  * would stop meaning anything, and a periodic timer would fire once for the
  * window instead of throughout it.
  */
-#define TICK_NS          1000000ull
+#define TICK_NS           1000000ull
 
 /*
  * How many consecutive passes of the loop must produce nothing before it is
@@ -83,7 +83,7 @@
  * generous is a few more non-blocking passes, and the cost of being mean is a
  * missed callback reported as a conformance failure.
  */
-#define SETTLE_PASSES    8
+#define SETTLE_PASSES     8
 
 /*
  * A backstop on settling.  With the clock frozen the loop has a bounded
@@ -91,42 +91,74 @@
  * producing events without end -- and a loop that never settles is a hang,
  * which is the least debuggable way for a test to fail.
  */
-#define SETTLE_LIMIT     200000
+#define SETTLE_LIMIT      200000
 
 /*
  * How long to keep driving the loop at the end of a window for obligations
  * that have not arrived yet.
  *
- * evpl_listener_create() runs the accept path on a thread of its own, so a
- * connection's arrival is handed across threads and how many passes of THIS
- * loop it takes is a property of the scheduler, not of libevpl.  Waiting for
- * it costs nothing when it is prompt and does not weaken anything: a callback
- * that must arrive is waited for, while a callback that must NOT arrive is
- * still decided by the clock, which does not move here.
+ * evpl_listener_create() runs the accept path on a thread of its own, and the
+ * block backends run their I/O on one, so those arrivals are handed across
+ * threads and how long they take is a property of the scheduler and the
+ * storage rather than of libevpl.  Waiting for them costs nothing when they
+ * are prompt and does not weaken anything: a callback that must arrive is
+ * waited for, while a callback that must NOT arrive is still decided by the
+ * clock, which does not move here.
  *
- * The bound is a backstop against a genuine hang.  Each pass is a
- * non-blocking poll, so exhausting it takes well under a second, and what
- * follows is the ordinary "obligation not discharged" failure -- which is
- * exactly what a callback that never comes is.
+ * The bound is real time, not a pass count.  It used to be 200000 passes of a
+ * non-blocking poll, on the reasoning that exhausting it "takes well under a
+ * second" -- true only while this loop is not competing for a core with the
+ * thread it is waiting on.  On a four-vCPU CI runner with several of these
+ * tests in flight it competes hard, and the pread backend's device thread is
+ * doing real pread/pwrite and, for a flush or a synced write, fsync against a
+ * file on a container filesystem.  A single fsync there can outlast the whole
+ * spin, and the result was a completion reported missing in the window that
+ * owed it and extra in a window nine steps later -- the callback was late,
+ * never lost.
+ *
+ * Time is the honest unit for that, because what is being waited on is
+ * another thread finishing real work.  It does not touch the modelled
+ * deadlines, which remain the virtual clock's; it only decides how long to
+ * wait before calling a missing callback missing.
+ *
+ * AWAIT_SPIN_PASSES keeps the fast path hot -- a prompt callback is picked up
+ * without ever sleeping -- and the sleep after it stops this loop from
+ * starving the very thread it is waiting for.
+ *
+ * The limit stays modest on purpose.  It is a backstop against a genuine
+ * hang, and every step that is really broken now costs it, so a limit
+ * generous enough to hide a slow disk must still leave a broken run able to
+ * report inside ctest's timeout.
  */
-#define AWAIT_PASSES     200000
+#define AWAIT_SPIN_PASSES 4096
+#define AWAIT_SLEEP_NS    (200 * 1000)            /* 200us between polls */
+#define AWAIT_LIMIT_NS    (5ULL * 1000000000ULL)  /* 5s for one window */
+/*
+ * And a budget across the whole run, because a per-window limit alone has a
+ * bad worst case: a run with 519 quiesces that is genuinely broken would wait
+ * out every one of them and take 43 minutes, turning a clean list of failures
+ * into a ctest timeout -- the least useful way to report a regression.  Once
+ * this is spent, later windows fall back to the spin and report immediately.
+ * A healthy run never touches either bound.
+ */
+#define AWAIT_TOTAL_NS    (30ULL * 1000000000ULL) /* 30s across the run */
 
 /* Object slots the model may name.  It declares two of each; the driver
  * carries a little slack so that widening the model is a one-line change
  * there.  Connection ends share the slot space with the rest, two per
  * connection -- see END_SLOT. */
-#define MAX_SLOT         4
-#define MAX_CONN         2
+#define MAX_SLOT          4
+#define MAX_CONN          2
 
-#define SIDE_CLIENT      0
-#define SIDE_SERVER      1
-#define NUM_SIDE         2
+#define SIDE_CLIENT       0
+#define SIDE_SERVER       1
+#define NUM_SIDE          2
 
 #define END_SLOT(conn, side) ((conn) * NUM_SIDE + (side))
 #define PEER(side)           (1 - (side))
 
 /* Comes from the generated header; see CORE_NUM_EVENT_KIND. */
-#define NUM_EVENT_KIND   CORE_NUM_EVENT_KIND
+#define NUM_EVENT_KIND    CORE_NUM_EVENT_KIND
 
 /*
  * Block I/O.  The model cuts the device into regions and addresses one whole
@@ -140,26 +172,26 @@
  * name, which is how the same programs can be pointed at io_uring or libaio
  * on a host that has them.
  */
-#define NUM_BLOCK_QUEUE  2
-#define NUM_REGION       4
+#define NUM_BLOCK_QUEUE   2
+#define NUM_REGION        4
 /* A whole region has to fit in one buffer: the driver allocates each segment
  * as a single iovec, so that the model's segment count is exactly the
  * request's iovec count.  CONF_BUFFER_SIZE is deliberately small (see there),
  * and this is half of it -- which also makes the whole device two buffers,
  * and so makes the write-zeroes emulation loop rather than finish in one
  * chunk.  Checked against CONF_BUFFER_SIZE below, where it is defined. */
-#define REGION_BYTES     (16 * 1024)
-#define DEVICE_BYTES     ((uint64_t) NUM_REGION * REGION_BYTES)
+#define REGION_BYTES      (16 * 1024)
+#define DEVICE_BYTES      ((uint64_t) NUM_REGION * REGION_BYTES)
 
 /* Segments a request may be scattered across -- BSeg16 is the largest the
  * model generates, and is deliberately past the point where a backend with a
  * small inline iovec array has to allocate one instead. */
-#define MAX_BLOCK_SEGS   16
+#define MAX_BLOCK_SEGS    16
 
 /* What a read buffer is filled with before it is submitted, so that a read
  * which quietly returns without touching the buffer fails on content rather
  * than passing on whatever was already there. */
-#define BLOCK_POISON     0xa5
+#define BLOCK_POISON      0xa5
 
 /*
  * Poll mode, as the driver configures it.
@@ -172,11 +204,11 @@
  * One keeps the poll callback firing regularly while leaving a full pass
  * between each, which is the same state machine at a legible cadence.
  */
-#define POLL_ITERATIONS  1
+#define POLL_ITERATIONS   1
 
 /* The largest number of iovecs a payload is allowed to arrive in or be sent
  * as; ample for the largest size class at any sane buffer size. */
-#define MAX_SEND_IOV     64
+#define MAX_SEND_IOV      64
 
 /*
  * Buffer size for the run, well below the largest payload class on purpose.
@@ -191,7 +223,7 @@
  * quarter of the largest class turns evpl_send into an abort rather than a
  * test.
  */
-#define CONF_BUFFER_SIZE (32 * 1024)
+#define CONF_BUFFER_SIZE  (32 * 1024)
 
 /* See REGION_BYTES: a block segment is one iovec, so the largest one the
  * driver allocates must come out of a single buffer. */
@@ -200,7 +232,7 @@ _Static_assert(REGION_BYTES <= CONF_BUFFER_SIZE,
 
 /* Must match core.qnt's SPIN_MS.  Set rather than assumed: the model's poll
  * transitions are computed against it. */
-#define CONF_SPIN_NS     1000000UL
+#define CONF_SPIN_NS      1000000UL
 
 /*
  * Where AF_UNIX socket files go.
@@ -1038,6 +1070,18 @@ window_count(
 /* Whether everything this window is owed has arrived.  Says nothing about
  * what should NOT have arrived; that is check_window's business, and the
  * clock's. */
+/* Real elapsed time, for the cross-thread backstop only.  CLOCK_MONOTONIC so
+* it cannot be moved by the virtual clock or by the system clock changing. */
+static uint64_t
+monotonic_ns(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+} /* monotonic_ns */
+
 static int
 expectations_met(
     struct prog_state      *ps,
@@ -1055,6 +1099,52 @@ expectations_met(
 
     return 1;
 } /* expectations_met */
+
+/*
+ * Drive the loop until every obligation of this window has arrived, or until
+ * the backstop expires.  See AWAIT_LIMIT_NS for why the bound is time.
+ */
+static uint64_t g_await_spent_ns;
+
+static void
+await_expectations(
+    struct prog_state      *ps,
+    const struct core_step *step)
+{
+    struct timespec nap = { 0, AWAIT_SLEEP_NS };
+    uint64_t        started = 0, now;
+    int             passes = 0;
+
+    while (!expectations_met(ps, step)) {
+        evpl_continue(ps->evpl);
+
+        if (++passes < AWAIT_SPIN_PASSES) {
+            continue;
+        }
+
+        /* The clock is read only once the spin is exhausted, so a prompt
+         * callback never pays for a clock_gettime at all. */
+        if (!started) {
+            if (g_await_spent_ns >= AWAIT_TOTAL_NS) {
+                break;
+            }
+            started = monotonic_ns();
+        } else {
+            now = monotonic_ns();
+
+            if (now - started >= AWAIT_LIMIT_NS ||
+                g_await_spent_ns + (now - started) >= AWAIT_TOTAL_NS) {
+                break;
+            }
+        }
+
+        nanosleep(&nap, NULL);
+    }
+
+    if (started) {
+        g_await_spent_ns += monotonic_ns() - started;
+    }
+} /* await_expectations */
 
 /*
  * Hold one quiesce window against what the model says was owed.
@@ -1189,7 +1279,7 @@ do_quiesce(
     int                     stepno)
 {
     uint64_t target = ps->base_ns + (uint64_t) step->at_ms * TICK_NS;
-    int      i, failures;
+    int      failures;
 
     ps->poll_logged = 0;
 
@@ -1211,10 +1301,8 @@ do_quiesce(
     }
 
     /* Anything still outstanding is waiting on another thread rather than on
-     * the clock; see AWAIT_PASSES. */
-    for (i = 0; i < AWAIT_PASSES && !expectations_met(ps, step); i++) {
-        evpl_continue(ps->evpl);
-    }
+     * the clock; see AWAIT_LIMIT_NS. */
+    await_expectations(ps, step);
 
     g_results.quiesces++;
 

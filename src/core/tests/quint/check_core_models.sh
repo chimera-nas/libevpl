@@ -17,10 +17,35 @@ set -euo pipefail
 
 QUINT="${1:?usage: check_core_models.sh QUINT SRC_DIR}"
 SRC_DIR="${2:?}"
+NODE="${3:-node}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-"${QUINT}" test "${SRC_DIR}/core.qnt"
 
-# Random simulation against the invariants: every op must be one the driver
-# knows, and every obligation must be attached to the quiesce that checks it.
-"${QUINT}" run "${SRC_DIR}/core.qnt" \
-    --invariant=safety --max-samples=500 --max-steps=60
+# One elaboration for every check below.  Each `quint test` / `quint run` is a
+# separate process that re-parses and re-typechecks the model, and that
+# dominates: elaborating core.qnt costs 3.35s against a few seconds of actual
+# checking.  scripts/quint_batch.js drives quint's staged API instead --
+# load/parse/typecheck once, then every check against the same typechecked
+# model.  These already ran sequentially, so no parallelism is lost.
+#
+# --backend=rust, quint's default and the fast one.  TypeScript would let
+# ubuntu 22.04 and rocky 9 run these too -- it needs no Rust evaluator -- but it
+# is 2.4x slower on these models and generates a different corpus from the same
+# seed, so those two images would compile a different case table from every
+# other platform.  They keep skipping these suites instead.
+
+# No "main": each of these files holds exactly one module, whose name does not
+# match the filename (evpl_core, xdr_values, rpc2_defects), so quint resolves it
+# as the file's default module -- which is what the CLI invocations relied on by
+# passing no --main.  Naming one explicitly would have to name it correctly.
+MODEL="${SRC_DIR}/core.qnt"
+"${NODE}" "${SCRIPT_DIR}/../../../../scripts/quint_batch.js" "${QUINT}" <<SPEC
+{
+  "model": "${MODEL}",
+  "backend": "rust",
+  "tests": [ {} ],
+  "runs": [
+    { "invariant": "safety", "maxSamples": 500, "maxSteps": 60 }
+  ]
+}
+SPEC
