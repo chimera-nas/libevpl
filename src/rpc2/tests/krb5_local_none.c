@@ -38,6 +38,12 @@ krb5_local_provider(void)
 } /* krb5_local_provider */
 
 const struct evpl_rpc2_gss_provider *
+krb5_local_initiator_provider(void)
+{
+    return NULL;
+} /* krb5_local_initiator_provider */
+
+const struct evpl_rpc2_gss_provider *
 krb5_local_provider_noiov(void)
 {
     return NULL;
