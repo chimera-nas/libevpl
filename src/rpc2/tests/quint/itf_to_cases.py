@@ -92,6 +92,7 @@ DEFECTS = [
     "GssIntegDataValid", "GssIntegChecksumWrong", "GssIntegSeqMismatch",
     "GssPrivDataValid", "GssPrivSealCorrupt", "GssPrivSeqMismatch",
     "GssPrivSplitAcrossFragments", "GssPrivEmptyArgs",
+    "GssPrivFramingBad", "GssPrivReplyWrapFails",
     "GssDestroyContext", "GssDestroyUnauthenticated",
     "GssSeqAboveMax", "GssSeqWindowJump", "GssSeqTooOld", "GssSeqOutOfOrder",
     "GssCredTruncated", "GssCredHandleOverruns",

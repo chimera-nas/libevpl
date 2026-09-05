@@ -281,6 +281,19 @@ static const struct known_divergence known_divergences[] = {
       .actual = EXP_SUCCESS,
       .note   = "oversized krb5i MIC returns unwrapped results, not a drop" },
 
+    /* The same fallthrough under privacy, and the consequence is not the same.
+     * An unsigned krb5i reply is one the client should refuse; an unsealed
+     * krb5p reply is the results themselves, in the clear, on a connection the
+     * caller asked to have encrypted.  The peer may well notice the missing
+     * wrapping -- but by then the confidentiality it was protecting is already
+     * spent, which is the one failure mode noticing cannot undo.  Recorded
+     * rather than required because it is rpc2's deliberate shape today; it is
+     * the entry to revisit first if that shape is ever reconsidered. */
+    { .defect = DEF_GSSPRIVREPLYWRAPFAILS,
+      .expect = EXP_NOREPLY,
+      .actual = EXP_SUCCESS,
+      .note   = "unsealable krb5p results are returned in the clear, not dropped" },
+
     /* The GSS token of a context-creation call travels in the call ARGUMENTS
      * (rpc_gss_init_arg, RFC 2203 sec 5.2.2), so a token that will not decode
      * is undecodable arguments: GARBAGE_ARGS, per RFC 5531 sec 9 and the same
@@ -370,6 +383,8 @@ defect_name(int d)
         case DEF_GSSPRIVSEQMISMATCH:      return "GssPrivSeqMismatch";
         case DEF_GSSPRIVSPLITACROSSFRAGMENTS: return "GssPrivSplitAcrossFragments";
         case DEF_GSSPRIVEMPTYARGS:        return "GssPrivEmptyArgs";
+        case DEF_GSSPRIVFRAMINGBAD:       return "GssPrivFramingBad";
+        case DEF_GSSPRIVREPLYWRAPFAILS:   return "GssPrivReplyWrapFails";
         case DEF_GSSDESTROYCONTEXT:       return "GssDestroyContext";
         case DEF_GSSDESTROYUNAUTHENTICATED: return "GssDestroyUnauthenticated";
         case DEF_GSSSEQABOVEMAX:          return "GssSeqAboveMax";
@@ -2740,7 +2755,8 @@ gss_case_needs_stub(int defect)
            defect == DEF_GSSINITCONTINUES ||
            defect == DEF_GSSCONTINUEINITTOKENMALFORMED ||
            defect == DEF_GSSINTEGREPLYMICFAILS ||
-           defect == DEF_GSSINTEGREPLYMICOVERSIZE;
+           defect == DEF_GSSINTEGREPLYMICOVERSIZE ||
+           defect == DEF_GSSPRIVREPLYWRAPFAILS;
 } /* gss_case_needs_stub */
 
 #define INIT_TOKEN_GOOD    0   /* a well-formed opaque<>                    */
@@ -3022,6 +3038,65 @@ build_gss_priv_call(
     put32(msg, (uint32_t) token_len);
     put_bytes(msg, token, token_len);
 } /* build_gss_priv_call */
+
+/* Ways an rpc_gss_priv_data can fail to decode.  As with integrity, each keeps
+ * the credential, header MIC and sequence number valid, so only the argument
+ * framing is at fault -- GARBAGE_ARGS rather than a denial.  Privacy has fewer
+ * ways to be malformed because its body is one opaque: there is no separate
+ * checksum field to truncate. */
+#define PRIV_BAD_NO_LENGTH  0    /* arguments too short to hold a length   */
+#define PRIV_BAD_ZERO_TOKEN 1    /* a zero-length token: nothing to unseal */
+#define PRIV_BAD_LONG_TOKEN 2    /* token length past the message          */
+
+static void
+build_gss_priv_bad_call(
+    struct wirebuf *msg,
+    uint32_t        xid,
+    uint32_t        handle,
+    uint32_t        seq,
+    int             mode)
+{
+    struct wirebuf plain;
+    uint8_t        mic[MIC_MAX];
+    uint8_t        token[4096];
+    size_t         token_len, mic_len;
+    uint32_t       cred_len;
+
+    msg->len = 0;
+    put32(msg, xid);
+    put32(msg, 0);                          /* CALL */
+    put32(msg, 2);
+    put32(msg, CONF_PROG);
+    put32(msg, CONF_VERS);
+    put32(msg, PROC_ECHO_SCALARS);
+    cred_len = put_gss_cred(msg, RPCSEC_GSS_VERS_1, RPCSEC_GSS_DATA,
+                            seq, GSS_SVC_PRIVACY, &handle);
+
+    mic_len = mech_mic(msg->data, gss_signed_len(cred_len), mic);
+    put32(msg, RPCSEC_GSS_FLAVOR);
+    put32(msg, (uint32_t) mic_len);
+    put_bytes(msg, mic, mic_len);
+
+    if (mode == PRIV_BAD_NO_LENGTH) {
+        msg->data[msg->len++] = 0;
+        msg->data[msg->len++] = 0;
+        return;
+    }
+
+    if (mode == PRIV_BAD_ZERO_TOKEN) {
+        put32(msg, 0);
+        return;
+    }
+
+    /* A real token, framed as longer than what actually follows it. */
+    plain.len = 0;
+    put32(&plain, seq);
+    build_args_into(&plain, TGT_TSCALARS);
+    token_len = mech_seal(plain.data, plain.len, token, sizeof(token));
+
+    put32(msg, (uint32_t) token_len + 64);
+    put_bytes(msg, token, token_len);
+} /* build_gss_priv_bad_call */
 
 /* Ways an rpc_gss_integ_data can fail to decode.  Each one keeps the
  * credential, the header MIC and the sequence number valid, so the caller is
@@ -3369,6 +3444,8 @@ defect_is_gss(uint8_t defect)
         case DEF_GSSPRIVSEQMISMATCH:
         case DEF_GSSPRIVSPLITACROSSFRAGMENTS:
         case DEF_GSSPRIVEMPTYARGS:
+        case DEF_GSSPRIVFRAMINGBAD:
+        case DEF_GSSPRIVREPLYWRAPFAILS:
         case DEF_GSSDESTROYCONTEXT:
         case DEF_GSSDESTROYUNAUTHENTICATED:
         case DEF_GSSSEQABOVEMAX:
@@ -3673,6 +3750,24 @@ run_gss_case(
         case DEF_GSSPRIVSEALCORRUPT:
             build_gss_priv_call(&msg, 0x47535361, handle, 1, 1, 0, 1);
             return gss_exchange(evpl, fd, &msg, NULL, NULL);
+
+        case DEF_GSSPRIVFRAMINGBAD:
+            build_gss_priv_bad_call(&msg, 0x47535365, handle, 1,
+                                    (int) c->param);
+            return gss_exchange(evpl, fd, &msg, NULL, NULL);
+
+        case DEF_GSSPRIVREPLYWRAPFAILS:
+            /* The mechanism refuses to seal the reply.  rpc2 treats a failed
+             * reply wrap as advisory and falls through with the body
+             * UNSEALED -- the same shape as the integrity reply-MIC cases and
+             * open to the same objection, sharpened: the caller asked for
+             * confidentiality and receives plaintext, with only the peer's
+             * vigilance standing between that and silence. */
+            gss_stub_set_wrap_mode(GSS_STUB_WRAP_FAIL);
+            build_gss_priv_call(&msg, 0x47535366, handle, 1, 1, 1, 1);
+            outcome = gss_exchange(evpl, fd, &msg, NULL, NULL);
+            gss_stub_set_wrap_mode(GSS_STUB_WRAP_HONEST);
+            return outcome;
 
         case DEF_GSSPRIVSEQMISMATCH:
             /* Header seq 1, sealed seq 2: the pair a tamperer would have to
