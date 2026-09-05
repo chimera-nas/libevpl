@@ -110,6 +110,8 @@ module rpc2_defects {
         | GssPrivSeqMismatch          /* krb5p: sealed seq != cred seq     */
         | GssPrivSplitAcrossFragments /* krb5p: token arrives scattered    */
         | GssPrivEmptyArgs            /* krb5p: NULLPROC, seq-only token   */
+        | GssPrivFramingBad(int)      /* krb5p: priv_data will not decode  */
+        | GssPrivReplyWrapFails       /* krb5p: mechanism will not seal    */
         | GssDestroyContext           /* DESTROY of a context we hold      */
         | GssDestroyUnauthenticated   /* DESTROY with no valid header MIC  */
         /* --- RPCSEC_GSS replay window (RFC 2203 section 5.3.3.1) ------- */
@@ -344,6 +346,20 @@ module rpc2_defects {
          * edge. */
         | GssPrivEmptyArgs => Success
 
+        /* An rpc_gss_priv_data that will not decode.  Same reasoning as the
+         * integrity framing cases: the credential and header MIC are valid, so
+         * the caller is authenticated and only its arguments are unusable --
+         * MSG_ACCEPTED with GARBAGE_ARGS (RFC 2203 section 5.3.3.4.2). */
+        | GssPrivFramingBad(_) => GarbageArgs
+
+        /* RFC 2203 section 5.3.3.4.1 requires no response when the results
+         * cannot be protected.  rpc2 instead falls through and sends them
+         * UNSEALED, which is recorded as a divergence rather than a
+         * requirement: under privacy that is the payload in the clear, and a
+         * client that notices cannot distinguish it from an attacker having
+         * stripped the wrapping. */
+        | GssPrivReplyWrapFails => NoReply
+
         /* RFC 2203 section 5.4: the client retires a context with a control
          * message carrying gss_proc RPCSEC_GSS_DESTROY over NULLPROC and no
          * arguments; "the server sends a response as it would to a data
@@ -506,6 +522,8 @@ module rpc2_defects {
         GssIntegDataValid, GssIntegChecksumWrong, GssIntegSeqMismatch,
         GssPrivDataValid, GssPrivSealCorrupt, GssPrivSeqMismatch,
         GssPrivSplitAcrossFragments, GssPrivEmptyArgs,
+        GssPrivFramingBad(0), GssPrivFramingBad(1), GssPrivFramingBad(2),
+        GssPrivReplyWrapFails,
         GssDestroyContext, GssDestroyUnauthenticated,
         GssSeqAboveMax, GssSeqWindowJump, GssSeqTooOld, GssSeqOutOfOrder,
         GssCredTruncated, GssCredHandleOverruns,
