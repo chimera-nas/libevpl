@@ -25,6 +25,15 @@ krb5_local_create(const char **reason)
     return NULL;
 } /* krb5_local_create */
 
+struct krb5_local *
+krb5_local_create_as(
+    const char  *client_principal,
+    const char **reason)
+{
+    (void) client_principal;
+    return krb5_local_create(reason);
+} /* krb5_local_create_as */
+
 void
 krb5_local_destroy(struct krb5_local *kl)
 {

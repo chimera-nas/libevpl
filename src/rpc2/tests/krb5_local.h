@@ -39,6 +39,20 @@ struct krb5_local *
 krb5_local_create(
     const char **reason);
 
+/*
+ * As krb5_local_create(), but naming the principal the initiator presents.
+ *
+ * "user" builds a one-component name and "svc/host" a two-component service
+ * principal; the realm is the harness's own either way.  A consumer that maps
+ * an authenticated principal to a local identity -- chimera's NFS server maps
+ * a service principal to root and an unknown user to anonymous -- has to be
+ * able to choose which of those it is presenting.  NULL takes the default.
+ */
+struct krb5_local *
+krb5_local_create_as(
+    const char  *client_principal,
+    const char **reason);
+
 void
 krb5_local_destroy(
     struct krb5_local *kl);

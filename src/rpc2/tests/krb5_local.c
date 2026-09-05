@@ -146,7 +146,9 @@ krb5_local_mint(
 } /* krb5_local_mint */
 
 struct krb5_local *
-krb5_local_create(const char **reason)
+krb5_local_create_as(
+    const char  *client_principal,
+    const char **reason)
 {
     struct krb5_local *kl;
     krb5_keyblock      svckey;
@@ -179,13 +181,43 @@ krb5_local_create(const char **reason)
         goto fail;
     }
 
-    if (krb5_build_principal(kl->ctx, &kl->client, strlen(KRB5_LOCAL_REALM),
-                             KRB5_LOCAL_REALM, KRB5_LOCAL_USER, NULL) ||
-        krb5_build_principal(kl->ctx, &kl->server, strlen(KRB5_LOCAL_REALM),
-                             KRB5_LOCAL_REALM, KRB5_LOCAL_SERVICE,
-                             KRB5_LOCAL_HOST, NULL)) {
-        why = "krb5_build_principal failed";
-        goto fail;
+    {
+        char        namebuf[256];
+        char       *slash;
+        const char *name = client_principal ? client_principal : KRB5_LOCAL_USER;
+        int         built;
+
+        if (strlen(name) >= sizeof(namebuf)) {
+            why = "client principal too long";
+            goto fail;
+        }
+
+        strcpy(namebuf, name);
+        slash = strchr(namebuf, '/');
+
+        /* A two-component name ("nfs/host") is a service principal, which is
+         * a different thing to the acceptor than a one-component user name --
+         * and what a consumer maps to a local identity turns on exactly that
+         * distinction. */
+        if (slash) {
+            *slash = '\0';
+            built = krb5_build_principal(kl->ctx, &kl->client,
+                                         strlen(KRB5_LOCAL_REALM),
+                                         KRB5_LOCAL_REALM, namebuf, slash + 1,
+                                         NULL);
+        } else {
+            built = krb5_build_principal(kl->ctx, &kl->client,
+                                         strlen(KRB5_LOCAL_REALM),
+                                         KRB5_LOCAL_REALM, namebuf, NULL);
+        }
+
+        if (built ||
+            krb5_build_principal(kl->ctx, &kl->server, strlen(KRB5_LOCAL_REALM),
+                                 KRB5_LOCAL_REALM, KRB5_LOCAL_SERVICE,
+                                 KRB5_LOCAL_HOST, NULL)) {
+            why = "krb5_build_principal failed";
+            goto fail;
+        }
     }
 
     /* AES-256 rather than whatever the host's default happens to be, so the
@@ -243,6 +275,12 @@ krb5_local_create(const char **reason)
         krb5_local_destroy(kl);
     }
     return NULL;
+} /* krb5_local_create_as */
+
+struct krb5_local *
+krb5_local_create(const char **reason)
+{
+    return krb5_local_create_as(NULL, reason);
 } /* krb5_local_create */
 
 void
