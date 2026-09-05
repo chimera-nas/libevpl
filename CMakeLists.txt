@@ -8,6 +8,8 @@ option(IO_URING_ENABLED "Enable io_uring support" ON)
 option(IO_URING_NVME_ENABLED "Enable the io_uring NVMe uring_cmd block backend (auto-detected when ON; set OFF to force-disable, e.g. under the clang static analyzer)" ON)
 option(REQUIRE_NETNS_TESTS "Fail configure if network namespace tests cannot be enabled" OFF)
 set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES=required, NO=disabled)")
+set(LIBFABRIC_ENABLED "AUTO" CACHE STRING "libfabric (OFI) backend: AUTO (enable iff available), ON (require), or OFF")
+set_property(CACHE LIBFABRIC_ENABLED PROPERTY STRINGS AUTO ON OFF)
 option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 project(libevpl LANGUAGES C)
@@ -222,6 +224,53 @@ if (RDMACM_LIB AND RDMACM_INCLUDE_DIR)
     set(HAVE_RDMACM 1)
 else()
     message(STATUS "rdmacm library not found.")
+endif()
+
+string(TOUPPER "${LIBFABRIC_ENABLED}" LIBFABRIC_ENABLED)
+
+if (LIBFABRIC_ENABLED STREQUAL "OFF" OR LIBFABRIC_ENABLED STREQUAL "NO")
+    message(STATUS "libfabric backend disabled")
+else()
+    find_library(LIBFABRIC_LIB NAMES fabric)
+    find_path(LIBFABRIC_INCLUDE_DIR NAMES rdma/fabric.h)
+
+    if (LIBFABRIC_LIB AND LIBFABRIC_INCLUDE_DIR)
+        # Probe for what the backend actually uses rather than trusting a
+        # version number: fi_context2, the FI_WAIT_POLLFD wait object, and the
+        # FI_MR_* bitmask mr_mode.  All are present from 1.17, which is what
+        # Ubuntu 24.04 packages; EVPL_LIBFABRIC_API_VERSION in libfabric.c is
+        # the matching runtime floor and the two must move together.
+        include(CheckCSourceCompiles)
+        set(CMAKE_REQUIRED_INCLUDES ${LIBFABRIC_INCLUDE_DIR})
+        check_c_source_compiles("
+            #include <rdma/fabric.h>
+            #include <rdma/fi_eq.h>
+            #if FI_VERSION_LT(FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION), FI_VERSION(1, 17))
+            #error libfabric too old
+            #endif
+            int main(void) {
+                struct fi_context2 ctx;
+                int wait = FI_WAIT_POLLFD;
+                uint64_t mr = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
+                              FI_MR_ALLOCATED | FI_MR_PROV_KEY;
+                (void) ctx; (void) wait; (void) mr;
+                return 0;
+            }
+        " LIBFABRIC_VERSION_OK)
+        unset(CMAKE_REQUIRED_INCLUDES)
+    endif()
+
+    if (LIBFABRIC_LIB AND LIBFABRIC_INCLUDE_DIR AND LIBFABRIC_VERSION_OK)
+        message(STATUS "libfabric library ${LIBFABRIC_LIB}")
+        message(STATUS "libfabric include ${LIBFABRIC_INCLUDE_DIR}")
+        include_directories(${LIBFABRIC_INCLUDE_DIR})
+        add_definitions(-DHAVE_LIBFABRIC)
+        set(HAVE_LIBFABRIC 1)
+    elseif (LIBFABRIC_ENABLED STREQUAL "ON" OR LIBFABRIC_ENABLED STREQUAL "YES")
+        message(FATAL_ERROR "LIBFABRIC_ENABLED=ON but libfabric >= 1.17 was not found")
+    else()
+        message(STATUS "libfabric >= 1.17 not found; libfabric backend disabled")
+    endif()
 endif()
 
 find_library(XLIO_LIB NAMES xlio)

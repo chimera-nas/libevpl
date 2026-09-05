@@ -221,6 +221,41 @@ void evpl_global_config_set_rdmacm_rnr_retry_count(
     struct evpl_global_config *config,
     unsigned int               retry_count);
 
+void evpl_global_config_set_libfabric_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+/* Pin the libfabric provider by name (e.g. "verbs", "tcp"); NULL restores
+ * libfabric's own auto-selection.  Ignored when an external domain is set.
+ */
+void evpl_global_config_set_libfabric_provider(
+    struct evpl_global_config *config,
+    const char                *provider);
+
+void evpl_global_config_set_libfabric_cq_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_libfabric_tx_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_libfabric_rq_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+void evpl_global_config_set_libfabric_rq_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch);
+
+void evpl_global_config_set_libfabric_inject_max(
+    struct evpl_global_config *config,
+    unsigned int               max);
+
+void evpl_global_config_set_libfabric_datagram_size_override(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
 void evpl_global_config_set_xlio_enabled(
     struct evpl_global_config *config,
     int                        enabled);
