@@ -375,7 +375,22 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
 
     add_custom_target(client_cases DEPENDS ${CLIENT_CASES})
 
-    unit_test_rpc2(conformance_client hello_world.x conformance_client.c)
+    # krb5_local supplies the acceptor half for the protected reply cases; the
+    # _none variant lets the same source compile and self-skip them where
+    # kerberos is absent.
+    if(KRB5_GSSAPI_FOUND)
+        unit_test_rpc2(conformance_client hello_world.x conformance_client.c
+                       krb5_local.c)
+        target_include_directories(evpl_rpc2_conformance_client PRIVATE
+                                   ${KRB5_GSSAPI_INCLUDE_DIRS})
+        target_link_directories(evpl_rpc2_conformance_client PRIVATE
+                                ${KRB5_GSSAPI_LIBRARY_DIRS})
+        target_link_libraries(evpl_rpc2_conformance_client
+                              ${KRB5_GSSAPI_LIBRARIES})
+    else()
+        unit_test_rpc2(conformance_client hello_world.x conformance_client.c
+                       krb5_local_none.c)
+    endif()
     target_sources(evpl_rpc2_conformance_client PRIVATE ${CLIENT_CASES})
     target_include_directories(evpl_rpc2_conformance_client
                                PRIVATE ${QUINT_WORK_DIR})

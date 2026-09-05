@@ -81,6 +81,41 @@ module rpc2_client {
         | ReplyStringLenOverflow
         | ReplyStringLenBeyondMessage
 
+        /* --- replies to a call made under RPCSEC_GSS (RFC 2203) ----------
+         *
+         * These are the only cases where the call itself is protected: the
+         * client has established a context with the hostile server and is
+         * sending under integrity or privacy, so the reply must be wrapped
+         * the same way (RFC 2203 sec 5.3.3.2 / 5.3.3.3) and the client has to
+         * open it before its decoder ever sees results.
+         *
+         * They are separate variants rather than a service dimension over the
+         * existing ones because what can go wrong is different in kind: a
+         * checksum that does not verify has no analogue in an unprotected
+         * reply, and an unprotected reply has no checksum to get wrong. */
+        | GssIntegReplyValid
+        | GssPrivReplyValid
+        /* The protection is present but does not hold up. */
+        | GssIntegReplyChecksumBad
+        | GssPrivReplySealCorrupt
+        /* RFC 2203 sec 5.3.3.2: the sequence number the reply echoes is the
+         * one the call carried.  A reply echoing a different one is either a
+         * reply to some other call or an attacker's splice, and either way it
+         * is not this call's result. */
+        | GssIntegReplySeqMismatch
+        | GssPrivReplySeqMismatch
+        /* Framing of the wrapping itself, which is parsed before any of the
+         * cryptography runs -- the arithmetic here is where a length is most
+         * likely to be trusted before it is checked. */
+        | GssIntegReplyLengthBeyondMessage
+        | GssIntegReplyChecksumMissing
+        /* The reply the peer would have sent had there been no context at
+         * all: results in the clear where the service requires them wrapped.
+         * A client that decodes them has silently dropped to no protection,
+         * which is the whole point of asking for integrity or privacy. */
+        | GssIntegReplyUnprotected
+        | GssPrivReplyUnprotected
+
     /// What the client must do with the reply.
     type Outcome =
         /* The callback fires with status 0 and the value the peer encoded. */
@@ -183,6 +218,24 @@ module rpc2_client {
         | ReplyGarbageBody => CbDecodeError
         | ReplyStringLenOverflow => CbDecodeError
         | ReplyStringLenBeyondMessage => CbDecodeError
+
+        /* A correctly wrapped reply carries the results the caller asked
+         * for -- the wrapping is transport, not a different answer. */
+        | GssIntegReplyValid => CbSuccess
+        | GssPrivReplyValid => CbSuccess
+
+        /* Everything else here is a reply whose protection the client could
+         * not verify, so there are no results it is entitled to believe.  The
+         * call completes as a failure; which failure is left open for the
+         * same reason as the other refusals. */
+        | GssIntegReplyChecksumBad => CbFailed
+        | GssPrivReplySealCorrupt => CbFailed
+        | GssIntegReplySeqMismatch => CbFailed
+        | GssPrivReplySeqMismatch => CbFailed
+        | GssIntegReplyLengthBeyondMessage => CbFailed
+        | GssIntegReplyChecksumMissing => CbFailed
+        | GssIntegReplyUnprotected => CbFailed
+        | GssPrivReplyUnprotected => CbFailed
     }
 
     /// A defect that leaves the record framing intact gives the client no
@@ -233,7 +286,17 @@ module rpc2_client {
         ReplyTrailingGarbage(4), ReplyTrailingGarbage(64),
         ReplyGarbageBody,
         ReplyStringLenOverflow,
-        ReplyStringLenBeyondMessage
+        ReplyStringLenBeyondMessage,
+        GssIntegReplyValid,
+        GssPrivReplyValid,
+        GssIntegReplyChecksumBad,
+        GssPrivReplySealCorrupt,
+        GssIntegReplySeqMismatch,
+        GssPrivReplySeqMismatch,
+        GssIntegReplyLengthBeyondMessage,
+        GssIntegReplyChecksumMissing,
+        GssIntegReplyUnprotected,
+        GssPrivReplyUnprotected
     )
 
     /// Apply one specific case, recording the required behaviour alongside it.
@@ -296,9 +359,28 @@ module rpc2_client {
     val droppedRepliesKeepTheConnection =
         (expected != CbDropped) or (survives == ConnUp)
 
+    /// Requirement 3, and the reason the GSS cases exist: under a protected
+    /// service, results the client could not verify are not results.  This is
+    /// the property an implementation silently loses by falling back -- the
+    /// call still succeeds, so nothing looks wrong, and the protection the
+    /// caller asked for is simply gone.
+    val unverifiedResultsAreNeverDelivered =
+        match current.defect {
+            | GssIntegReplyChecksumBad => expected == CbFailed
+            | GssPrivReplySealCorrupt => expected == CbFailed
+            | GssIntegReplySeqMismatch => expected == CbFailed
+            | GssPrivReplySeqMismatch => expected == CbFailed
+            | GssIntegReplyLengthBeyondMessage => expected == CbFailed
+            | GssIntegReplyChecksumMissing => expected == CbFailed
+            | GssIntegReplyUnprotected => expected == CbFailed
+            | GssPrivReplyUnprotected => expected == CbFailed
+            | _ => true
+        }
+
     val safety =
         outcomeIsSpecified and noCallIsLostInSilence and
-        refusalIsNeverSuccess and droppedRepliesKeepTheConnection
+        refusalIsNeverSuccess and droppedRepliesKeepTheConnection and
+        unverifiedResultsAreNeverDelivered
 
     // ------------------------------------------------------------------
     // Scenario tests: the outcomes most likely to be got wrong
@@ -325,6 +407,34 @@ module rpc2_client {
             .then(use(ReplyAcceptStatWithBody(4), OneWrite))
             .expect(expected == CbFailed)
             .then(use(ReplyStatUndefined(2), OneWrite))
+            .expect(expected == CbFailed)
+
+    /// The two halves of a protected reply: one that verifies is the result,
+    /// and one that does not is not -- including the case where the peer
+    /// simply left the protection off, which is the fallback an attacker
+    /// would ask for.
+    run protectedReplyMustVerifyTest =
+        init
+            .then(use(GssIntegReplyValid, OneWrite))
+            .expect(expected == CbSuccess and survives == ConnUp)
+            .then(use(GssPrivReplyValid, OneWrite))
+            .expect(expected == CbSuccess)
+            .then(use(GssIntegReplyChecksumBad, OneWrite))
+            .expect(expected == CbFailed)
+            .then(use(GssPrivReplySealCorrupt, OneWrite))
+            .expect(expected == CbFailed)
+            .then(use(GssIntegReplyUnprotected, OneWrite))
+            .expect(expected == CbFailed)
+            .then(use(GssPrivReplyUnprotected, OneWrite))
+            .expect(expected == CbFailed)
+
+    /// A reply that verifies but answers a different call is still not this
+    /// call's result (RFC 2203 sec 5.3.3.2).
+    run protectedReplyMustEchoTheSequenceTest =
+        init
+            .then(use(GssIntegReplySeqMismatch, OneWrite))
+            .expect(expected == CbFailed)
+            .then(use(GssPrivReplySeqMismatch, OneWrite))
             .expect(expected == CbFailed)
 
     /// Losing the transport is still a completion.

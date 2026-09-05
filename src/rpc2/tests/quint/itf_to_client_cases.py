@@ -46,6 +46,16 @@ DEFECTS = [
     "ReplyGarbageBody",
     "ReplyStringLenOverflow",
     "ReplyStringLenBeyondMessage",
+    "GssIntegReplyValid",
+    "GssPrivReplyValid",
+    "GssIntegReplyChecksumBad",
+    "GssPrivReplySealCorrupt",
+    "GssIntegReplySeqMismatch",
+    "GssPrivReplySeqMismatch",
+    "GssIntegReplyLengthBeyondMessage",
+    "GssIntegReplyChecksumMissing",
+    "GssIntegReplyUnprotected",
+    "GssPrivReplyUnprotected",
 ]
 
 DELIVERIES = ["OneWrite", "TwoWrites", "Dribble"]

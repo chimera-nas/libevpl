@@ -81,6 +81,9 @@ raw_socket_prepare(int fd)
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"
+#include "evpl/evpl_rpc2_gss.h"
+
+#include "krb5_local.h"
 
 #include "core/test_log.h"
 #include "test_common.h"
@@ -103,6 +106,7 @@ static int port = 8000;
 #define RPC_AUTH_BADCRED    1
 #define RPC_AUTH_NONE       0
 #define RPC_AUTH_SYS        1
+#define RPC_RPCSEC_GSS      6
 
 /* hello_world.x, which this test reuses unmodified. */
 #define HELLO_PROG          42
@@ -203,6 +207,18 @@ defect_name(int d)
         case CDEF_REPLYGARBAGEBODY:          return "ReplyGarbageBody";
         case CDEF_REPLYSTRINGLENOVERFLOW:    return "ReplyStringLenOverflow";
         case CDEF_REPLYSTRINGLENBEYONDMESSAGE: return "ReplyStringLenBeyondMessage";
+        case CDEF_GSSINTEGREPLYVALID:        return "GssIntegReplyValid";
+        case CDEF_GSSPRIVREPLYVALID:         return "GssPrivReplyValid";
+        case CDEF_GSSINTEGREPLYCHECKSUMBAD:  return "GssIntegReplyChecksumBad";
+        case CDEF_GSSPRIVREPLYSEALCORRUPT:   return "GssPrivReplySealCorrupt";
+        case CDEF_GSSINTEGREPLYSEQMISMATCH:  return "GssIntegReplySeqMismatch";
+        case CDEF_GSSPRIVREPLYSEQMISMATCH:   return "GssPrivReplySeqMismatch";
+        case CDEF_GSSINTEGREPLYLENGTHBEYONDMESSAGE:
+            return "GssIntegReplyLengthBeyondMessage";
+        case CDEF_GSSINTEGREPLYCHECKSUMMISSING:
+            return "GssIntegReplyChecksumMissing";
+        case CDEF_GSSINTEGREPLYUNPROTECTED:  return "GssIntegReplyUnprotected";
+        case CDEF_GSSPRIVREPLYUNPROTECTED:   return "GssPrivReplyUnprotected";
         default:                             return "?";
     } /* switch */
 } /* defect_name */
@@ -805,6 +821,58 @@ read_exact(
     return READ_OK;
 } /* read_exact */
 
+/* rpc_gss_proc_t (RFC 2203 sec 5.1) */
+#define GSS_PROC_DATA          0
+#define GSS_PROC_INIT          1
+#define GSS_PROC_CONTINUE_INIT 2
+#define GSS_PROC_DESTROY       3
+
+static int
+deliver(
+    struct evpl              *evpl,
+    const struct client_case *c,
+    const struct wirebuf     *msg);
+
+/*
+ * Whether this call is a context retirement.
+ *
+ *   header:  xid, mtype, rpcvers, prog, vers, proc   (24 bytes)
+ *   cred:    flavor, length, rpc_gss_cred_vers_1 { version, gss_proc, ... }
+ */
+static int
+call_is_gss_destroy(
+    const uint8_t *call,
+    uint32_t       len)
+{
+    uint32_t cred_len;
+
+    if (len < 32 + 8 || get32(call + 24) != RPC_RPCSEC_GSS) {
+        return 0;
+    }
+
+    cred_len = get32(call + 28);
+
+    if (cred_len < 8 || (uint64_t) 32 + cred_len > len) {
+        return 0;
+    }
+
+    return get32(call + 36) == GSS_PROC_DESTROY;
+} /* call_is_gss_destroy */
+
+static int
+answer_gss_destroy(
+    struct evpl *evpl,
+    uint32_t     xid)
+{
+    struct wirebuf     msg;
+    struct client_case one = { 0, CDLV_ONEWRITE, 0, 0, -1 };
+
+    msg.len = 0;
+    put_accepted_header(&msg, xid);
+
+    return deliver(evpl, &one, &msg);
+} /* answer_gss_destroy */
+
 /*
  * Read one record-marked message the client sent, returning only CALLs.
  *
@@ -844,6 +912,18 @@ read_call(
         }
 
         if (len >= 8 && get32(buf + 4) == RPC_CALL) {
+            /* A context being retired is not a call any case is waiting for.
+             * It is answered and skipped here for the same reason the client's
+             * own PROG_UNAVAIL replies are: whichever case happens to be
+             * reading when it arrives would otherwise mistake it for its own
+             * call and desync every case after it. */
+            if (call_is_gss_destroy(buf, len)) {
+                if (answer_gss_destroy(evpl, get32(buf))) {
+                    return READ_EOF;
+                }
+                continue;
+            }
+
             *out_len = len;
             *out_xid = get32(buf);
             return READ_OK;
@@ -1038,6 +1118,430 @@ probe_connection(struct evpl *evpl)
 
     return cs->fired == 1 && cs->status == 0 && cs->matched;
 } /* probe_connection */
+
+/* ------------------------------------------------------------------ *
+* RPCSEC_GSS replies: the harness as an acceptor
+*
+* Everything above is an unprotected call, so the client's GSS receive path --
+* the one that has to open a wrapped reply before its decoder ever sees
+* results -- is unreachable from here.  Reaching it means the hostile server
+* has to hold up its end of a real context: answer the client's
+* RPCSEC_GSS_INIT with an rpc_gss_init_res (RFC 2203 sec 5.2.3), then wrap
+* what it sends back the way the negotiated service requires.
+*
+* krb5_local's acceptor half is used unmodified, so the checksums the client
+* verifies are real ones from a real mechanism.  That is what makes a
+* deliberately corrupted checksum meaningful: it is corrupt relative to a
+* mechanism that would otherwise have accepted it, not relative to a stub
+* that was going to say yes regardless.
+* ------------------------------------------------------------------ */
+
+#define GSS_HANDLE_VALUE 0x5eed1234u
+#define GSS_SEQ_WINDOW   64
+
+static struct krb5_local                   *g_kl;
+static const struct evpl_rpc2_gss_provider *g_acc;
+static void                                *g_acc_ctx;
+static struct evpl_rpc2_gss_client         *g_gss;
+static int                                  g_gss_ready;
+static int                                  g_gss_failed;
+static int                                  g_gss_skipped;
+
+/* Which service each GSS defect is expressed under.  The wrapping is what the
+ * case is about, so the service is a property of the defect rather than a
+ * separate dimension: an unsealable token has no meaning under integrity. */
+static int
+gss_case_service(int defect)
+{
+    switch (defect) {
+        case CDEF_GSSINTEGREPLYVALID:
+        case CDEF_GSSINTEGREPLYCHECKSUMBAD:
+        case CDEF_GSSINTEGREPLYSEQMISMATCH:
+        case CDEF_GSSINTEGREPLYLENGTHBEYONDMESSAGE:
+        case CDEF_GSSINTEGREPLYCHECKSUMMISSING:
+        case CDEF_GSSINTEGREPLYUNPROTECTED:
+            return EVPL_RPC2_GSS_SVC_INTEGRITY;
+        case CDEF_GSSPRIVREPLYVALID:
+        case CDEF_GSSPRIVREPLYSEALCORRUPT:
+        case CDEF_GSSPRIVREPLYSEQMISMATCH:
+        case CDEF_GSSPRIVREPLYUNPROTECTED:
+            return EVPL_RPC2_GSS_SVC_PRIVACY;
+        default:
+            return -1;
+    } /* switch */
+} /* gss_case_service */
+
+static int
+is_gss_case(int defect)
+{
+    return gss_case_service(defect) >= 0;
+} /* is_gss_case */
+
+static void
+gss_ready_cb(
+    struct evpl_rpc2_gss_client *client,
+    int                          status,
+    void                        *arg)
+{
+    (void) arg;
+
+    if (status) {
+        g_gss_failed = 1;
+    } else {
+        g_gss       = client;
+        g_gss_ready = 1;
+    }
+} /* gss_ready_cb */
+
+/*
+ * Answer one leg of the client's context establishment.
+ *
+ * The call is NULLPROC with an RPCSEC_GSS credential naming the procedure;
+ * its argument is the initiator's token as a counted opaque.  The reply is
+ * MSG_ACCEPTED/SUCCESS whose results are the rpc_gss_init_res, and -- once the
+ * context is complete -- whose verifier is a MIC over the advertised
+ * seq_window (RFC 2203 sec 5.2.3.1).
+ *
+ */
+static int
+gss_answer_init_leg(
+    struct evpl   *evpl,
+    const uint8_t *call,
+    uint32_t       len,
+    uint32_t       xid,
+    int           *complete)
+{
+    struct wirebuf     msg;
+    struct client_case one = { 0, CDLV_ONEWRITE, 0, 0, -1 };
+    const uint8_t     *token;
+    void              *out_token = NULL;
+    void              *mic       = NULL;
+    size_t             out_len   = 0, mic_len = 0;
+    uint32_t           off, cred_len, verf_len, token_len, window_be;
+    char               principal[256];
+
+    /* xid, mtype, rpcvers, prog, vers, proc, then the two opaque_auths. */
+    off = 24;
+    if (len < off + 8) {
+        return -1;
+    }
+    cred_len = get32(call + off + 4);
+
+    if (cred_len < 16 || (uint64_t) off + 8 + cred_len > len) {
+        return -1;
+    }
+
+    off += 8 + ((cred_len + 3) & ~3u);
+
+    if (len < off + 8) {
+        return -1;
+    }
+    verf_len = get32(call + off + 4);
+    off     += 8 + ((verf_len + 3) & ~3u);
+
+    if (len < off + 4) {
+        return -1;
+    }
+    token_len = get32(call + off);
+    token     = call + off + 4;
+
+    if ((uint64_t) off + 4 + token_len > len) {
+        return -1;
+    }
+
+    if (g_acc->accept(krb5_local_arg(g_kl), &g_acc_ctx, token, token_len,
+                      &out_token, &out_len, complete,
+                      principal, sizeof(principal))) {
+        return -1;
+    }
+
+    msg.len = 0;
+    put32(&msg, xid);
+    put32(&msg, RPC_REPLY);
+    put32(&msg, RPC_MSG_ACCEPTED);
+
+    window_be = htonl(GSS_SEQ_WINDOW);
+
+    if (*complete &&
+        g_acc->get_mic(krb5_local_arg(g_kl), g_acc_ctx, &window_be,
+                       sizeof(window_be), &mic, &mic_len) == 0) {
+        put32(&msg, RPC_RPCSEC_GSS);
+        put32(&msg, (uint32_t) mic_len);
+        put_bytes(&msg, mic, (uint32_t) mic_len);
+        free(mic);
+    } else {
+        put32(&msg, RPC_AUTH_NONE);
+        put32(&msg, 0);
+    }
+
+    put32(&msg, RPC_SUCCESS);
+
+    /* rpc_gss_init_res: handle, major, minor, seq_window, token. */
+    put32(&msg, 4);
+    put32(&msg, GSS_HANDLE_VALUE);
+    put32(&msg, *complete ? 0 /* GSS_S_COMPLETE */ : 1 /* CONTINUE_NEEDED */);
+    put32(&msg, 0);
+    put32(&msg, GSS_SEQ_WINDOW);
+    put32(&msg, (uint32_t) out_len);
+    if (out_len) {
+        put_bytes(&msg, out_token, (uint32_t) out_len);
+    }
+
+    free(out_token);
+
+    return deliver(evpl, &one, &msg);
+} /* gss_answer_init_leg */
+
+/* Bring up a context on the current connection under `service`, playing the
+ * acceptor by hand.  Returns 0 once the client reports it established. */
+static int
+gss_establish(
+    struct evpl *evpl,
+    uint32_t     service)
+{
+    uint8_t  buf[4096];
+    uint32_t len, xid;
+    int      complete = 0, guard;
+
+    g_gss_ready  = 0;
+    g_gss_failed = 0;
+    g_acc_ctx    = NULL;
+
+    evpl_rpc2_gss_client_create(evpl, &g_prog.rpc2, g_conn,
+                                krb5_local_initiator_provider(),
+                                krb5_local_arg(g_kl), service,
+                                "conformance@localhost", gss_ready_cb, NULL);
+
+    for (guard = 0; guard < 8 && !g_gss_ready && !g_gss_failed; guard++) {
+        if (read_call(evpl, buf, sizeof(buf), &len, &xid) != READ_OK) {
+            return -1;
+        }
+
+        if (gss_answer_init_leg(evpl, buf, len, xid, &complete)) {
+            return -1;
+        }
+
+        evpl_continue(evpl);
+        evpl_continue(evpl);
+    }
+
+    return g_gss_ready ? 0 : -1;
+} /* gss_establish */
+
+static void
+gss_release(struct evpl *evpl)
+{
+    if (g_gss) {
+        evpl_rpc2_gss_client_destroy(evpl, g_gss);
+        g_gss = NULL;
+    }
+
+    if (g_acc_ctx) {
+        g_acc->destroy(krb5_local_arg(g_kl), g_acc_ctx);
+        g_acc_ctx = NULL;
+    }
+} /* gss_release */
+
+/*
+ * The sequence number the client put in the credential of the call it just
+ * sent.  The reply has to echo it (RFC 2203 sec 5.3.3.2), and it is chosen by
+ * the client, so it is read back off the wire rather than assumed.
+ *
+ *   rpc_gss_cred_vers_1: version, gss_proc, seq_num, service, handle<>
+ */
+static int
+gss_call_seq(
+    const uint8_t *call,
+    uint32_t       len,
+    uint32_t      *out_seq)
+{
+    uint32_t cred_len;
+
+    if (len < 24 + 8) {
+        return -1;
+    }
+
+    cred_len = get32(call + 28);
+
+    if (cred_len < 16 || (uint64_t) 32 + cred_len > len) {
+        return -1;
+    }
+
+    *out_seq = get32(call + 32 + 8);
+    return 0;
+} /* gss_call_seq */
+
+/*
+ * Build the reply body for a GSS case.
+ *
+ * Both services put a counted blob first: under integrity it is the plaintext
+ * rpc_gss_data_t (seq_num followed by the results) with a checksum after it,
+ * and under privacy it is that same plaintext sealed into a single token.
+ * Every defect here is a deliberate deviation from one of those two shapes.
+ */
+static int
+build_gss_reply(
+    struct wirebuf           *b,
+    const struct client_case *c,
+    uint32_t                  xid,
+    uint32_t                  seq)
+{
+    struct wirebuf plain;
+    uint8_t        sealed[2048];
+    void          *mic = NULL;
+    size_t         mic_len = 0, sealed_len = 0;
+    uint32_t       echoed = seq;
+    uint32_t       seq_be;
+
+    if (c->defect == CDEF_GSSINTEGREPLYSEQMISMATCH ||
+        c->defect == CDEF_GSSPRIVREPLYSEQMISMATCH) {
+        echoed = seq + 1;
+    }
+
+    /* rpc_gss_data_t, the plaintext both services are built around. */
+    plain.len = 0;
+    put32(&plain, echoed);
+    put_hello(&plain);
+
+    b->len = 0;
+    put32(b, xid);
+    put32(b, RPC_REPLY);
+    put32(b, RPC_MSG_ACCEPTED);
+
+    /* The reply verifier under an established context is a MIC over the
+     * sequence number of the call being answered. */
+    seq_be = htonl(seq);
+
+    if (g_acc->get_mic(krb5_local_arg(g_kl), g_acc_ctx, &seq_be, sizeof(seq_be),
+                       &mic, &mic_len) == 0) {
+        put32(b, RPC_RPCSEC_GSS);
+        put32(b, (uint32_t) mic_len);
+        put_bytes(b, mic, (uint32_t) mic_len);
+        free(mic);
+        mic = NULL;
+    } else {
+        put32(b, RPC_AUTH_NONE);
+        put32(b, 0);
+    }
+
+    put32(b, RPC_SUCCESS);
+
+    /* The peer that simply left the protection off: results in the clear
+     * where the service requires them wrapped. */
+    if (c->defect == CDEF_GSSINTEGREPLYUNPROTECTED ||
+        c->defect == CDEF_GSSPRIVREPLYUNPROTECTED) {
+        put_hello(b);
+        return 0;
+    }
+
+    if (gss_case_service(c->defect) == EVPL_RPC2_GSS_SVC_PRIVACY) {
+        if (g_acc->wrap(krb5_local_arg(g_kl), g_acc_ctx, plain.data, plain.len,
+                        sealed, sizeof(sealed), &sealed_len)) {
+            return -1;
+        }
+
+        put32(b, (uint32_t) sealed_len);
+
+        if (c->defect == CDEF_GSSPRIVREPLYSEALCORRUPT) {
+            /* The last byte of the token, so the damage is inside the sealed
+             * region for any wrap-token layout rather than in a header field
+             * that a length check might reject first. */
+            sealed[sealed_len - 1] ^= 0xff;
+        }
+
+        put_bytes(b, sealed, (uint32_t) sealed_len);
+        return 0;
+    }
+
+    /* Integrity: databody_integ, then its checksum. */
+    if (c->defect == CDEF_GSSINTEGREPLYLENGTHBEYONDMESSAGE) {
+        /* A length that runs past the end of the record.  Nothing after it is
+         * reachable, so no checksum is appended: the point is whether the
+         * client trusts the length before it checks it. */
+        put32(b, plain.len + 4096);
+        put_bytes(b, plain.data, plain.len);
+        return 0;
+    }
+
+    put32(b, plain.len);
+    put_bytes(b, plain.data, plain.len);
+
+    if (c->defect == CDEF_GSSINTEGREPLYCHECKSUMMISSING) {
+        return 0;
+    }
+
+    if (g_acc->get_mic(krb5_local_arg(g_kl), g_acc_ctx, plain.data, plain.len,
+                       &mic, &mic_len)) {
+        return -1;
+    }
+
+    put32(b, (uint32_t) mic_len);
+
+    if (c->defect == CDEF_GSSINTEGREPLYCHECKSUMBAD) {
+        ((uint8_t *) mic)[mic_len - 1] ^= 0xff;
+    }
+
+    put_bytes(b, mic, (uint32_t) mic_len);
+    free(mic);
+
+    return 0;
+} /* build_gss_reply */
+
+/*
+ * One GSS case: stand a context up on a fresh connection, make the call under
+ * it, and answer with the bytes the case calls for.
+ *
+ * The context is rebuilt per case rather than shared.  A case that leaves the
+ * client's replay window or its sequence counter in an unexpected state would
+ * otherwise change the meaning of every case after it, and the failure would
+ * be attributed to the wrong one.
+ */
+static int
+run_gss_case(
+    struct evpl              *evpl,
+    const struct client_case *c,
+    struct call_state        *cs)
+{
+    struct evpl_rpc2_cred cred;
+    struct wirebuf        msg;
+    uint8_t               buf[4096];
+    uint32_t              len, xid, seq;
+    int                   rc;
+
+    if (gss_establish(evpl, (uint32_t) gss_case_service(c->defect))) {
+        gss_release(evpl);
+        return -1;
+    }
+
+    memset(&cred, 0, sizeof(cred));
+    cred.flavor     = EVPL_RPC2_AUTH_RPCSEC_GSS;
+    cred.gss.client = g_gss;
+
+    issue_call_cred(evpl, cs, &cred);
+
+    rc = read_call(evpl, buf, sizeof(buf), &len, &xid);
+    evpl_test_abort_if(rc != READ_OK,
+                       "case %s: never saw the client's protected CALL (rc %d)",
+                       defect_name(c->defect), rc);
+
+    evpl_test_abort_if(gss_call_seq(buf, len, &seq),
+                       "case %s: could not read the sequence number out of the "
+                       "client's credential", defect_name(c->defect));
+
+    if (build_gss_reply(&msg, c, xid, seq)) {
+        gss_release(evpl);
+        return -1;
+    }
+
+    rc = deliver(evpl, c, &msg);
+    evpl_test_abort_if(rc, "case %s/%s: failed to write the reply",
+                       defect_name(c->defect), delivery_name(c->delivery));
+
+    pump_until_fired(evpl, cs);
+
+    gss_release(evpl);
+    return 0;
+} /* run_gss_case */
 
 /* ------------------------------------------------------------------ *
 * Outbound AUTH_SYS credentials (RFC 5531 Appendix A)
@@ -1274,6 +1778,28 @@ run_case(
         evpl_test_abort("failed to (re)connect the client under test");
     }
 
+    /* A protected case needs a context first, and a context needs a
+     * mechanism; where there is none the case is skipped rather than failed,
+     * the same way the krb5 instances of the server-side suite are. */
+    if (is_gss_case(c->defect)) {
+        if (!g_kl) {
+            g_gss_skipped++;
+            return;
+        }
+
+        g_results.run++;
+
+        if (run_gss_case(evpl, c, cs)) {
+            evpl_test_error("case %s/%s: the harness could not hold up its end "
+                            "of the context", defect_name(c->defect),
+                            delivery_name(c->delivery));
+            g_results.unknown++;
+            return;
+        }
+
+        goto classify;
+    }
+
     g_results.run++;
 
     issue_call(evpl, cs);
@@ -1313,6 +1839,8 @@ run_case(
     /* Classify what the client did.  Note the ordering: a second completion
      * outranks whatever the first one said, because no status can make
      * double-completing a call correct. */
+ classify:
+
     if (cs->fired > 1) {
         actual = ACT_DOUBLE_CALLBACK;
     } else if (cs->fired == 1) {
@@ -1391,7 +1919,8 @@ main(
     struct evpl               *evpl;
     struct evpl_rpc2_program  *programs[1];
     struct evpl_thread_config *tcfg;
-    enum evpl_protocol_id      proto = EVPL_STREAM_SOCKET_TCP;
+    enum evpl_protocol_id      proto    = EVPL_STREAM_SOCKET_TCP;
+    const char                *krb5_why = NULL;
     unsigned int               i;
     int                        opt, rc, failed;
 
@@ -1399,18 +1928,18 @@ main(
 
     while ((opt = getopt(argc, argv, "r:p:")) != -1) {
         switch (opt) {
-            case 'r':
-                rc = evpl_protocol_lookup(&proto, optarg);
-                if (rc) {
-                    fprintf(stderr, "Invalid protocol '%s'\n", optarg);
-                    return 1;
-                }
-                break;
-            case 'p':
-                port = atoi(optarg);
-                break;
-            default:
-                usage(argv[0]);
+                case 'r':
+                    rc = evpl_protocol_lookup(&proto, optarg);
+                    if (rc) {
+                        fprintf(stderr, "Invalid protocol '%s'\n", optarg);
+                        return 1;
+                    }
+                    break;
+                case 'p':
+                    port = atoi(optarg);
+                    break;
+                default:
+                    usage(argv[0]);
         } /* switch */
     }
 
@@ -1447,6 +1976,17 @@ main(
                                      NULL);
     g_endpoint = evpl_endpoint_create("127.0.0.1", port);
 
+    /* The mechanism for the protected cases.  Its absence is not a failure --
+     * the rest of the matrix does not need it -- so the GSS cases report as
+     * skipped and everything else runs unchanged. */
+    g_acc = krb5_local_provider();
+    g_kl  = krb5_local_create(&krb5_why);
+
+    if (!g_kl) {
+        evpl_test_info("no kerberos: the protected reply cases will be skipped "
+                       "(%s)", krb5_why ? krb5_why : "unavailable");
+    }
+
     /* Before the reply matrix, and on a connection nothing has abused yet:
      * these check what the client puts on the wire, so they need a case-free
      * connection more than they need a particular one. */
@@ -1466,6 +2006,11 @@ main(
 
     if (g_conn_alive) {
         evpl_rpc2_client_disconnect(g_thread, g_conn);
+    }
+
+    if (g_kl) {
+        krb5_local_destroy(g_kl);
+        g_kl = NULL;
     }
 
     if (g_peer_fd >= 0) {
@@ -1492,9 +2037,9 @@ main(
     printf("outbound credential cases: %d run, %d failed\n",
            g_cred_run, g_cred_failed);
     printf("client reply cases: %d run, %d matched spec, %d known divergences, "
-           "%d unexpected\n",
+           "%d unexpected, %d skipped (no kerberos)\n",
            g_results.run, g_results.matched, g_results.known,
-           g_results.unknown);
+           g_results.unknown, g_gss_skipped);
     printf("  matched by required outcome: %d callback-ok, %d decode-error, "
            "%d failed, %d dropped\n",
            g_results.matched_by_expect[CEXP_CBSUCCESS],
