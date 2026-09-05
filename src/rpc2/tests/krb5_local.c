@@ -825,6 +825,222 @@ krb5_local_p_destroy(
     free(lc);
 } /* krb5_local_p_destroy */
 
+/*
+ * Initiator half of the provider vtable.
+ *
+ * The acceptor entries above each carry a per-context krb5_local_ctx; the
+ * initiator does not, because a client establishes one context at a time
+ * against one peer and the whole point of this harness is that both ends live
+ * in the same process.  So *gss_ctx is the krb5_local itself, and the mechanism
+ * state it hands back is the init_ctx already inside it.
+ */
+static int
+krb5_local_p_init(
+    void       *arg,
+    void      **gss_ctx,
+    const char *target,
+    const void *in_token,
+    size_t      in_len,
+    void      **out_token,
+    size_t     *out_len,
+    int        *complete)
+{
+    struct krb5_local *kl = arg;
+    OM_uint32          maj, min, flags;
+    gss_buffer_desc    in = GSS_C_EMPTY_BUFFER, tok = GSS_C_EMPTY_BUFFER;
+    gss_name_t         name = GSS_C_NO_NAME;
+    gss_buffer_desc    nb;
+    char               principal[256];
+
+    (void) target;
+
+    *out_token = NULL;
+    *out_len   = 0;
+    *complete  = 0;
+
+    snprintf(principal, sizeof(principal), "%s/%s@%s", KRB5_LOCAL_SERVICE,
+             KRB5_LOCAL_HOST, KRB5_LOCAL_REALM);
+
+    nb.value  = principal;
+    nb.length = strlen(principal);
+
+    if (GSS_ERROR(gss_import_name(&min, &nb,
+                                  (gss_OID) GSS_KRB5_NT_PRINCIPAL_NAME,
+                                  &name))) {
+        return -1;
+    }
+
+    if (!in_token) {
+        /* First leg: start clean, so a context left over from an earlier case
+         * cannot sign with a session key this handshake never agreed. */
+        if (kl->init_ctx != GSS_C_NO_CONTEXT) {
+            gss_delete_sec_context(&min, &kl->init_ctx, GSS_C_NO_BUFFER);
+            kl->init_ctx = GSS_C_NO_CONTEXT;
+        }
+    } else {
+        in.value  = (void *) in_token;
+        in.length = in_len;
+    }
+
+    maj = gss_init_sec_context(&min, kl->init_cred, &kl->init_ctx, name,
+                               GSS_C_NO_OID,
+                               GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG |
+                               GSS_C_SEQUENCE_FLAG,
+                               0, GSS_C_NO_CHANNEL_BINDINGS,
+                               in_token ? &in : GSS_C_NO_BUFFER,
+                               NULL, &tok, &flags, NULL);
+
+    gss_release_name(&min, &name);
+
+    if (GSS_ERROR(maj)) {
+        return -1;
+    }
+
+    if (tok.length) {
+        *out_token = malloc(tok.length);
+        if (!*out_token) {
+            gss_release_buffer(&min, &tok);
+            return -1;
+        }
+        memcpy(*out_token, tok.value, tok.length);
+        *out_len = tok.length;
+    }
+
+    gss_release_buffer(&min, &tok);
+
+    *complete = (maj == GSS_S_COMPLETE);
+    *gss_ctx  = kl;
+
+    return 0;
+} /* krb5_local_p_init */
+
+/*
+ * The initiator's own vtable entries.
+ *
+ * These cannot be the acceptor's.  Every acceptor entry above is handed the
+ * per-context krb5_local_ctx that accept() minted, and signs with that
+ * context's session key; an initiator signs with kl->init_ctx, which is a
+ * different context entirely -- the one this side of the handshake built.
+ * Passing a krb5_local where a krb5_local_ctx is expected does not fail
+ * cleanly, it walks into the mechanism with the wrong pointer, which is
+ * exactly what a segfault inside kg_seal looks like.
+ *
+ * So the two roles get two vtables, and gss_ctx means something different in
+ * each: a minted context for the acceptor, the krb5_local itself for the
+ * initiator, which is where init_ctx lives.
+ */
+static int
+krb5_local_i_get_mic(
+    void       *arg,
+    void       *gss_ctx,
+    const void *msg,
+    size_t      msg_len,
+    void      **mic,
+    size_t     *mic_len)
+{
+    (void) arg;
+    return krb5_local_get_mic(gss_ctx, msg, msg_len, mic, mic_len);
+} /* krb5_local_i_get_mic */
+
+static int
+krb5_local_i_verify_mic(
+    void       *arg,
+    void       *gss_ctx,
+    const void *msg,
+    size_t      msg_len,
+    const void *mic,
+    size_t      mic_len)
+{
+    (void) arg;
+    return krb5_local_verify_mic(gss_ctx, msg, msg_len, mic, mic_len);
+} /* krb5_local_i_verify_mic */
+
+static int
+krb5_local_i_wrap(
+    void       *arg,
+    void       *gss_ctx,
+    const void *in,
+    size_t      in_len,
+    void       *out,
+    size_t      out_cap,
+    size_t     *r_out_len)
+{
+    void  *tok;
+    size_t tl;
+
+    (void) arg;
+
+    if (krb5_local_wrap(gss_ctx, in, in_len, &tok, &tl)) {
+        return -1;
+    }
+
+    if (tl > out_cap) {
+        free(tok);
+        return -1;
+    }
+
+    memcpy(out, tok, tl);
+    *r_out_len = tl;
+    free(tok);
+    return 0;
+} /* krb5_local_i_wrap */
+
+static int
+krb5_local_i_unwrap(
+    void       *arg,
+    void       *gss_ctx,
+    const void *in,
+    size_t      in_len,
+    void       *out,
+    size_t      out_cap,
+    size_t     *r_out_len)
+{
+    void  *plain;
+    size_t pl;
+
+    (void) arg;
+
+    if (krb5_local_unwrap(gss_ctx, in, in_len, &plain, &pl)) {
+        return -1;
+    }
+
+    if (pl > out_cap) {
+        free(plain);
+        return -1;
+    }
+
+    memcpy(out, plain, pl);
+    *r_out_len = pl;
+    free(plain);
+    return 0;
+} /* krb5_local_i_unwrap */
+
+/* The initiator's context belongs to the krb5_local, which krb5_local_destroy
+ * already tears down; nothing extra to release per context. */
+static void
+krb5_local_i_destroy(
+    void *arg,
+    void *gss_ctx)
+{
+    (void) arg;
+    (void) gss_ctx;
+} /* krb5_local_i_destroy */
+
+static const struct evpl_rpc2_gss_provider krb5_local_initiator_vtable = {
+    .init       = krb5_local_p_init,
+    .get_mic    = krb5_local_i_get_mic,
+    .verify_mic = krb5_local_i_verify_mic,
+    .wrap       = krb5_local_i_wrap,
+    .unwrap     = krb5_local_i_unwrap,
+    .destroy    = krb5_local_i_destroy,
+};
+
+const struct evpl_rpc2_gss_provider *
+krb5_local_initiator_provider(void)
+{
+    return &krb5_local_initiator_vtable;
+} /* krb5_local_initiator_provider */
+
 static const struct evpl_rpc2_gss_provider krb5_local_vtable = {
     .accept     = krb5_local_accept,
     .get_mic    = krb5_local_p_get_mic,

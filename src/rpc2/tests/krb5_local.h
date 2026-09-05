@@ -44,6 +44,12 @@ krb5_local_destroy(
     struct krb5_local *kl);
 
 /* The acceptor, for evpl_rpc2_set_gss_provider(). */
+/* The initiator's vtable.  Distinct from the acceptor's because the two sign
+ * with different contexts; see the comment on krb5_local_i_get_mic. */
+const struct evpl_rpc2_gss_provider *
+krb5_local_initiator_provider(
+    void);
+
 const struct evpl_rpc2_gss_provider *
 krb5_local_provider(
     void);

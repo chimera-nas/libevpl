@@ -66,6 +66,32 @@ macro(unit_test_rpc2_instance test_name protocol port)
     endforeach()
 endmacro()
 
+# As unit_test_rpc2_instance, but the instance carries extra arguments and so
+# needs a name of its own -- one binary driven several ways, where a bare
+# per-protocol name would collide.
+macro(unit_test_rpc2_instance_args inst_name protocol port bin_name)
+    foreach(mech ${EVPL_MECHANISMS})
+        set(_test libevpl/rpc2/${inst_name}_${protocol}_${mech})
+
+        if(LIBEVPL_NETNS_TESTING)
+            add_test(NAME ${_test}
+                     COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
+                             ${RPC2_TEST_EXE_${bin_name}} -r ${protocol}
+                             -p ${port} ${ARGN})
+        else()
+            add_test(NAME ${_test}
+                     COMMAND ${RPC2_TEST_EXE_${bin_name}} -r ${protocol}
+                             -p ${port} ${ARGN})
+        endif()
+
+        set_tests_properties(${_test} PROPERTIES
+            SKIP_RETURN_CODE 77
+            RESOURCE_LOCK evpl_net
+            ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${bin_name}};EVPL_TEST_CORE_MECH=${mech}"
+            TIMEOUT 30)
+    endforeach()
+endmacro()
+
 # As unit_test_rpc2_instance, but for a transport that names its peer rather
 # than addressing it -- AF_UNIX or inproc.  Neither contends for a port, so
 # neither needs a network namespace or the shared "evpl_net" lock, and both run
@@ -136,6 +162,19 @@ unit_test_rpc2(rdma_ddp rdma_ddp.x rdma_ddp.c)
 unit_test_rpc2(multifrag hello_world.x multifrag.c)
 unit_test_rpc2(client_xid hello_world.x client_xid.c)
 
+# Client-side RPCSEC_GSS.  Needs a real mechanism -- the whole point is that
+# the initiator and the acceptor are not the same few lines of test code -- so
+# it is registered only where krb5 is available, and skips (77) at runtime if
+# the library is present but cannot mint a ticket.
+if(KRB5_GSSAPI_FOUND)
+    unit_test_rpc2(client_gss hello_world.x client_gss.c krb5_local.c)
+    target_include_directories(evpl_rpc2_client_gss PRIVATE
+                               ${KRB5_GSSAPI_INCLUDE_DIRS})
+    target_link_directories(evpl_rpc2_client_gss PRIVATE
+                            ${KRB5_GSSAPI_LIBRARY_DIRS})
+    target_link_libraries(evpl_rpc2_client_gss ${KRB5_GSSAPI_LIBRARIES})
+endif()
+
 # Add test instances for STREAM_SOCKET_TCP
 unit_test_rpc2_instance(hello_world STREAM_SOCKET_TCP 8100)
 unit_test_rpc2_instance(builtin_bool STREAM_SOCKET_TCP 8101)
@@ -143,6 +182,17 @@ unit_test_rpc2_instance(rdma_ddp STREAM_SOCKET_TCP 8102)
 # multifrag is TCP-only: RDMA bypasses rpc2_segment_callback entirely.
 unit_test_rpc2_instance(multifrag STREAM_SOCKET_TCP 8103)
 unit_test_rpc2_instance(client_xid STREAM_SOCKET_TCP 8104)
+
+# One instance per service: the credential and verifier are common to all
+# three, but what rides on top of them is not, so a failure should name which.
+if(KRB5_GSSAPI_FOUND)
+    unit_test_rpc2_instance_args(client_gss_none STREAM_SOCKET_TCP 8210
+                                 client_gss -s none)
+    unit_test_rpc2_instance_args(client_gss_integrity STREAM_SOCKET_TCP 8211
+                                 client_gss -s integrity)
+    unit_test_rpc2_instance_args(client_gss_privacy STREAM_SOCKET_TCP 8212
+                                 client_gss -s privacy)
+endif()
 
 # Add test instances for DATAGRAM_TCP_RDMA
 unit_test_rpc2_instance(hello_world DATAGRAM_TCP_RDMA 8200)
