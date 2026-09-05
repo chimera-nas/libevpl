@@ -2184,7 +2184,20 @@ send_all(
             len -= n;
             continue;
         }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        /* ENOTCONN is "the connect has not finished yet", not a failure.  The
+         * socket is O_NONBLOCK (raw_socket_prepare), so connect() returns
+         * EINPROGRESS and the handshake completes asynchronously.  Linux
+         * finishes a loopback connect inside connect() itself, so the send
+         * that follows always has a connected socket and this never fires;
+         * Darwin does not, and returned ENOTCONN to the first send of every
+         * defect case -- 298 of them -- which this loop treated as fatal.
+         * The request was then never sent, so the case recorded STALLED
+         * waiting for a reply to a request the server never saw.  Retrying
+         * is safe: a connect that genuinely fails surfaces its own errno
+         * (ECONNREFUSED and friends) here rather than ENOTCONN, and the
+         * deadline below still bounds the wait. */
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
+                      errno == ENOTCONN)) {
             evpl_continue(evpl);
             if (now_ms() > deadline) {
                 return -1;
@@ -2253,7 +2266,10 @@ read_outcome_full(
             return EXP_CLOSED;
         }
         if (n < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            /* ENOTCONN here is the same not-yet-connected case send_all
+             * describes, not a peer close. */
+            if (errno != EAGAIN && errno != EWOULDBLOCK &&
+                errno != ENOTCONN) {
                 return EXP_CLOSED;
             }
             evpl_continue(evpl);
@@ -2278,7 +2294,10 @@ read_outcome_full(
             return EXP_CLOSED;
         }
         if (n < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            /* ENOTCONN here is the same not-yet-connected case send_all
+             * describes, not a peer close. */
+            if (errno != EAGAIN && errno != EWOULDBLOCK &&
+                errno != ENOTCONN) {
                 return EXP_CLOSED;
             }
             evpl_continue(evpl);
