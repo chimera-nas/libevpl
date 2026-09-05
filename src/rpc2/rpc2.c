@@ -1421,7 +1421,13 @@ evpl_rpc2_gss_wr_opaque(
     if (*p + padded > end) {
         return -1;
     }
-    memcpy(*p, data, len);
+    /* A zero-length opaque is a legal encoding and its data pointer is then
+     * meaningless -- an establishment leg with no token to send is exactly
+     * that -- so the copy is conditional on there being something to copy. */
+    if (len) {
+        memcpy(*p, data, len);
+    }
+
     if (padded > len) {
         memset(*p + len, 0, padded - len);
     }
@@ -4731,7 +4737,6 @@ evpl_rpc2_call_full(
 
             req_iov    = &gss_wrapped_iov;
             req_niov   = 1;
-            req_length = wrapped_len;
             pay_length = wrapped_len - program->reserve;
         }
 
