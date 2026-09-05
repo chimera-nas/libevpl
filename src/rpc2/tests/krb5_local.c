@@ -883,12 +883,13 @@ krb5_local_p_init(
     size_t     *out_len,
     int        *complete)
 {
-    struct krb5_local *kl = arg;
-    OM_uint32          maj, min, flags;
-    gss_buffer_desc    in = GSS_C_EMPTY_BUFFER, tok = GSS_C_EMPTY_BUFFER;
-    gss_name_t         name = GSS_C_NO_NAME;
-    gss_buffer_desc    nb;
-    char               principal[256];
+    struct krb5_local     *kl = arg;
+    struct krb5_local_ctx *lc = *gss_ctx;
+    OM_uint32              maj, min, flags;
+    gss_buffer_desc        in = GSS_C_EMPTY_BUFFER, tok = GSS_C_EMPTY_BUFFER;
+    gss_name_t             name = GSS_C_NO_NAME;
+    gss_buffer_desc        nb;
+    char                   principal[256];
 
     (void) target;
 
@@ -908,19 +909,28 @@ krb5_local_p_init(
         return -1;
     }
 
-    if (!in_token) {
-        /* First leg: start clean, so a context left over from an earlier case
-         * cannot sign with a session key this handshake never agreed. */
-        if (kl->init_ctx != GSS_C_NO_CONTEXT) {
-            gss_delete_sec_context(&min, &kl->init_ctx, GSS_C_NO_BUFFER);
-            kl->init_ctx = GSS_C_NO_CONTEXT;
+    /* One context per handshake, not one per realm: a caller may hold several
+     * at once -- an NFS connection and a MOUNT connection, say -- and a shared
+     * context would leave the older of them signing with a session key its
+     * acceptor half never agreed to. */
+    if (!lc) {
+        lc = calloc(1, sizeof(*lc));
+
+        if (!lc) {
+            gss_release_name(&min, &name);
+            return -1;
         }
-    } else {
+
+        lc->ctx  = GSS_C_NO_CONTEXT;
+        *gss_ctx = lc;
+    }
+
+    if (in_token) {
         in.value  = (void *) in_token;
         in.length = in_len;
     }
 
-    maj = gss_init_sec_context(&min, kl->init_cred, &kl->init_ctx, name,
+    maj = gss_init_sec_context(&min, kl->init_cred, &lc->ctx, name,
                                GSS_C_NO_OID,
                                GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG |
                                GSS_C_SEQUENCE_FLAG,
@@ -947,7 +957,6 @@ krb5_local_p_init(
     gss_release_buffer(&min, &tok);
 
     *complete = (maj == GSS_S_COMPLETE);
-    *gss_ctx  = kl;
 
     return 0;
 } /* krb5_local_p_init */
@@ -976,8 +985,25 @@ krb5_local_i_get_mic(
     void      **mic,
     size_t     *mic_len)
 {
+    struct krb5_local_ctx *lc = gss_ctx;
+    OM_uint32              maj, min;
+    gss_buffer_desc        in, out = GSS_C_EMPTY_BUFFER;
+    int                    rc;
+
     (void) arg;
-    return krb5_local_get_mic(gss_ctx, msg, msg_len, mic, mic_len);
+
+    in.value  = (void *) msg;
+    in.length = msg_len;
+
+    maj = gss_get_mic(&min, lc->ctx, GSS_C_QOP_DEFAULT, &in, &out);
+
+    if (GSS_ERROR(maj)) {
+        return -1;
+    }
+
+    rc = krb5_local_buf_out(&out, mic, mic_len);
+    gss_release_buffer(&min, &out);
+    return rc;
 } /* krb5_local_i_get_mic */
 
 static int
@@ -989,8 +1015,20 @@ krb5_local_i_verify_mic(
     const void *mic,
     size_t      mic_len)
 {
+    struct krb5_local_ctx *lc = gss_ctx;
+    OM_uint32              maj, min;
+    gss_buffer_desc        in, tok;
+
     (void) arg;
-    return krb5_local_verify_mic(gss_ctx, msg, msg_len, mic, mic_len);
+
+    in.value   = (void *) msg;
+    in.length  = msg_len;
+    tok.value  = (void *) mic;
+    tok.length = mic_len;
+
+    maj = gss_verify_mic(&min, lc->ctx, &in, &tok, NULL);
+
+    return GSS_ERROR(maj) ? -1 : 0;
 } /* krb5_local_i_verify_mic */
 
 static int
@@ -1003,23 +1041,30 @@ krb5_local_i_wrap(
     size_t      out_cap,
     size_t     *r_out_len)
 {
-    void  *tok;
-    size_t tl;
+    struct krb5_local_ctx *lc = gss_ctx;
+    OM_uint32              maj, min;
+    gss_buffer_desc        ib, ob = GSS_C_EMPTY_BUFFER;
+    int                    conf;
 
     (void) arg;
 
-    if (krb5_local_wrap(gss_ctx, in, in_len, &tok, &tl)) {
+    ib.value  = (void *) in;
+    ib.length = in_len;
+
+    maj = gss_wrap(&min, lc->ctx, 1, GSS_C_QOP_DEFAULT, &ib, &conf, &ob);
+
+    if (GSS_ERROR(maj)) {
         return -1;
     }
 
-    if (tl > out_cap) {
-        free(tok);
+    if (ob.length > out_cap) {
+        gss_release_buffer(&min, &ob);
         return -1;
     }
 
-    memcpy(out, tok, tl);
-    *r_out_len = tl;
-    free(tok);
+    memcpy(out, ob.value, ob.length);
+    *r_out_len = ob.length;
+    gss_release_buffer(&min, &ob);
     return 0;
 } /* krb5_local_i_wrap */
 
@@ -1033,23 +1078,31 @@ krb5_local_i_unwrap(
     size_t      out_cap,
     size_t     *r_out_len)
 {
-    void  *plain;
-    size_t pl;
+    struct krb5_local_ctx *lc = gss_ctx;
+    OM_uint32              maj, min;
+    gss_buffer_desc        ib, ob = GSS_C_EMPTY_BUFFER;
+    int                    conf;
+    gss_qop_t              qop;
 
     (void) arg;
 
-    if (krb5_local_unwrap(gss_ctx, in, in_len, &plain, &pl)) {
+    ib.value  = (void *) in;
+    ib.length = in_len;
+
+    maj = gss_unwrap(&min, lc->ctx, &ib, &ob, &conf, &qop);
+
+    if (GSS_ERROR(maj)) {
         return -1;
     }
 
-    if (pl > out_cap) {
-        free(plain);
+    if (ob.length > out_cap) {
+        gss_release_buffer(&min, &ob);
         return -1;
     }
 
-    memcpy(out, plain, pl);
-    *r_out_len = pl;
-    free(plain);
+    memcpy(out, ob.value, ob.length);
+    *r_out_len = ob.length;
+    gss_release_buffer(&min, &ob);
     return 0;
 } /* krb5_local_i_unwrap */
 
@@ -1060,8 +1113,20 @@ krb5_local_i_destroy(
     void *arg,
     void *gss_ctx)
 {
+    struct krb5_local_ctx *lc = gss_ctx;
+    OM_uint32              min;
+
     (void) arg;
-    (void) gss_ctx;
+
+    if (!lc) {
+        return;
+    }
+
+    if (lc->ctx != GSS_C_NO_CONTEXT) {
+        gss_delete_sec_context(&min, &lc->ctx, GSS_C_NO_BUFFER);
+    }
+
+    free(lc);
 } /* krb5_local_i_destroy */
 
 static const struct evpl_rpc2_gss_provider krb5_local_initiator_vtable = {
