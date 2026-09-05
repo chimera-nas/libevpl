@@ -42,7 +42,12 @@ evpl_global_config_init(void)
     config->max_datagram_size      = 65536;
     config->max_datagram_batch     = 16;
     config->resolve_timeout_ms     = 5000;
-    config->rpc2_max_message_size  = EVPL_DEFAULT_RPC2_MAX_MESSAGE_SIZE;
+    /* 0 means derive from buffer_size when read -- see
+     * evpl_config_rpc2_max_message_size().  Deriving late rather than here is
+     * what lets a caller set buffer_size afterwards and still get a coherent
+     * pair; baking it at init would freeze a ceiling against a buffer size
+     * that no longer exists. */
+    config->rpc2_max_message_size = 0;
 
     config->page_size = sysconf(_SC_PAGESIZE);
 
@@ -373,14 +378,18 @@ evpl_global_config_set_rpc2_max_message_size(
     struct evpl_global_config *config,
     unsigned int               size)
 {
-    config->rpc2_max_message_size = size ?
-        size : EVPL_DEFAULT_RPC2_MAX_MESSAGE_SIZE;
+    config->rpc2_max_message_size = size;
 } /* evpl_global_config_set_rpc2_max_message_size */
 
 SYMBOL_EXPORT unsigned int
 evpl_config_rpc2_max_message_size(void)
 {
-    return evpl_shared->config->rpc2_max_message_size;
+    struct evpl_global_config *config = evpl_shared->config;
+
+    /* 0 means "derive": the ceiling has to fit one buffer, so it follows
+     * buffer_size rather than being chosen beside it and drifting. */
+    return config->rpc2_max_message_size ? config->rpc2_max_message_size :
+           EVPL_DEFAULT_RPC2_MAX_MESSAGE_SIZE(config->buffer_size);
 } /* evpl_config_rpc2_max_message_size */
 
 SYMBOL_EXPORT void

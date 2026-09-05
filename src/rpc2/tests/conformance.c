@@ -3330,20 +3330,6 @@ run_gss_case(
                                 (uint32_t) c->param, 1, 0);
             return gss_exchange(evpl, fd, &msg, NULL, NULL);
 
-        case DEF_GSSPRIVDATAVALID:
-            build_gss_priv_call(&msg, 0x47535360, handle, 1, 1, 1, 1);
-            return gss_exchange(evpl, fd, &msg, NULL, NULL);
-
-        case DEF_GSSPRIVSEALCORRUPT:
-            build_gss_priv_call(&msg, 0x47535361, handle, 1, 1, 0, 1);
-            return gss_exchange(evpl, fd, &msg, NULL, NULL);
-
-        case DEF_GSSPRIVSEQMISMATCH:
-            /* Header seq 1, sealed seq 2: the pair a tamperer would have to
-             * produce, and cannot without the key. */
-            build_gss_priv_call(&msg, 0x47535362, handle, 1, 2, 1, 1);
-            return gss_exchange(evpl, fd, &msg, NULL, NULL);
-
         case DEF_GSSHANDLEUNKNOWN:
             build_gss_data_call(&msg, 0x47535334, 0xdeadbeef, 1,
                                 GSS_SVC_NONE, 1, 1);
@@ -3362,6 +3348,20 @@ run_gss_case(
     switch (c->defect) {
         case DEF_GSSDATAVALID:
             build_gss_data_call(&msg, 0x47535340, handle, 1, GSS_SVC_NONE, 1, 1);
+            return gss_exchange(evpl, fd, &msg, NULL, NULL);
+
+        case DEF_GSSPRIVDATAVALID:
+            build_gss_priv_call(&msg, 0x47535360, handle, 1, 1, 1, 1);
+            return gss_exchange(evpl, fd, &msg, NULL, NULL);
+
+        case DEF_GSSPRIVSEALCORRUPT:
+            build_gss_priv_call(&msg, 0x47535361, handle, 1, 1, 0, 1);
+            return gss_exchange(evpl, fd, &msg, NULL, NULL);
+
+        case DEF_GSSPRIVSEQMISMATCH:
+            /* Header seq 1, sealed seq 2: the pair a tamperer would have to
+             * produce, and cannot without the key. */
+            build_gss_priv_call(&msg, 0x47535362, handle, 1, 2, 1, 1);
             return gss_exchange(evpl, fd, &msg, NULL, NULL);
 
         case DEF_GSSCONTINUEINITTOKENMALFORMED:

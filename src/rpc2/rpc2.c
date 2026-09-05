@@ -1711,10 +1711,10 @@ evpl_rpc2_gss_unwrap_privacy(
     struct evpl_iovec       *token;
     struct evpl_iovec        flat;
     const void              *tok_data;
-    void                    *plain     = NULL;
     size_t                   plain_len = 0;
-    struct evpl_iovec       *inner;
-    int                      ntoken, ninner, have_flat = 0, rc = -1;
+    struct evpl_iovec       *inner     = NULL;
+    int                      ntoken, ninner, have_flat = 0, have_inner = 0;
+    int                      rc = -1;
 
     /* databody_priv opaque length prefix */
     if (evpl_rpc2_iov_gather(iov, niov, 0, lenbuf, 4)) {
@@ -1756,41 +1756,49 @@ evpl_rpc2_gss_unwrap_privacy(
         tok_data = flat.data;
     }
 
+    /*
+     * Unseal straight into the iovec dispatch will read from.  A plaintext is
+     * never larger than the token it came from, so tok_len is a safe capacity,
+     * and the configuration guarantees a whole message fits inside one buffer
+     * (evpl_init rejects a config where it could not), so this allocation is
+     * always a single iovec.
+     */
+    inner = xdr_dbuf_alloc_space(sizeof(*inner), dbuf);
+    if (!inner) {
+        goto out;
+    }
+    ninner = evpl_iovec_alloc(evpl, tok_len, 8, 1, 0, inner);
+    if (ninner != 1) {
+        goto out;
+    }
+    have_inner = 1;
+
     if (thread->gss_provider->unwrap(thread->gss_provider_arg, ctx->gss_ctx,
-                                     tok_data, tok_len, &plain, &plain_len) ||
-        !plain || plain_len < 4) {
+                                     tok_data, tok_len, inner->data, tok_len,
+                                     &plain_len) || plain_len < 4) {
         evpl_rpc2_debug("rpcsec_gss: privacy unseal failed tok_len=%u "
                         "plain_len=%zu", tok_len, plain_len);
         goto out;
     }
 
     /* The seq sealed inside the token must match the credential's.  Checking
-     * it here rather than trusting the header seq is the point of sealing it:
-     * the header is cleartext and an attacker can edit it, the token is not. */
-    lp = plain;
-    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) plain + 4, &embedded);
+     * it rather than trusting the header seq is the point of sealing it: the
+     * header travels in the clear and can be edited, the seal cannot be
+     * without the key. */
+    lp = inner->data;
+    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) inner->data + 4, &embedded);
     if (embedded != seq) {
         evpl_rpc2_debug("rpcsec_gss: privacy seq mismatch embedded=%u cred=%u",
                         embedded, seq);
         goto out;
     }
 
-    /* Copy the inner arguments out of the mechanism's buffer into an iovec the
-     * request owns.  See the header comment: this copy is what privacy costs
-     * over integrity, because the plaintext is produced rather than received. */
-    inner_len = (uint32_t) plain_len - 4;
-    inner     = xdr_dbuf_alloc_space(sizeof(*inner), dbuf);
-    if (!inner) {
-        goto out;
-    }
-    ninner = evpl_iovec_alloc(evpl, inner_len ? inner_len : 1, 8, 1, 0, inner);
-    if (ninner != 1) {
-        goto out;
-    }
+    /* Dispatch wants the arguments, which are the plaintext past its 4-byte
+     * seq.  Advance the view rather than copying; the buffer reference is
+     * unchanged, so releasing this iovec still frees the whole allocation. */
+    inner_len     = (uint32_t) plain_len - 4;
+    inner->data   = (uint8_t *) inner->data + 4;
     inner->length = inner_len;
-    if (inner_len) {
-        memcpy(inner->data, (const uint8_t *) plain + 4, inner_len);
-    }
 
     /* The received iovecs held the ciphertext and nothing else needs them. */
     evpl_iovecs_release(evpl, request->msg->req_iov, request->msg->req_niov);
@@ -1807,8 +1815,10 @@ evpl_rpc2_gss_unwrap_privacy(
     if (have_flat) {
         evpl_iovec_release(evpl, &flat);
     }
-    if (plain) {
-        free(plain);
+    /* On success the inner iovec became the request's arguments and the msg
+     * owns it; only a failure leaves it ours to drop. */
+    if (rc && have_inner) {
+        evpl_iovec_release(evpl, inner);
     }
     return rc;
 } /* evpl_rpc2_gss_unwrap_privacy */
@@ -1938,10 +1948,10 @@ evpl_rpc2_gss_wrap_reply_privacy(
     uint32_t                      pt_len  = 4 + bodylen; /* seq || results */
     struct evpl_iovec             plain_iov;
     uint8_t                      *pt, *pp;
-    void                         *token     = NULL;
     size_t                        token_len = 0;
-    uint32_t                      newbodylen;
-    int                           niov;
+    uint32_t                      newbodylen, cap;
+    uint8_t                      *tok;
+    int                           niov, rc = -1;
 
     /* Stage seq || results contiguously for the seal. */
     if (evpl_iovec_alloc(evpl, pt_len, 8, 1, 0, &plain_iov) != 1) {
@@ -1959,39 +1969,50 @@ evpl_rpc2_gss_wrap_reply_privacy(
         return -1;
     }
 
+    /*
+     * The token is sealed straight into the reply buffer, so that buffer is
+     * allocated first: headroom, the databody_priv length prefix, then room
+     * for the plaintext plus whatever framing the seal adds.  Nothing is
+     * copied out of a mechanism-owned buffer afterwards -- that copy is what
+     * the caller-owned output convention exists to remove.
+     */
+    cap  = reserve + 4 + evpl_rpc2_gss_pad4(pt_len + EVPL_RPC2_GSS_SEAL_MAX);
+    niov = evpl_iovec_alloc(evpl, cap, 8, 1, 0, out_iov);
+    if (niov != 1) {
+        evpl_iovec_release(evpl, &plain_iov);
+        return -1;
+    }
+
+    tok = (uint8_t *) out_iov->data + reserve + 4;
+
     pthread_mutex_lock(&evpl_rpc2_gss_lock);
     ctx = evpl_rpc2_gss_ctx_lookup(request->gss_handle);
     if (ctx) {
-        thread->gss_provider->wrap(thread->gss_provider_arg, ctx->gss_ctx,
-                                   pt, pt_len, &token, &token_len);
+        rc = thread->gss_provider->wrap(thread->gss_provider_arg, ctx->gss_ctx,
+                                        pt, pt_len, tok,
+                                        cap - reserve - 4, &token_len);
     }
     pthread_mutex_unlock(&evpl_rpc2_gss_lock);
 
     evpl_iovec_release(evpl, &plain_iov);
 
-    if (!token || token_len == 0) {
-        if (token) {
-            free(token);
-        }
-        return -1;
-    }
-
-    /* headroom + the databody_priv opaque (4 + padded token) */
-    newbodylen = 4 + evpl_rpc2_gss_pad4((uint32_t) token_len);
-    niov       = evpl_iovec_alloc(evpl, reserve + newbodylen, 8, 1, 0, out_iov);
-    if (niov != 1) {
-        free(token);
-        return -1;
-    }
-
-    pp = (uint8_t *) out_iov->data + reserve;
-    if (evpl_rpc2_gss_wr_opaque(&pp, (uint8_t *) out_iov->data + reserve +
-                                newbodylen, token, token_len)) {
-        free(token);
+    if (rc || token_len == 0) {
         evpl_iovec_release(evpl, out_iov);
         return -1;
     }
-    free(token);
+
+    /* databody_priv opaque: the length prefix, the token already in place,
+     * then the XDR pad. */
+    pp = (uint8_t *) out_iov->data + reserve;
+    if (evpl_rpc2_gss_wr_u32(&pp, pp + 4, (uint32_t) token_len)) {
+        evpl_iovec_release(evpl, out_iov);
+        return -1;
+    }
+
+    newbodylen = 4 + evpl_rpc2_gss_pad4((uint32_t) token_len);
+    if (newbodylen > 4 + token_len) {
+        memset(tok + token_len, 0, newbodylen - 4 - token_len);
+    }
 
     out_iov->length = reserve + newbodylen;
     *out_length     = reserve + newbodylen;

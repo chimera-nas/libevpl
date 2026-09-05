@@ -257,28 +257,22 @@ gss_stub_wrap(
     void       *gss_ctx,
     const void *in,
     size_t      in_len,
-    void      **out,
-    size_t     *out_len)
+    void       *out,
+    size_t      out_cap,
+    size_t     *r_out_len)
 {
-    size_t cap = in_len + GSS_STUB_SEAL_OVERHEAD;
-    void  *tok;
+    size_t len;
 
     if (gss_stub_wrap_mode == GSS_STUB_WRAP_FAIL) {
         return -1;
     }
 
-    tok = malloc(cap);
-    if (!tok) {
+    len = gss_stub_seal(in, in_len, out, out_cap);
+    if (len == 0) {
         return -1;
     }
 
-    *out_len = gss_stub_seal(in, in_len, tok, cap);
-    if (*out_len == 0) {
-        free(tok);
-        return -1;
-    }
-
-    *out = tok;
+    *r_out_len = len;
     return 0;
 } /* gss_stub_wrap */
 
@@ -288,12 +282,13 @@ gss_stub_unwrap(
     void       *gss_ctx,
     const void *in,
     size_t      in_len,
-    void      **out,
-    size_t     *out_len)
+    void       *out,
+    size_t      out_cap,
+    size_t     *r_out_len)
 {
     const uint8_t *tok = in;
     uint8_t        mic[GSS_STUB_MIC_LEN];
-    uint8_t       *plain;
+    uint8_t       *plain = out;
     uint32_t       plain_len;
     size_t         i;
 
@@ -310,8 +305,10 @@ gss_stub_unwrap(
         return -1;
     }
 
-    plain = malloc(plain_len ? plain_len : 1);
-    if (!plain) {
+    /* A plaintext is never larger than its token, so a caller that sized the
+     * buffer from the token always has room; refuse rather than truncate if
+     * one did not. */
+    if (plain_len > out_cap) {
         return -1;
     }
 
@@ -323,12 +320,10 @@ gss_stub_unwrap(
      * recovered plaintext, and the MIC over that plaintext no longer matches. */
     gss_stub_mic(plain, plain_len, mic);
     if (memcmp(mic, tok + 4 + plain_len, GSS_STUB_MIC_LEN) != 0) {
-        free(plain);
         return -1;
     }
 
-    *out     = plain;
-    *out_len = plain_len;
+    *r_out_len = plain_len;
     return 0;
 } /* gss_stub_unwrap */
 
