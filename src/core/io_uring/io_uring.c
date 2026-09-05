@@ -201,7 +201,8 @@ evpl_io_uring_create(
     //struct evpl_io_uring_shared  *shared = private_data;
     struct evpl_io_uring_context *ctx;
     int                           ret;
-    struct io_uring_params        params;
+    struct io_uring_params        params, saved_params;
+    unsigned int                  entries;
     int                           sqpoll = 1;
 
     memset(&params, 0, sizeof(params));
@@ -226,9 +227,47 @@ evpl_io_uring_create(
 
     ctx->next_send_group_id = EVPL_IO_URING_BUFGROUP_ID + 1;
 
-    ret = io_uring_queue_init_params(evpl_shared->config->io_uring_entries, &ctx->ring, &params);
+    /*
+     * A ring is not a small allocation: SQE128 and CQE32 double both entry
+     * sizes, so the default 8192 entries ask the kernel for roughly 1.5 MB of
+     * accounted memory, and SQPOLL adds a kernel thread per ring.  A process
+     * with several event-loop threads, or several such processes at once,
+     * can therefore be refused with ENOMEM on a machine that is otherwise
+     * healthy -- which is how a busy CI runner turns an unrelated test into a
+     * fatal abort.
+     *
+     * A smaller ring is a far better outcome than no process.  Halve down to
+     * EVPL_IO_URING_MIN_ENTRIES before giving up, and only on ENOMEM: every
+     * other failure (EPERM from SQPOLL without privilege, EINVAL from an
+     * unsupported flag) says the ring is unavailable for a reason a smaller
+     * one would not fix.
+     */
+    saved_params = params;
+
+    for (entries = evpl_shared->config->io_uring_entries;; entries >>= 1) {
+
+        ret = io_uring_queue_init_params(entries, &ctx->ring, &params);
+
+        if (ret >= 0 || ret != -ENOMEM || entries <= EVPL_IO_URING_MIN_ENTRIES) {
+            break;
+        }
+
+        /* io_uring_setup() copies its parameters back only on success, and
+         * liburing zeroes the ring itself, but do not rely on either across a
+         * retry: reset both so each attempt starts from the same state. */
+        params = saved_params;
+        memset(&ctx->ring, 0, sizeof(ctx->ring));
+    }
 
     evpl_io_uring_abort_if(ret < 0, "io_uring_queue_init_params() failed: %s (%d)", strerror(-ret), ret);
+
+    if (entries != evpl_shared->config->io_uring_entries) {
+        evpl_io_uring_info(
+            "io_uring ring reduced from %u to %u entries after ENOMEM; "
+            "the ring is smaller than configured, which costs throughput only "
+            "under queueing deep enough to fill it",
+            evpl_shared->config->io_uring_entries, entries);
+    }
 
     ctx->eventfd = eventfd(0, EFD_NONBLOCK);
 

@@ -16,6 +16,11 @@
 #define EVPL_IO_URING_REQ_TCP     1
 #define EVPL_IO_URING_REQ_BLOCK   2
 
+/* Smallest ring the fallback in evpl_io_uring_create() will settle for before
+ * it gives up and aborts.  Small enough that a machine refusing this has a real
+ * memory problem, large enough to keep a batch of submissions in flight. */
+#define EVPL_IO_URING_MIN_ENTRIES 256
+
 #define evpl_io_uring_debug(...) evpl_debug("io_uring", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_io_uring_info(...)  evpl_info("io_uring", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_io_uring_error(...) evpl_error("io_uring", __FILE__, __LINE__, __VA_ARGS__)
