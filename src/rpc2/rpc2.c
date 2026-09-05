@@ -112,6 +112,20 @@ struct evpl_rpc2_request {
      * gss_handle + gss_seq let the reply path re-find the context (under the
      * global lock) to compute the integrity checksum over the results. */
     int                                   gss_authenticated;
+    /* Client side: set on the NULLPROC exchange that establishes a context,
+     * so its reply is parsed as rpc_gss_init_res by the handshake rather than
+     * handed to the program's (void) NULLPROC result decoder. */
+    struct evpl_rpc2_gss_client          *gss_client_init;
+    /* A reply nobody is waiting for: the DESTROY sent while retiring a
+     * context.  Its client is freed as soon as it is sent, so the reply -- or
+     * the error completion teardown synthesises for it -- must not reach back
+     * for one. */
+    int                                   gss_discard_reply;
+    /* The context this call travelled under, and the sequence number it
+     * carried: the reply is wrapped around the same number, and checking that
+     * is what stops a reply being replayed onto a different call. */
+    struct evpl_rpc2_gss_client          *gss_client;
+    uint32_t                              gss_client_seq;
     uint32_t                              gss_service;
     uint32_t                              gss_handle;
     uint32_t                              gss_seq;
@@ -1269,6 +1283,19 @@ static struct evpl_rpc2_gss_context *evpl_rpc2_gss_table       = NULL;
 static pthread_mutex_t               evpl_rpc2_gss_lock        = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t                      evpl_rpc2_gss_next_handle = 0;
 
+/*
+ * Ceiling on a peer-minted context handle we will hold as a client.  The
+ * handle is opaque to us -- this server mints a uint32, others mint what they
+ * like -- so the only requirement is that it be large enough for real
+ * implementations and bounded so a hostile length cannot size an allocation.
+ */
+#define EVPL_RPC2_GSS_MAX_HANDLE 64
+
+/* Ceiling on a MIC we will emit as a call verifier.  krb5 aes256 is 28 bytes;
+ * this is loose because it only sizes a stack buffer, and a mechanism whose
+ * MIC does not fit is refused rather than truncated. */
+#define EVPL_RPC2_GSS_MAX_MIC    128
+
 /* Decoded rpc_gss_cred_t (version 1). */
 struct evpl_rpc2_gss_cred {
     uint32_t       version;
@@ -1277,6 +1304,44 @@ struct evpl_rpc2_gss_cred {
     uint32_t       service;
     const uint8_t *handle;
     uint32_t       handle_len;
+};
+
+/*
+ * A client-side RPCSEC_GSS context.
+ *
+ * The server keeps its half in evpl_rpc2_gss_context, keyed by a handle it
+ * minted; this is the initiator's mirror.  It owns the mechanism context, the
+ * handle the acceptor gave back, and the sequence number RFC 2203 section
+ * 5.3.1 requires every call to carry and never repeat.
+ *
+ * Deliberately per-connection rather than per-thread: a context is established
+ * over one connection and the acceptor scopes it there, so sharing one across
+ * connections would present a handle the peer does not recognise.
+ */
+struct evpl_rpc2_gss_client {
+    const struct evpl_rpc2_gss_provider *provider;
+    void                                *provider_arg;
+    void                                *gss_ctx;
+    uint32_t                             service;
+    /* Next sequence number.  Starts at 1: zero is legal but wastes the one
+     * value a peer's replay window starts out having already seen. */
+    uint32_t                             seq;
+    uint8_t                              handle[EVPL_RPC2_GSS_MAX_HANDLE];
+    uint32_t                             handle_len;
+
+    /* Live only while the handshake is in flight. */
+    struct evpl_rpc2_program            *program;
+    struct evpl_rpc2_conn               *conn;
+    char                                *target;
+    evpl_rpc2_gss_client_callback_t      callback;
+    void                                *callback_arg;
+    int                                  established;
+    /* The mechanism reported GSS_S_COMPLETE on the leg we last sent.  With a
+     * service ticket in hand krb5 finishes in one, so the acceptor's reply is
+     * an acknowledgement rather than a token to feed back -- and feeding it
+     * back anyway would start a second context, leaving us signing with one
+     * the acceptor never agreed to. */
+    int                                  mech_complete;
 };
 
 /* --- minimal big-endian XDR cursors over contiguous byte buffers --- */
@@ -1356,7 +1421,13 @@ evpl_rpc2_gss_wr_opaque(
     if (*p + padded > end) {
         return -1;
     }
-    memcpy(*p, data, len);
+    /* A zero-length opaque is a legal encoding and its data pointer is then
+     * meaningless -- an establishment leg with no token to send is exactly
+     * that -- so the copy is conditional on there being something to copy. */
+    if (len) {
+        memcpy(*p, data, len);
+    }
+
     if (padded > len) {
         memset(*p + len, 0, padded - len);
     }
@@ -2396,6 +2467,615 @@ evpl_rpc2_gss_handle_call(
     return 1;
 } /* evpl_rpc2_gss_handle_call */
 
+/* =================== RPCSEC_GSS, initiator side =========================
+ *
+ * Everything above answers calls; this makes them.  The two halves share the
+ * wire format and the cursors, and nothing else: an acceptor is driven by what
+ * arrives, an initiator by what it decides to send, so the state each keeps is
+ * different and lives apart.
+ *
+ * What a client owes per RFC 2203, and what is implemented here:
+ *
+ *   - a context, established over the program's NULL procedure (sec 5.2)
+ *   - an rpc_gss_cred_t on every call naming that context, the service, and a
+ *     sequence number that never repeats (sec 5.3.1)
+ *   - a verifier that is a MIC over the call header through the credential,
+ *     which is what binds the sequence number to the request (sec 5.3.1)
+ *   - under integrity or privacy, arguments reframed as rpc_gss_integ_data or
+ *     rpc_gss_priv_data, and results unwrapped symmetrically (sec 5.3.2)
+ */
+
+/* Build the rpc_gss_cred_t body for a call.  Returns its length, or 0 if it
+ * would not fit -- which cannot happen for any handle we accepted. */
+static uint32_t
+evpl_rpc2_gss_client_cred_blob(
+    struct evpl_rpc2_gss_client *gc,
+    uint32_t                     proc,
+    uint32_t                     seq,
+    uint8_t                     *out,
+    uint32_t                     out_cap)
+{
+    uint8_t *p   = out;
+    uint8_t *end = out + out_cap;
+
+    if (evpl_rpc2_gss_wr_u32(&p, end, RPCSEC_GSS_VERS_1) ||
+        evpl_rpc2_gss_wr_u32(&p, end, proc) ||
+        evpl_rpc2_gss_wr_u32(&p, end, seq) ||
+        evpl_rpc2_gss_wr_u32(&p, end, gc->service) ||
+        evpl_rpc2_gss_wr_opaque(&p, end, gc->handle, gc->handle_len)) {
+        return 0;
+    }
+
+    return (uint32_t) (p - out);
+} /* evpl_rpc2_gss_client_cred_blob */
+
+/*
+ * Parse an rpc_gss_init_res from a reply body:
+ *   { opaque handle<>; unsigned major; unsigned minor; unsigned seq_window;
+ *     opaque gss_token<>; }
+ *
+ * Returns 0 on a well-formed response, -1 otherwise.  A mechanism-level
+ * failure is well-formed -- major says so -- and is reported through *major
+ * rather than as a parse error, because the two call for different answers.
+ */
+static int
+evpl_rpc2_gss_client_parse_init_res(
+    struct evpl_rpc2_gss_client *gc,
+    const uint8_t               *body,
+    uint32_t                     len,
+    uint32_t                    *r_major,
+    const uint8_t              **r_token,
+    uint32_t                    *r_token_len)
+{
+    const uint8_t *p   = body;
+    const uint8_t *end = body + len;
+    const uint8_t *hand;
+    uint32_t       hlen, minor, window;
+
+    if (evpl_rpc2_gss_rd_opaque(&p, end, &hand, &hlen) ||
+        evpl_rpc2_gss_rd_u32(&p, end, r_major) ||
+        evpl_rpc2_gss_rd_u32(&p, end, &minor) ||
+        evpl_rpc2_gss_rd_u32(&p, end, &window) ||
+        evpl_rpc2_gss_rd_opaque(&p, end, r_token, r_token_len)) {
+        return -1;
+    }
+
+    if (hlen > EVPL_RPC2_GSS_MAX_HANDLE) {
+        evpl_rpc2_debug("rpcsec_gss: peer handle is %u bytes, over the %u we hold",
+                        hlen, EVPL_RPC2_GSS_MAX_HANDLE);
+        return -1;
+    }
+
+    /* Adopt the handle from every leg: RFC 2203 sec 5.2.2 lets the acceptor
+     * change it between legs, and the last one is the one that counts. */
+    memcpy(gc->handle, hand, hlen);
+    gc->handle_len = hlen;
+
+    return 0;
+} /* evpl_rpc2_gss_client_parse_init_res */
+
+/*
+ * Reframe call arguments for the integrity service:
+ *   rpc_gss_integ_data { opaque databody<>; opaque checksum<>; }
+ * with databody = seq_num || args and checksum a MIC over it.
+ *
+ * The mirror of evpl_rpc2_gss_wrap_reply_integrity, and deliberately shaped
+ * the same way -- headroom preserved at the front, the caller's iovecs
+ * released, one contiguous result -- because the two are the same
+ * transformation seen from opposite ends, and a difference between them would
+ * be a bug in one of them.
+ */
+static int
+evpl_rpc2_gss_wrap_call_integrity(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *gc,
+    uint32_t                     seq,
+    struct evpl_iovec           *msg_iov,
+    int                          msg_niov,
+    int                          length,
+    int                          reserve,
+    struct evpl_iovec           *out_iov,
+    int                         *out_length)
+{
+    uint32_t bodylen = length - reserve;
+    uint32_t db_len  = 4 + bodylen;
+    uint32_t db_pad  = evpl_rpc2_gss_pad4(db_len);
+    uint32_t cap, newbodylen;
+    uint8_t *p, *databody, *cksum_pos, *pp;
+    void    *mic     = NULL;
+    size_t   mic_len = 0;
+
+    cap = reserve + 4 + db_pad + 4 + EVPL_RPC2_GSS_MAX_MIC;
+
+    if (evpl_iovec_alloc(evpl, cap, 8, 1, 0, out_iov) != 1) {
+        return -1;
+    }
+
+    p  = (uint8_t *) out_iov->data + reserve;
+    pp = p;
+
+    if (evpl_rpc2_gss_wr_u32(&pp, p + 4, db_len)) {
+        goto fail;
+    }
+
+    databody = p + 4;
+    pp       = databody;
+
+    if (evpl_rpc2_gss_wr_u32(&pp, databody + 4, seq)) {
+        goto fail;
+    }
+
+    if (bodylen &&
+        evpl_rpc2_iov_gather(msg_iov, msg_niov, reserve, databody + 4, bodylen)) {
+        goto fail;
+    }
+
+    if (db_pad > db_len) {
+        memset(databody + db_len, 0, db_pad - db_len);
+    }
+
+    if (gc->provider->get_mic(gc->provider_arg, gc->gss_ctx, databody, db_len,
+                              &mic, &mic_len) || !mic ||
+        mic_len > EVPL_RPC2_GSS_MAX_MIC) {
+        if (mic) {
+            free(mic);
+        }
+        goto fail;
+    }
+
+    cksum_pos = databody + db_pad;
+    pp        = cksum_pos;
+
+    if (evpl_rpc2_gss_wr_opaque(&pp, cksum_pos + 4 +
+                                evpl_rpc2_gss_pad4((uint32_t) mic_len),
+                                mic, mic_len)) {
+        free(mic);
+        goto fail;
+    }
+
+    free(mic);
+
+    newbodylen      = 4 + db_pad + 4 + evpl_rpc2_gss_pad4((uint32_t) mic_len);
+    out_iov->length = reserve + newbodylen;
+    *out_length     = reserve + newbodylen;
+
+    evpl_iovecs_release(evpl, msg_iov, msg_niov);
+    return 0;
+
+ fail:
+    evpl_iovec_release(evpl, out_iov);
+    return -1;
+} /* evpl_rpc2_gss_wrap_call_integrity */
+
+/*
+ * The privacy counterpart: rpc_gss_priv_data, one opaque holding the sealed
+ * token of seq_num || args.  Staged contiguously first because the mechanism
+ * seals one block, then sealed straight into the outgoing buffer -- the same
+ * caller-owned-output shape the reply path uses, so the token is never copied
+ * out of mechanism storage.
+ */
+static int
+evpl_rpc2_gss_wrap_call_privacy(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *gc,
+    uint32_t                     seq,
+    struct evpl_iovec           *msg_iov,
+    int                          msg_niov,
+    int                          length,
+    int                          reserve,
+    struct evpl_iovec           *out_iov,
+    int                         *out_length)
+{
+    uint32_t          bodylen = length - reserve;
+    uint32_t          pt_len  = 4 + bodylen;
+    struct evpl_iovec plain_iov;
+    uint8_t          *pt, *pp, *tok;
+    size_t            token_len = 0;
+    uint32_t          cap, newbodylen;
+
+    if (evpl_iovec_alloc(evpl, pt_len, 8, 1, 0, &plain_iov) != 1) {
+        return -1;
+    }
+
+    pt = plain_iov.data;
+    pp = pt;
+
+    if (evpl_rpc2_gss_wr_u32(&pp, pt + 4, seq) ||
+        (bodylen &&
+         evpl_rpc2_iov_gather(msg_iov, msg_niov, reserve, pt + 4, bodylen))) {
+        evpl_iovec_release(evpl, &plain_iov);
+        return -1;
+    }
+
+    cap = reserve + 4 + evpl_rpc2_gss_pad4(pt_len + EVPL_RPC2_GSS_SEAL_MAX);
+
+    if (evpl_iovec_alloc(evpl, cap, 8, 1, 0, out_iov) != 1) {
+        evpl_iovec_release(evpl, &plain_iov);
+        return -1;
+    }
+
+    tok = (uint8_t *) out_iov->data + reserve + 4;
+
+    if (gc->provider->wrap(gc->provider_arg, gc->gss_ctx, pt, pt_len, tok,
+                           cap - reserve - 4, &token_len) || token_len == 0) {
+        evpl_iovec_release(evpl, &plain_iov);
+        evpl_iovec_release(evpl, out_iov);
+        return -1;
+    }
+
+    evpl_iovec_release(evpl, &plain_iov);
+
+    pp = (uint8_t *) out_iov->data + reserve;
+
+    if (evpl_rpc2_gss_wr_u32(&pp, pp + 4, (uint32_t) token_len)) {
+        evpl_iovec_release(evpl, out_iov);
+        return -1;
+    }
+
+    newbodylen = 4 + evpl_rpc2_gss_pad4((uint32_t) token_len);
+
+    if (newbodylen > 4 + token_len) {
+        memset(tok + token_len, 0, newbodylen - 4 - token_len);
+    }
+
+    out_iov->length = reserve + newbodylen;
+    *out_length     = reserve + newbodylen;
+
+    evpl_iovecs_release(evpl, msg_iov, msg_niov);
+    return 0;
+} /* evpl_rpc2_gss_wrap_call_privacy */
+
+/*
+ * Unwrap a reply the peer wrapped, and repoint (*iov_p, *niov_p, *len_p) at
+ * the results inside it.
+ *
+ * The acceptor's mirror of this checks a sequence number the initiator chose;
+ * here the initiator checks one the acceptor echoed, and it is the same
+ * number.  A reply carrying a different one is a reply to some other call --
+ * which on a connection that multiplexes is worth catching, because the xid
+ * alone would not notice a peer that answered the wrong request under the
+ * right identifier.
+ */
+static int
+evpl_rpc2_gss_unwrap_reply(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *gc,
+    uint32_t                     seq,
+    struct xdr_dbuf             *dbuf,
+    struct evpl_iovec          **iov_p,
+    int                         *niov_p,
+    int                         *len_p)
+{
+    struct evpl_iovec *iov  = *iov_p;
+    int                niov = *niov_p;
+    uint8_t            lenbuf[4];
+    const uint8_t     *lp;
+    uint32_t           outer, embedded, inner_len;
+    struct evpl_iovec *inner;
+    struct evpl_iovec  flat;
+    int                ninner, rc = -1;
+
+    if (evpl_rpc2_iov_gather(iov, niov, 0, lenbuf, 4)) {
+        return -1;
+    }
+
+    lp = lenbuf;
+
+    if (evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &outer) || outer < 4) {
+        return -1;
+    }
+
+    if (4 + (uint64_t) outer > (uint64_t) (uint32_t) *len_p) {
+        return -1;
+    }
+
+    inner = xdr_dbuf_alloc_space(sizeof(*inner), dbuf);
+
+    if (!inner) {
+        return -1;
+    }
+
+    /* Both services put a length-prefixed blob first, so the gather is
+     * common; what differs is whether the bytes are the plaintext (integrity,
+     * where the checksum follows and is verified) or a token to unseal. */
+    if (evpl_iovec_alloc(evpl, outer, 8, 1, 0, &flat) != 1) {
+        return -1;
+    }
+
+    if (evpl_rpc2_iov_gather(iov, niov, 4, flat.data, outer)) {
+        goto out;
+    }
+
+    if (gc->service == EVPL_RPC2_GSS_SVC_INTEGRITY) {
+        uint32_t       ck_off = 4 + evpl_rpc2_gss_pad4(outer);
+        uint32_t       ck_len;
+        const uint8_t *ck;
+        uint8_t        ckbuf[EVPL_RPC2_GSS_MAX_MIC];
+
+        if (evpl_rpc2_iov_gather(iov, niov, ck_off, lenbuf, 4)) {
+            goto out;
+        }
+
+        lp = lenbuf;
+        evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &ck_len);
+
+        if (ck_len == 0 || ck_len > sizeof(ckbuf) ||
+            evpl_rpc2_iov_gather(iov, niov, ck_off + 4, ckbuf, ck_len)) {
+            goto out;
+        }
+
+        ck = ckbuf;
+
+        if (gc->provider->verify_mic(gc->provider_arg, gc->gss_ctx,
+                                     flat.data, outer, ck, ck_len)) {
+            evpl_rpc2_debug("rpcsec_gss: reply checksum did not verify");
+            goto out;
+        }
+
+        if (evpl_iovec_alloc(evpl, outer, 8, 1, 0, inner) != 1) {
+            goto out;
+        }
+
+        memcpy(inner->data, flat.data, outer);
+        inner->length = outer;
+        inner_len     = outer;
+    } else {
+        size_t plain_len = 0;
+
+        if (evpl_iovec_alloc(evpl, outer, 8, 1, 0, inner) != 1) {
+            goto out;
+        }
+
+        if (gc->provider->unwrap(gc->provider_arg, gc->gss_ctx, flat.data,
+                                 outer, inner->data, outer, &plain_len) ||
+            plain_len < 4) {
+            evpl_rpc2_debug("rpcsec_gss: reply would not unseal");
+            evpl_iovec_release(evpl, inner);
+            goto out;
+        }
+
+        inner->length = (uint32_t) plain_len;
+        inner_len     = (uint32_t) plain_len;
+    }
+
+    lp = inner->data;
+    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) inner->data + 4, &embedded);
+
+    if (embedded != seq) {
+        evpl_rpc2_debug("rpcsec_gss: reply seq %u, expected %u", embedded, seq);
+        evpl_iovec_release(evpl, inner);
+        goto out;
+    }
+
+    /* Past the echoed seq lie the results themselves. */
+    inner->data   = (uint8_t *) inner->data + 4;
+    inner->length = inner_len - 4;
+
+    ninner  = 1;
+    *iov_p  = inner;
+    *niov_p = ninner;
+    *len_p  = (int) (inner_len - 4);
+    rc      = 0;
+
+ out:
+    evpl_iovec_release(evpl, &flat);
+    return rc;
+} /* evpl_rpc2_gss_unwrap_reply */
+
+/* Forward: the handshake sends ordinary calls, which the sender defines. */
+static int
+evpl_rpc2_call_gss_init(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *gc,
+    const void                  *token,
+    size_t                       token_len,
+    uint32_t                     proc);
+
+static void
+evpl_rpc2_gss_client_fail(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *gc)
+{
+    evpl_rpc2_gss_client_callback_t cb  = gc->callback;
+    void                           *arg = gc->callback_arg;
+
+    if (gc->gss_ctx && gc->provider->destroy) {
+        gc->provider->destroy(gc->provider_arg, gc->gss_ctx);
+    }
+    free(gc->target);
+    free(gc);
+
+    if (cb) {
+        cb(NULL, -1, arg);
+    }
+} /* evpl_rpc2_gss_client_fail */
+
+/*
+ * One leg of the handshake has come back.  Feed the acceptor's token to the
+ * mechanism; either it is satisfied, or it produces another token to send.
+ *
+ * Called from the client reply path, which routes here rather than to the
+ * program's result decoder because these results are an rpc_gss_init_res and
+ * the procedure carrying them is NULLPROC, whose results are void.
+ */
+static void
+evpl_rpc2_gss_client_init_reply(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *gc,
+    const uint8_t               *body,
+    uint32_t                     body_len,
+    int                          status)
+{
+    const uint8_t *token     = NULL;
+    uint32_t       token_len = 0;
+    uint32_t       major     = 0;
+    void          *out       = NULL;
+    size_t         out_len   = 0;
+    int            complete  = 0;
+
+    if (status) {
+        evpl_rpc2_debug("rpcsec_gss: context establishment refused, status=%d",
+                        status);
+        evpl_rpc2_gss_client_fail(evpl, gc);
+        return;
+    }
+
+    if (evpl_rpc2_gss_client_parse_init_res(gc, body, body_len, &major,
+                                            &token, &token_len)) {
+        evpl_rpc2_debug("rpcsec_gss: malformed rpc_gss_init_res (%u bytes)",
+                        body_len);
+        evpl_rpc2_gss_client_fail(evpl, gc);
+        return;
+    }
+
+    /* GSS_S_COMPLETE is 0; anything else with the error bits set is the
+     * acceptor telling us the mechanism refused, which no amount of further
+     * legs will fix. */
+    if (major & 0xffff0000u) {
+        evpl_rpc2_debug("rpcsec_gss: acceptor rejected the context, major=0x%x",
+                        major);
+        evpl_rpc2_gss_client_fail(evpl, gc);
+        return;
+    }
+
+    if (gc->mech_complete) {
+        /* Already established locally; the reply only carried the handle,
+         * which parse_init_res has taken. */
+        complete = 1;
+    } else if (gc->provider->init(gc->provider_arg, &gc->gss_ctx, gc->target,
+                                  token_len ? token : NULL, token_len,
+                                  &out, &out_len, &complete)) {
+        evpl_rpc2_debug("rpcsec_gss: initiator rejected the acceptor's token");
+        evpl_rpc2_gss_client_fail(evpl, gc);
+        return;
+    }
+
+    gc->mech_complete = complete;
+
+    if (!complete) {
+        /* Another leg.  RFC 2203 sec 5.2.2: continuation legs carry
+         * RPCSEC_GSS_CONTINUE_INIT and the handle the acceptor gave us. */
+        if (evpl_rpc2_call_gss_init(evpl, gc, out, out_len,
+                                    RPCSEC_GSS_CONTINUE_INIT)) {
+            free(out);
+            evpl_rpc2_gss_client_fail(evpl, gc);
+            return;
+        }
+        free(out);
+        return;
+    }
+
+    if (out) {
+        /* A final token the acceptor does not need: the context is complete
+         * on our side and the peer said it was complete on its own. */
+        free(out);
+    }
+
+    gc->established = 1;
+    gc->seq         = 1;
+
+    if (gc->callback) {
+        gc->callback(gc, 0, gc->callback_arg);
+    }
+} /* evpl_rpc2_gss_client_init_reply */
+
+SYMBOL_EXPORT void
+evpl_rpc2_gss_client_create(
+    struct evpl                         *evpl,
+    struct evpl_rpc2_program            *program,
+    struct evpl_rpc2_conn               *conn,
+    const struct evpl_rpc2_gss_provider *provider,
+    void                                *provider_arg,
+    uint32_t                             service,
+    const char                          *target,
+    evpl_rpc2_gss_client_callback_t      callback,
+    void                                *private_data)
+{
+    struct evpl_rpc2_gss_client *gc;
+    void                        *token     = NULL;
+    size_t                       token_len = 0;
+    int                          complete  = 0;
+
+    evpl_rpc2_abort_if(!provider || !provider->init,
+                       "evpl_rpc2_gss_client_create: provider has no initiator");
+
+    gc = calloc(1, sizeof(*gc));
+
+    gc->provider     = provider;
+    gc->provider_arg = provider_arg;
+    gc->service      = service;
+    gc->program      = program;
+    gc->conn         = conn;
+    gc->target       = target ? strdup(target) : NULL;
+    gc->callback     = callback;
+    gc->callback_arg = private_data;
+
+    /* First leg: no acceptor token yet. */
+    if (provider->init(provider_arg, &gc->gss_ctx, gc->target, NULL, 0,
+                       &token, &token_len, &complete)) {
+        evpl_rpc2_debug("rpcsec_gss: initiator would not start a context");
+        evpl_rpc2_gss_client_fail(evpl, gc);
+        return;
+    }
+
+    gc->mech_complete = complete;
+
+    if (evpl_rpc2_call_gss_init(evpl, gc, token, token_len, RPCSEC_GSS_INIT)) {
+        free(token);
+        evpl_rpc2_gss_client_fail(evpl, gc);
+        return;
+    }
+
+    free(token);
+} /* evpl_rpc2_gss_client_create */
+
+SYMBOL_EXPORT void
+evpl_rpc2_gss_client_destroy(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *client)
+{
+    if (!client) {
+        return;
+    }
+
+    /* Best effort: tell the peer so it can drop its half now rather than at
+     * expiry (RFC 2203 sec 5.4).  A DESTROY that never lands costs the peer a
+     * timeout, not correctness, so its failure is not worth reporting. */
+    if (client->established) {
+        evpl_rpc2_call_gss_init(evpl, client, NULL, 0, RPCSEC_GSS_DESTROY);
+    }
+
+    /* A call made under this context may still be outstanding -- the caller
+     * is entitled to retire a context without first draining what it carried,
+     * and the DESTROY just queued is itself such a call.  Their replies still
+     * have to be dispatched, so the back-references are cleared rather than
+     * the requests cancelled: a reply that arrives after this point is
+     * delivered unwrapped and unverified, which is what an unprotected reply
+     * to a context that no longer exists is. */
+    if (client->conn) {
+        struct evpl_rpc2_request *request, *tmp;
+
+        HASH_ITER(hh, client->conn->pending_calls, request, tmp)
+        {
+            if (request->gss_client == client) {
+                request->gss_client = NULL;
+            }
+
+            if (request->gss_client_init == client) {
+                request->gss_client_init   = NULL;
+                request->gss_discard_reply = 1;
+            }
+        }
+    }
+
+    if (client->gss_ctx && client->provider->destroy) {
+        client->provider->destroy(client->provider_arg, client->gss_ctx);
+    }
+
+    free(client->target);
+    free(client);
+} /* evpl_rpc2_gss_client_destroy */
+
 SYMBOL_EXPORT void
 evpl_rpc2_set_gss_provider(
     struct evpl_rpc2_thread             *thread,
@@ -2516,6 +3196,45 @@ evpl_rpc2_client_handle_reply(
     int                      error;
     int                      chunk_unclaimed = 0;
     struct evpl             *evpl            = thread->evpl;
+    struct evpl_iovec       *gss_opened_iov  = NULL;
+
+    /*
+     * A context-establishment reply.  Its results are an rpc_gss_init_res, and
+     * the procedure that carried them is NULLPROC, whose results the program's
+     * generated decoder knows to be void -- so it has to be intercepted here,
+     * before dispatch, rather than decoded as the call's own output.
+     */
+    if (request->gss_discard_reply) {
+        evpl_rpc2_request_free(thread, request);
+        return;
+    }
+
+    if (request->gss_client_init) {
+        struct evpl_rpc2_gss_client *gc = request->gss_client_init;
+        uint8_t                      body[512];
+        uint32_t                     body_len = 0;
+
+        if (!status && reply_length > 0) {
+            body_len = (uint32_t) reply_length;
+            if (body_len > sizeof(body) ||
+                evpl_rpc2_iov_gather(reply_iov, reply_niov, 0, body, body_len)) {
+                body_len = 0;
+                status   = -1;
+            }
+        }
+
+        /* DESTROY is fire and forget: the context is already being torn down
+         * locally, so there is nothing an answer could change. */
+        if (!gc->established || gc->callback) {
+            evpl_rpc2_gss_client_init_reply(evpl, gc, body, body_len, status);
+        }
+
+        /* The reply iovecs belong to request->msg, which request_free
+         * releases; releasing them here as well would drop the reference
+         * twice. */
+        evpl_rpc2_request_free(thread, request);
+        return;
+    }
 
     if (request->read_chunk.niov) {
         /* Since server has replied, it will have finished reading our read chunk.
@@ -2556,6 +3275,24 @@ evpl_rpc2_client_handle_reply(
         request->write_chunk.length = 0;
     }
 
+    /* A reply to a wrapped call is wrapped too (RFC 2203 sec 5.3.3.2/5.3.3.3),
+    * so it has to be opened before the program's decoder sees it -- which
+    * would otherwise be handed rpc_gss_integ_data where it expects results. */
+    if (request->gss_client && !status &&
+        request->gss_client->service != EVPL_RPC2_GSS_SVC_NONE) {
+        if (evpl_rpc2_gss_unwrap_reply(evpl, request->gss_client,
+                                       request->gss_client_seq,
+                                       &request->msg->dbuf, &reply_iov,
+                                       &reply_niov, &reply_length)) {
+            status = EVPL_RPC2_REPLY_DENIED;
+        } else {
+            /* The opened results live in a buffer of their own rather than in
+             * the ones the reply arrived in, so they have to be dropped
+             * separately -- and only once the decoder has read them. */
+            gss_opened_iov = reply_iov;
+        }
+    }
+
     error = request->program->recv_reply_dispatch(evpl, conn, &request->msg->dbuf,
                                                   request->proc,
                                                   &request->read_chunk,
@@ -2563,6 +3300,10 @@ evpl_rpc2_client_handle_reply(
                                                   status,
                                                   request->callback,
                                                   request->callback_arg);
+
+    if (gss_opened_iov) {
+        evpl_iovec_release(evpl, gss_opened_iov);
+    }
 
     if (chunk_unclaimed) {
         evpl_iovecs_release_internal(evpl, request->read_chunk.iov,
@@ -3743,6 +4484,88 @@ evpl_rpc2_client_disconnect(
     evpl_close(thread->evpl, conn->bind);
 } /* evpl_rpc2_client_destroy */
 
+static int
+evpl_rpc2_call_full(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_program    *program,
+    struct evpl_rpc2_conn       *conn,
+    const struct evpl_rpc2_cred *cred,
+    uint32_t                     procedure,
+    struct evpl_iovec           *req_iov,
+    int                          req_niov,
+    int                          req_length,
+    struct evpl_rpc2_rdma_chunk *rdma_chunk,
+    int                          max_rdma_write_chunk,
+    struct evpl_iovec           *write_chunk_iov,
+    int                          write_chunk_niov,
+    int                          max_rdma_reply_chunk,
+    void                        *callback,
+    void                        *private_data,
+    struct evpl_rpc2_gss_client *gss_init_client,
+    const uint8_t               *gss_init_cred,
+    uint32_t                     gss_init_cred_len,
+    int                          gss_discard);
+
+/*
+ * Send one context-establishment leg on the program's NULL procedure.
+ *
+ * RFC 2203 sec 5.2: the GSS token travels as rpc_gss_init_arg -- a lone opaque
+ * in the call arguments -- and the credential carries the procedure and the
+ * handle so far.  DESTROY reuses the same shape with no token, which is why it
+ * is sent from here rather than from a path of its own.
+ */
+static int
+evpl_rpc2_call_gss_init(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *gc,
+    const void                  *token,
+    size_t                       token_len,
+    uint32_t                     proc)
+{
+    uint8_t           cred_buf[32 + EVPL_RPC2_GSS_MAX_HANDLE];
+    uint32_t          cred_len;
+    struct evpl_iovec arg_iov;
+    uint8_t          *p, *end;
+    uint32_t          arg_len = 4 + evpl_rpc2_gss_pad4((uint32_t) token_len);
+    int               reserve = gc->program->reserve;
+    int               rc;
+
+    /* A DESTROY names the context and carries no token; the sequence number it
+     * spends is a real one from the window, because the acceptor authenticates
+     * it exactly like any other call (sec 5.4). */
+    cred_len = evpl_rpc2_gss_client_cred_blob(gc, proc,
+                                              proc == RPCSEC_GSS_DESTROY ?
+                                              gc->seq++ : 0,
+                                              cred_buf, sizeof(cred_buf));
+    if (!cred_len) {
+        return -1;
+    }
+
+    if (evpl_iovec_alloc(evpl, reserve + arg_len, 8, 1, 0, &arg_iov) != 1) {
+        return -1;
+    }
+
+    p   = (uint8_t *) arg_iov.data + reserve;
+    end = p + arg_len;
+
+    if (evpl_rpc2_gss_wr_opaque(&p, end, token, token_len)) {
+        evpl_iovec_release(evpl, &arg_iov);
+        return -1;
+    }
+
+    arg_iov.length = reserve + arg_len;
+
+    rc = evpl_rpc2_call_full(evpl, gc->program, gc->conn, NULL, 0,
+                             &arg_iov, 1, reserve + arg_len,
+                             NULL, 0, NULL, 0, 0, NULL, NULL,
+                             gc, cred_buf, cred_len,
+                             proc == RPCSEC_GSS_DESTROY);
+
+    /* arg_iov is consumed by the call path (marshalling moves it inline and
+     * the send holds what it needs), so it must not be released here. */
+    return rc;
+} /* evpl_rpc2_call_gss_init */
+
 SYMBOL_EXPORT int
 evpl_rpc2_call(
     struct evpl                 *evpl,
@@ -3761,22 +4584,57 @@ evpl_rpc2_call(
     void                        *callback,
     void                        *private_data)
 {
-    struct evpl_rpc2_thread  *thread = conn->thread;
-    struct evpl_rpc2_request *request;
-    struct evpl_rpc2_msg     *msg;
-    struct rpc_msg            rpc_msg;
-    struct rdma_msg           rdma_msg;
-    struct evpl_iovec         hdr_iov, hdr_out_iov;
-    struct xdr_read_list      read_list;
-    struct xdr_write_list     write_list;
-    struct xdr_rdma_segment   write_chunk_segment;
-    struct xdr_write_chunk    reply_chunk;
-    struct xdr_rdma_segment   reply_chunk_segment;
-    int                       transport_hdr_len, rpc_len, i;
-    int                       out_niov   = 1;
-    int                       pay_length = req_length - program->reserve;
-    int                       total_length;
-    int                       rdma = conn->rdma;
+    return evpl_rpc2_call_full(evpl, program, conn, cred, procedure, req_iov,
+                               req_niov, req_length, rdma_chunk,
+                               max_rdma_write_chunk, write_chunk_iov,
+                               write_chunk_niov, max_rdma_reply_chunk,
+                               callback, private_data, NULL, 0, 0, 0);
+} /* evpl_rpc2_call */
+
+static int
+evpl_rpc2_call_full(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_program    *program,
+    struct evpl_rpc2_conn       *conn,
+    const struct evpl_rpc2_cred *cred,
+    uint32_t                     procedure,
+    struct evpl_iovec           *req_iov,
+    int                          req_niov,
+    int                          req_length,
+    struct evpl_rpc2_rdma_chunk *rdma_chunk,
+    int                          max_rdma_write_chunk,
+    struct evpl_iovec           *write_chunk_iov,
+    int                          write_chunk_niov,
+    int                          max_rdma_reply_chunk,
+    void                        *callback,
+    void                        *private_data,
+    struct evpl_rpc2_gss_client *gss_init_client,
+    const uint8_t               *gss_init_cred,
+    uint32_t                     gss_init_cred_len,
+    int                          gss_discard)
+{
+    struct evpl_rpc2_thread     *thread = conn->thread;
+    struct evpl_rpc2_request    *request;
+    struct evpl_rpc2_msg        *msg;
+    struct rpc_msg               rpc_msg;
+    struct rdma_msg              rdma_msg;
+    struct evpl_iovec            hdr_iov, hdr_out_iov;
+    struct xdr_read_list         read_list;
+    struct xdr_write_list        write_list;
+    struct xdr_rdma_segment      write_chunk_segment;
+    struct xdr_write_chunk       reply_chunk;
+    struct xdr_rdma_segment      reply_chunk_segment;
+    int                          transport_hdr_len, rpc_len, i;
+    struct evpl_rpc2_gss_client *gss_client   = NULL;
+    uint32_t                     gss_seq      = 0;
+    uint32_t                     gss_cred_len = 0;
+    uint8_t                      gss_cred_buf[32 + EVPL_RPC2_GSS_MAX_HANDLE];
+    uint8_t                      gss_verf_buf[EVPL_RPC2_GSS_MAX_MIC];
+    struct evpl_iovec            gss_wrapped_iov;
+    int                          out_niov   = 1;
+    int                          pay_length = req_length - program->reserve;
+    int                          total_length;
+    int                          rdma = conn->rdma;
 
     /* Allocate request for the exchange */
     request = evpl_rpc2_request_alloc(thread);
@@ -3788,12 +4646,14 @@ evpl_rpc2_call(
     msg          = evpl_rpc2_msg_alloc(thread);
     request->msg = msg;
 
-    request->conn         = conn;
-    request->program      = program;
-    request->xid          = conn->next_xid++;
-    request->proc         = procedure;
-    request->callback     = callback;
-    request->callback_arg = private_data;
+    request->conn              = conn;
+    request->gss_client_init   = gss_init_client;
+    request->gss_discard_reply = gss_discard;
+    request->program           = program;
+    request->xid               = conn->next_xid++;
+    request->proc              = procedure;
+    request->callback          = callback;
+    request->callback_arg      = private_data;
 
     HASH_ADD(hh, conn->pending_calls, xid, sizeof(request->xid), request);
 
@@ -3816,9 +4676,156 @@ evpl_rpc2_call(
         rpc_msg.body.cbody.cred.authsys.gid             = cred->authsys.gid;
         rpc_msg.body.cbody.cred.authsys.num_gids        = cred->authsys.num_gids;
         rpc_msg.body.cbody.cred.authsys.gids            = cred->authsys.gids;
+    } else if (cred && cred->flavor == EVPL_RPC2_AUTH_RPCSEC_GSS &&
+               cred->gss.client) {
+        struct evpl_rpc2_gss_client *gc = cred->gss.client;
+
+        /* An established context: DATA, carrying the next sequence number.
+         * RFC 2203 sec 5.3.1 -- the number must never repeat on a context,
+         * which is why it lives in the context and not in the caller. */
+        gss_client   = gc;
+        gss_seq      = gc->seq++;
+        gss_cred_len = evpl_rpc2_gss_client_cred_blob(gc, RPCSEC_GSS_DATA,
+                                                      gss_seq, gss_cred_buf,
+                                                      sizeof(gss_cred_buf));
+        if (!gss_cred_len) {
+            evpl_rpc2_request_free(thread, request);
+            return -1;
+        }
+
+        /*
+         * Under integrity or privacy the arguments do not travel as
+         * themselves: they are reframed around the same sequence number the
+         * credential carries, which is what ties the two together and what
+         * the acceptor checks.  Done here, before the header is sized, so
+         * everything downstream measures the wrapped payload.
+         *
+         * RDMA is excluded for the same reason the acceptor excludes it: the
+         * payload does not travel inline, so there is nothing at this layer to
+         * wrap.
+         */
+        if (!rdma && gc->service != EVPL_RPC2_GSS_SVC_NONE) {
+            int wrapped_len = 0;
+            int rc;
+
+            /* Allocated straight into the variable that will carry it, not
+             * into a temporary that is then copied: an iovec records where it
+             * lives, and moving one to another address is what the trace
+             * build's canary exists to catch. */
+            if (gc->service == EVPL_RPC2_GSS_SVC_INTEGRITY) {
+                rc = evpl_rpc2_gss_wrap_call_integrity(evpl, gc, gss_seq,
+                                                       req_iov, req_niov,
+                                                       req_length,
+                                                       program->reserve,
+                                                       &gss_wrapped_iov,
+                                                       &wrapped_len);
+            } else {
+                rc = evpl_rpc2_gss_wrap_call_privacy(evpl, gc, gss_seq,
+                                                     req_iov, req_niov,
+                                                     req_length,
+                                                     program->reserve,
+                                                     &gss_wrapped_iov,
+                                                     &wrapped_len);
+            }
+
+            if (rc) {
+                evpl_rpc2_debug("rpcsec_gss: could not wrap call arguments "
+                                "for service %u", gc->service);
+                evpl_rpc2_request_free(thread, request);
+                return -1;
+            }
+
+            req_iov    = &gss_wrapped_iov;
+            req_niov   = 1;
+            pay_length = wrapped_len - program->reserve;
+        }
+
+        rpc_msg.body.cbody.cred.flavor          = RPCSEC_GSS;
+        rpc_msg.body.cbody.cred.rpcsec_gss.data = gss_cred_buf;
+        rpc_msg.body.cbody.cred.rpcsec_gss.len  = gss_cred_len;
+        rpc_msg.body.cbody.verf.flavor          = RPCSEC_GSS;
+    } else if (gss_init_client) {
+        memcpy(gss_cred_buf, gss_init_cred, gss_init_cred_len);
+        gss_cred_len = gss_init_cred_len;
+        /* A context-establishment leg.  The credential names the procedure
+        * (INIT / CONTINUE_INIT / DESTROY) and the handle so far; there is no
+        * verifier yet, because there is not yet a context to sign with. */
+        rpc_msg.body.cbody.cred.flavor          = RPCSEC_GSS;
+        rpc_msg.body.cbody.cred.rpcsec_gss.data = gss_cred_buf;
+        rpc_msg.body.cbody.cred.rpcsec_gss.len  = gss_cred_len;
     } else {
         rpc_msg.body.cbody.cred.flavor = AUTH_NONE;
     }
+
+    /*
+     * The call verifier is a MIC over the header from the xid through the
+     * credential -- everything the acceptor must be able to trust, and
+     * nothing that follows it.  The signed prefix does not depend on the
+     * verifier, so it can be computed before the verifier exists: marshal to
+     * learn the bytes, sign them, then marshal again with the real verifier
+     * in place.  Two passes over a header of a few dozen bytes.
+     */
+    if (gss_client && gss_client->provider->get_mic) {
+        struct evpl_iovec probe_iov;
+        uint32_t          signed_len = 24 + 8 + evpl_rpc2_gss_pad4(gss_cred_len);
+        void             *mic        = NULL;
+        size_t            mic_len    = 0;
+
+        struct evpl_iovec probe_out;
+        int               probe_niov = 1;
+        int               rc;
+
+        if (evpl_iovec_alloc(evpl, signed_len + 512, 8, 1, 0, &probe_iov) != 1) {
+            evpl_rpc2_request_free(thread, request);
+            return -1;
+        }
+
+        /* Marshal with an AUTH_NONE verifier: the signed prefix ends at the
+         * credential, so the verifier's own encoding cannot affect it, and
+         * leaving the RPCSEC_GSS verifier fields unset here would hand the
+         * marshaller a length it never assigned. */
+        rpc_msg.body.cbody.verf.flavor = AUTH_NONE;
+
+        marshall_rpc_msg(&rpc_msg, &probe_iov, &probe_out, &probe_niov,
+                         NULL, 0);
+
+        rc = gss_client->provider->get_mic(gss_client->provider_arg,
+                                           gss_client->gss_ctx,
+                                           probe_out.data, signed_len,
+                                           &mic, &mic_len);
+
+        /* Both halves are ours: probe_out is the marshaller's view of what it
+         * wrote, probe_iov the buffer it wrote into.  On the send path the
+         * latter reference is spent by evpl_sendv, but these bytes never go
+         * anywhere -- they exist only to be signed. */
+        evpl_iovec_release_internal(evpl, &probe_out);
+        evpl_iovec_release_internal(evpl, &probe_iov);
+
+        if (rc) {
+            evpl_rpc2_request_free(thread, request);
+            return -1;
+        }
+
+        if (mic_len > sizeof(gss_verf_buf)) {
+            free(mic);
+            evpl_rpc2_request_free(thread, request);
+            return -1;
+        }
+
+        memcpy(gss_verf_buf, mic, mic_len);
+        free(mic);
+
+        rpc_msg.body.cbody.verf.flavor          = RPCSEC_GSS;
+        rpc_msg.body.cbody.verf.rpcsec_gss.data = gss_verf_buf;
+        rpc_msg.body.cbody.verf.rpcsec_gss.len  = (uint32_t) mic_len;
+    }
+
+    /* Recorded here rather than with the rest of the request fields: the
+     * credential branch above is what decides whether this call travels under
+     * a context at all, and copying the pointer before that ran would leave
+     * every reply looking unwrapped. */
+    request->gss_client     = gss_client;
+    request->gss_client_seq = gss_seq;
 
     rpc_len = marshall_length_rpc_msg(&rpc_msg);
 

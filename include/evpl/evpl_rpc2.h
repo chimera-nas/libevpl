@@ -17,6 +17,7 @@ struct evpl_iovec;
 struct evpl_rpc2_program;
 struct evpl_rpc2_call;
 struct evpl_rpc2_gss_context;
+struct evpl_rpc2_gss_client;
 
 /*
  * Verifier structure for RPC authentication.
@@ -77,6 +78,11 @@ struct evpl_rpc2_cred {
         const char *principal;
         uint32_t    service;
         void       *gss_ctx;
+        /* Client side: the established context a call travels under.  Set by
+         * a caller building a credential to SEND; NULL in the credential a
+         * server RECEIVES, where the three fields above describe the peer
+         * instead. */
+        struct evpl_rpc2_gss_client *client;
     } gss;
 };
 

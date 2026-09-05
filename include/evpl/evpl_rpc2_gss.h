@@ -72,6 +72,26 @@ struct evpl_rpc2_gss_provider {
         char       *principal,
         size_t      principal_sz);
 
+    /*
+     * Initiator half of context establishment (gss_init_sec_context), the
+     * mirror of accept() above.  A provider that only ever answers calls
+     * leaves this NULL; one that also makes them supplies it.
+     *
+     * target names the service to authenticate to ("nfs@host" style).
+     * in_token is the acceptor's last output, NULL on the first leg.  On
+     * return *complete is 1 when the context is ready and 0 when another leg
+     * is needed, and *out_token is the token to send (freed by the caller).
+     */
+    int  (*init)(
+        void       *provider_arg,
+        void      **gss_ctx,
+        const char *target,
+        const void *in_token,
+        size_t      in_len,
+        void      **out_token,
+        size_t     *out_len,
+        int        *complete);
+
     /* Compute a MIC (gss_get_mic) over msg; used for reply verifiers. */
     int (*get_mic)(
         void       *provider_arg,
@@ -157,6 +177,58 @@ struct evpl_rpc2_gss_provider {
         void *provider_arg,
         void *gss_ctx);
 };
+
+/*
+ * A client-side RPCSEC_GSS context.
+ *
+ * Opaque and owned by rpc2.  Created by establishing a context with a peer --
+ * an RPC exchange in its own right, hence the callback -- and then named in an
+ * evpl_rpc2_cred so that ordinary calls travel under it.  One context serves
+ * any number of calls on the connection it was established over; the sequence
+ * number RFC 2203 requires is maintained inside it.
+ */
+struct evpl_rpc2_gss_client;
+struct evpl_rpc2_program;
+struct evpl_rpc2_conn;
+
+typedef void (*evpl_rpc2_gss_client_callback_t)(
+    struct evpl_rpc2_gss_client *client,
+    int                          status,
+    void                        *private_data);
+
+/*
+ * Establish a context against `conn`, then hand it back through `callback`.
+ *
+ * service is one of EVPL_RPC2_GSS_SVC_*: none authenticates each call,
+ * integrity signs its arguments and results, privacy seals them.  target names
+ * the peer service the provider should authenticate to.
+ *
+ * The handshake is carried on the program's NULL procedure, as RFC 2203
+ * section 5.2 requires, so the program must be one the peer serves.  status is
+ * 0 on success; on failure the client is NULL and nothing needs freeing.
+ */
+void
+evpl_rpc2_gss_client_create(
+    struct evpl                          *evpl,
+    struct evpl_rpc2_program             *program,
+    struct evpl_rpc2_conn                *conn,
+    const struct evpl_rpc2_gss_provider  *provider,
+    void                                 *provider_arg,
+    uint32_t                              service,
+    const char                           *target,
+    evpl_rpc2_gss_client_callback_t       callback,
+    void                                 *private_data);
+
+/*
+ * Retire a context.  Sends RPCSEC_GSS_DESTROY so the peer can drop its half
+ * (RFC 2203 section 5.4) and releases the local one.  Best effort: the peer
+ * expires contexts on its own schedule, so a destroy that never arrives costs
+ * the peer a timeout rather than correctness.
+ */
+void
+evpl_rpc2_gss_client_destroy(
+    struct evpl                 *evpl,
+    struct evpl_rpc2_gss_client *client);
 
 /*
  * Register a GSS provider on an rpc2 thread.  Must be called before the
