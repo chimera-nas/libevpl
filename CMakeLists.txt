@@ -235,16 +235,27 @@ else()
     find_path(LIBFABRIC_INCLUDE_DIR NAMES rdma/fabric.h)
 
     if (LIBFABRIC_LIB AND LIBFABRIC_INCLUDE_DIR)
-        # The backend needs the 1.18+ API surface (fi_context2, FI_WAIT_POLLFD
-        # FI_GETWAIT semantics, modern mr_mode negotiation).
+        # Probe for what the backend actually uses rather than trusting a
+        # version number: fi_context2, the FI_WAIT_POLLFD wait object, and the
+        # FI_MR_* bitmask mr_mode.  All are present from 1.17, which is what
+        # Ubuntu 24.04 packages; EVPL_LIBFABRIC_API_VERSION in libfabric.c is
+        # the matching runtime floor and the two must move together.
         include(CheckCSourceCompiles)
         set(CMAKE_REQUIRED_INCLUDES ${LIBFABRIC_INCLUDE_DIR})
         check_c_source_compiles("
             #include <rdma/fabric.h>
-            #if FI_VERSION_LT(FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION), FI_VERSION(1, 18))
+            #include <rdma/fi_eq.h>
+            #if FI_VERSION_LT(FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION), FI_VERSION(1, 17))
             #error libfabric too old
             #endif
-            int main(void) { struct fi_context2 ctx; (void) ctx; return 0; }
+            int main(void) {
+                struct fi_context2 ctx;
+                int wait = FI_WAIT_POLLFD;
+                uint64_t mr = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
+                              FI_MR_ALLOCATED | FI_MR_PROV_KEY;
+                (void) ctx; (void) wait; (void) mr;
+                return 0;
+            }
         " LIBFABRIC_VERSION_OK)
         unset(CMAKE_REQUIRED_INCLUDES)
     endif()
@@ -256,9 +267,9 @@ else()
         add_definitions(-DHAVE_LIBFABRIC)
         set(HAVE_LIBFABRIC 1)
     elseif (LIBFABRIC_ENABLED STREQUAL "ON" OR LIBFABRIC_ENABLED STREQUAL "YES")
-        message(FATAL_ERROR "LIBFABRIC_ENABLED=ON but libfabric >= 1.18 was not found")
+        message(FATAL_ERROR "LIBFABRIC_ENABLED=ON but libfabric >= 1.17 was not found")
     else()
-        message(STATUS "libfabric >= 1.18 not found; libfabric backend disabled")
+        message(STATUS "libfabric >= 1.17 not found; libfabric backend disabled")
     endif()
 endif()
 
