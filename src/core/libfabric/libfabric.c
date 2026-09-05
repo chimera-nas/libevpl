@@ -53,8 +53,14 @@ extern struct evpl_shared *evpl_shared;
 #define evpl_libfabric_abort_if(cond, ...) \
         evpl_abort_if(cond, "libfabric", __FILE__, __LINE__, __VA_ARGS__)
 
-/* The API surface this backend is written against */
-#define EVPL_LIBFABRIC_API_VERSION FI_VERSION(1, 18)
+/* The API surface this backend is written against.  fi_getinfo() refuses a
+ * requested version newer than the installed library, so this doubles as the
+ * minimum libfabric this backend runs on -- keep it at the oldest release
+ * carrying everything used here (fi_context2, FI_WAIT_POLLFD/FI_GETWAIT, and
+ * the FI_MR_* bitmask form of mr_mode, which needs only 1.5).  1.17 is what
+ * Ubuntu 24.04 ships, and raising this past a distro's package silently
+ * disables the backend there rather than failing the build. */
+#define EVPL_LIBFABRIC_API_VERSION FI_VERSION(1, 17)
 
 /* Requested-key allocation starts high to stay clear of keys an
  * application may have chosen on an externally provided domain */
