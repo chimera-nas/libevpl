@@ -16,9 +16,11 @@ ARG QUINT_VERSION=0.32.0
 # it and generates their case tables from the models at build time, and without
 # it those suites and the quint_model checks silently disable themselves.
 #
-# Not on ubuntu 22.04 or rocky 9.  quint's Rust evaluator is published only as
-# *-unknown-linux-gnu against glibc 2.39, with no musl build to mirror, so it
-# cannot load on their 2.35 and 2.34.  The TypeScript backend needs no
+# Not on ubuntu 22.04 or rocky 9.  The Linux build of quint's Rust evaluator is
+# linked against glibc 2.39, with no musl build to mirror, so it cannot load on
+# their 2.35 and 2.34.  This is a glibc-version limit, not an absence of
+# non-Linux builds -- darwin arm64 and amd64 evaluators exist, which is what
+# lets the macOS job run these same suites on the same backend.  The TypeScript backend needs no
 # evaluator and would run there, but it is 2.4x slower on these models and
 # generates a different corpus from the same seed -- so those two images would
 # be compiling a different case table from every other platform, which is

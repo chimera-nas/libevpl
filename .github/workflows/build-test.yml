@@ -344,6 +344,14 @@ jobs:
           # whatever its packager happened to ship.  Upstream's darwin asset is
           # a single universal binary, covering Intel and Apple Silicon alike.
           CCACHE_REF: ghcr.io/chimera-nas/ccache:4.14-darwin
+          # The same version the Linux images pin (QUINT_VERSION in every
+          # Dockerfile).  Pinned rather than floating because the case tables
+          # the conformance suites run are GENERATED from the models at build
+          # time with fixed seeds: a different quint samples the models
+          # differently, so an unpinned macOS would be compiling a different
+          # corpus from the rest of the matrix -- testing something else
+          # rather than testing more widely.
+          QUINT_VERSION: 0.32.0
         run: |
           brew update
           # openssl@3 and nghttp2 are keg-only; CMakeLists.txt already adds the
@@ -352,6 +360,50 @@ jobs:
           oras pull "${CCACHE_REF}" --output "${RUNNER_TEMP}"
           install -m 0755 "${RUNNER_TEMP}/ccache-darwin" /usr/local/bin/ccache
           ccache --version | head -1
+          # quint is not a brew formula; upstream publishes it on npm, which is
+          # also what pins it exactly.  The Linux images take it from the GHCR
+          # mirror instead, but that image carries a Linux node+quint tree and
+          # cannot be reused here.
+          npm install -g "@informalsystems/quint@${QUINT_VERSION}"
+          quint --version
+
+      # quint fetches its Rust evaluator on first use and ABORTS rather than
+      # falling back when that fetch fails, so an absent evaluator becomes a
+      # build failure in the middle of case generation, attributed to cmake.
+      # The Linux images ship it inside the image; here it has to come off the
+      # network, so install it in a step of its own.
+      #
+      # Fetched here rather than by quint itself because quint's fetch is
+      # ANONYMOUS -- its GitHub client sends only User-Agent and Accept, and
+      # honours no token -- so on hosted runners, whose egress IPs are shared
+      # and busy, it reliably draws "rate limit exceeded" from api.github.com.
+      # gh uses the job's own token and gets the authenticated limit instead.
+      #
+      # v0.6.0 is not a guess: QUINT_EVALUATOR_VERSION is a constant inside
+      # quint 0.32.0, and the path below is where quint looks before deciding
+      # it needs to download anything.  The evaluator version is as
+      # corpus-affecting as the quint version, so pinning both is the point.
+      - name: Install the quint Rust evaluator
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUINT_EVALUATOR_VERSION: v0.6.0
+        run: |
+          case "$(uname -m)" in
+            arm64|aarch64) asset=quint_evaluator-aarch64-apple-darwin.tar.gz ;;
+            x86_64)        asset=quint_evaluator-x86_64-apple-darwin.tar.gz ;;
+            *) echo "no quint evaluator for $(uname -m)" >&2; exit 1 ;;
+          esac
+          dest="${HOME}/.quint/rust-evaluator-${QUINT_EVALUATOR_VERSION}"
+          mkdir -p "${dest}"
+          gh release download "evaluator/${QUINT_EVALUATOR_VERSION}" \
+            --repo informalsystems/quint --pattern "${asset}" \
+            --output "${RUNNER_TEMP}/${asset}" --clobber
+          tar -xzf "${RUNNER_TEMP}/${asset}" -C "${dest}"
+          chmod +x "${dest}/quint_evaluator"
+          # Prove quint is satisfied by what we placed, before the build needs
+          # it: this runs the models and must not reach the network.
+          quint run --max-steps=1 --max-samples=1 \
+            src/rpc2/tests/quint/defects.qnt --main=rpc2_defects >/dev/null
 
       - name: Restore the ccache directory
         uses: actions/cache/restore@v4
