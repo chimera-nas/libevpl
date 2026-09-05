@@ -25,20 +25,16 @@ struct evpl_thread_config {
 };
 
 /*
- * Default ceiling on one RPC2 message, counted over every fragment of a record.
- *
- * The record mark is unauthenticated input: a peer can claim any length it
- * likes before sending a byte of it.  Without a ceiling the transport keeps
- * buffering whatever the claim asks for, so a single connection can be made to
- * consume memory without bound.  Capping it means an oversized claim is refused
- * at the framing layer, before anything is allocated for it.
- *
- * 4 MiB is comfortably above realistic RPC traffic -- NFS rsize/wsize is
- * typically 1 MiB, and the payload for a large READ/WRITE travels in RDMA
- * chunks rather than inline -- while staying small enough that the worst case
- * per connection is bounded.
+ * Headroom an RPC2 message must leave inside one iovec buffer: the RPC and
+ * record-marking headers, the GSS credential and verifier, and the framing a
+ * krb5p seal adds around the plaintext.  Proportional below 256 KiB so that a
+ * deliberately tiny buffer -- the core conformance test uses 32 KiB to force
+ * multi-iovec paths -- yields a sane ceiling rather than underflowing.
  */
-#define EVPL_DEFAULT_RPC2_MAX_MESSAGE_SIZE (4U * 1024U * 1024U)
+#define EVPL_MESSAGE_BUFFER_MARGIN(bufsz) \
+        ((bufsz) >= (256U * 1024U) ? (64U * 1024U) : ((bufsz) / 4U))
+
+#define EVPL_DEFAULT_RPC2_MAX_MESSAGE_SIZE(bufsz) ((bufsz) - EVPL_MESSAGE_BUFFER_MARGIN(bufsz))
 
 /*
  * Read the configured RPC2 message ceiling.

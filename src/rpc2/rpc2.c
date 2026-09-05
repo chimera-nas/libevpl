@@ -765,6 +765,18 @@ evpl_rpc2_gss_wrap_reply_integrity(
     struct evpl_iovec        *out_iov,
     int                      *out_length);
 
+/* Likewise for the privacy service (krb5p), as rpc_gss_priv_data. */
+static int
+evpl_rpc2_gss_wrap_reply_privacy(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    struct evpl_iovec        *msg_iov,
+    int                       msg_niov,
+    int                       length,
+    int                       reserve,
+    struct evpl_iovec        *out_iov,
+    int                      *out_length);
+
 static int
 evpl_rpc2_send_reply(
     struct evpl                 *evpl,
@@ -842,6 +854,26 @@ evpl_rpc2_send_reply(
                                                    msg_niov, length, reserve,
                                                    &gss_wrapped_iov,
                                                    &wrapped_len) == 0) {
+                msg_iov  = &gss_wrapped_iov;
+                msg_niov = 1;
+                length   = wrapped_len;
+            }
+        }
+
+        /* Privacy service (krb5p): seal the proc results as rpc_gss_priv_data,
+         * under the same non-RDMA / SUCCESS constraints as integrity.  The
+         * fallthrough on failure is deliberate and matches integrity: an
+         * unsealed reply is one the client rejects, which is the safe outcome
+         * -- but note it means a wrap failure is never itself reported, so the
+         * provider is the only place that can say why. */
+        if (!rdma && error_stat == SUCCESS &&
+            request->gss_service == EVPL_RPC2_GSS_SVC_PRIVACY) {
+            int wrapped_len;
+
+            if (evpl_rpc2_gss_wrap_reply_privacy(evpl, request, msg_iov,
+                                                 msg_niov, length, reserve,
+                                                 &gss_wrapped_iov,
+                                                 &wrapped_len) == 0) {
                 msg_iov  = &gss_wrapped_iov;
                 msg_niov = 1;
                 length   = wrapped_len;
@@ -1174,9 +1206,9 @@ evpl_rpc2_send_reply_success(
  * context-establishment handshake (carried on the program NULL procedure),
  * the per-request call verifier and sequence-number replay window, and the
  * reply verifier.  A registered provider (evpl_rpc2_set_gss_provider) wraps
- * the actual GSS mechanism (Kerberos).  This first cut implements the
- * authentication service (rpc_gss_svc_none, i.e. sec=krb5); integrity and
- * privacy are rejected with AUTH_TOOWEAK until wrapping is wired up.
+ * the actual GSS mechanism (Kerberos).  All three services are implemented:
+ * authentication (rpc_gss_svc_none, sec=krb5), integrity (svc_integrity,
+ * sec=krb5i) and privacy (svc_privacy, sec=krb5p).
  */
 
 /* rpc_gss_proc_t */
@@ -1638,6 +1670,160 @@ evpl_rpc2_gss_unwrap_integrity(
 } /* evpl_rpc2_gss_unwrap_integrity */
 
 /*
+ * Privacy service (krb5p): the call arguments arrive as
+ *   rpc_gss_priv_data { opaque databody_priv<>; }
+ * where databody_priv is the GSS-sealed token of XDR(seq_num) || XDR(args).
+ * Unseal it, check the embedded seq against the credential, and repoint
+ * (*iov_p, *niov_p, *len_p) at the inner proc arguments so dispatch sees a
+ * plain call.
+ *
+ * Unlike integrity -- where the databody is verified where it already lies
+ * and the inner arguments are a trimmed view of it -- the plaintext here does
+ * not exist until the mechanism produces it, and the mechanism owns the buffer
+ * it produces.  So one copy out of that buffer into a ref-counted iovec is
+ * structural, not incidental: the unmarshallers need iovecs whose lifetime the
+ * request controls.  What IS avoided is gathering the ciphertext: when the
+ * token already lies contiguously in a single received iovec, it is handed to
+ * unwrap() where it is, and only a scattered token is gathered -- from the
+ * bulk allocator, never the request arena, for the same reason the integrity
+ * path gave up on the arena.
+ *
+ * Must be called with evpl_rpc2_gss_lock held (it touches ctx->gss_ctx).
+ * Returns 0 on success, -1 on a framing or unseal failure.
+ */
+static int
+evpl_rpc2_gss_unwrap_privacy(
+    struct evpl_rpc2_request     *request,
+    struct evpl_rpc2_gss_context *ctx,
+    uint32_t                      seq,
+    struct evpl_iovec           **iov_p,
+    int                          *niov_p,
+    int                          *len_p)
+{
+    struct evpl_rpc2_thread *thread = request->thread;
+    struct evpl             *evpl   = thread->evpl;
+    struct xdr_dbuf         *dbuf   = &request->msg->dbuf;
+    struct evpl_iovec       *iov    = *iov_p;
+    int                      niov   = *niov_p;
+    uint8_t                  lenbuf[4];
+    const uint8_t           *lp;
+    uint32_t                 tok_len, embedded, inner_len;
+    struct evpl_iovec       *token;
+    struct evpl_iovec        flat;
+    const void              *tok_data;
+    size_t                   plain_len = 0;
+    struct evpl_iovec       *inner     = NULL;
+    int                      ntoken, ninner, have_flat = 0, have_inner = 0;
+    int                      rc = -1;
+
+    /* databody_priv opaque length prefix */
+    if (evpl_rpc2_iov_gather(iov, niov, 0, lenbuf, 4)) {
+        return -1;
+    }
+    lp = lenbuf;
+    if (evpl_rpc2_gss_rd_u32(&lp, lenbuf + 4, &tok_len) || tok_len == 0) {
+        return -1;
+    }
+
+    /* Carve a ref-counted view of [4, 4 + tok_len).  iovec_limit fails when
+     * the framing claimed more than actually arrived, which is what bounds
+     * tok_len -- no separate ceiling is needed, and none would be right: the
+     * token can legitimately be as large as a whole WRITE plus GSS overhead. */
+    token = xdr_dbuf_alloc_space(sizeof(*token) * niov, dbuf);
+    if (!token) {
+        return -1;
+    }
+    ntoken = evpl_rpc2_iovec_skip(token, iov, niov, 4);
+    ntoken = evpl_rpc2_iovec_limit(evpl, token, ntoken, tok_len);
+    if (ntoken < 0) {
+        return -1;
+    }
+
+    if (ntoken == 1) {
+        /* Already contiguous where it landed: unseal it in place. */
+        tok_data = token[0].data;
+    } else {
+        /* Scattered.  gss_unwrap takes one contiguous block, so gather -- from
+         * the bulk allocator, so the ceiling is a buffer rather than the
+         * arena's scratch budget, and freed as soon as the unseal is done. */
+        if (evpl_iovec_alloc(evpl, tok_len, 8, 1, 0, &flat) != 1) {
+            goto out;
+        }
+        have_flat = 1;
+        if (evpl_rpc2_iov_gather(token, ntoken, 0, flat.data, tok_len)) {
+            goto out;
+        }
+        tok_data = flat.data;
+    }
+
+    /*
+     * Unseal straight into the iovec dispatch will read from.  A plaintext is
+     * never larger than the token it came from, so tok_len is a safe capacity,
+     * and the configuration guarantees a whole message fits inside one buffer
+     * (evpl_init rejects a config where it could not), so this allocation is
+     * always a single iovec.
+     */
+    inner = xdr_dbuf_alloc_space(sizeof(*inner), dbuf);
+    if (!inner) {
+        goto out;
+    }
+    ninner = evpl_iovec_alloc(evpl, tok_len, 8, 1, 0, inner);
+    if (ninner != 1) {
+        goto out;
+    }
+    have_inner = 1;
+
+    if (thread->gss_provider->unwrap(thread->gss_provider_arg, ctx->gss_ctx,
+                                     tok_data, tok_len, inner->data, tok_len,
+                                     &plain_len) || plain_len < 4) {
+        evpl_rpc2_debug("rpcsec_gss: privacy unseal failed tok_len=%u "
+                        "plain_len=%zu", tok_len, plain_len);
+        goto out;
+    }
+
+    /* The seq sealed inside the token must match the credential's.  Checking
+     * it rather than trusting the header seq is the point of sealing it: the
+     * header travels in the clear and can be edited, the seal cannot be
+     * without the key. */
+    lp = inner->data;
+    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) inner->data + 4, &embedded);
+    if (embedded != seq) {
+        evpl_rpc2_debug("rpcsec_gss: privacy seq mismatch embedded=%u cred=%u",
+                        embedded, seq);
+        goto out;
+    }
+
+    /* Dispatch wants the arguments, which are the plaintext past its 4-byte
+     * seq.  Advance the view rather than copying; the buffer reference is
+     * unchanged, so releasing this iovec still frees the whole allocation. */
+    inner_len     = (uint32_t) plain_len - 4;
+    inner->data   = (uint8_t *) inner->data + 4;
+    inner->length = inner_len;
+
+    /* The received iovecs held the ciphertext and nothing else needs them. */
+    evpl_iovecs_release(evpl, request->msg->req_iov, request->msg->req_niov);
+    request->msg->req_iov  = inner;
+    request->msg->req_niov = 1;
+
+    *iov_p  = inner;
+    *niov_p = 1;
+    *len_p  = (int) inner_len;
+    rc      = 0;
+
+ out:
+    evpl_iovecs_release(evpl, token, ntoken);
+    if (have_flat) {
+        evpl_iovec_release(evpl, &flat);
+    }
+    /* On success the inner iovec became the request's arguments and the msg
+     * owns it; only a failure leaves it ours to drop. */
+    if (rc && have_inner) {
+        evpl_iovec_release(evpl, inner);
+    }
+    return rc;
+} /* evpl_rpc2_gss_unwrap_privacy */
+
+/*
  * Integrity service reply wrap: reframe the marshalled proc results as
  *   rpc_gss_integ_data { databody = seq_num || results; checksum = MIC; }
  * into a fresh buffer that keeps `reserve` bytes of RPC-header headroom at the
@@ -1732,6 +1918,108 @@ evpl_rpc2_gss_wrap_reply_integrity(
     evpl_iovec_release(evpl, out_iov);
     return -1;
 } /* evpl_rpc2_gss_wrap_reply_integrity */
+
+/*
+ * Privacy service reply wrap: reframe the marshalled proc results as
+ *   rpc_gss_priv_data { opaque databody_priv<>; }
+ * where databody_priv is the sealed token of seq_num || results, into a fresh
+ * buffer keeping `reserve` bytes of RPC-header headroom.  The original reply
+ * iovecs are released.  Returns 0 and fills out_iov/out_length, or -1.
+ *
+ * The plaintext is staged contiguously first because gss_wrap takes one block,
+ * exactly as the integrity path stages it for get_mic; the seal then adds its
+ * own header, confounder and trailer, so the token is allocated to the size
+ * the mechanism reports rather than guessed at.
+ */
+static int
+evpl_rpc2_gss_wrap_reply_privacy(
+    struct evpl              *evpl,
+    struct evpl_rpc2_request *request,
+    struct evpl_iovec        *msg_iov,
+    int                       msg_niov,
+    int                       length,
+    int                       reserve,
+    struct evpl_iovec        *out_iov,
+    int                      *out_length)
+{
+    struct evpl_rpc2_thread      *thread = request->thread;
+    struct evpl_rpc2_gss_context *ctx;
+    uint32_t                      bodylen = length - reserve;
+    uint32_t                      pt_len  = 4 + bodylen; /* seq || results */
+    struct evpl_iovec             plain_iov;
+    uint8_t                      *pt, *pp;
+    size_t                        token_len = 0;
+    uint32_t                      newbodylen, cap;
+    uint8_t                      *tok;
+    int                           niov, rc = -1;
+
+    /* Stage seq || results contiguously for the seal. */
+    if (evpl_iovec_alloc(evpl, pt_len, 8, 1, 0, &plain_iov) != 1) {
+        return -1;
+    }
+    pt = plain_iov.data;
+    pp = pt;
+    if (evpl_rpc2_gss_wr_u32(&pp, pt + 4, request->gss_seq)) {
+        evpl_iovec_release(evpl, &plain_iov);
+        return -1;
+    }
+    if (bodylen &&
+        evpl_rpc2_iov_gather(msg_iov, msg_niov, reserve, pt + 4, bodylen)) {
+        evpl_iovec_release(evpl, &plain_iov);
+        return -1;
+    }
+
+    /*
+     * The token is sealed straight into the reply buffer, so that buffer is
+     * allocated first: headroom, the databody_priv length prefix, then room
+     * for the plaintext plus whatever framing the seal adds.  Nothing is
+     * copied out of a mechanism-owned buffer afterwards -- that copy is what
+     * the caller-owned output convention exists to remove.
+     */
+    cap  = reserve + 4 + evpl_rpc2_gss_pad4(pt_len + EVPL_RPC2_GSS_SEAL_MAX);
+    niov = evpl_iovec_alloc(evpl, cap, 8, 1, 0, out_iov);
+    if (niov != 1) {
+        evpl_iovec_release(evpl, &plain_iov);
+        return -1;
+    }
+
+    tok = (uint8_t *) out_iov->data + reserve + 4;
+
+    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+    ctx = evpl_rpc2_gss_ctx_lookup(request->gss_handle);
+    if (ctx) {
+        rc = thread->gss_provider->wrap(thread->gss_provider_arg, ctx->gss_ctx,
+                                        pt, pt_len, tok,
+                                        cap - reserve - 4, &token_len);
+    }
+    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+
+    evpl_iovec_release(evpl, &plain_iov);
+
+    if (rc || token_len == 0) {
+        evpl_iovec_release(evpl, out_iov);
+        return -1;
+    }
+
+    /* databody_priv opaque: the length prefix, the token already in place,
+     * then the XDR pad. */
+    pp = (uint8_t *) out_iov->data + reserve;
+    if (evpl_rpc2_gss_wr_u32(&pp, pp + 4, (uint32_t) token_len)) {
+        evpl_iovec_release(evpl, out_iov);
+        return -1;
+    }
+
+    newbodylen = 4 + evpl_rpc2_gss_pad4((uint32_t) token_len);
+    if (newbodylen > 4 + token_len) {
+        memset(tok + token_len, 0, newbodylen - 4 - token_len);
+    }
+
+    out_iov->length = reserve + newbodylen;
+    *out_length     = reserve + newbodylen;
+
+    evpl_iovecs_release(evpl, msg_iov, msg_niov);
+    return 0;
+} /* evpl_rpc2_gss_wrap_reply_privacy */
 
 /*
  * Emit an rpc_gss_init_res reply for the context-establishment handshake.
@@ -1974,10 +2262,13 @@ evpl_rpc2_gss_handle_call(
             return 0;
     } /* switch */
 
-    /* DATA: authentication (krb5) and integrity (krb5i) are supported.
-     * Privacy (krb5p) wrapping is not yet implemented. */
+    /* DATA: authentication (krb5), integrity (krb5i) and privacy (krb5p) are
+     * all supported; anything outside that set is not a service we can honour,
+     * and RFC 5531 answers that by refusing the credential rather than by
+     * silently downgrading it. */
     if (cred.service != EVPL_RPC2_GSS_SVC_NONE &&
-        cred.service != EVPL_RPC2_GSS_SVC_INTEGRITY) {
+        cred.service != EVPL_RPC2_GSS_SVC_INTEGRITY &&
+        cred.service != EVPL_RPC2_GSS_SVC_PRIVACY) {
         evpl_rpc2_debug("rpcsec_gss: DATA proc=%u service=%u unsupported "
                         "-> AUTH_TOOWEAK", cred.proc, cred.service);
         evpl_rpc2_send_reply_denied(evpl, request, AUTH_TOOWEAK);
@@ -2069,6 +2360,21 @@ evpl_rpc2_gss_handle_call(
              * the caller is known but its arguments are unusable, which is
              * MSG_ACCEPTED with GARBAGE_ARGS.  Denying here instead would make
              * a client tear down and re-establish a context that is fine. */
+            evpl_rpc2_send_reply_error(evpl, request, GARBAGE_ARGS);
+            return 0;
+        }
+    }
+
+    /* For privacy, unseal rpc_gss_priv_data -> inner proc args (verifies the
+     * sealed seq).  GARBAGE_ARGS for the same reason as integrity: a token
+     * that will not unseal means the caller is authenticated -- it proved that
+     * with the header verifier above -- but its arguments are unusable. */
+    if (cred.service == EVPL_RPC2_GSS_SVC_PRIVACY) {
+        if (evpl_rpc2_gss_unwrap_privacy(request, ctx, cred.seq, req_iov_p,
+                                         req_niov_p, request_length_p)) {
+            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+            evpl_rpc2_debug("rpcsec_gss: privacy UNWRAP failed proc=%u seq=%u "
+                            "reqlen=%d", cred.proc, cred.seq, *request_length_p);
             evpl_rpc2_send_reply_error(evpl, request, GARBAGE_ARGS);
             return 0;
         }

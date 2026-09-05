@@ -19,6 +19,7 @@
 static int gss_stub_accept_mode = GSS_STUB_ACCEPT_COMPLETE;
 static int gss_stub_verify_mode = GSS_STUB_VERIFY_HONEST;
 static int gss_stub_mic_mode    = GSS_STUB_MIC_HONEST;
+static int gss_stub_wrap_mode   = GSS_STUB_WRAP_HONEST;
 
 void
 gss_stub_set_behaviour(
@@ -30,6 +31,12 @@ gss_stub_set_behaviour(
     gss_stub_verify_mode = verify_mode;
     gss_stub_mic_mode    = mic_mode;
 } /* gss_stub_set_behaviour */
+
+void
+gss_stub_set_wrap_mode(int wrap_mode)
+{
+    gss_stub_wrap_mode = wrap_mode;
+} /* gss_stub_set_wrap_mode */
 
 /*
  * FNV-1a over the message, emitted big-endian.  The point is not
@@ -56,6 +63,55 @@ gss_stub_mic(
         out[i] = (uint8_t) (h >> (56 - 8 * i));
     }
 } /* gss_stub_mic */
+
+/*
+ * Keystream for the toy seal: FNV over a fixed key and the byte offset, so it
+ * is position-dependent (a token is not a repeating XOR of one byte) and
+ * reproducible from nothing but the offset, which is what lets the driver and
+ * the provider agree without sharing state.
+ */
+static inline uint8_t
+gss_stub_keystream(size_t off)
+{
+    uint64_t h = 1469598103934665603ULL ^ 0x6b726235u; /* "krb5" */
+    size_t   i;
+
+    for (i = 0; i < sizeof(off); i++) {
+        h ^= (uint8_t) (off >> (8 * i));
+        h *= 1099511628211ULL;
+    }
+
+    return (uint8_t) (h >> 24);
+} /* gss_stub_keystream */
+
+size_t
+gss_stub_seal(
+    const void *plain,
+    size_t      plain_len,
+    void       *out,
+    size_t      out_cap)
+{
+    const uint8_t *in = plain;
+    uint8_t       *o  = out;
+    size_t         i;
+
+    if (out_cap < plain_len + GSS_STUB_SEAL_OVERHEAD) {
+        return 0;
+    }
+
+    o[0] = (uint8_t) (plain_len >> 24);
+    o[1] = (uint8_t) (plain_len >> 16);
+    o[2] = (uint8_t) (plain_len >> 8);
+    o[3] = (uint8_t) plain_len;
+
+    for (i = 0; i < plain_len; i++) {
+        o[4 + i] = in[i] ^ gss_stub_keystream(i);
+    }
+
+    gss_stub_mic(plain, plain_len, o + 4 + plain_len);
+
+    return plain_len + GSS_STUB_SEAL_OVERHEAD;
+} /* gss_stub_seal */
 
 /* Per-context cookie.  Only its existence matters to libevpl, which treats it
  * as opaque; the stub keeps a marker so destroy() can assert it owns it. */
@@ -190,9 +246,10 @@ gss_stub_verify_mic(
 } /* gss_stub_verify_mic */
 
 /*
- * Privacy (krb5p) is not implemented by rpc2.c, which rejects the service with
- * AUTH_TOOWEAK before ever reaching a provider.  These exist to complete the
- * vtable and to fail loudly if that ever changes without the stub keeping up.
+ * Privacy (krb5p).  gss_stub_seal() is the whole mechanism; see its comment in
+ * gss_stub.h for why a reversible toy is the right shape here and what it has
+ * to guarantee.  Both directions allocate with malloc(), matching the
+ * ownership the vtable specifies: the caller frees what it is handed.
  */
 static int
 gss_stub_wrap(
@@ -200,10 +257,23 @@ gss_stub_wrap(
     void       *gss_ctx,
     const void *in,
     size_t      in_len,
-    void      **out,
-    size_t     *out_len)
+    void       *out,
+    size_t      out_cap,
+    size_t     *r_out_len)
 {
-    return -1;
+    size_t len;
+
+    if (gss_stub_wrap_mode == GSS_STUB_WRAP_FAIL) {
+        return -1;
+    }
+
+    len = gss_stub_seal(in, in_len, out, out_cap);
+    if (len == 0) {
+        return -1;
+    }
+
+    *r_out_len = len;
+    return 0;
 } /* gss_stub_wrap */
 
 static int
@@ -212,10 +282,49 @@ gss_stub_unwrap(
     void       *gss_ctx,
     const void *in,
     size_t      in_len,
-    void      **out,
-    size_t     *out_len)
+    void       *out,
+    size_t      out_cap,
+    size_t     *r_out_len)
 {
-    return -1;
+    const uint8_t *tok = in;
+    uint8_t        mic[GSS_STUB_MIC_LEN];
+    uint8_t       *plain = out;
+    uint32_t       plain_len;
+    size_t         i;
+
+    if (in_len < GSS_STUB_SEAL_OVERHEAD) {
+        return -1;
+    }
+
+    plain_len = ((uint32_t) tok[0] << 24) | ((uint32_t) tok[1] << 16) |
+        ((uint32_t) tok[2] << 8) | tok[3];
+
+    /* The length is inside the token, so a truncated or oversized claim is
+     * itself evidence of tampering rather than something to trust. */
+    if ((size_t) plain_len + GSS_STUB_SEAL_OVERHEAD != in_len) {
+        return -1;
+    }
+
+    /* A plaintext is never larger than its token, so a caller that sized the
+     * buffer from the token always has room; refuse rather than truncate if
+     * one did not. */
+    if (plain_len > out_cap) {
+        return -1;
+    }
+
+    for (i = 0; i < plain_len; i++) {
+        plain[i] = tok[4 + i] ^ gss_stub_keystream(i);
+    }
+
+    /* Tamper-evidence: a flipped bit anywhere in the sealed body changes the
+     * recovered plaintext, and the MIC over that plaintext no longer matches. */
+    gss_stub_mic(plain, plain_len, mic);
+    if (memcmp(mic, tok + 4 + plain_len, GSS_STUB_MIC_LEN) != 0) {
+        return -1;
+    }
+
+    *r_out_len = plain_len;
+    return 0;
 } /* gss_stub_unwrap */
 
 static void

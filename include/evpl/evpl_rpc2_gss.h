@@ -35,6 +35,15 @@ struct evpl_iovec;
 #define EVPL_RPC2_GSS_SVC_INTEGRITY 2   /* krb5i -- per-message MIC          */
 #define EVPL_RPC2_GSS_SVC_PRIVACY   3   /* krb5p -- per-message wrap/encrypt */
 
+/*
+ * Upper bound on what sealing adds to a message: the mechanism's token header,
+ * confounder, any block padding and the trailing checksum.  RFC 4121 tokens
+ * over the AES enctypes sit far inside this; it is deliberately loose because
+ * it is only used to size a buffer, and a provider whose framing does not fit
+ * fails cleanly rather than truncating.
+ */
+#define EVPL_RPC2_GSS_SEAL_MAX      512
+
 /* Maximum length of a textual principal name we surface to the host. */
 #define EVPL_RPC2_GSS_PRINCIPAL_MAX 256
 
@@ -52,7 +61,7 @@ struct evpl_rpc2_gss_provider {
      *
      * Returns 0 on success (continue or complete), -1 on a GSS error.
      */
-    int  (*accept)(
+    int (*accept)(
         void       *provider_arg,
         void      **gss_ctx,
         const void *in_token,
@@ -64,7 +73,7 @@ struct evpl_rpc2_gss_provider {
         size_t      principal_sz);
 
     /* Compute a MIC (gss_get_mic) over msg; used for reply verifiers. */
-    int  (*get_mic)(
+    int (*get_mic)(
         void       *provider_arg,
         void       *gss_ctx,
         const void *msg,
@@ -73,7 +82,7 @@ struct evpl_rpc2_gss_provider {
         size_t     *mic_len);
 
     /* Verify a MIC (gss_verify_mic); used for call verifiers / krb5i. */
-    int  (*verify_mic)(
+    int (*verify_mic)(
         void       *provider_arg,
         void       *gss_ctx,
         const void *msg,
@@ -81,23 +90,48 @@ struct evpl_rpc2_gss_provider {
         const void *mic,
         size_t      mic_len);
 
-    /* Seal a message (gss_wrap, conf_req=1); krb5p only. */
-    int  (*wrap)(
+    /*
+     * Seal and unseal a message (gss_wrap with conf_req=1, gss_unwrap);
+     * krb5p only.
+     *
+     * The output buffer belongs to the CALLER, which is what keeps the copy
+     * count honest.  A mechanism hands its result back in storage it owns
+     * (gss_buffer_desc, released with gss_release_buffer), so an interface
+     * shaped as `void **out` forces the provider to copy into something the
+     * caller may free, and then the caller to copy again into whatever it
+     * actually wanted -- two gratuitous copies of a whole NFS payload, plus a
+     * malloc/free pair on the data path, before anything useful happens.
+     *
+     * Writing straight into the caller's buffer collapses that to the one
+     * copy the mechanism's own output buffer makes unavoidable.  Removing
+     * even that needs gss_wrap_iov/gss_unwrap_iov, whose scatter support is
+     * asymmetric (unwrap's STREAM mode wants one contiguous token) and which
+     * nothing in this tree can exercise against a real mechanism yet.
+     *
+     * out_cap is what the caller has room for; a mechanism whose result does
+     * not fit must fail rather than truncate.  Sizing it is the caller's
+     * problem: a plaintext is never larger than the token it came from, and a
+     * token is never larger than its plaintext plus EVPL_RPC2_GSS_SEAL_MAX.
+     *
+     * Returns 0 on success, non-zero on failure.
+     */
+    int (*wrap)(
         void       *provider_arg,
         void       *gss_ctx,
         const void *in,
         size_t      in_len,
-        void      **out,
-        size_t     *out_len);
+        void       *out,
+        size_t      out_cap,
+        size_t     *r_out_len);
 
-    /* Unseal a message (gss_unwrap); krb5p only. */
-    int  (*unwrap)(
+    int (*unwrap)(
         void       *provider_arg,
         void       *gss_ctx,
         const void *in,
         size_t      in_len,
-        void      **out,
-        size_t     *out_len);
+        void       *out,
+        size_t      out_cap,
+        size_t     *r_out_len);
 
     /* Optional: verify a MIC over a scattered message (gss_verify_mic_iov).
      *

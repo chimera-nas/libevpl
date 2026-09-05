@@ -97,6 +97,47 @@ evpl_check_core_mech(unsigned int requested)
                        evpl_core_mech_name(requested));
 } /* evpl_check_core_mech */
 
+/*
+ * An RPC2 message must fit inside one iovec buffer, with room to spare.
+ *
+ * RPCSEC_GSS privacy is what makes this a hard requirement rather than a
+ * preference: gss_unwrap takes one contiguous token, so a sealed call has to
+ * be gathered into a single allocation, and evpl_iovec_alloc cannot satisfy a
+ * single-iovec request larger than one buffer.  Left unchecked, the two knobs
+ * look independent while a message between buffer_size and
+ * rpc2_max_message_size arrives fine and then fails to unseal -- a dead band
+ * that only appears under krb5p, only above a size nobody tests at, and
+ * reports itself as GARGABE_ARGS from the client's point of view.
+ *
+ * The margin covers what sits alongside the payload in that same buffer: the
+ * RPC and record-marking headers, the GSS credential and verifier, and the
+ * framing a seal adds around the plaintext.  Refusing at init is deliberate --
+ * this is a static property of the configuration, so the only useful moment to
+ * complain is before any traffic depends on it.
+ */
+static void
+evpl_check_message_size(struct evpl_global_config *config)
+{
+    /* Only an explicit setting can be wrong.  Zero means the ceiling is
+     * derived from buffer_size when read, which is coherent by construction;
+     * judging that here would abort configurations that do not participate in
+     * the constraint at all -- the core conformance test runs a deliberately
+     * tiny 32 KiB buffer and never speaks RPC2. */
+    if (!config->rpc2_max_message_size) {
+        return;
+    }
+
+    evpl_core_abort_if(config->rpc2_max_message_size +
+                       EVPL_MESSAGE_BUFFER_MARGIN(config->buffer_size) >
+                       config->buffer_size,
+                       "evpl_init: rpc2_max_message_size (%u) must leave %u "
+                       "bytes of headroom inside buffer_size (%u); raise the "
+                       "buffer size or lower the message size",
+                       config->rpc2_max_message_size,
+                       EVPL_MESSAGE_BUFFER_MARGIN(config->buffer_size),
+                       config->buffer_size);
+} /* evpl_check_message_size */
+
 static void
 evpl_shared_init(struct evpl_global_config *config)
 {
@@ -109,6 +150,7 @@ evpl_shared_init(struct evpl_global_config *config)
     }
 
     evpl_check_core_mech(config->core_mech);
+    evpl_check_message_size(config);
 
     evpl_shared->config = config;
 

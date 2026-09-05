@@ -51,6 +51,12 @@ struct evpl_rpc2_gss_provider;
 #define GSS_STUB_MIC_FAIL_BODY   1   /* refuse to sign the databody         */
 #define GSS_STUB_MIC_HUGE_BODY   2   /* sign it, but with an outsized MIC   */
 
+/* Whether wrap() should seal or refuse.  A mechanism that cannot seal a reply
+ * is the privacy analogue of GSS_STUB_MIC_FAIL_BODY, and reaches rpc2's
+ * "fall through with the reply unsealed" path. */
+#define GSS_STUB_WRAP_HONEST     0
+#define GSS_STUB_WRAP_FAIL       1
+
 /* Bigger than the 512-byte checksum headroom rpc2.c reserves in an integrity
  * reply, so a MIC this size is one it cannot emit. */
 #define GSS_STUB_MIC_HUGE_LEN    600
@@ -60,6 +66,12 @@ gss_stub_set_behaviour(
     int accept_mode,
     int verify_mode,
     int mic_mode);
+
+/* Independent of set_behaviour so a case can steer sealing without disturbing
+ * the accept/verify/mic modes the rest of the suite relies on. */
+void
+gss_stub_set_wrap_mode(
+    int wrap_mode);
 
 /* The MIC the stub computes, and which a driver can therefore reproduce to
 * build a verifier the stub will accept.  Always GSS_STUB_MIC_LEN bytes. */
@@ -74,6 +86,28 @@ gss_stub_mic(
     const void *msg,
     size_t      msg_len,
     uint8_t     out[GSS_STUB_MIC_LEN]);
+
+/*
+ * The stub's seal, exposed so a driver can build a token the stub will unseal
+ * -- the privacy counterpart of gss_stub_mic().
+ *
+ * A token is [4-byte plaintext length][plaintext XOR keystream][MIC over the
+ * plaintext].  It is emphatically not cryptography; what it has to be is
+ * reversible, length-changing (so the code cannot accidentally work by
+ * treating the token as the plaintext), and tamper-evident (so a corrupted
+ * token fails to unseal rather than yielding garbage arguments).
+ *
+ * Returns the token length, or 0 if out_cap is too small.  A token is
+ * GSS_STUB_SEAL_OVERHEAD bytes longer than its plaintext.
+ */
+#define GSS_STUB_SEAL_OVERHEAD (4 + GSS_STUB_MIC_LEN)
+
+size_t
+gss_stub_seal(
+    const void *plain,
+    size_t      plain_len,
+    void       *out,
+    size_t      out_cap);
 
 const struct evpl_rpc2_gss_provider *
 gss_stub_provider(
