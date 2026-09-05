@@ -10,6 +10,12 @@ on:
     branches: ["main"]
   pull_request:
 
+# The docs build only reads the tree, so the GITHUB_TOKEN needs nothing
+# beyond that.  Without an explicit block a job inherits whatever the
+# repository default happens to be.  Publishing is pages.yml's job.
+permissions:
+  contents: read
+
 jobs:
   # Build job
   build:
