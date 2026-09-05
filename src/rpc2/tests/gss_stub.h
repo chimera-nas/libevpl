@@ -109,6 +109,15 @@ gss_stub_seal(
     void       *out,
     size_t      out_cap);
 
+/* The inverse, so a driver can open a reply the stub sealed.  Writes at most
+ * (token_len - GSS_STUB_SEAL_OVERHEAD) bytes.  Returns 0 on success, non-zero
+ * if the token is malformed or its MIC does not verify. */
+int
+gss_stub_unseal(
+    const void *token,
+    size_t      token_len,
+    void       *out);
+
 const struct evpl_rpc2_gss_provider *
 gss_stub_provider(
     void);

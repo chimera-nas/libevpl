@@ -113,6 +113,37 @@ gss_stub_seal(
     return plain_len + GSS_STUB_SEAL_OVERHEAD;
 } /* gss_stub_seal */
 
+int
+gss_stub_unseal(
+    const void *token,
+    size_t      token_len,
+    void       *out)
+{
+    const uint8_t *tok   = token;
+    uint8_t       *plain = out;
+    uint8_t        mic[GSS_STUB_MIC_LEN];
+    uint32_t       plain_len;
+    size_t         i;
+
+    if (token_len < GSS_STUB_SEAL_OVERHEAD) {
+        return -1;
+    }
+
+    plain_len = ((uint32_t) tok[0] << 24) | ((uint32_t) tok[1] << 16) |
+        ((uint32_t) tok[2] << 8) | tok[3];
+
+    if ((size_t) plain_len + GSS_STUB_SEAL_OVERHEAD != token_len) {
+        return -1;
+    }
+
+    for (i = 0; i < plain_len; i++) {
+        plain[i] = tok[4 + i] ^ gss_stub_keystream(i);
+    }
+
+    gss_stub_mic(plain, plain_len, mic);
+    return memcmp(mic, tok + 4 + plain_len, GSS_STUB_MIC_LEN) == 0 ? 0 : -1;
+} /* gss_stub_unseal */
+
 /* Per-context cookie.  Only its existence matters to libevpl, which treats it
  * as opaque; the stub keeps a marker so destroy() can assert it owns it. */
 struct gss_stub_ctx {
@@ -286,24 +317,13 @@ gss_stub_unwrap(
     size_t      out_cap,
     size_t     *r_out_len)
 {
-    const uint8_t *tok = in;
-    uint8_t        mic[GSS_STUB_MIC_LEN];
-    uint8_t       *plain = out;
-    uint32_t       plain_len;
-    size_t         i;
+    size_t plain_len;
 
     if (in_len < GSS_STUB_SEAL_OVERHEAD) {
         return -1;
     }
 
-    plain_len = ((uint32_t) tok[0] << 24) | ((uint32_t) tok[1] << 16) |
-        ((uint32_t) tok[2] << 8) | tok[3];
-
-    /* The length is inside the token, so a truncated or oversized claim is
-     * itself evidence of tampering rather than something to trust. */
-    if ((size_t) plain_len + GSS_STUB_SEAL_OVERHEAD != in_len) {
-        return -1;
-    }
+    plain_len = in_len - GSS_STUB_SEAL_OVERHEAD;
 
     /* A plaintext is never larger than its token, so a caller that sized the
      * buffer from the token always has room; refuse rather than truncate if
@@ -312,14 +332,7 @@ gss_stub_unwrap(
         return -1;
     }
 
-    for (i = 0; i < plain_len; i++) {
-        plain[i] = tok[4 + i] ^ gss_stub_keystream(i);
-    }
-
-    /* Tamper-evidence: a flipped bit anywhere in the sealed body changes the
-     * recovered plaintext, and the MIC over that plaintext no longer matches. */
-    gss_stub_mic(plain, plain_len, mic);
-    if (memcmp(mic, tok + 4 + plain_len, GSS_STUB_MIC_LEN) != 0) {
+    if (gss_stub_unseal(in, in_len, out)) {
         return -1;
     }
 

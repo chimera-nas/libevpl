@@ -67,6 +67,7 @@
 #include "test_common.h"
 
 #include "gss_stub.h"
+#include "krb5_local.h"
 #include "evpl/evpl_rpc2_gss.h"
 
 #include "conformance_xdr.h"
@@ -367,6 +368,8 @@ defect_name(int d)
         case DEF_GSSPRIVDATAVALID:        return "GssPrivDataValid";
         case DEF_GSSPRIVSEALCORRUPT:      return "GssPrivSealCorrupt";
         case DEF_GSSPRIVSEQMISMATCH:      return "GssPrivSeqMismatch";
+        case DEF_GSSPRIVSPLITACROSSFRAGMENTS: return "GssPrivSplitAcrossFragments";
+        case DEF_GSSPRIVEMPTYARGS:        return "GssPrivEmptyArgs";
         case DEF_GSSDESTROYCONTEXT:       return "GssDestroyContext";
         case DEF_GSSDESTROYUNAUTHENTICATED: return "GssDestroyUnauthenticated";
         case DEF_GSSSEQABOVEMAX:          return "GssSeqAboveMax";
@@ -2577,6 +2580,169 @@ gss_exchange_split(
 } /* gss_exchange_split */
 
 /* How the GSS token in an rpc_gss_init_arg should be encoded. */
+/*
+ * Which mechanism this run drives.
+ *
+ * The stub is the default and owns the defect taxonomy: a real mechanism
+ * cannot be told to reject on command, and most of what this model asserts is
+ * a rejection.  Selecting krb5 (-k) leaves every message builder and every
+ * expectation exactly as it is and only changes who signs -- which is the
+ * point.  A stub whose MIC the driver also computes can never establish that
+ * libevpl and a real mechanism agree on WHICH BYTES are covered; two
+ * independent implementations of that agreement can.
+ *
+ * The handful of cases that need behaviour injection cannot run against a real
+ * mechanism and are skipped there; see gss_case_needs_stub().
+ */
+static struct krb5_local *g_krb5;   /* NULL => the stub */
+
+/* Whether the krb5 provider is presenting its scattered MIC entry point. */
+static int                g_krb5_noiov;
+
+
+/* Room for any mechanism's MIC.  The stub's is 8 bytes and krb5 aes256's is
+ * 28; this is checked at runtime rather than assumed. */
+#define MIC_MAX 64
+
+/* Sign as the initiator would, and report how long the MIC is.  Length is a
+ * return value rather than a constant because a real mechanism's is neither
+ * fixed nor the same as the stub's -- and a receiver that assumed otherwise is
+ * exactly the kind of thing this mode is here to catch. */
+static size_t
+mech_mic(
+    const void *msg,
+    size_t      len,
+    uint8_t    *out)
+{
+    void  *m;
+    size_t ml;
+
+    if (!g_krb5) {
+        gss_stub_mic(msg, len, out);
+        return GSS_STUB_MIC_LEN;
+    }
+
+    evpl_test_abort_if(krb5_local_get_mic(g_krb5, msg, len, &m, &ml),
+                       "krb5 get_mic failed");
+    evpl_test_abort_if(ml > MIC_MAX, "krb5 MIC is %zu bytes, over MIC_MAX", ml);
+
+    memcpy(out, m, ml);
+    free(m);
+    return ml;
+} /* mech_mic */
+
+/*
+ * Seal as the initiator would, and report the token length.
+ *
+ * The privacy counterpart of mech_mic, and it carries the same point: under
+ * the stub, the driver seals with the very routine the provider unseals with,
+ * so the two can only ever agree.  Under krb5 the token is a real RFC 4121
+ * wrap token -- header, confounder, ciphertext, checksum, and whatever
+ * rotation the mechanism chose -- and nothing in this file knows how any of
+ * that is laid out.  That is what makes the privacy cases worth running here:
+ * they stop testing that rpc2 agrees with the test, and start testing that
+ * rpc2 agrees with Kerberos.
+ */
+static size_t
+mech_seal(
+    const void *plain,
+    size_t      plain_len,
+    void       *out,
+    size_t      out_cap)
+{
+    void  *tok;
+    size_t tl;
+
+    if (!g_krb5) {
+        return gss_stub_seal(plain, plain_len, out, out_cap);
+    }
+
+    evpl_test_abort_if(krb5_local_wrap(g_krb5, plain, plain_len, &tok, &tl),
+                       "krb5 wrap failed");
+    evpl_test_abort_if(tl > out_cap,
+                       "krb5 token is %zu bytes, over the %zu-byte buffer",
+                       tl, out_cap);
+    memcpy(out, tok, tl);
+    free(tok);
+    return tl;
+} /* mech_seal */
+
+/* Unseal a reply.  Returns the plaintext length, or 0 if the token will not
+ * open -- which for a reply the server built is a failure of rpc2's sealing,
+ * not of the case. */
+static size_t
+mech_unseal(
+    const void *token,
+    size_t      token_len,
+    void       *out,
+    size_t      out_cap)
+{
+    void  *plain;
+    size_t pl;
+
+    if (!g_krb5) {
+        /* The stub's seal is symmetric: [len][xor][mic]. */
+        if (token_len < GSS_STUB_SEAL_OVERHEAD) {
+            return 0;
+        }
+        pl = ((size_t) ((const uint8_t *) token)[0] << 24) |
+            ((size_t) ((const uint8_t *) token)[1] << 16) |
+            ((size_t) ((const uint8_t *) token)[2] << 8) |
+            ((const uint8_t *) token)[3];
+        if (pl + GSS_STUB_SEAL_OVERHEAD != token_len || pl > out_cap) {
+            return 0;
+        }
+        return gss_stub_unseal(token, token_len, out) ? 0 : pl;
+    }
+
+    if (krb5_local_unwrap(g_krb5, token, token_len, &plain, &pl)) {
+        return 0;
+    }
+    if (pl > out_cap) {
+        free(plain);
+        return 0;
+    }
+    memcpy(out, plain, pl);
+    free(plain);
+    return pl;
+} /* mech_unseal */
+
+/* Check a MIC the ACCEPTOR produced -- a reply verifier, or the checksum over
+ * a krb5i reply body. */
+static int
+mech_verify(
+    const void *msg,
+    size_t      len,
+    const void *mic,
+    size_t      mic_len)
+{
+    uint8_t expect[GSS_STUB_MIC_LEN];
+
+    if (g_krb5) {
+        return krb5_local_verify_mic(g_krb5, msg, len, mic, mic_len);
+    }
+
+    if (mic_len != GSS_STUB_MIC_LEN) {
+        return -1;
+    }
+
+    gss_stub_mic(msg, len, expect);
+    return memcmp(expect, mic, GSS_STUB_MIC_LEN) == 0 ? 0 : -1;
+} /* mech_verify */
+
+/* Cases that steer the mechanism itself rather than the wire.  A real
+ * mechanism has no such switch, so these stay stub-only. */
+static int
+gss_case_needs_stub(int defect)
+{
+    return defect == DEF_GSSINITMECHFAILS ||
+           defect == DEF_GSSINITMECHFAILSWITHTOKEN ||
+           defect == DEF_GSSINITCONTINUES ||
+           defect == DEF_GSSCONTINUEINITTOKENMALFORMED ||
+           defect == DEF_GSSINTEGREPLYMICFAILS ||
+           defect == DEF_GSSINTEGREPLYMICOVERSIZE;
+} /* gss_case_needs_stub */
+
 #define INIT_TOKEN_GOOD    0   /* a well-formed opaque<>                    */
 #define INIT_TOKEN_ABSENT  1   /* no arguments at all: not even a length    */
 #define INIT_TOKEN_OVERRUN 2   /* a length that runs past the message       */
@@ -2613,8 +2779,23 @@ build_gss_init_call(
             put_bytes(msg, "INIT", 4);
             break;
         default:
-            put32(msg, 4);              /* token<> */
-            put_bytes(msg, "INIT", 4);
+            /* The stub accepts any token; a real mechanism wants the AP-REQ
+             * its own initiator produced, so the good token is whatever the
+             * mechanism in force calls good. */
+            if (g_krb5) {
+                void  *tok;
+                size_t tok_len;
+
+                evpl_test_abort_if(krb5_local_init_token(g_krb5, &tok,
+                                                         &tok_len),
+                                   "krb5 could not produce an AP-REQ");
+                put32(msg, tok_len);
+                put_bytes(msg, tok, tok_len);
+                free(tok);
+            } else {
+                put32(msg, 4);          /* token<> */
+                put_bytes(msg, "INIT", 4);
+            }
             break;
     } /* switch */
 } /* build_gss_init_call */
@@ -2674,7 +2855,8 @@ build_gss_data_call(
     int             good_mic,
     int             gss_verf)
 {
-    uint8_t  mic[GSS_STUB_MIC_LEN];
+    uint8_t  mic[MIC_MAX];
+    size_t   mic_len;
     uint32_t cred_len;
 
     msg->len = 0;
@@ -2688,13 +2870,13 @@ build_gss_data_call(
                             seq, service, &handle);
 
     if (gss_verf) {
-        gss_stub_mic(msg->data, gss_signed_len(cred_len), mic);
+        mic_len = mech_mic(msg->data, gss_signed_len(cred_len), mic);
         if (!good_mic) {
             mic[0] ^= 0xff;
         }
         put32(msg, RPCSEC_GSS_FLAVOR);
-        put32(msg, GSS_STUB_MIC_LEN);
-        put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+        put32(msg, mic_len);
+        put_bytes(msg, mic, mic_len);
     } else {
         put32(msg, 0);                      /* verf AUTH_NONE */
         put32(msg, 0);
@@ -2730,7 +2912,8 @@ build_gss_integ_call(
     int             with_args)
 {
     struct wirebuf databody;
-    uint8_t        mic[GSS_STUB_MIC_LEN];
+    uint8_t        mic[MIC_MAX];
+    size_t         mic_len;
     uint32_t       cred_len;
 
     msg->len = 0;
@@ -2745,10 +2928,10 @@ build_gss_integ_call(
 
     /* The header MIC covers the message up to and including the credential,
      * so it has to be taken before the verifier or the arguments land. */
-    gss_stub_mic(msg->data, gss_signed_len(cred_len), mic);
+    mic_len = mech_mic(msg->data, gss_signed_len(cred_len), mic);
     put32(msg, RPCSEC_GSS_FLAVOR);
-    put32(msg, GSS_STUB_MIC_LEN);
-    put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+    put32(msg, mic_len);
+    put_bytes(msg, mic, mic_len);
 
     databody.len = 0;
     put32(&databody, body_seq);
@@ -2761,12 +2944,12 @@ build_gss_integ_call(
 
     /* The checksum covers the unpadded databody, which is what the server
      * gathers back out of the message. */
-    gss_stub_mic(databody.data, databody.len, mic);
+    mic_len = mech_mic(databody.data, databody.len, mic);
     if (!good_checksum) {
         mic[0] ^= 0xff;
     }
-    put32(msg, GSS_STUB_MIC_LEN);
-    put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+    put32(msg, mic_len);
+    put_bytes(msg, mic, mic_len);
 } /* build_gss_integ_call */
 
 /*
@@ -2795,9 +2978,9 @@ build_gss_priv_call(
     int             with_args)
 {
     struct wirebuf plain;
-    uint8_t        mic[GSS_STUB_MIC_LEN];
+    uint8_t        mic[MIC_MAX];
     uint8_t        token[4096];
-    size_t         token_len;
+    size_t         token_len, mic_len;
     uint32_t       cred_len;
 
     msg->len = 0;
@@ -2813,10 +2996,10 @@ build_gss_priv_call(
     /* The header MIC covers the message through the credential and is sent in
      * the clear: under privacy the *arguments* are sealed, the RPC header is
      * not, which is exactly why the seq has to be sealed as well. */
-    gss_stub_mic(msg->data, gss_signed_len(cred_len), mic);
+    mic_len = mech_mic(msg->data, gss_signed_len(cred_len), mic);
     put32(msg, RPCSEC_GSS_FLAVOR);
-    put32(msg, GSS_STUB_MIC_LEN);
-    put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+    put32(msg, (uint32_t) mic_len);
+    put_bytes(msg, mic, mic_len);
 
     plain.len = 0;
     put32(&plain, body_seq);
@@ -2824,13 +3007,16 @@ build_gss_priv_call(
         build_args_into(&plain, TGT_TSCALARS);
     }
 
-    token_len = gss_stub_seal(plain.data, plain.len, token, sizeof(token));
+    token_len = mech_seal(plain.data, plain.len, token, sizeof(token));
 
     if (!good_seal) {
-        /* Flip a bit inside the sealed body.  The stub's unseal recomputes the
-         * MIC over the recovered plaintext, so this is caught as a failed
-         * unseal -- the token no longer decrypts to what was sealed. */
-        token[4] ^= 0xff;
+        /* Corrupt the token's last byte rather than a fixed early offset.
+         * Under the stub that lands in the trailing MIC; under krb5 it lands
+         * in the wrap token's checksum or final ciphertext block.  Either way
+         * it is inside the sealed region for both mechanisms, which a fixed
+         * offset into the stub's framing would not be -- a real token's header
+         * is a different size and shape entirely. */
+        token[token_len - 1] ^= 0xff;
     }
 
     put32(msg, (uint32_t) token_len);
@@ -2857,7 +3043,8 @@ build_gss_integ_bad_call(
     int             mode)
 {
     struct wirebuf databody;
-    uint8_t        mic[GSS_STUB_MIC_LEN];
+    uint8_t        mic[MIC_MAX];
+    size_t         mic_len;
     uint32_t       cred_len;
 
     msg->len = 0;
@@ -2870,10 +3057,10 @@ build_gss_integ_bad_call(
     cred_len = put_gss_cred(msg, RPCSEC_GSS_VERS_1, RPCSEC_GSS_DATA,
                             seq, GSS_SVC_INTEGRITY, &handle);
 
-    gss_stub_mic(msg->data, gss_signed_len(cred_len), mic);
+    mic_len = mech_mic(msg->data, gss_signed_len(cred_len), mic);
     put32(msg, RPCSEC_GSS_FLAVOR);
-    put32(msg, GSS_STUB_MIC_LEN);
-    put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+    put32(msg, mic_len);
+    put_bytes(msg, mic, mic_len);
 
     if (mode == INTEG_BAD_NO_LENGTH) {
         /* Two bytes of arguments: not enough for the databody's length
@@ -2887,8 +3074,8 @@ build_gss_integ_bad_call(
         /* A databody too short to carry the seq_num it must begin with. */
         put32(msg, 2);
         put_bytes(msg, "\0\0", 2);
-        put32(msg, GSS_STUB_MIC_LEN);
-        put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+        put32(msg, mic_len);
+        put_bytes(msg, mic, mic_len);
         return;
     }
 
@@ -2899,8 +3086,8 @@ build_gss_integ_bad_call(
     if (mode == INTEG_BAD_LONG_BODY) {
         put32(msg, databody.len + 4096);
         put_bytes(msg, databody.data, databody.len);
-        put32(msg, GSS_STUB_MIC_LEN);
-        put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+        put32(msg, mic_len);
+        put_bytes(msg, mic, mic_len);
         return;
     }
 
@@ -2912,9 +3099,9 @@ build_gss_integ_bad_call(
     }
 
     /* INTEG_BAD_LONG_CKSUM */
-    gss_stub_mic(databody.data, databody.len, mic);
+    mic_len = mech_mic(databody.data, databody.len, mic);
     put32(msg, 4096);
-    put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+    put_bytes(msg, mic, mic_len);
 } /* build_gss_integ_bad_call */
 
 /*
@@ -2976,7 +3163,6 @@ check_integ_reply(
     int            with_args)
 {
     struct wirebuf args;
-    uint8_t        expect[GSS_STUB_MIC_LEN];
     uint32_t       db_len, db_pad, ck_len;
 
     if (len < 8) {
@@ -2989,13 +3175,14 @@ check_integ_reply(
         return 0;
     }
 
+    /* The checksum length is the mechanism's business, so it is read rather
+     * than asserted; what matters is that it verifies. */
     ck_len = get32(results + 4 + db_pad);
-    if (ck_len != GSS_STUB_MIC_LEN || 4 + db_pad + 4 + ck_len > len) {
+    if (ck_len == 0 || 4 + db_pad + 4 + ck_len > len) {
         return 0;
     }
 
-    gss_stub_mic(results + 4, db_len, expect);
-    if (memcmp(expect, results + 4 + db_pad + 4, GSS_STUB_MIC_LEN)) {
+    if (mech_verify(results + 4, db_len, results + 4 + db_pad + 4, ck_len)) {
         return 0;
     }
 
@@ -3020,6 +3207,55 @@ check_integ_reply(
 } /* check_integ_reply */
 
 /*
+ * The privacy counterpart: the reply body is rpc_gss_priv_data, a single
+ * opaque holding the sealed token of seq_num || results.
+ *
+ * Checking this is what stops the reply direction being taken on trust.  A
+ * server that answered a sealed call with a cleartext body would satisfy every
+ * other assertion in the suite -- the client got MSG_ACCEPTED/SUCCESS with the
+ * right results -- while having silently dropped the confidentiality the
+ * caller asked for.  Under privacy that is not a degraded reply, it is the
+ * payload in the clear on the wire.
+ */
+static int
+check_priv_reply(
+    const uint8_t *results,
+    uint32_t       len,
+    uint32_t       seq,
+    int            with_args)
+{
+    struct wirebuf args;
+    uint8_t        plain[2048];
+    uint32_t       tok_len;
+    size_t         pl;
+
+    if (len < 4) {
+        return 0;
+    }
+
+    tok_len = get32(results);
+    if (tok_len == 0 || 4 + tok_len > len) {
+        return 0;
+    }
+
+    pl = mech_unseal(results + 4, tok_len, plain, sizeof(plain));
+    if (pl < 4) {
+        return 0;
+    }
+
+    if (get32(plain) != seq) {
+        return 0;
+    }
+
+    if (!with_args) {
+        return pl == 4;
+    }
+
+    build_args(&args, TGT_TSCALARS);
+    return pl - 4 == args.len && memcmp(plain + 4, args.data, args.len) == 0;
+} /* check_priv_reply */
+
+/*
  * Build an RPCSEC_GSS_DESTROY control message.  RFC 2203 sec 5.4: framed like
  * a data request, but with gss_proc set to DESTROY, NULLPROC in the header and
  * no procedure arguments.
@@ -3032,7 +3268,8 @@ build_gss_destroy_call(
     uint32_t        seq,
     int             gss_verf)
 {
-    uint8_t  mic[GSS_STUB_MIC_LEN];
+    uint8_t  mic[MIC_MAX];
+    size_t   mic_len;
     uint32_t cred_len;
 
     msg->len = 0;
@@ -3046,10 +3283,10 @@ build_gss_destroy_call(
                             seq, GSS_SVC_NONE, &handle);
 
     if (gss_verf) {
-        gss_stub_mic(msg->data, gss_signed_len(cred_len), mic);
+        mic_len = mech_mic(msg->data, gss_signed_len(cred_len), mic);
         put32(msg, RPCSEC_GSS_FLAVOR);
-        put32(msg, GSS_STUB_MIC_LEN);
-        put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+        put32(msg, mic_len);
+        put_bytes(msg, mic, mic_len);
     } else {
         put32(msg, 0);                      /* verf AUTH_NONE */
         put32(msg, 0);
@@ -3130,6 +3367,8 @@ defect_is_gss(uint8_t defect)
         case DEF_GSSPRIVDATAVALID:
         case DEF_GSSPRIVSEALCORRUPT:
         case DEF_GSSPRIVSEQMISMATCH:
+        case DEF_GSSPRIVSPLITACROSSFRAGMENTS:
+        case DEF_GSSPRIVEMPTYARGS:
         case DEF_GSSDESTROYCONTEXT:
         case DEF_GSSDESTROYUNAUTHENTICATED:
         case DEF_GSSSEQABOVEMAX:
@@ -3321,7 +3560,12 @@ run_gss_case(
             }
             outcome = gss_exchange(evpl, fd, &msg, NULL, NULL);
 
-            evpl_rpc2_set_gss_provider(g_thread, gss_stub_provider(), NULL);
+            evpl_rpc2_set_gss_provider(g_thread,
+                                       g_krb5 ? (g_krb5_noiov
+                                                 ? krb5_local_provider_noiov()
+                                                 : krb5_local_provider())
+                                              : gss_stub_provider(),
+                                       g_krb5 ? krb5_local_arg(g_krb5) : NULL);
             return outcome;
 
         case DEF_GSSCREDVERSIONWRONG:
@@ -3370,8 +3614,61 @@ run_gss_case(
             return gss_exchange(evpl, fd, &msg, NULL, NULL);
 
         case DEF_GSSPRIVDATAVALID:
+        {
+            uint8_t  results[2048];
+            uint32_t results_len = sizeof(results);
+
             build_gss_priv_call(&msg, 0x47535360, handle, 1, 1, 1, 1);
-            return gss_exchange(evpl, fd, &msg, NULL, NULL);
+            outcome = gss_exchange(evpl, fd, &msg, results, &results_len);
+            if (outcome != EXP_SUCCESS) {
+                return outcome;
+            }
+            /* Not just "did it answer" -- did it answer SEALED.  A cleartext
+             * body here would satisfy every other assertion while putting the
+             * payload on the wire in the open. */
+            return check_priv_reply(results, results_len, 1, 1)
+                   ? EXP_SUCCESS : ACT_MALFORMED;
+        }
+
+        case DEF_GSSPRIVSPLITACROSSFRAGMENTS:
+        {
+            uint8_t  results[2048];
+            uint32_t results_len = sizeof(results);
+
+            build_gss_priv_call(&msg, 0x47535363, handle, 1, 1, 1, 1);
+
+            /* Split inside the sealed token so it arrives in two buffers.
+             * This is the only case that reaches rpc2's gather path: privacy
+             * needs the whole token contiguous for gss_unwrap, so a scattered
+             * one has to be collected first, and until now nothing made a
+             * token arrive scattered. */
+            evpl_test_abort_if(msg.len < 60, "privacy call unexpectedly short");
+            outcome = gss_exchange_split(evpl, fd, &msg, msg.len - 40,
+                                         results, &results_len);
+            if (outcome != EXP_SUCCESS) {
+                return outcome;
+            }
+            return check_priv_reply(results, results_len, 1, 1)
+                   ? EXP_SUCCESS : ACT_MALFORMED;
+        }
+
+        case DEF_GSSPRIVEMPTYARGS:
+        {
+            uint8_t  results[2048];
+            uint32_t results_len = sizeof(results);
+
+            /* NULLPROC under privacy: the token seals a seq_num and nothing
+             * else, so the reply's sealed body must be exactly four bytes.  A
+             * server that padded it would still unseal correctly, which is why
+             * the length is the assertion. */
+            build_gss_priv_call(&msg, 0x47535364, handle, 1, 1, 1, 0);
+            outcome = gss_exchange(evpl, fd, &msg, results, &results_len);
+            if (outcome != EXP_SUCCESS) {
+                return outcome;
+            }
+            return check_priv_reply(results, results_len, 1, 0)
+                   ? EXP_SUCCESS : ACT_MALFORMED;
+        }
 
         case DEF_GSSPRIVSEALCORRUPT:
             build_gss_priv_call(&msg, 0x47535361, handle, 1, 1, 0, 1);
@@ -3605,6 +3902,17 @@ run_defect_case(
 
     if (defect_is_gss(c->defect)) {
         if (!defect_case_first_time(c->defect, c->param)) {
+            g_results.defect_skipped++;
+            return;
+        }
+
+        /* A real mechanism has no behaviour switch, so the cases that steer
+         * the mechanism rather than the wire only run against the stub.
+         * Everything else runs under both: a bit flipped in a real MIC is
+         * just as invalid as one flipped in the stub's, and the
+         * sequence-window and framing defects never involve the mechanism at
+         * all. */
+        if (g_krb5 && gss_case_needs_stub(c->defect)) {
             g_results.defect_skipped++;
             return;
         }
@@ -3875,11 +4183,29 @@ main(
     struct evpl_thread_config *tcfg;
     uint64_t                   drain_deadline;
     int                        opt, rc, failed;
+    int                        use_krb5   = 0;
+    int                        krb5_noiov = 0;
+    const char                *krb5_why   = NULL;
 
     conformance_evpl_config();
 
-    while ((opt = getopt(argc, argv, "r:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "r:p:kK")) != -1) {
         switch (opt) {
+            case 'k':
+                /* Drive the same cases against real Kerberos instead of the
+                 * stub.  The realm is minted in-process, so this needs no KDC
+                 * -- but it does need krb5, and a host without it skips. */
+                use_krb5 = 1;
+                break;
+            case 'K':
+                /* As -k, but with the provider's scattered MIC entry point
+                 * withheld, which is what puts rpc2 on its gathering
+                 * fallback.  Which of the two runs is otherwise a property of
+                 * the host's krb5 rather than of the test, and the fallback
+                 * is the path with the size ceiling. */
+                use_krb5   = 1;
+                krb5_noiov = 1;
+                break;
             case 'r':
                 rc = evpl_protocol_lookup(&proto, optarg);
                 if (rc) {
@@ -3943,7 +4269,27 @@ main(
     /* Register the deterministic GSS provider so the RPCSEC_GSS cases have a
      * mechanism to talk to.  Without one, libevpl rejects flavor-6 calls with
      * AUTH_REJECTEDCRED before reaching any of the framing under test. */
-    evpl_rpc2_set_gss_provider(g_thread, gss_stub_provider(), NULL);
+    if (use_krb5) {
+        g_krb5 = krb5_local_create(&krb5_why);
+
+        if (!g_krb5) {
+            /* No realm to be had.  Skipping is the honest outcome: the stub
+             * run already covered the framing, and reporting a pass for a
+             * mechanism that never ran would be worse than saying so. */
+            evpl_test_info("skipping: krb5 unavailable (%s)",
+                           krb5_why ? krb5_why : "unknown");
+            return 77;
+        }
+
+        g_krb5_noiov = krb5_noiov;
+
+        evpl_rpc2_set_gss_provider(g_thread,
+                                   krb5_noiov ? krb5_local_provider_noiov()
+                                              : krb5_local_provider(),
+                                   krb5_local_arg(g_krb5));
+    } else {
+        evpl_rpc2_set_gss_provider(g_thread, gss_stub_provider(), NULL);
+    }
 
     evpl_rpc2_server_attach(g_thread, server, g_server_private);
 
