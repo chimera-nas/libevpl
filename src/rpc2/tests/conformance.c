@@ -355,7 +355,7 @@ defect_name(int d)
         case DEF_GSSDATAVALID:            return "GssDataValid";
         case DEF_GSSCREDVERSIONWRONG:     return "GssCredVersionWrong";
         case DEF_GSSPROCUNKNOWN:          return "GssProcUnknown";
-        case DEF_GSSSERVICEPRIVACY:       return "GssServicePrivacy";
+        case DEF_GSSSERVICEUNKNOWN:       return "GssServiceUnknown";
         case DEF_GSSHANDLEUNKNOWN:        return "GssHandleUnknown";
         case DEF_GSSVERIFIERNOTGSS:       return "GssVerifierNotGss";
         case DEF_GSSMICWRONG:             return "GssMicWrong";
@@ -364,6 +364,9 @@ defect_name(int d)
         case DEF_GSSINTEGDATAVALID:       return "GssIntegDataValid";
         case DEF_GSSINTEGCHECKSUMWRONG:   return "GssIntegChecksumWrong";
         case DEF_GSSINTEGSEQMISMATCH:     return "GssIntegSeqMismatch";
+        case DEF_GSSPRIVDATAVALID:        return "GssPrivDataValid";
+        case DEF_GSSPRIVSEALCORRUPT:      return "GssPrivSealCorrupt";
+        case DEF_GSSPRIVSEQMISMATCH:      return "GssPrivSeqMismatch";
         case DEF_GSSDESTROYCONTEXT:       return "GssDestroyContext";
         case DEF_GSSDESTROYUNAUTHENTICATED: return "GssDestroyUnauthenticated";
         case DEF_GSSSEQABOVEMAX:          return "GssSeqAboveMax";
@@ -2747,6 +2750,74 @@ build_gss_integ_call(
     put_bytes(msg, mic, GSS_STUB_MIC_LEN);
 } /* build_gss_integ_call */
 
+/*
+ * Build a privacy-service (krb5p) DATA call.  RFC 2203 sec 5.3.2.3 puts the
+ * arguments on the wire as
+ *   rpc_gss_priv_data { opaque databody_priv<>; }
+ * where databody_priv is the sealed token of seq_num || proc_args.
+ *
+ * body_seq is separate from the credential seq for the same reason as the
+ * integrity builder -- to make the two disagree -- but it matters more here:
+ * under integrity the databody seq is merely signed, whereas under privacy it
+ * is *sealed*, so a mismatch is something only the holder of the key could
+ * have produced, and the check is what makes the seal worth having.
+ *
+ * good_seal corrupts the sealed body rather than the length prefix or the MIC,
+ * so what fails is the unseal itself and not the framing around it.
+ */
+static void
+build_gss_priv_call(
+    struct wirebuf *msg,
+    uint32_t        xid,
+    uint32_t        handle,
+    uint32_t        seq,
+    uint32_t        body_seq,
+    int             good_seal,
+    int             with_args)
+{
+    struct wirebuf plain;
+    uint8_t        mic[GSS_STUB_MIC_LEN];
+    uint8_t        token[4096];
+    size_t         token_len;
+    uint32_t       cred_len;
+
+    msg->len = 0;
+    put32(msg, xid);
+    put32(msg, 0);                          /* CALL */
+    put32(msg, 2);
+    put32(msg, CONF_PROG);
+    put32(msg, CONF_VERS);
+    put32(msg, with_args ? PROC_ECHO_SCALARS : 0);
+    cred_len = put_gss_cred(msg, RPCSEC_GSS_VERS_1, RPCSEC_GSS_DATA,
+                            seq, GSS_SVC_PRIVACY, &handle);
+
+    /* The header MIC covers the message through the credential and is sent in
+     * the clear: under privacy the *arguments* are sealed, the RPC header is
+     * not, which is exactly why the seq has to be sealed as well. */
+    gss_stub_mic(msg->data, gss_signed_len(cred_len), mic);
+    put32(msg, RPCSEC_GSS_FLAVOR);
+    put32(msg, GSS_STUB_MIC_LEN);
+    put_bytes(msg, mic, GSS_STUB_MIC_LEN);
+
+    plain.len = 0;
+    put32(&plain, body_seq);
+    if (with_args) {
+        build_args_into(&plain, TGT_TSCALARS);
+    }
+
+    token_len = gss_stub_seal(plain.data, plain.len, token, sizeof(token));
+
+    if (!good_seal) {
+        /* Flip a bit inside the sealed body.  The stub's unseal recomputes the
+         * MIC over the recovered plaintext, so this is caught as a failed
+         * unseal -- the token no longer decrypts to what was sealed. */
+        token[4] ^= 0xff;
+    }
+
+    put32(msg, (uint32_t) token_len);
+    put_bytes(msg, token, token_len);
+} /* build_gss_priv_call */
+
 /* Ways an rpc_gss_integ_data can fail to decode.  Each one keeps the
  * credential, the header MIC and the sequence number valid, so the caller is
  * authenticated and only the argument framing is at fault -- which is what
@@ -3029,7 +3100,7 @@ defect_is_gss(uint8_t defect)
         case DEF_GSSDATAVALID:
         case DEF_GSSCREDVERSIONWRONG:
         case DEF_GSSPROCUNKNOWN:
-        case DEF_GSSSERVICEPRIVACY:
+        case DEF_GSSSERVICEUNKNOWN:
         case DEF_GSSHANDLEUNKNOWN:
         case DEF_GSSVERIFIERNOTGSS:
         case DEF_GSSMICWRONG:
@@ -3037,6 +3108,9 @@ defect_is_gss(uint8_t defect)
         case DEF_GSSINTEGDATAVALID:
         case DEF_GSSINTEGCHECKSUMWRONG:
         case DEF_GSSINTEGSEQMISMATCH:
+        case DEF_GSSPRIVDATAVALID:
+        case DEF_GSSPRIVSEALCORRUPT:
+        case DEF_GSSPRIVSEQMISMATCH:
         case DEF_GSSDESTROYCONTEXT:
         case DEF_GSSDESTROYUNAUTHENTICATED:
         case DEF_GSSSEQABOVEMAX:
@@ -3251,9 +3325,23 @@ run_gss_case(
             build_args_into(&msg, TGT_TSCALARS);
             return gss_exchange(evpl, fd, &msg, NULL, NULL);
 
-        case DEF_GSSSERVICEPRIVACY:
+        case DEF_GSSSERVICEUNKNOWN:
             build_gss_data_call(&msg, 0x47535333, handle, 1,
-                                GSS_SVC_PRIVACY, 1, 0);
+                                (uint32_t) c->param, 1, 0);
+            return gss_exchange(evpl, fd, &msg, NULL, NULL);
+
+        case DEF_GSSPRIVDATAVALID:
+            build_gss_priv_call(&msg, 0x47535360, handle, 1, 1, 1, 1);
+            return gss_exchange(evpl, fd, &msg, NULL, NULL);
+
+        case DEF_GSSPRIVSEALCORRUPT:
+            build_gss_priv_call(&msg, 0x47535361, handle, 1, 1, 0, 1);
+            return gss_exchange(evpl, fd, &msg, NULL, NULL);
+
+        case DEF_GSSPRIVSEQMISMATCH:
+            /* Header seq 1, sealed seq 2: the pair a tamperer would have to
+             * produce, and cannot without the key. */
+            build_gss_priv_call(&msg, 0x47535362, handle, 1, 2, 1, 1);
             return gss_exchange(evpl, fd, &msg, NULL, NULL);
 
         case DEF_GSSHANDLEUNKNOWN:

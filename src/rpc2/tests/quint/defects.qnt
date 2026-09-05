@@ -93,7 +93,11 @@ module rpc2_defects {
         | GssDataValid                /* established context, good MIC     */
         | GssCredVersionWrong(int)
         | GssProcUnknown(int)
-        | GssServicePrivacy           /* krb5p: not implemented            */
+        /* An rpc_gss_service outside the three RFC 2203 defines.  krb5p used
+         * to live here as "a defined service we do not provide"; now that all
+         * three are implemented, only an undefined value is refusable, and
+         * this keeps that gate covered. */
+        | GssServiceUnknown(int)
         | GssHandleUnknown            /* DATA against a handle we never got */
         | GssVerifierNotGss           /* DATA whose verf is not flavor 6   */
         | GssMicWrong                 /* DATA carrying a bad header MIC    */
@@ -101,6 +105,9 @@ module rpc2_defects {
         | GssIntegDataValid           /* krb5i: well-formed integ_data     */
         | GssIntegChecksumWrong       /* krb5i: databody checksum is bad   */
         | GssIntegSeqMismatch         /* krb5i: databody seq != cred seq   */
+        | GssPrivDataValid            /* krb5p: well-formed priv_data      */
+        | GssPrivSealCorrupt          /* krb5p: token will not unseal      */
+        | GssPrivSeqMismatch          /* krb5p: sealed seq != cred seq     */
         | GssDestroyContext           /* DESTROY of a context we hold      */
         | GssDestroyUnauthenticated   /* DESTROY with no valid header MIC  */
         /* --- RPCSEC_GSS replay window (RFC 2203 section 5.3.3.1) ------- */
@@ -261,10 +268,11 @@ module rpc2_defects {
         | GssCredVersionWrong(_) => AuthError
         | GssProcUnknown(_) => AuthError
 
-        /* Privacy is a defined service that this implementation does not
-         * provide, which RFC 5531 answers by rejecting the credential as too
-         * weak rather than by pretending to honour it. */
-        | GssServicePrivacy => AuthError
+        /* RFC 2203 section 5.3.1 defines exactly three services.  A value
+         * outside them is a credential asking for something that does not
+         * exist, which RFC 5531 answers by refusing it as too weak rather
+         * than by picking a service the caller did not name. */
+        | GssServiceUnknown(_) => AuthError
 
         /* No usable security context: either it never existed, or the caller
          * cannot prove it holds it. */
@@ -300,6 +308,26 @@ module rpc2_defects {
          * argument decoding -- the same GARBAGE_ARGS outcome section 5.3.3.4.2
          * gives every argument-level integrity failure. */
         | GssIntegSeqMismatch => GarbageArgs
+
+        /* RFC 2203 section 5.3.2.3: under the privacy service the arguments
+         * travel as rpc_gss_priv_data, a single opaque holding the sealed
+         * token of seq_num || args.  A well-formed one is an ordinary call
+         * and the results come back sealed the same way (section 5.3.3.3). */
+        | GssPrivDataValid => Success
+
+        /* A token that will not unseal is the privacy analogue of a failed
+         * argument MIC, and section 5.3.3.4.2 gives it the same answer: the
+         * caller authenticated (the header verifier is cleartext-signed and
+         * checked first), but its arguments did not survive.  MSG_ACCEPTED
+         * with GARBAGE_ARGS, not MSG_DENIED. */
+        | GssPrivSealCorrupt => GarbageArgs
+
+        /* Section 5.3.2.3 requires the seq_num sealed inside the token to
+         * equal the credential's.  Sealing it is the point: the header seq is
+         * cleartext and editable, the sealed one is not, so a disagreement
+         * between them is exactly the tampering the service exists to catch
+         * -- and it fails argument decoding like any other. */
+        | GssPrivSeqMismatch => GarbageArgs
 
         /* RFC 2203 section 5.4: the client retires a context with a control
          * message carrying gss_proc RPCSEC_GSS_DESTROY over NULLPROC and no
@@ -457,9 +485,11 @@ module rpc2_defects {
         GssDataValid,
         GssCredVersionWrong(0), GssCredVersionWrong(2),
         GssProcUnknown(4), GssProcUnknown(99),
-        GssServicePrivacy, GssHandleUnknown, GssVerifierNotGss,
+        GssServiceUnknown(0), GssServiceUnknown(4),
+        GssHandleUnknown, GssVerifierNotGss,
         GssMicWrong, GssSeqReplayed,
         GssIntegDataValid, GssIntegChecksumWrong, GssIntegSeqMismatch,
+        GssPrivDataValid, GssPrivSealCorrupt, GssPrivSeqMismatch,
         GssDestroyContext, GssDestroyUnauthenticated,
         GssSeqAboveMax, GssSeqWindowJump, GssSeqTooOld, GssSeqOutOfOrder,
         GssCredTruncated, GssCredHandleOverruns,
@@ -577,17 +607,30 @@ module rpc2_defects {
             .then(use(DiscriminantUnmatched, TStrict))
             .expect(expected == GarbageArgs)
 
-    /// The two GSS outcomes most easily got wrong: an unimplemented service is
-    /// refused rather than silently downgraded, and a replay is answered with
-    /// silence rather than an error that would confirm the replay landed.
+    /// The two GSS outcomes most easily got wrong: a service the credential
+    /// names but that does not exist is refused rather than silently
+    /// downgraded to one that does, and a replay is answered with silence
+    /// rather than an error that would confirm the replay landed.
     run gssOutcomesTest =
         init
-            .then(use(GssServicePrivacy, TScalars))
+            .then(use(GssServiceUnknown(4), TScalars))
             .expect(expected == AuthError)
             .then(use(GssSeqReplayed, TScalars))
             .expect(expected == NoReply)
             .then(use(GssDataValid, TScalars))
             .expect(expected == Success)
+
+    /// Privacy repeats the integrity split, and adds the one thing integrity
+    /// cannot test: the seq is *sealed*, so a header that disagrees with it is
+    /// evidence of tampering rather than of a mis-built client.
+    run gssPrivacyOutcomesTest =
+        init
+            .then(use(GssPrivDataValid, TScalars))
+            .expect(expected == Success)
+            .then(use(GssPrivSealCorrupt, TScalars))
+            .expect(expected == GarbageArgs)
+            .then(use(GssPrivSeqMismatch, TScalars))
+            .expect(expected == GarbageArgs)
 
     /// The integrity service splits one failure into two different replies,
     /// and getting them the same way round is the easy mistake: a bad *header*
