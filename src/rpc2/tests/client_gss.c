@@ -45,6 +45,9 @@ struct test_state {
     struct evpl_rpc2_gss_client *gss;
     uint32_t                     service;
     int                          server_saw_gss;
+    /* The principal the acceptor saw on the last call, so a driver holding
+     * several identities can check that each call arrived as its own. */
+    char                         last_principal[256];
     int                          complete;
     int                          passed;
     int                          after_destroy_fired;
@@ -70,6 +73,8 @@ server_recv_greet(
      */
     if (cred && cred->flavor == EVPL_RPC2_AUTH_RPCSEC_GSS) {
         state->server_saw_gss = 1;
+        snprintf(state->last_principal, sizeof(state->last_principal), "%s",
+                 cred->gss.principal ? cred->gss.principal : "");
         evpl_test_info("server: call authenticated as '%s', service %u",
                        cred->gss.principal ? cred->gss.principal : "(none)",
                        cred->gss.service);
@@ -133,6 +138,24 @@ client_recv_after_destroy(
 
     state->after_destroy_fired = 1;
 } /* client_recv_after_destroy */
+
+/* Waits out one context establishment for the multi-identity phase. */
+struct multi_wait {
+    struct evpl_rpc2_gss_client *client;
+    int                          done;
+};
+
+static void
+multi_ready(
+    struct evpl_rpc2_gss_client *client,
+    int                          status,
+    void                        *private_data)
+{
+    struct multi_wait *w = private_data;
+
+    w->client = status ? NULL : client;
+    w->done   = 1;
+} /* multi_ready */
 
 /* The context is ready (or was refused); either way the test moves on. */
 static void
@@ -257,12 +280,100 @@ main(
     evpl_test_abort_if(!state.conn, "client connect failed");
 
     evpl_rpc2_gss_client_create(evpl, &prog.rpc2, state.conn,
-                                krb5_local_initiator_provider(), kl,
+                                krb5_local_initiator_provider(),
+                                krb5_local_initiator_arg(kl),
                                 state.service, "hello@localhost",
                                 gss_ready, &state);
 
     while (!state.complete) {
         evpl_continue(evpl);
+    }
+
+    /*
+     * Several users, one connection.
+     *
+     * RPCSEC_GSS carries no uid: a client calling as more than one user holds
+     * a context per user and names the right one in each call's credential,
+     * which is what rpc.gssd builds from each user's own ccache.  This is that
+     * arrangement in miniature -- two identities, two contexts, one connection
+     * -- and what it checks is that the acceptor attributes each call to the
+     * principal that made it rather than to whichever context came last.
+     */
+    if (state.passed) {
+        static const char *const     names[] = { "u1000", "u1001" };
+        struct krb5_local_identity  *ids[2]  = { NULL, NULL };
+        struct evpl_rpc2_gss_client *gss[2]  = { NULL, NULL };
+        int                          i, ok = 1;
+
+        for (i = 0; i < 2; i++) {
+            struct multi_wait w = { 0 };
+
+            ids[i] = krb5_local_identity_create(kl, names[i]);
+            evpl_test_abort_if(!ids[i], "could not build identity %s",
+                               names[i]);
+
+            evpl_rpc2_gss_client_create(evpl, &prog.rpc2, state.conn,
+                                        krb5_local_initiator_provider(),
+                                        krb5_local_identity_arg(ids[i]),
+                                        state.service, "hello@localhost",
+                                        multi_ready, &w);
+
+            while (!w.done) {
+                evpl_continue(evpl);
+            }
+
+            evpl_test_abort_if(!w.client, "context for %s never established",
+                               names[i]);
+            gss[i] = w.client;
+        }
+
+        /* Interleaved, and the older identity last: a server that keyed the
+         * identity off anything but the credential's handle would answer this
+         * as the most recently established one. */
+        for (i = 1; i >= 0; i--) {
+            struct evpl_rpc2_cred cred;
+            struct Hello          request;
+            char                  want[256];
+
+            memset(&cred, 0, sizeof(cred));
+            cred.flavor      = EVPL_RPC2_AUTH_RPCSEC_GSS;
+            cred.gss.service = state.service;
+            cred.gss.client  = gss[i];
+
+            request.id = 44 + i;
+            xdr_set_str_static(&request, greeting, "hi", strlen("hi"));
+
+            state.complete          = 0;
+            state.last_principal[0] = '\0';
+
+            prog.send_call_GREET(&prog.rpc2, evpl, state.conn, &cred,
+                                 &request, 0, 0, NULL, 0, 0,
+                                 client_recv_reply, &state);
+
+            while (!state.complete) {
+                evpl_continue(evpl);
+            }
+
+            snprintf(want, sizeof(want), "%s@TEST.LIBEVPL", names[i]);
+
+            if (strcmp(state.last_principal, want)) {
+                evpl_test_error("call under %s arrived as '%s'", names[i],
+                                state.last_principal);
+                ok = 0;
+            }
+        }
+
+        for (i = 0; i < 2; i++) {
+            evpl_rpc2_gss_client_destroy(evpl, gss[i]);
+            krb5_local_identity_destroy(ids[i]);
+        }
+
+        if (ok) {
+            evpl_test_info("two identities, one connection: each call "
+                           "attributed to its own principal");
+        } else {
+            state.passed = 0;
+        }
     }
 
     /*

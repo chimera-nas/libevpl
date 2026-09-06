@@ -1309,7 +1309,7 @@ gss_establish(
 
     evpl_rpc2_gss_client_create(evpl, &g_prog.rpc2, g_conn,
                                 krb5_local_initiator_provider(),
-                                krb5_local_arg(g_kl), service,
+                                krb5_local_initiator_arg(g_kl), service,
                                 "conformance@localhost", gss_ready_cb, NULL);
 
     for (guard = 0; guard < 8 && !g_gss_ready && !g_gss_failed; guard++) {
