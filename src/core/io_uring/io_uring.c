@@ -23,21 +23,26 @@ evpl_io_uring_flush_sqe(
 {
     struct evpl_io_uring_context *ctx = private_data;
 
-    /* IORING_SQ_NEED_WAKEUP lives in the SQ ring's kernel-visible flags word,
-     * not in io_uring::flags -- that one holds the IORING_SETUP_* flags this
-     * ring was created with.  Reading it there tests IORING_SETUP_IOPOLL
-     * (same bit 0), which is never set here, so this branch was dead and the
-     * log below has never once fired.  liburing's own io_uring_submit() checks
-     * the right word, so submission still worked; what was lost was any
-     * visibility into whether the sqpoll thread needed waking. */
-    unsigned int flags = atomic_load_explicit((_Atomic unsigned int *) ctx->ring.sq.kflags,
-                                              memory_order_relaxed);
-
-    if (flags & IORING_SQ_NEED_WAKEUP) {
-        io_uring_enter(ctx->ring.ring_fd, 0, 0, IORING_ENTER_SQ_WAKEUP, NULL);
-        evpl_io_uring_debug("woke the kernel sqpoll thread");
-    }
-
+    /*
+     * Just submit.  There was a hand-rolled IORING_SQ_NEED_WAKEUP check here
+     * that ran *before* this call, and waking the sqpoll thread at that point
+     * is worse than not waking it at all: io_uring_get_sqe() advances only
+     * liburing's private sqe_tail, so the poller wakes, finds the ring's
+     * kernel-visible tail unchanged, has nothing to do, and goes back to
+     * sleep -- clearing the very NEED_WAKEUP flag that io_uring_submit() is
+     * about to consult.  liburing then concludes no enter is needed and
+     * returns without a syscall, leaving the SQE sitting unconsumed until
+     * something else happens to wake the poller.
+     *
+     * io_uring_submit() does the same check in the only order that is correct:
+     * publish the tail first, then test NEED_WAKEUP and enter with
+     * IORING_ENTER_SQ_WAKEUP if it is set.
+     *
+     * (For most of this file's life the hand-rolled check read io_uring::flags
+     * rather than the SQ ring's, which tests IORING_SETUP_IOPOLL -- never set
+     * here -- so the branch was dead and liburing quietly did the right thing.
+     * Correcting the word woke the branch up, and with it this race.)
+     */
     io_uring_submit(&ctx->ring);
 } /* evpl_io_uring_flush */
 
