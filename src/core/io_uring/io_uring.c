@@ -23,12 +23,19 @@ evpl_io_uring_flush_sqe(
 {
     struct evpl_io_uring_context *ctx = private_data;
 
-    unsigned int                  flags = atomic_load_explicit((_Atomic unsigned int *) &ctx->ring.flags,
-                                                               memory_order_relaxed);
+    /* IORING_SQ_NEED_WAKEUP lives in the SQ ring's kernel-visible flags word,
+     * not in io_uring::flags -- that one holds the IORING_SETUP_* flags this
+     * ring was created with.  Reading it there tests IORING_SETUP_IOPOLL
+     * (same bit 0), which is never set here, so this branch was dead and the
+     * log below has never once fired.  liburing's own io_uring_submit() checks
+     * the right word, so submission still worked; what was lost was any
+     * visibility into whether the sqpoll thread needed waking. */
+    unsigned int flags = atomic_load_explicit((_Atomic unsigned int *) ctx->ring.sq.kflags,
+                                              memory_order_relaxed);
 
     if (flags & IORING_SQ_NEED_WAKEUP) {
         io_uring_enter(ctx->ring.ring_fd, 0, 0, IORING_ENTER_SQ_WAKEUP, NULL);
-        evpl_io_uring_info("had to wake up the kernel sqpoll thread");
+        evpl_io_uring_debug("woke the kernel sqpoll thread");
     }
 
     io_uring_submit(&ctx->ring);
@@ -144,8 +151,17 @@ evpl_io_uring_poll_enter(
     void        *private_data)
 {
     struct evpl_io_uring_context *ctx = private_data;
+    int                           rc;
 
-    io_uring_unregister_eventfd(&ctx->ring);
+    /* A failure here only leaves the eventfd armed while we poll, which costs a
+     * spurious wakeup and nothing else -- unlike poll_exit below, where it is
+     * the difference between waking and hanging. */
+    rc = io_uring_unregister_eventfd(&ctx->ring);
+
+    if (rc < 0) {
+        evpl_io_uring_debug("io_uring_unregister_eventfd() failed: %s (%d)", strerror(-rc), rc);
+    }
+
     evpl_io_uring_complete(evpl, ctx);
 } /* evpl_io_uring_poll_enter */
 
@@ -155,8 +171,34 @@ evpl_io_uring_poll_exit(
     void        *private_data)
 {
     struct evpl_io_uring_context *ctx = private_data;
+    int                           rc = 0, i;
 
-    io_uring_register_eventfd(&ctx->ring, ctx->eventfd);
+    /*
+     * Leaving poll mode makes this eventfd the only thing that can wake the
+     * loop for a completion, so a silent failure here is a hang: the loop
+     * blocks, the CQE arrives with nothing to signal, and if the caller is
+     * waiting on that very request nothing else will ever wake it either.
+     * The result was previously discarded.
+     *
+     * Retry the transient cases -- EINTR, and the EBUSY io_uring can return
+     * while the ring is mid-operation.  A failure that survives those is
+     * fatal: there is no correct way to continue, because the loop is about to
+     * block on a signal that will never arrive, and an abort naming the cause
+     * is strictly better than the silent hang that leaves.
+     */
+    for (i = 0; i < EVPL_IO_URING_ARM_RETRIES; i++) {
+        rc = io_uring_register_eventfd(&ctx->ring, ctx->eventfd);
+
+        if (rc == 0 || (rc != -EINTR && rc != -EBUSY && rc != -EAGAIN)) {
+            break;
+        }
+    }
+
+    evpl_io_uring_abort_if(rc < 0,
+                           "io_uring_register_eventfd() failed: %s (%d); completions would "
+                           "arrive with nothing to wake the event loop",
+                           strerror(-rc), rc);
+
     evpl_io_uring_complete(evpl, ctx);
 } /* evpl_io_uring_poll_exit */
 
@@ -185,9 +227,15 @@ evpl_io_uring_complete_event(
 
     if (rc != sizeof(value)) {
         evpl_event_mark_unreadable(evpl, &ctx->event);
-        return;
     }
 
+    /* Drain regardless of what the eventfd said.  The counter and the
+     * completion queue are separate pieces of state: a CQE posted while the
+     * eventfd was unregistered (the whole of poll mode) never incremented it,
+     * and returning early on an empty read would leave that CQE sitting in the
+     * ring.  With one request outstanding and nothing else to wake this loop,
+     * that is a hang rather than a delay -- the request the caller is blocked
+     * on is the only thing that could have produced the next wakeup. */
     do {
         n = evpl_io_uring_complete(evpl, ctx);
     } while (n);
@@ -234,7 +282,12 @@ evpl_io_uring_create(
 
     evpl_io_uring_abort_if(ctx->eventfd < 0, "eventfd");
 
-    io_uring_register_eventfd(&ctx->ring, ctx->eventfd);
+    ret = io_uring_register_eventfd(&ctx->ring, ctx->eventfd);
+
+    evpl_io_uring_abort_if(ret < 0,
+                           "io_uring_register_eventfd() failed: %s (%d); no completion "
+                           "would ever wake this event loop",
+                           strerror(-ret), ret);
 
     evpl_add_event(evpl, &ctx->event, ctx->eventfd,
                    evpl_io_uring_complete_event, NULL, NULL);
