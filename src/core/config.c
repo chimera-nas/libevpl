@@ -4,6 +4,8 @@
 
 #include <unistd.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <pthread.h>
 
@@ -18,6 +20,7 @@ SYMBOL_EXPORT struct evpl_global_config *
 evpl_global_config_init(void)
 {
     struct evpl_global_config *config = evpl_zalloc(sizeof(*config));
+    const char                *env;
 
     config->core_mech = EVPL_CORE_MECH_DEFAULT;
 
@@ -59,6 +62,37 @@ evpl_global_config_init(void)
 
     config->io_uring_enabled = 1;
     config->io_uring_entries = 8192;
+
+    /*
+     * A ring is not a small allocation: IORING_SETUP_SQE128 and
+     * IORING_SETUP_CQE32 double both entry sizes, so 8192 entries ask the
+     * kernel for roughly 1.5 MB of accounted memory, and SQPOLL adds a kernel
+     * thread per ring.  A host running many event-loop threads, or many such
+     * processes at once, can be refused with ENOMEM while otherwise healthy --
+     * which is how chimera's CI loses unrelated tests to a ring allocation.
+     *
+     * The size stays the caller's to choose and is honoured or fails; there is
+     * deliberately no silent reduction, because a ring that quietly shrank
+     * would make throughput depend on how loaded the machine was when the
+     * process started.  This override exists so a constrained environment can
+     * state a smaller size up front, the same way evpl_global_config_set_
+     * io_uring_entries() does for a caller that parses its own configuration.
+     */
+    env = getenv("EVPL_IO_URING_ENTRIES");
+
+    if (env) {
+        char *end;
+        long  entries = strtol(env, &end, 10);
+
+        if (*end == '\0' && entries > 0 && entries <= UINT_MAX) {
+            config->io_uring_entries = (unsigned int) entries;
+        } else {
+            evpl_error("config", __FILE__, __LINE__,
+                       "EVPL_IO_URING_ENTRIES=\"%s\" is not a positive integer; "
+                       "keeping the default of %u",
+                       env, config->io_uring_entries);
+        }
+    }
 
     config->rdmacm_enabled                = 1;
     config->rdmacm_tos                    = 0;
