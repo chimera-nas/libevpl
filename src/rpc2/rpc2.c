@@ -855,6 +855,27 @@ evpl_rpc2_send_reply(
             rpc_reply.body.rbody.areply.reply_data.info.high = request->mismatch_high;
         }
 
+        /*
+         * Capture the results here, before the security layer reframes them
+         * and before the RPC header is prepended: what a replay cache owes a
+         * retransmit is the procedure's answer, not the bytes some earlier
+         * send happened to make of it.  Wrapping is applied afresh on the
+         * replay, which is what keeps a cached reply correct under a service
+         * that reframes -- and correct with the retransmit's own sequence
+         * number rather than the original's.
+         *
+         * Only for a SUCCESS reply: anything else carries no results, so there
+         * is nothing to replay.  That is also what keeps a call the dispatcher
+         * refused -- GARBAGE_ARGS, say -- out of an application's cache, where
+         * an unauthenticated peer could otherwise evict real entries with a
+         * stream of malformed requests.
+         */
+        if (error_stat == SUCCESS && request->encoding.reply_capture_cb) {
+            request->encoding.reply_capture_cb(
+                msg_iov, msg_niov, length, (uint32_t) reserve,
+                request->encoding.reply_capture_private);
+        }
+
         /* Integrity service (krb5i): reframe the proc results as
          * rpc_gss_integ_data before the RPC header is prepended.  Non-RDMA
          * only (GSS over RDMA is not a supported transport).  On failure we
@@ -1069,25 +1090,6 @@ evpl_rpc2_send_reply(
 
     if (request->metric) {
         prometheus_time_histogram_sample(request->metric, &request->timestamp);
-    }
-
-    /* If the application requested reply capture (e.g. for an NFS4.1 SEQUENCE
-     * replay cache or an NFSv3 duplicate-request cache), invoke the callback
-     * now.
-     *
-     * Before the Reply-chunk reduction below, not after: that path clones only
-     * the first `offset` header bytes into final_reply_iov and RDMA-writes the
-     * body straight to the requester, so a callback run afterwards would see a
-     * header with no reply behind it.  Here msg_iov still spans the whole
-     * message, and `offset` is the transport framing ahead of the RPC reply --
-     * 4 for a stream record marker, marshall_length_rdma_msg() for RDMA. */
-    if (request->encoding.reply_capture_cb) {
-        request->encoding.reply_capture_cb(
-            msg_iov,
-            msg_niov,
-            length,
-            (uint32_t) offset,
-            request->encoding.reply_capture_private);
     }
 
     if (reduce) {
