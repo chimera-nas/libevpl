@@ -59,10 +59,49 @@ krb5_local_destroy(
 
 /* The acceptor, for evpl_rpc2_set_gss_provider(). */
 /* The initiator's vtable.  Distinct from the acceptor's because the two sign
- * with different contexts; see the comment on krb5_local_i_get_mic. */
+ * with different contexts; see the comment on krb5_local_i_get_mic.
+ *
+ * Its provider_arg is an identity, not the realm: krb5_local_initiator_arg()
+ * for the realm's own principal, or krb5_local_identity_arg() for one built
+ * with krb5_local_identity_create(). */
 const struct evpl_rpc2_gss_provider *
 krb5_local_initiator_provider(
     void);
+
+/*
+ * Initiator identities.
+ *
+ * A realm holds one service key and one acceptor credential, because a server
+ * does.  What it can hold many of is initiator identities -- a principal, the
+ * ticket issued to it, and the credential built from that ticket -- which is
+ * what a real client keeps per user.  RPCSEC_GSS has no uid on the wire: a
+ * client calling as several users establishes a context per user (rpc.gssd
+ * does exactly this, from each user's own credential cache), and a driver that
+ * wants to do the same needs an identity per user to do it with.
+ *
+ * `name` is "u1000" for a user principal or "nfs/host" for a service one; the
+ * realm is the harness's own.  What an acceptor does with an authenticated
+ * identity often turns on which of the two it is.
+ */
+struct krb5_local_identity;
+
+struct krb5_local_identity *
+krb5_local_identity_create(
+    struct krb5_local *kl,
+    const char        *name);
+
+void
+krb5_local_identity_destroy(
+    struct krb5_local_identity *id);
+
+/* The provider_arg for an identity, and for the realm's own principal. */
+void *
+krb5_local_identity_arg(
+    struct krb5_local_identity *id);
+
+void *
+krb5_local_initiator_arg(
+    struct krb5_local *kl);
 
 const struct evpl_rpc2_gss_provider *
 krb5_local_provider(

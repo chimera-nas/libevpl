@@ -43,21 +43,45 @@ extern krb5_error_code encode_krb5_ticket(
 #define KRB5_LOCAL_USER    "conformance"
 
 struct krb5_local {
-    krb5_context   ctx;
-    krb5_principal client;
-    krb5_principal server;
-    krb5_keytab    keytab;
-    krb5_ccache    ccache;
+    krb5_context                ctx;
+    krb5_principal              client;
+    krb5_principal              server;
+    krb5_keytab                 keytab;
+    krb5_ccache                 ccache;
 
     /* The initiator's context, established lazily by the first init_token. */
-    gss_cred_id_t  init_cred;
-    gss_ctx_id_t   init_ctx;
+    gss_cred_id_t               init_cred;
+    gss_ctx_id_t                init_ctx;
 
     /* The acceptor's credential; contexts are per-exchange and owned by rpc2
      * through the provider's gss_ctx cookie. */
-    gss_cred_id_t  accept_cred;
+    gss_cred_id_t               accept_cred;
 
-    int            iov_enabled;
+    /* Lazily built by krb5_local_initiator_arg; freed with the realm. */
+    struct krb5_local_identity *default_identity;
+
+    /* The service key, kept rather than wiped after construction: minting a
+     * ticket for a principal named later is the whole of what an additional
+     * identity needs, and only the service key can do it. */
+    krb5_keyblock               svckey;
+
+    int                         iov_enabled;
+};
+
+/*
+ * One initiator identity: a principal with a service ticket of its own.
+ *
+ * The realm above is shared -- one service key, one acceptor credential --
+ * because a server holds one of each no matter how many users call it.  What
+ * is per-identity is what a real client's rpc.gssd keeps per user: a principal,
+ * the ticket issued to it, and the credential built from that ticket.
+ */
+struct krb5_local_identity {
+    struct krb5_local *kl;
+    krb5_principal     client;
+    krb5_ccache        ccache;
+    gss_cred_id_t      init_cred;
+    int                is_default; /* borrows the realm's ccache and cred */
 };
 
 /* ------------------------------------------------------------------ */
@@ -71,8 +95,10 @@ struct krb5_local {
  * of anybody.
  */
 static int
-krb5_local_mint(
+krb5_local_mint_for(
     struct krb5_local   *kl,
+    krb5_principal       client,
+    krb5_ccache          ccache,
     const krb5_keyblock *svckey)
 {
     krb5_enc_tkt_part enc;
@@ -98,7 +124,7 @@ krb5_local_mint(
 
     enc.flags                        = TKT_FLG_INITIAL;
     enc.session                      = &seskey;
-    enc.client                       = kl->client;
+    enc.client                       = client;
     enc.times.authtime               = now;
     enc.times.starttime              = now;
     enc.times.endtime                = now + 3600;
@@ -117,18 +143,18 @@ krb5_local_mint(
         goto out;
     }
 
-    creds.client       = kl->client;
+    creds.client       = client;
     creds.server       = kl->server;
     creds.keyblock     = seskey;
     creds.times        = enc.times;
     creds.ticket_flags = enc.flags;
     creds.ticket       = *tktdata;
 
-    if (krb5_cc_initialize(kl->ctx, kl->ccache, kl->client)) {
+    if (krb5_cc_initialize(kl->ctx, ccache, client)) {
         goto out;
     }
 
-    if (krb5_cc_store_cred(kl->ctx, kl->ccache, &creds)) {
+    if (krb5_cc_store_cred(kl->ctx, ccache, &creds)) {
         goto out;
     }
 
@@ -243,7 +269,7 @@ krb5_local_create_as(
         goto fail;
     }
 
-    if (krb5_local_mint(kl, &svckey)) {
+    if (krb5_local_mint_for(kl, kl->client, kl->ccache, &svckey)) {
         why = "could not mint a service ticket";
         goto fail;
     }
@@ -263,7 +289,8 @@ krb5_local_create_as(
         goto fail;
     }
 
-    krb5_free_keyblock_contents(kl->ctx, &svckey);
+    /* Retained on the realm; released in krb5_local_destroy. */
+    kl->svckey = svckey;
 
     return kl;
 
@@ -282,6 +309,152 @@ krb5_local_create(const char **reason)
 {
     return krb5_local_create_as(NULL, reason);
 } /* krb5_local_create */
+
+/*
+ * Build an initiator identity for `name` -- "u1000", or "nfs/host" for a
+ * service principal.  Each gets a memory ccache of its own, because a ccache
+ * holds one client's tickets and initializing it for a second principal would
+ * discard the first.
+ */
+struct krb5_local_identity *
+krb5_local_identity_create(
+    struct krb5_local *kl,
+    const char        *name)
+{
+    struct krb5_local_identity *id;
+    OM_uint32                   maj, min;
+    char                        ccname[160];
+    char                        namebuf[128];
+    char                       *slash, *p;
+    int                         built;
+
+    if (!kl || !name || !name[0] || strlen(name) >= sizeof(namebuf)) {
+        return NULL;
+    }
+
+    id = calloc(1, sizeof(*id));
+
+    if (!id) {
+        return NULL;
+    }
+
+    id->kl        = kl;
+    id->init_cred = GSS_C_NO_CREDENTIAL;
+
+    strcpy(namebuf, name);
+    slash = strchr(namebuf, '/');
+
+    if (slash) {
+        *slash = '\0';
+        built = krb5_build_principal(kl->ctx, &id->client,
+                                     strlen(KRB5_LOCAL_REALM),
+                                     KRB5_LOCAL_REALM, namebuf, slash + 1,
+                                     NULL);
+    } else {
+        built = krb5_build_principal(kl->ctx, &id->client,
+                                     strlen(KRB5_LOCAL_REALM),
+                                     KRB5_LOCAL_REALM, namebuf, NULL);
+    }
+
+    if (built) {
+        goto fail;
+    }
+
+    /* Named for the principal, so two identities never share a ccache. */
+    snprintf(ccname, sizeof(ccname), "MEMORY:evpl_krb5_id_%s", name);
+
+    for (p = ccname; *p; p++) {
+        if (*p == '/') {
+            *p = '_';
+        }
+    }
+
+    if (krb5_cc_resolve(kl->ctx, ccname, &id->ccache)) {
+        goto fail;
+    }
+
+    if (krb5_local_mint_for(kl, id->client, id->ccache, &kl->svckey)) {
+        goto fail;
+    }
+
+    maj = gss_krb5_import_cred(&min, id->ccache, NULL, NULL, &id->init_cred);
+
+    if (GSS_ERROR(maj)) {
+        goto fail;
+    }
+
+    return id;
+
+ fail:
+    krb5_local_identity_destroy(id);
+    return NULL;
+} /* krb5_local_identity_create */
+
+void
+krb5_local_identity_destroy(struct krb5_local_identity *id)
+{
+    OM_uint32 min;
+
+    if (!id) {
+        return;
+    }
+
+    if (!id->is_default) {
+        if (id->init_cred != GSS_C_NO_CREDENTIAL) {
+            gss_release_cred(&min, &id->init_cred);
+        }
+
+        if (id->ccache) {
+            krb5_cc_destroy(id->kl->ctx, id->ccache);
+        }
+
+        if (id->client) {
+            krb5_free_principal(id->kl->ctx, id->client);
+        }
+    } else {
+        (void) min;
+    }
+
+    free(id);
+} /* krb5_local_identity_destroy */
+
+/*
+ * The identity for the realm's own client principal.  A driver that only ever
+ * calls as one user -- which is most of them -- wants this and nothing else.
+ * It borrows the realm's ccache and credential rather than minting a second
+ * ticket for the same principal.
+ */
+void *
+krb5_local_initiator_arg(struct krb5_local *kl)
+{
+    if (!kl) {
+        return NULL;
+    }
+
+    if (!kl->default_identity) {
+        struct krb5_local_identity *id = calloc(1, sizeof(*id));
+
+        if (!id) {
+            return NULL;
+        }
+
+        id->kl         = kl;
+        id->client     = kl->client;
+        id->ccache     = kl->ccache;
+        id->init_cred  = kl->init_cred;
+        id->is_default = 1;
+
+        kl->default_identity = id;
+    }
+
+    return kl->default_identity;
+} /* krb5_local_initiator_arg */
+
+void *
+krb5_local_identity_arg(struct krb5_local_identity *id)
+{
+    return id;
+} /* krb5_local_identity_arg */
 
 void
 krb5_local_destroy(struct krb5_local *kl)
@@ -302,7 +475,13 @@ krb5_local_destroy(struct krb5_local *kl)
         gss_release_cred(&min, &kl->accept_cred);
     }
 
+    if (kl->default_identity) {
+        krb5_local_identity_destroy(kl->default_identity);
+        kl->default_identity = NULL;
+    }
+
     if (kl->ctx) {
+        krb5_free_keyblock_contents(kl->ctx, &kl->svckey);
         if (kl->keytab) {
             krb5_kt_close(kl->ctx, kl->keytab);
         }
@@ -883,13 +1062,13 @@ krb5_local_p_init(
     size_t     *out_len,
     int        *complete)
 {
-    struct krb5_local     *kl = arg;
-    struct krb5_local_ctx *lc = *gss_ctx;
-    OM_uint32              maj, min, flags;
-    gss_buffer_desc        in = GSS_C_EMPTY_BUFFER, tok = GSS_C_EMPTY_BUFFER;
-    gss_name_t             name = GSS_C_NO_NAME;
-    gss_buffer_desc        nb;
-    char                   principal[256];
+    struct krb5_local_identity *id = arg;
+    struct krb5_local_ctx      *lc = *gss_ctx;
+    OM_uint32                   maj, min, flags;
+    gss_buffer_desc             in = GSS_C_EMPTY_BUFFER, tok = GSS_C_EMPTY_BUFFER;
+    gss_name_t                  name = GSS_C_NO_NAME;
+    gss_buffer_desc             nb;
+    char                        principal[256];
 
     (void) target;
 
@@ -930,7 +1109,7 @@ krb5_local_p_init(
         in.length = in_len;
     }
 
-    maj = gss_init_sec_context(&min, kl->init_cred, &lc->ctx, name,
+    maj = gss_init_sec_context(&min, id->init_cred, &lc->ctx, name,
                                GSS_C_NO_OID,
                                GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG |
                                GSS_C_SEQUENCE_FLAG,

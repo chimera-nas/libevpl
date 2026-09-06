@@ -52,6 +52,36 @@ krb5_local_initiator_provider(void)
     return NULL;
 } /* krb5_local_initiator_provider */
 
+struct krb5_local_identity *
+krb5_local_identity_create(
+    struct krb5_local *kl,
+    const char        *name)
+{
+    (void) kl;
+    (void) name;
+    return NULL;
+} /* krb5_local_identity_create */
+
+void
+krb5_local_identity_destroy(struct krb5_local_identity *id)
+{
+    (void) id;
+} /* krb5_local_identity_destroy */
+
+void *
+krb5_local_identity_arg(struct krb5_local_identity *id)
+{
+    (void) id;
+    return NULL;
+} /* krb5_local_identity_arg */
+
+void *
+krb5_local_initiator_arg(struct krb5_local *kl)
+{
+    (void) kl;
+    return NULL;
+} /* krb5_local_initiator_arg */
+
 const struct evpl_rpc2_gss_provider *
 krb5_local_provider_noiov(void)
 {
