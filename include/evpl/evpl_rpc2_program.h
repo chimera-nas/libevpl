@@ -90,23 +90,33 @@ struct evpl_rpc2_rdma_segment_list {
  * Optional pre-dispatch reply-capture callback.
  *
  * If set on an evpl_rpc2_encoding before a send_reply call, libevpl invokes
- * this callback inside send_reply -- after the reply has been marshalled
- * into iovecs but before they are queued onto the wire and the request is
- * freed.  This gives applications a chance to copy out the encoded reply
- * bytes for later replay (NFS4.1 session replay cache).
+ * this callback inside send_reply, once the procedure's results have been
+ * marshalled and before anything else is done to them.  This is what lets an
+ * application keep a reply for later replay: an NFSv4.1 session cache, an
+ * NFSv3 duplicate-request cache.
  *
- * The iov array spans the whole outgoing message and total_length is its
- * length.  rpc_offset is how many leading bytes of that are TRANSPORT framing
- * rather than RPC: 4 for the record marker over a stream transport, and the
- * length of the RPC-over-RDMA header over an RDMA one.  A caller that wants
- * the RPC reply itself -- which is what a replay cache stores, since the
- * framing has to be rebuilt for the retransmit anyway -- skips rpc_offset
- * bytes.  Ignoring it yields a buffer whose framing only happens to be
- * parseable on the transport it was captured from.
+ * What the callback is shown is the RESULTS -- not the outgoing message.  The
+ * iov array spans a buffer whose first `body_offset` bytes are reserved
+ * headroom; the results run from there to total_length, and that span is the
+ * whole of what to store.
  *
- * The callback runs before any Reply-chunk reduction, so the RPC reply is
- * always present in full here even when the wire form sends its body by RDMA
- * write and leaves only the header inline.
+ * That is deliberately narrower than the wire form, because everything the
+ * wire form adds is a property of the send rather than of the answer.  The
+ * transport framing has to be rebuilt for a retransmit anyway.  The RPC header
+ * carries the retransmit's own xid and verifier.  And under RPCSEC_GSS
+ * integrity or privacy the security layer reframes the results around the
+ * sequence number of the call being answered (RFC 2203 sec 5.3.3.2/5.3.3.3),
+ * so a cached wire reply replayed for a later call is wrapped around the wrong
+ * one -- and, sent back through the same path, is wrapped a second time.
+ * Storing the results and letting the reply be built afresh is what keeps a
+ * cached reply correct under every service.
+ *
+ * The callback runs before any Reply-chunk reduction, so the results are
+ * always present in full here even when the wire form sends the body by RDMA
+ * write and leaves only the header inline.  It runs only for a MSG_ACCEPTED /
+ * SUCCESS reply: anything else carries no results, so there is nothing to
+ * replay -- which is also what keeps a call the dispatcher refused out of an
+ * application's cache.
  *
  * Pointers are valid only for the duration of the callback; the callback must
  * copy any bytes it wishes to retain.
@@ -115,7 +125,7 @@ typedef void (*evpl_rpc2_reply_capture_cb_t)(
     const struct evpl_iovec *iov,
     int                      niov,
     int                      total_length,
-    uint32_t                 rpc_offset,
+    uint32_t                 body_offset,
     void                    *private_data);
 
 /*
