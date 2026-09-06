@@ -16,6 +16,11 @@
 #define EVPL_IO_URING_REQ_TCP     1
 #define EVPL_IO_URING_REQ_BLOCK   2
 
+/* Bounded retries for arming the completion eventfd when leaving poll mode.
+ * Small: the failures worth retrying are transient, and a persistent one must
+ * be reported rather than spun on. */
+#define EVPL_IO_URING_ARM_RETRIES 5
+
 #define evpl_io_uring_debug(...) evpl_debug("io_uring", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_io_uring_info(...)  evpl_info("io_uring", __FILE__, __LINE__, __VA_ARGS__)
 #define evpl_io_uring_error(...) evpl_error("io_uring", __FILE__, __LINE__, __VA_ARGS__)
