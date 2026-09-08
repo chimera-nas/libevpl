@@ -181,6 +181,10 @@ void evpl_global_config_set_io_uring_entries(
     struct evpl_global_config *config,
     unsigned int               entries);
 
+void evpl_global_config_set_io_uring_sqpoll(
+    struct evpl_global_config *config,
+    int                        enabled);
+
 void evpl_global_config_set_rdmacm_enabled(
     struct evpl_global_config *config,
     int                        enabled);
