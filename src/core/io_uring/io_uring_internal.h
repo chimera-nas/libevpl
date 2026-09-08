@@ -33,10 +33,6 @@
 #define evpl_io_uring_abort_if(cond, ...) \
         evpl_abort_if(cond, "io_uring", __FILE__, __LINE__, __VA_ARGS__)
 
-struct evpl_io_uring_shared {
-    struct io_uring ring;
-};
-
 struct evpl_io_uring_socket;
 
 struct evpl_io_uring_request {

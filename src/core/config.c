@@ -94,6 +94,39 @@ evpl_global_config_init(void)
         }
     }
 
+    /*
+     * SQPOLL hands submission to a kernel thread that busy-polls the SQ and
+     * keeps spinning for sq_thread_idle after the last entry, then has to be
+     * woken by a syscall for the next one.  That is a win only while the ring
+     * stays busy.  Every evpl thread owns a ring, so for a process with many
+     * mostly idle loops it is a kernel thread per loop, each burning a CPU for
+     * a second after every submission -- and a depth-one workload, such as a
+     * journal write that must complete before the next is issued, pays a
+     * scheduler hop through that thread on every I/O.  Measured on chimera's
+     * diskfs metadata storm, the ring with SQPOLL was 4.6x slower than the
+     * same ring without it, and 2.3x slower than libaio on the same device.
+     *
+     * Default off: submission happens in the issuing thread's
+     * io_uring_enter() and completions wake the loop through the registered
+     * eventfd exactly as before.  A deployment whose rings stay busy can turn
+     * it on with evpl_global_config_set_io_uring_sqpoll() or
+     * EVPL_IO_URING_SQPOLL=1.
+     */
+    config->io_uring_sqpoll = 0;
+
+    env = getenv("EVPL_IO_URING_SQPOLL");
+
+    if (env) {
+        if (strcmp(env, "0") == 0 || strcmp(env, "1") == 0) {
+            config->io_uring_sqpoll = (unsigned int) (env[0] - '0');
+        } else {
+            evpl_error("config", __FILE__, __LINE__,
+                       "EVPL_IO_URING_SQPOLL=\"%s\" is not 0 or 1; "
+                       "keeping the default of %u",
+                       env, config->io_uring_sqpoll);
+        }
+    }
+
     config->rdmacm_enabled                = 1;
     config->rdmacm_tos                    = 0;
     config->rdmacm_max_sge                = 31;
@@ -481,6 +514,14 @@ evpl_global_config_set_io_uring_entries(
 {
     config->io_uring_entries = entries;
 } /* evpl_global_config_set_io_uring_entries */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_sqpoll(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->io_uring_sqpoll = enabled ? 1 : 0;
+} /* evpl_global_config_set_io_uring_sqpoll */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_enabled(

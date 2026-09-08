@@ -47,39 +47,73 @@ evpl_io_uring_flush_sqe(
 } /* evpl_io_uring_flush */
 
 
+/*
+ * Ring setup shared by the availability probe and every per-thread ring, so
+ * the probe tests exactly the configuration the threads will run with.
+ *
+ * SQPOLL is off unless configured (see the io_uring_sqpoll note in config.c):
+ * a kernel thread per ring that spins for a second after each submission is
+ * paid for only by a ring that stays busy, and the depth-one I/O it slows
+ * down is the common case for an event loop that mostly waits.  Without it,
+ * COOP_TASKRUN keeps completion task-work from interrupting this thread while
+ * it runs, and TASKRUN_FLAG lets liburing skip the io_uring_enter() when
+ * nothing is pending.  DEFER_TASKRUN is deliberately not used: it runs
+ * completions only when the issuing thread enters the ring, and this loop
+ * sleeps in the core poller on the ring's eventfd, so completions would never
+ * be posted while it waits.
+ */
+static void
+evpl_io_uring_params(struct io_uring_params *params)
+{
+    memset(params, 0, sizeof(*params));
+
+    params->flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_SQE128 | IORING_SETUP_CQE32;
+
+    if (evpl_shared->config->io_uring_sqpoll) {
+        params->flags         |= IORING_SETUP_SQPOLL;
+        params->sq_thread_idle = 1000;
+    } else {
+        params->flags |= IORING_SETUP_COOP_TASKRUN | IORING_SETUP_TASKRUN_FLAG;
+    }
+} /* evpl_io_uring_params */
+
+/*
+ * Availability probe: a NULL return tells the shared attach that io_uring is
+ * not usable here (old kernel, seccomp, SQPOLL refused without privilege) and
+ * no thread will create a ring.  The probe ring used to live for the whole
+ * process, an SQPOLL ring that nothing ever attached to and whose kernel
+ * thread served no one; build it with the real parameters and tear it down.
+ */
 static void *
 evpl_io_uring_init(void)
 {
-    struct evpl_io_uring_shared *shared;
-    struct io_uring_params       params;
-    int                          rc;
+    struct io_uring        ring;
+    struct io_uring_params params;
+    int                    rc;
 
-    memset(&params, 0, sizeof(params));
+    evpl_io_uring_params(&params);
 
-    params.flags         |= IORING_SETUP_SQPOLL;
-    params.sq_thread_idle = 1000;
-
-    shared = evpl_zalloc(sizeof(*shared));
-
-    rc = io_uring_queue_init_params(256, &shared->ring, &params);
+    /* Probe with a small ring: this asks whether the flags are accepted, not
+     * whether the configured size fits.  A size the host cannot afford is
+     * still reported where it happens, by the per-thread create below. */
+    rc = io_uring_queue_init_params(256, &ring, &params);
 
     if (rc < 0) {
-        evpl_free(shared);
+        evpl_io_uring_debug("io_uring unavailable: %s (%d)", strerror(-rc), rc);
         return NULL;
     }
 
-    return shared;
+    io_uring_queue_exit(&ring);
+
+    /* Nothing is shared between rings; the framework pattern needs a non-NULL
+     * token to record that the probe passed. */
+    return (void *) 1;
 } /* evpl_io_uring_init */
 
 static void
 evpl_io_uring_cleanup(void *private_data)
 {
-    struct evpl_io_uring_shared *shared = private_data;
-
-    io_uring_queue_exit(&shared->ring);
-
-    evpl_free(shared);
-
+    (void) private_data;
 } /* evpl_io_uring_cleanup */
 
 static inline int
@@ -251,29 +285,13 @@ evpl_io_uring_create(
     struct evpl *evpl,
     void        *private_data)
 {
-    //struct evpl_io_uring_shared  *shared = private_data;
     struct evpl_io_uring_context *ctx;
     int                           ret;
     struct io_uring_params        params;
-    int                           sqpoll = 1;
 
-    memset(&params, 0, sizeof(params));
+    (void) private_data;
 
-    params.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_SQE128 | IORING_SETUP_CQE32;
-
-    if (sqpoll) {
-        params.flags |= IORING_SETUP_SQPOLL;
-
-        params.sq_thread_idle = 1000;
-    } else {
-        //params.flags |= IORING_SETUP_COOP_TASKRUN | IORING_SETUP_TASKRUN_FLAG;
-        params.flags |= IORING_SETUP_DEFER_TASKRUN;
-    }
-
-#if 0
-    params.flags |= IORING_SETUP_ATTACH_WQ;
-    params.wq_fd  = shared->ring.ring_fd;
-    #endif /* if 0 */
+    evpl_io_uring_params(&params);
 
     ctx = evpl_zalloc(sizeof(*ctx));
 

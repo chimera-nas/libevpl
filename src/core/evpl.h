@@ -74,6 +74,7 @@ struct evpl_global_config {
 
     unsigned int              io_uring_enabled;
     unsigned int              io_uring_entries;
+    unsigned int              io_uring_sqpoll;
 
     unsigned int              rdmacm_enabled;
     unsigned int              rdmacm_tos;
