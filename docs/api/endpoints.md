@@ -92,4 +92,4 @@ Get the port number from an endpoint.
 
 - [Binds & Connections API]({{ '/api/binds' | relative_url }}) - Using endpoints with connections
 - [Core API]({{ '/api/core' | relative_url }}) - Protocol selection for endpoints
-- [Getting Started]({{ '/getting-started' | relative_url }}) - Basic endpoint usage examples
+- [Examples]({{ '/examples' | relative_url }}) - Basic endpoint usage examples

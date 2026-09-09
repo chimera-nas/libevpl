@@ -66,7 +66,5 @@ Always check return values and handle errors appropriately.
 
 ## See Also
 
-- [Getting Started]({{ '/getting-started' | relative_url }}) - Quick tutorial
 - [Architecture]({{ '/architecture' | relative_url }}) - Understanding core concepts
-- [Programming Guide]({{ '/programming_guide' | relative_url }}) - Best practices
 - [Examples]({{ '/examples' | relative_url }}) - Complete working code samples

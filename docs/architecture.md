@@ -324,5 +324,4 @@ These principles combine to enable portable, high-performance applications that 
 Now that you understand libevpl's architecture:
 
 - Explore the [API Reference]({{ '/api' | relative_url }}) for detailed function documentation
-- Review [Getting Started]({{ '/getting_started' | relative_url }}) for a practical introduction
 - Study the [Examples]({{ '/examples' | relative_url }}) to see these concepts in action

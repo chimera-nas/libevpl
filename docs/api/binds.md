@@ -645,4 +645,4 @@ Request `EVPL_NOTIFY_SENT` notifications for send completions. By default, send 
 - [Endpoints API]({{ '/api/endpoints' | relative_url }}) - Address and port management
 - [Memory API]({{ '/api/memory' | relative_url }}) - Buffer and iovec management
 - [Core API]({{ '/api/core' | relative_url }}) - Event loop management
-- [Getting Started]({{ '/getting-started' | relative_url }}) - Echo server example
+- [Examples]({{ '/examples' | relative_url }}) - Echo server example
