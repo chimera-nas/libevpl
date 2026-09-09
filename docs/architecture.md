@@ -32,7 +32,7 @@ The core of libevpl is the event loop (`struct evpl`), which manages all asynchr
 
 This model eliminates the need for locking when accessing per-connection state, since all operations on a given connection happen sequentially within a single thread's event loop. Applications can maintain complex state machines without worrying about concurrent access from multiple threads.
 
-For API details on event loop creation and management, see the [Core API](/api/core) documentation.
+For API details on event loop creation and management, see the [Core API]({{ '/api/core' | relative_url }}) documentation.
 
 ## Hybrid Event and Poll Modes
 
@@ -87,7 +87,7 @@ When the system becomes heavily loaded:
 - Latency drops to near-hardware levels
 - CPU usage increases but is justified by the workload
 
-The transition is automatic and transparent to the application. Configuration options control the threshold for switching modes (see [Configuration API](/api/config)).
+The transition is automatic and transparent to the application. Configuration options control the threshold for switching modes (see [Configuration API]({{ '/api/config' | relative_url }})).
 
 This hybrid approach provides the best of both worlds: energy-efficient operation under light load and maximum performance under heavy load.
 
@@ -130,7 +130,7 @@ libevpl addresses this by maintaining pools of pre-registered memory. Instead of
 
 This amortizes the registration cost across many I/O operations. The expensive registration happens once during initialization; individual I/O operations simply use already-registered memory.
 
-See the [Memory Management API](/api/memory) for details on buffer allocation and management.
+See the [Memory Management API]({{ '/api/memory' | relative_url }}) for details on buffer allocation and management.
 
 ### Zero-Copy I/O
 
@@ -177,7 +177,7 @@ Currently supported backends include:
 
 Other acceleration frameworks will be added over time.
 
-See [Bind API](/api/binds) for protocol querying and selection mechanisms.
+See [Bind API]({{ '/api/binds' | relative_url }}) for protocol querying and selection mechanisms.
 
 ## Connection Management and Steering
 
@@ -205,7 +205,7 @@ This model provides several advantages:
 
 This is particularly important for RDMA connections, where the hardware resources (queue pairs) are naturally in proximity with specific CPU cores and memory domains.
 
-See [Bind API](/api/binds) for listener management details.
+See [Bind API]({{ '/api/binds' | relative_url }}) for listener management details.
 
 ## Embedding Application Logic in the Event Loop
 
@@ -222,7 +222,7 @@ Timers allow application code to execute at periodic intervals. Common uses incl
 
 All timers in libevpl are periodic—they automatically reschedule after firing. For one-shot behavior, the timer callback removes itself. Timers are managed by the event loop and fire with microsecond precision (actual precision depends on the system timer resolution and event loop load).
 
-See [Timers API](/api/timers) for timer management functions.
+See [Timers API]({{ '/api/timers' | relative_url }}) for timer management functions.
 
 ### Deferrals
 
@@ -235,7 +235,7 @@ Deferrals schedule work to run at the end of the current event loop iteration. T
 
 Deferrals execute in the same thread that schedules them, so they don't require synchronization for accessing thread-local state.
 
-See [Deferrals API](/api/deferrals) for deferral scheduling functions.
+See [Deferrals API]({{ '/api/deferrals' | relative_url }}) for deferral scheduling functions.
 
 ### Doorbells
 
@@ -258,7 +258,7 @@ Common uses include:
 
 Unlike deferrals, doorbells are thread-safe and can signal across threads. However, they have higher overhead due to the synchronization requirements.
 
-See [Doorbells API](/api/doorbells) for doorbell management functions.
+See [Doorbells API]({{ '/api/doorbells' | relative_url }}) for doorbell management functions.
 
 ## Block I/O Integration
 
@@ -275,7 +275,7 @@ Backends include io_uring (for kernel-mediated async I/O) and VFIO-NVMe (for dir
 
 Like network I/O, block I/O uses pre-registered memory buffers from the same pools, enabling zero-copy operation where supported.
 
-See [Block I/O API](/api/block) for block device operations.
+See [Block I/O API]({{ '/api/block' | relative_url }}) for block device operations.
 
 ## Threading Model
 
@@ -288,7 +288,7 @@ libevpl follows a strict single-threaded event loop model:
 
 This model eliminates the need for fine-grained locking within the event loop. Each event loop has exclusive access to its own state, allowing for lock-free operation within a single thread. Applications scale by running multiple threads, each with its own event loop, rather than by sharing a single event loop across threads.
 
-For multi-threaded applications, libevpl provides thread pools where each thread runs an independent event loop. See [Threading API](/api/threading) for thread pool management.
+For multi-threaded applications, libevpl provides thread pools where each thread runs an independent event loop. See [Threading API]({{ '/api/threading' | relative_url }}) for thread pool management.
 
 ## Configuration
 
@@ -304,7 +304,7 @@ libevpl's behavior is controlled through configuration settings at two levels:
 - Priority settings
 - Event loop-specific parameters
 
-See [Configuration API](/api/config) for all available settings.
+See [Configuration API]({{ '/api/config' | relative_url }}) for all available settings.
 
 ## Design Principles Summary
 
@@ -323,6 +323,6 @@ These principles combine to enable portable, high-performance applications that 
 
 Now that you understand libevpl's architecture:
 
-- Explore the [API Reference](/api) for detailed function documentation
-- Review [Getting Started](/getting_started) for a practical introduction
-- Study the [Examples](/examples) to see these concepts in action
+- Explore the [API Reference]({{ '/api' | relative_url }}) for detailed function documentation
+- Review [Getting Started]({{ '/getting_started' | relative_url }}) for a practical introduction
+- Study the [Examples]({{ '/examples' | relative_url }}) to see these concepts in action

@@ -12,24 +12,24 @@ Complete API documentation for libevpl organized by functional area.
 
 ## Core APIs
 
-- **[Core API](/api/core)** - Event loop management, initialization, and protocol queries
-- **[Configuration API](/api/config)** - Global and thread-local configuration
-- **[Binds & Connections](/api/binds)** - Creating connections, sending/receiving data
-- **[Endpoints API](/api/endpoints)** - Network address and port management
-- **[Memory API](/api/memory)** - Buffer allocation and management
-- **[Timer API](/api/timers)** - Scheduled callbacks and timeouts
-- **[Deferral API](/api/deferrals)** - Deferred task execution
-- **[Doorbell API](/api/doorbells)** - Inter-thread notifications
-- **[Poll API](/api/polls)** - Busy-poll callbacks for spin-mode work
-- **[Threading API](/api/threading)** - Thread creation and thread pools
-- **[Block I/O API](/api/block)** - High-performance storage operations (io_uring, VFIO-NVMe)
-- **[RDMA API](/api/rdma)** - RDMA-specific functionality
-- **[Logging API](/api/logging)** - Logging and diagnostics
+- **[Core API]({{ '/api/core' | relative_url }})** - Event loop management, initialization, and protocol queries
+- **[Configuration API]({{ '/api/config' | relative_url }})** - Global and thread-local configuration
+- **[Binds & Connections]({{ '/api/binds' | relative_url }})** - Creating connections, sending/receiving data
+- **[Endpoints API]({{ '/api/endpoints' | relative_url }})** - Network address and port management
+- **[Memory API]({{ '/api/memory' | relative_url }})** - Buffer allocation and management
+- **[Timer API]({{ '/api/timers' | relative_url }})** - Scheduled callbacks and timeouts
+- **[Deferral API]({{ '/api/deferrals' | relative_url }})** - Deferred task execution
+- **[Doorbell API]({{ '/api/doorbells' | relative_url }})** - Inter-thread notifications
+- **[Poll API]({{ '/api/polls' | relative_url }})** - Busy-poll callbacks for spin-mode work
+- **[Threading API]({{ '/api/threading' | relative_url }})** - Thread creation and thread pools
+- **[Block I/O API]({{ '/api/block' | relative_url }})** - High-performance storage operations (io_uring, VFIO-NVMe)
+- **[RDMA API]({{ '/api/rdma' | relative_url }})** - RDMA-specific functionality
+- **[Logging API]({{ '/api/logging' | relative_url }})** - Logging and diagnostics
 
 ## Protocol Modules
 
-- **[HTTP API](/api/http)** - HTTP client and server
-- **[RPC2 API](/api/rpc2)** - ONC RPC2 for NFS
+- **[HTTP API]({{ '/api/protocols/http' | relative_url }})** - HTTP client and server
+- **[RPC2 API]({{ '/api/protocols/rpc2' | relative_url }})** - ONC RPC2 for NFS
 
 ## Quick Reference
 
@@ -66,7 +66,7 @@ Always check return values and handle errors appropriately.
 
 ## See Also
 
-- [Getting Started](/getting-started) - Quick tutorial
-- [Architecture](/architecture) - Understanding core concepts
-- [Programming Guide](/programming_guide) - Best practices
-- [Examples](/examples) - Complete working code samples
+- [Getting Started]({{ '/getting-started' | relative_url }}) - Quick tutorial
+- [Architecture]({{ '/architecture' | relative_url }}) - Understanding core concepts
+- [Programming Guide]({{ '/programming_guide' | relative_url }}) - Best practices
+- [Examples]({{ '/examples' | relative_url }}) - Complete working code samples

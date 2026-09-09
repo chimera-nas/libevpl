@@ -13,7 +13,7 @@ Provides per-thread poll callbacks that run while the event loop is in poll
 state when the thread transitions between polling and event-driven waiting.
 
 For background on libevpl's hybrid event/poll model, see the
-[Architecture](/architecture) page.
+[Architecture]({{ '/architecture' | relative_url }}) page.
 
 ## Overview
 
@@ -198,6 +198,6 @@ thread that owns `evpl`.
 
 ## See Also
 
-- [Configuration API](/api/config) - `poll_mode`, `spin_ns`, `poll_iterations`
-- [Doorbell API](/api/doorbells) - Inter-thread wakeups (often paired with polls)
-- [Architecture](/architecture) - Hybrid event/poll model
+- [Configuration API]({{ '/api/config' | relative_url }}) - `poll_mode`, `spin_ns`, `poll_iterations`
+- [Doorbell API]({{ '/api/doorbells' | relative_url }}) - Inter-thread wakeups (often paired with polls)
+- [Architecture]({{ '/architecture' | relative_url }}) - Hybrid event/poll model

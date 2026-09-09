@@ -90,6 +90,6 @@ Get the port number from an endpoint.
 
 ## See Also
 
-- [Binds & Connections API](/api/binds) - Using endpoints with connections
-- [Core API](/api/core) - Protocol selection for endpoints
-- [Getting Started](/getting-started) - Basic endpoint usage examples
+- [Binds & Connections API]({{ '/api/binds' | relative_url }}) - Using endpoints with connections
+- [Core API]({{ '/api/core' | relative_url }}) - Protocol selection for endpoints
+- [Getting Started]({{ '/getting-started' | relative_url }}) - Basic endpoint usage examples

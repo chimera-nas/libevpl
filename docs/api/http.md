@@ -508,7 +508,7 @@ The handle must not be used afterwards.
 
 ## See Also
 
-- [Binds & Connections API](/api/binds) - Underlying network I/O
-- [Memory API](/api/memory) - Buffer management
-- [Threading API](/api/threading) - Multi-threaded servers
-- [Examples](/examples) - Complete HTTP server examples (coming soon)
+- [Binds & Connections API]({{ '/api/binds' | relative_url }}) - Underlying network I/O
+- [Memory API]({{ '/api/memory' | relative_url }}) - Buffer management
+- [Threading API]({{ '/api/threading' | relative_url }}) - Multi-threaded servers
+- [Examples]({{ '/examples' | relative_url }}) - Complete HTTP server examples (coming soon)

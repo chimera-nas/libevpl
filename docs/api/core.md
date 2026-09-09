@@ -165,7 +165,7 @@ concatenation remains a valid single page).
 
 ## See Also
 
-- [Configuration API](/api/config) - Global and thread-local configuration
-- [Binds & Connections API](/api/binds) - Creating and managing connections
-- [Threading API](/api/threading) - Thread pools and thread management
-- [Architecture Guide](/architecture) - Understanding event loops and protocols
+- [Configuration API]({{ '/api/config' | relative_url }}) - Global and thread-local configuration
+- [Binds & Connections API]({{ '/api/binds' | relative_url }}) - Creating and managing connections
+- [Threading API]({{ '/api/threading' | relative_url }}) - Thread pools and thread management
+- [Architecture Guide]({{ '/architecture' | relative_url }}) - Understanding event loops and protocols

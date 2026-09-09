@@ -867,7 +867,7 @@ Set the wait timeout in milliseconds when no events are available. A value of -1
 
 ## See Also
 
-- [Core API](/api/core) - Initialization and event loops
-- [Architecture](/architecture) - Understanding hybrid event/polling
-- [Performance](/performance) - Benchmark results
-- [Programming Guide](/programming_guide) - Performance tuning
+- [Core API]({{ '/api/core' | relative_url }}) - Initialization and event loops
+- [Architecture]({{ '/architecture' | relative_url }}) - Understanding hybrid event/polling
+- [Performance]({{ '/performance' | relative_url }}) - Benchmark results
+- [Programming Guide]({{ '/programming_guide' | relative_url }}) - Performance tuning

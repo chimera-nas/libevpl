@@ -10,7 +10,7 @@ permalink: /api/deferrals
 
 Provides a mechanism to schedule callbacks for execution at the end of the current event loop iteration, before it might block waiting for more activity.
 
-All operations on a deferral must be performed by the thread that owns the associated evpl context. A deferral is a mechanism for a thread to schedule work for itself to do later. For cross-thread communication, use [doorbells](/api/doorbells) instead.
+All operations on a deferral must be performed by the thread that owns the associated evpl context. A deferral is a mechanism for a thread to schedule work for itself to do later. For cross-thread communication, use [doorbells]({{ '/api/doorbells' | relative_url }}) instead.
 
 ## Overview
 
@@ -85,7 +85,7 @@ Schedule a deferral to fire at the end of the current event loop iteration.
 
 ## See Also
 
-- [Timers API](/api/timers) - Scheduled callbacks
-- [Doorbells API](/api/doorbells) - Cross-thread communication
-- [Core API](/api/core) - Event loop management
-- [Architecture](/architecture) - Understanding event loops
+- [Timers API]({{ '/api/timers' | relative_url }}) - Scheduled callbacks
+- [Doorbells API]({{ '/api/doorbells' | relative_url }}) - Cross-thread communication
+- [Core API]({{ '/api/core' | relative_url }}) - Event loop management
+- [Architecture]({{ '/architecture' | relative_url }}) - Understanding event loops

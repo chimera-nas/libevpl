@@ -260,5 +260,5 @@ When enabled, iovec operations are validated and will abort with a descriptive e
 
 ## See Also
 
-- [Binds & Connections API](/api/binds) - Using iovecs with send/receive
-- [Architecture](/architecture) - Memory management overview
+- [Binds & Connections API]({{ '/api/binds' | relative_url }}) - Using iovecs with send/receive
+- [Architecture]({{ '/architecture' | relative_url }}) - Memory management overview

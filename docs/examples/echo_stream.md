@@ -18,6 +18,6 @@ This example demonstrates a simple echo server and client using stream semantics
 
 ## See Also
 
-- [Event Loop API](/api/core) - Event loop management
-- [Binds API](/api/bind) - Network connections and I/O
-- [Echo Server (Message)](/examples/echo-message) - Message-based alternative
+- [Event Loop API]({{ '/api/core' | relative_url }}) - Event loop management
+- [Binds API]({{ '/api/binds' | relative_url }}) - Network connections and I/O
+- [Echo Server (Message)]({{ '/examples/echo-message' | relative_url }}) - Message-based alternative
