@@ -111,4 +111,3 @@ Get the file descriptor associated with a doorbell (for advanced use cases).
 - [Deferrals API]({{ '/api/deferrals' | relative_url }}) - Same-thread deferred execution
 - [Core API]({{ '/api/core' | relative_url }}) - Event loop management
 - [Architecture]({{ '/architecture' | relative_url }}) - Threading model
-- [Programming Guide]({{ '/programming_guide' | relative_url }}) - Multi-threading patterns
