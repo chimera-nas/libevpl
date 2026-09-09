@@ -97,6 +97,6 @@ Check if a bind supports RDMA operations.
 
 ## See Also
 
-- [Binds & Connections API](/api/binds) - RDMA connection setup
-- [Memory API](/api/memory) - Buffer management
-- [Protocols](/api/protocols) - Available protocols including TCP-RDMA
+- [Binds & Connections API]({{ '/api/binds' | relative_url }}) - RDMA connection setup
+- [Memory API]({{ '/api/memory' | relative_url }}) - Buffer management
+- [Protocols]({{ '/api/protocols' | relative_url }}) - Available protocols including TCP-RDMA

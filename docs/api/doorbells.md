@@ -107,8 +107,8 @@ Get the file descriptor associated with a doorbell (for advanced use cases).
 
 ## See Also
 
-- [Threading API](/api/threading) - Thread pools and worker threads
-- [Deferrals API](/api/deferrals) - Same-thread deferred execution
-- [Core API](/api/core) - Event loop management
-- [Architecture](/architecture) - Threading model
-- [Programming Guide](/programming_guide) - Multi-threading patterns
+- [Threading API]({{ '/api/threading' | relative_url }}) - Thread pools and worker threads
+- [Deferrals API]({{ '/api/deferrals' | relative_url }}) - Same-thread deferred execution
+- [Core API]({{ '/api/core' | relative_url }}) - Event loop management
+- [Architecture]({{ '/architecture' | relative_url }}) - Threading model
+- [Programming Guide]({{ '/programming_guide' | relative_url }}) - Multi-threading patterns

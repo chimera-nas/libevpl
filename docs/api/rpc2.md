@@ -230,10 +230,10 @@ Destroy an RPC2 server and free resources.
 
 ## See Also
 
-- [Threading API](/api/threading) - Multi-threaded RPC servers
-- [RDMA API](/api/rdma) - RPC-over-RDMA optimization
-- [Memory API](/api/memory) - Zero-copy buffer management
-- [Architecture](/architecture) - Understanding RPC protocol module
+- [Threading API]({{ '/api/threading' | relative_url }}) - Multi-threaded RPC servers
+- [RDMA API]({{ '/api/rdma' | relative_url }}) - RPC-over-RDMA optimization
+- [Memory API]({{ '/api/memory' | relative_url }}) - Zero-copy buffer management
+- [Architecture]({{ '/architecture' | relative_url }}) - Understanding RPC protocol module
 - **RFC 5531** - RPC: Remote Procedure Call Protocol Specification Version 2
 - **RFC 5666** - Remote Direct Memory Access Transport for RPC
 - **RFC 1813** - NFS Version 3 Protocol Specification

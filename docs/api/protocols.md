@@ -45,7 +45,7 @@ Despite being implemented over TCP (a stream protocol), TCP-RDMA presents a data
 - Debugging RDMA protocols with standard network tools
 - Cross-platform RDMA application support
 
-See the [RDMA API documentation](/api/rdma) for details on using TCP-RDMA.
+See the [RDMA API documentation]({{ '/api/rdma' | relative_url }}) for details on using TCP-RDMA.
 
 ## Frameworks
 
@@ -81,7 +81,7 @@ Common protocol name strings:
 
 ## See Also
 
-- [Core API](/api/core) - Event loop and initialization
-- [Binds & Connections API](/api/binds) - Using protocols with connections
-- [RDMA API](/api/rdma) - RDMA and TCP-RDMA operations
-- [Configuration API](/api/config) - Protocol-specific settings
+- [Core API]({{ '/api/core' | relative_url }}) - Event loop and initialization
+- [Binds & Connections API]({{ '/api/binds' | relative_url }}) - Using protocols with connections
+- [RDMA API]({{ '/api/rdma' | relative_url }}) - RDMA and TCP-RDMA operations
+- [Configuration API]({{ '/api/config' | relative_url }}) - Protocol-specific settings

@@ -18,6 +18,6 @@ This example demonstrates an echo server using message semantics with a segmenta
 
 ## See Also
 
-- [Event Loop API](/api/core) - Event loop management
-- [Binds API](/api/bind) - Network connections and I/O
-- [Echo Server (Stream)](/examples/echo-stream) - Stream-based alternative
+- [Event Loop API]({{ '/api/core' | relative_url }}) - Event loop management
+- [Binds API]({{ '/api/binds' | relative_url }}) - Network connections and I/O
+- [Echo Server (Stream)]({{ '/examples/echo-stream' | relative_url }}) - Stream-based alternative

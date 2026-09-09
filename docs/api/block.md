@@ -372,7 +372,7 @@ Multiple outstanding requests improve IOPS to a point. Issue multiple requests i
 
 ## See Also
 
-- [Memory API](/api/memory) - Buffer management for block I/O
-- [Configuration API](/api/config) - Performance tuning
-- [Core API](/api/core) - Event loop integration
-- [Architecture](/architecture) - Understanding async I/O
+- [Memory API]({{ '/api/memory' | relative_url }}) - Buffer management for block I/O
+- [Configuration API]({{ '/api/config' | relative_url }}) - Performance tuning
+- [Core API]({{ '/api/core' | relative_url }}) - Event loop integration
+- [Architecture]({{ '/architecture' | relative_url }}) - Understanding async I/O

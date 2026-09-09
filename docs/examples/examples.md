@@ -12,8 +12,8 @@ Complete, working examples that demonstrate various features of libevpl. All exa
 
 ## Available Examples
 
-- **[Echo Server (Stream)](/examples/echo-stream)** - Simple echo server using stream semantics
-- **[Echo Server (Message)](/examples/echo-message)** - Echo server with message framing and segmentation
+- **[Echo Server (Stream)]({{ '/examples/echo-stream' | relative_url }})** - Simple echo server using stream semantics
+- **[Echo Server (Message)]({{ '/examples/echo-message' | relative_url }})** - Echo server with message framing and segmentation
 
 ## Building and Running
 

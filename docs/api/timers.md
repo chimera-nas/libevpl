@@ -118,7 +118,7 @@ Remove a timer from the event loop.
 
 ## See Also
 
-- [Deferrals API](/api/deferrals) - Same-iteration task scheduling
-- [Doorbells API](/api/doorbells) - Cross-thread notifications
-- [Core API](/api/core) - Event loop management
-- [Architecture](/architecture) - Understanding event loops
+- [Deferrals API]({{ '/api/deferrals' | relative_url }}) - Same-iteration task scheduling
+- [Doorbells API]({{ '/api/doorbells' | relative_url }}) - Cross-thread notifications
+- [Core API]({{ '/api/core' | relative_url }}) - Event loop management
+- [Architecture]({{ '/architecture' | relative_url }}) - Understanding event loops
