@@ -114,27 +114,28 @@ struct evpl_pread_device {
 struct evpl_pread_queue {
     /* First member: the core hands back a struct evpl_block_queue *, and the
      * queue callbacks recover this from it. */
-    struct evpl_block_queue    base;
+    struct evpl_block_queue      base;
 
-    struct evpl_pread_device  *device;
-    struct evpl_doorbell       doorbell;
+    struct evpl_pread_device    *device;
+    struct evpl_doorbell         doorbell;
+    struct evpl_doorbell_sender *sender;
 
     /* Completion queue.  Appended by the device thread, drained by the
      * owning evpl thread out of the doorbell callback. */
-    evpl_mutex_t               lock;
-    struct evpl_pread_request *completed;
-    struct evpl_pread_request *completed_tail;
+    evpl_mutex_t                 lock;
+    struct evpl_pread_request   *completed;
+    struct evpl_pread_request   *completed_tail;
 
     /* Set while a doorbell ring is outstanding, so a run of completions
      * costs one wakeup rather than one per request.  Guarded by lock.
      */
-    int                        notified;
+    int                          notified;
 
     /* Owning-thread-only state: a freelist of retired requests, and the
      * number of requests that have been submitted but whose callbacks have
      * not yet run. */
-    struct evpl_pread_request *free_requests;
-    uint64_t                   outstanding;
+    struct evpl_pread_request   *free_requests;
+    uint64_t                     outstanding;
 };
 
 static inline struct evpl_pread_queue *
@@ -293,7 +294,7 @@ evpl_pread_post(struct evpl_pread_request *req)
     evpl_mutex_unlock(&pq->lock);
 
     if (ring) {
-        evpl_ring_doorbell(&pq->doorbell);
+        (void) evpl_doorbell_signal(pq->sender);
     }
 } /* evpl_pread_post */
 
@@ -531,6 +532,7 @@ evpl_pread_close_queue(
                         (unsigned long) pq->outstanding);
 
     evpl_remove_doorbell(evpl, &pq->doorbell);
+    evpl_doorbell_sender_release(pq->sender);
 
     while ((req = pq->free_requests)) {
         pq->free_requests = req->next;
@@ -556,6 +558,7 @@ evpl_pread_open_queue(
     evpl_mutex_init(&pq->lock, NULL);
 
     evpl_add_doorbell(evpl, &pq->doorbell, evpl_pread_doorbell);
+    pq->sender = evpl_doorbell_sender(&pq->doorbell);
 
     pq->base.private_data = pq;
     pq->base.close_queue  = evpl_pread_close_queue;

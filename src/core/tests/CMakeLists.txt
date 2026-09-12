@@ -25,6 +25,7 @@ unit_test_all_mechs(core timer_oneshot timer_oneshot.c)
 # load-bearing: a regression that strands an entry in the active list stops
 # delivery rather than crashing, which shows up here as a hang.
 unit_test_all_mechs(core doorbell_remove doorbell_remove.c)
+unit_test_all_mechs(core doorbell_sender doorbell_sender.c)
 
 foreach(mech ${EVPL_MECHANISMS})
     set_tests_properties(libevpl/core/doorbell_remove_${mech}

@@ -46,3 +46,22 @@ evpl_doorbell_fd(
 void
 evpl_ring_doorbell(
     struct evpl_doorbell *doorbell);
+
+/* Obtain an owned sending reference on the receiver's loop thread before
+ * sharing it. Signal/retain/release are thread-safe while holding a reference.
+ * Signals coalesce; success is not an acknowledgement that work was consumed.
+ * Receiver removal (or loop destruction) revokes every sender: signal returns
+ * ECANCELED thereafter. A queued notification may be dropped by removal.
+ * Sender lifetime does not extend the lifetime of application work queues.
+ * Legacy ring(receiver) still requires caller synchronization against removal.
+ */
+struct evpl_doorbell_sender;
+struct evpl_doorbell_sender * evpl_doorbell_sender(
+    struct evpl_doorbell *receiver);
+void evpl_doorbell_sender_retain(
+    struct evpl_doorbell_sender *sender);
+void evpl_doorbell_sender_release(
+    struct evpl_doorbell_sender *sender);
+/* Returns zero, ECANCELED for a closed receiver, or an error code. */
+int evpl_doorbell_signal(
+    struct evpl_doorbell_sender *sender);

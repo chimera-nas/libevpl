@@ -28,8 +28,6 @@ evpl_listener_accept(
     struct evpl_listener         *listener = private_data;
     struct evpl_listener_binding *binding;
     struct evpl_connect_request  *request;
-    ssize_t                       rc;
-    int                           err;
 
     evpl_mutex_lock(&EvplListenerLock);
 
@@ -62,13 +60,7 @@ evpl_listener_accept(
     DL_APPEND(binding->evpl->connect_requests, request);
     evpl_mutex_unlock(&binding->evpl->lock);
 
-    rc = evpl_wakeup_signal(&binding->evpl->run_wakeup);
-
-    err = errno;
-
-    evpl_core_abort_if(rc != sizeof(uint64_t),
-                       "evpl_listener_accept: wakeup signal (fd %d) failed: rc=%zd errno=%d (%s)",
-                       binding->evpl->run_wakeup.wfd, rc, err, strerror(err));
+    evpl_ring_doorbell(&binding->evpl->run_doorbell);
 
     evpl_mutex_unlock(&EvplListenerLock);
 } /* evpl_listener_accept */
