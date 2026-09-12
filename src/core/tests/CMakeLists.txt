@@ -140,3 +140,9 @@ else()
     message(STATUS
         "Core conformance test disabled (needs quint and python3 on PATH)")
 endif()
+
+# Reply using the borrowed source address after the receive callback returns.
+unit_test_all_mechs(core udp_reply_address udp_reply_address.c)
+foreach(mech ${EVPL_MECHANISMS})
+    set_tests_properties(libevpl/core/udp_reply_address_${mech} PROPERTIES TIMEOUT 10)
+endforeach()

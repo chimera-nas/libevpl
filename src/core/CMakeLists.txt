@@ -103,6 +103,15 @@ add_subdirectory(thread)
 
 add_library(evpl SHARED ${CORE_SRC})
 
+# Both options change the public iovec layout or inline reference handling.
+# Consumers outside this directory must use the same representation as evpl.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(evpl PUBLIC EVPL_IOVEC_TRACE=1)
+endif()
+if(EVPL_IOVEC_PROFILE)
+    target_compile_definitions(evpl PUBLIC EVPL_IOVEC_PROFILE=1)
+endif()
+
 # Base dependencies present on every platform.
 set(EVPL_LIBDEPS ${BACKEND_LIBDEPS} prometheus-c)
 

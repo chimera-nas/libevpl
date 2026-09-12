@@ -45,7 +45,10 @@ evpl_sendtoep(
     const void           *buffer,
     unsigned int          length)
 {
-    evpl_sendto(evpl, bind, evpl_endpoint_resolve(endpoint), buffer, length);
+    struct evpl_address *address = evpl_endpoint_resolve(endpoint);
+
+    evpl_sendto(evpl, bind, address, buffer, length);
+    evpl_address_release(address);
 } /* evpl_sendto */
 
 SYMBOL_EXPORT void
@@ -100,11 +103,17 @@ evpl_sendtov(
 
     dgram = evpl_dgram_ring_add(&bind->dgram_send);
 
-    dgram->dgram_type   = EVPL_DGRAM_TYPE_SEND;
-    dgram->bind         = bind;
-    dgram->niov         = i;
-    dgram->length       = length;
-    dgram->addr         = address;
+    dgram->dgram_type = EVPL_DGRAM_TYPE_SEND;
+    dgram->bind       = bind;
+    dgram->niov       = i;
+    dgram->length     = length;
+    dgram->addr       = address;
+    /* Datagram backends release the destination after sending (or closing).
+     * A received peer address is borrowed only for the notify callback, so
+     * the queued send needs its own reference. Connected binds own theirs. */
+    if (!bind->protocol->connected) {
+        evpl_address_incref(address);
+    }
     dgram->callback     = NULL;
     dgram->private_data = NULL;
 
@@ -126,5 +135,8 @@ evpl_sendtoepv(
     int                   length,
     unsigned int          flags)
 {
-    evpl_sendtov(evpl, bind, evpl_endpoint_resolve(endpoint), iovecs, nbufvecs, length, flags);
+    struct evpl_address *address = evpl_endpoint_resolve(endpoint);
+
+    evpl_sendtov(evpl, bind, address, iovecs, nbufvecs, length, flags);
+    evpl_address_release(address);
 } /* evpl_sendtoepv */
