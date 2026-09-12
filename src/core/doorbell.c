@@ -11,6 +11,30 @@
 _Static_assert(sizeof(struct evpl_doorbell) <= 8 * sizeof(uint64_t),
                "doorbell exceeds public storage");
 
+#ifdef _WIN32
+static void
+evpl_doorbell_complete(
+    struct evpl              *evpl,
+    struct evpl_iocp_request *request,
+    DWORD                     bytes,
+    DWORD                     error)
+{
+    struct evpl_doorbell_sender *sender = container_of(request, struct evpl_doorbell_sender, notification);
+    struct evpl_doorbell        *receiver;
+    evpl_doorbell_callback_t     callback;
+
+    (void) bytes; (void) error;
+    evpl_mutex_lock(&sender->lock);
+    sender->queued = 0;
+    receiver       = sender->receiver;
+    callback       = sender->callback;
+    evpl_mutex_unlock(&sender->lock);
+    if (receiver) {
+        callback(evpl, receiver);
+    }
+    evpl_doorbell_sender_release(sender);
+} /* evpl_doorbell_complete */
+#else  /* ifdef _WIN32 */
 static void
 evpl_event_user_callback(
     struct evpl       *evpl,
@@ -26,6 +50,8 @@ evpl_event_user_callback(
      * The event dispatcher supports self-removal; do not touch either again. */
     sender->callback(evpl, sender->receiver);
 } /* evpl_event_user_callback */
+
+#endif /* ifdef _WIN32 */
 
 SYMBOL_EXPORT void
 evpl_doorbell_sender_retain(struct evpl_doorbell_sender *sender)
@@ -60,7 +86,20 @@ evpl_doorbell_signal(struct evpl_doorbell_sender *sender)
     if (!sender->owner) {
         result = ECANCELED;
     } else {
+#ifdef _WIN32
+        result = 0;
+        if (!sender->queued) {
+            sender->queued = 1;
+            evpl_doorbell_sender_retain(sender);
+            result = evpl_iocp_post(sender->owner, &sender->notification);
+            if (result) {
+                sender->queued = 0;
+                evpl_doorbell_sender_release(sender);
+            }
+        }
+#else  /* ifdef _WIN32 */
         result = evpl_wakeup_signal(&sender->wakeup) == sizeof(uint64_t) ? 0 : errno;
+#endif /* ifdef _WIN32 */
     }
     evpl_mutex_unlock(&sender->lock);
     return result;
@@ -80,11 +119,15 @@ evpl_add_doorbell(
     sender->receiver = receiver;
     sender->callback = callback;
     receiver->sender = sender;
+#ifdef _WIN32
+    sender->notification.callback = evpl_doorbell_complete;
+#else  /* ifdef _WIN32 */
     evpl_core_abort_if(evpl_wakeup_open(&sender->wakeup) < 0,
                        "evpl_add_doorbell: wakeup open failed");
     evpl_add_event(evpl, &sender->event, sender->wakeup.rfd,
                    evpl_event_user_callback, NULL, NULL);
     evpl_event_read_interest(evpl, &sender->event);
+#endif /* ifdef _WIN32 */
     DL_APPEND(evpl->doorbells, sender);
 } /* evpl_add_doorbell */
 
@@ -99,8 +142,10 @@ evpl_remove_doorbell(
     evpl_mutex_lock(&sender->lock);
     sender->owner    = NULL;
     sender->receiver = NULL;
+#ifndef _WIN32
     evpl_remove_event(evpl, &sender->event);
     evpl_wakeup_close(&sender->wakeup);
+#endif /* ifndef _WIN32 */
     evpl_mutex_unlock(&sender->lock);
     DL_DELETE(evpl->doorbells, sender);
     receiver->sender = NULL;
@@ -110,7 +155,13 @@ evpl_remove_doorbell(
 SYMBOL_EXPORT int
 evpl_doorbell_fd(struct evpl_doorbell *receiver)
 {
+#ifdef _WIN32
+    (void) receiver;
+    errno = ENOTSUP;
+    return -1;
+#else  /* ifdef _WIN32 */
     return receiver->sender->event.fd;
+#endif /* ifdef _WIN32 */
 } /* evpl_doorbell_fd */
 
 SYMBOL_EXPORT void

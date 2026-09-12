@@ -22,6 +22,9 @@ struct evpl_core;
 struct evpl_event;
 
 struct evpl_core_ops {
+    /* Dispatch collected completions after post_wait, on the loop thread. */
+    void        (*dispatch)(
+        struct evpl_core *);
     const char *name;
     int         (*init)(
         struct evpl_core *evc,
@@ -51,9 +54,16 @@ struct evpl_core_ops {
 #include "core/select.h"
 #endif /* ifdef EVPL_HAVE_SELECT */
 
+#ifdef EVPL_HAVE_IOCP
+#include "core/iocp.h"
+#endif // ifdef EVPL_HAVE_IOCP
+
 struct evpl_core {
     const struct evpl_core_ops *ops;
     union {
+#ifdef EVPL_HAVE_IOCP
+        struct evpl_core_iocp   iocp;
+#endif // ifdef EVPL_HAVE_IOCP
 #ifdef EVPL_HAVE_EPOLL
         struct evpl_core_epoll  epoll;
 #endif /* ifdef EVPL_HAVE_EPOLL */

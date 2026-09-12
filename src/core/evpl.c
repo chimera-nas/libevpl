@@ -1,22 +1,25 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE 1
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <fcntl.h>
 #include <errno.h>
 #include "evpl/evpl_platform.h"
 #include <sys/types.h>
-#include <sys/time.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+
+
+
+
+
 #include <utlist.h>
 #include <signal.h>
 
@@ -141,6 +144,10 @@ evpl_check_message_size(struct evpl_global_config *config)
 static void
 evpl_shared_init(struct evpl_global_config *config)
 {
+#ifdef _WIN32
+    WSADATA wsa;
+    evpl_core_abort_if(WSAStartup(MAKEWORD(2, 2), &wsa), "WSAStartup failed");
+#endif /* ifdef _WIN32 */
     evpl_shared = evpl_zalloc(sizeof(*evpl_shared));
 
     evpl_mutex_init(&evpl_shared->lock, NULL);
@@ -175,7 +182,9 @@ evpl_shared_init(struct evpl_global_config *config)
         }
     }
 
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif /* ifndef _WIN32 */
 #ifdef EVPL_IOVEC_PROFILE
     signal(SIGUSR2, evpl_iovec_profile_signal);
 #endif /* EVPL_IOVEC_PROFILE */
@@ -192,7 +201,7 @@ evpl_shared_init(struct evpl_global_config *config)
      * monotonic time. Captured adjacently so the anchor is tight.
      */
     stopwatch_context_init(&evpl_shared->hf_stopwatch);
-    clock_gettime(CLOCK_MONOTONIC, &evpl_shared->hf_base_time);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &evpl_shared->hf_base_time);
     stopwatch_start(&evpl_shared->hf_stopwatch, &evpl_shared->hf_base_sw);
 
     /* Lifted out of the config so the time path reads one cache line rather
@@ -228,6 +237,7 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_shared->allocator = evpl_allocator_create();
 
+#ifndef EVPL_CORE_ONLY
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_SOCKET_UDP,
                        &evpl_socket_udp);
 
@@ -251,6 +261,8 @@ evpl_shared_init(struct evpl_global_config *config)
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
                        &evpl_tcp_rdma_datagram);
 
+#endif /* ifndef EVPL_CORE_ONLY */
+
     /* Needs no kernel facility of any kind, so like the socket protocols it is
      * always present rather than gated on a build option. */
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_INPROC,
@@ -266,10 +278,13 @@ evpl_shared_init(struct evpl_global_config *config)
      * no kernel async facility, so like the socket protocols it is always
      * present rather than gated on a build option -- it is the only block
      * backend on platforms without io_uring or libaio. */
+#ifndef EVPL_CORE_ONLY
     if (config->pread_enabled) {
         evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_PREAD,
                                  &evpl_block_protocol_pread);
     }
+
+#endif /* ifndef EVPL_CORE_ONLY */
 
 #ifdef HAVE_IO_URING
     if (config->io_uring_enabled) {
@@ -551,6 +566,15 @@ evpl_continue(struct evpl *evpl)
             }
         }
 
+        if (evpl->core.ops->dispatch) {
+            if (evpl->loop_hooks.pre_wait) {
+                evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
+            }
+            evpl_core_wait(&evpl->core, 0);
+            if (evpl->loop_hooks.post_wait) {
+                evpl->loop_hooks.post_wait(evpl, evpl->loop_hooks.private_data);
+            }
+        }
         evpl->poll_iterations++;
 
     } else {
@@ -663,6 +687,10 @@ evpl_continue(struct evpl *evpl)
 
         evpl->poll_iterations = 0;
     } /* evpl_continue */
+
+    if (evpl->core.ops->dispatch) {
+        evpl->core.ops->dispatch(&evpl->core);
+    }
 
     for (i = 0; i < evpl->num_active_events;) {
         event = evpl->active_events[i];
@@ -815,7 +843,7 @@ evpl_get_hf_monotonic_time(
 
         ts->tv_nsec = nsec;
     } else {
-        clock_gettime(CLOCK_MONOTONIC, ts);
+        evpl_clock_gettime(CLOCK_MONOTONIC, ts);
     }
 } /* evpl_get_hf_monotonic_time */
 

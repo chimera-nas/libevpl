@@ -2,12 +2,13 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>
@@ -37,6 +38,8 @@ test_evpl_set_core_mech(struct evpl_global_config *config)
         evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_KQUEUE);
     } else if (strcmp(mech, "select") == 0) {
         evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_SELECT);
+    } else if (strcmp(mech, "iocp") == 0) {
+        evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_IOCP);
     } else {
         fprintf(stderr, "EVPL_TEST_CORE_MECH: unknown mechanism '%s'\n", mech);
         exit(1);
@@ -141,7 +144,7 @@ test_address(
 
     if (evpl_protocol_is_inproc(proto)) {
         snprintf(test_path_buf, sizeof(test_path_buf),
-                 TEST_INPROC_PREFIX "%.32s-%d", base, (int) getpid());
+                 TEST_INPROC_PREFIX "%.32s-%d", base, (int) evpl_process_id());
         return test_path_buf;
     }
 
@@ -149,7 +152,7 @@ test_address(
      * outside the filesystem, so there is no directory to place them in. */
     if (address && address[0] == '@') {
         snprintf(test_path_buf, sizeof(test_path_buf), "@evpl-%.32s-%d",
-                 base, (int) getpid());
+                 base, (int) evpl_process_id());
         return test_path_buf;
     }
 
@@ -171,13 +174,13 @@ test_address(
     }
 
     len = snprintf(test_path_buf, sizeof(test_path_buf),
-                   "%s/evpl-%.32s-%d.sock", dir, base, (int) getpid());
+                   "%s/evpl-%.32s-%d.sock", dir, base, (int) evpl_process_id());
 
     /* sun_path is only 108 bytes, so a deep build tree would truncate into a
      * nonsensical path; fall back to /tmp rather than guess. */
     if (len < 0 || (size_t) len >= sizeof(test_path_buf)) {
         snprintf(test_path_buf, sizeof(test_path_buf), "/tmp/evpl-%.32s-%d.sock",
-                 base, (int) getpid());
+                 base, (int) evpl_process_id());
     }
 
     return test_path_buf;

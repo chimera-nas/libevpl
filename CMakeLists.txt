@@ -11,6 +11,17 @@ set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES
 option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 project(libevpl LANGUAGES C)
+option(EVPL_CORE_ONLY "Build only event-loop infrastructure and in-process transport" OFF)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+if(EVPL_CORE_ONLY)
+    add_compile_definitions(EVPL_CORE_ONLY)
+endif()
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+endif()
 
 enable_testing()
 
@@ -55,12 +66,17 @@ message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
 # Keep frame pointers in every build type so that perf and other
 # frame-pointer-based profilers can unwind call stacks (the cost at -O3 is
 # negligible and the unwind reliability is worth it for production profiling).
-add_compile_options(-fno-omit-frame-pointer)
+if(NOT MSVC)
+    add_compile_options(-fno-omit-frame-pointer)
+endif()
 
 set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};/opt/nvidia")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(EVPL_MECH epoll)
+elseif(WIN32)
+    set(EVPL_MECH iocp)
+    set(EVPL_HAVE_IOCP ON)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(EVPL_MECH kqueue)
 
@@ -84,7 +100,7 @@ else()
     message(FATAL_ERROR "Unsupported build platform ${CMAKE_SYSTEM_NAME}")
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT MSVC)
     message(STATUS "Enabling AddressSanitizer")
     add_definitions(-fsanitize=address -fno-omit-frame-pointer
                     -fno-optimize-sibling-calls -fstack-protector-all)
@@ -94,7 +110,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions(-DEVPL_IOVEC_TRACE=1)
 endif()    
 
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
     add_definitions(-O3)
 endif()
 
@@ -241,12 +257,14 @@ endif()
 # linkable stubs in the SDK, so this resolves to a Homebrew openssl@3 (found
 # via the prefixes added above) -- find_package is used rather than a bare
 # -lssl because that formula is keg-only and lives outside the default paths.
+if(NOT EVPL_CORE_ONLY)
 find_package(OpenSSL REQUIRED)
 
 message(STATUS "OpenSSL ${OPENSSL_VERSION}: ${OPENSSL_SSL_LIBRARY}")
 
 set(HAVE_TLS 1)
 add_definitions(-DHAVE_TLS)
+endif()
 
 find_library(NGHTTP2_LIB NAMES nghttp2)
 find_path(NGHTTP2_INCLUDE_DIR NAMES nghttp2/nghttp2.h)
@@ -271,6 +289,10 @@ check_include_file("sys/event.h"  EVPL_HAVE_KQUEUE)
 check_include_file("sys/select.h" EVPL_HAVE_SELECT)
 
 set(EVPL_MECHANISMS)
+if(EVPL_HAVE_IOCP)
+    add_compile_definitions(EVPL_HAVE_IOCP)
+    list(APPEND EVPL_MECHANISMS iocp)
+endif()
 
 if(EVPL_HAVE_EPOLL)
     add_definitions(-DEVPL_HAVE_EPOLL)
@@ -293,8 +315,12 @@ endif()
 
 message(STATUS "Event core mechanisms: ${EVPL_MECHANISMS} (default: ${EVPL_MECH})")
 
-add_definitions(-g -Wall -Werror -Wno-unused-function)
-add_definitions(-fvisibility=hidden)
+if(MSVC)
+    add_compile_options(/W3 /WX)
+else()
+    add_definitions(-g -Wall -Werror -Wno-unused-function)
+    add_definitions(-fvisibility=hidden)
+endif()
 
 # Warnings to waive on xdrzcc-generated sources, which are held to the same
 # -Werror as hand-written code: the emitted code carries helpers a given .x
@@ -306,7 +332,10 @@ add_definitions(-fvisibility=hidden)
 # only raises it if some other diagnostic fires -- so a build can pass with the
 # flag present and still fail the moment anything else warns, which is what
 # happened on macOS.  Offer it only where it exists.
-set(EVPL_XDR_WARNING_FLAGS "-Wno-unused")
+set(EVPL_XDR_WARNING_FLAGS)
+if(NOT MSVC)
+    set(EVPL_XDR_WARNING_FLAGS "-Wno-unused")
+endif()
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     list(APPEND EVPL_XDR_WARNING_FLAGS "-Wno-format-truncation")
@@ -314,6 +343,8 @@ endif()
 
 set(LIBEVPL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
+find_path(UTHASH_INCLUDE_DIR uthash.h REQUIRED)
+include_directories(SYSTEM ${UTHASH_INCLUDE_DIR})
 include_directories(3rdparty)
 include_directories(include)
 
@@ -324,10 +355,14 @@ include_directories(ext/prometheus-c/ext/stopwatch)
 
 add_subdirectory(ext)
 add_subdirectory(src)
-add_subdirectory(docs)
+if(NOT EVPL_CORE_ONLY)
+    add_subdirectory(docs)
+endif()
 add_subdirectory(include)
 
-execute_process(COMMAND ln -sf ${CMAKE_BINARY_DIR}/compile_commands.json ${CMAKE_SOURCE_DIR}/compile_commands.json)
+if(NOT WIN32)
+    execute_process(COMMAND ln -sf ${CMAKE_BINARY_DIR}/compile_commands.json ${CMAKE_SOURCE_DIR}/compile_commands.json)
+endif()
 
 if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(XDRZCC ${XDRZCC} PARENT_SCOPE)

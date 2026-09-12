@@ -44,20 +44,29 @@ if (EVPL_HAVE_SELECT)
     set(CORE_SRC ${CORE_SRC} select.c select.h)
 endif()
 
+if(EVPL_HAVE_IOCP)
+    list(APPEND CORE_SRC iocp.c iocp.h)
+endif()
 set(BACKEND_LIBDEPS)
 
+if(NOT EVPL_CORE_ONLY)
 set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/tcp_rdma.c socket/tcp_rdma.h socket/unix_stream.c socket/unix_stream.h)
 add_subdirectory(socket)
+endif()
 
 # Thread-to-thread transport.  No kernel facility, so unconditional.
 set(CORE_SRC ${CORE_SRC} inproc/inproc.c inproc/inproc.h)
-add_subdirectory(inproc)
+if(NOT EVPL_CORE_ONLY)
+    add_subdirectory(inproc)
+endif()
 
 # Block I/O over plain pread()/pwrite() on a per-device service thread.  Needs
 # no kernel async facility either, so it is the block backend that exists
 # everywhere -- notably macOS, which has nothing io_uring/libaio-shaped.
+if(NOT EVPL_CORE_ONLY)
 set(CORE_SRC ${CORE_SRC} pread/pread_block.c pread/pread.h)
 add_subdirectory(pread)
+endif()
 
 # TLS is available wherever OpenSSL is (HAVE_TLS is set at the top level).  Its
 # kTLS zero-copy path is Linux-only; on other platforms BIO_get_ktls_*() simply
@@ -102,6 +111,12 @@ set(CORE_SRC ${CORE_SRC} thread/thread.c)
 add_subdirectory(thread)
 
 add_library(evpl SHARED ${CORE_SRC})
+target_compile_definitions(evpl PRIVATE EVPL_BUILD)
+if(MSVC)
+    target_compile_options(evpl PUBLIC $<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+    target_compile_definitions(evpl PUBLIC $<$<CONFIG:Debug>:EVPL_IOVEC_TRACE=1>)
+    target_compile_definitions(evpl PRIVATE $<$<CONFIG:Debug>:EVPL_ASSERT=1>)
+endif()
 
 # Both options change the public iovec layout or inline reference handling.
 # Consumers outside this directory must use the same representation as evpl.
@@ -116,7 +131,7 @@ endif()
 set(EVPL_LIBDEPS ${BACKEND_LIBDEPS} prometheus-c)
 
 # libnuma is Linux-only; on macOS numa.c compiles to a stub with no link dep.
-if (NOT APPLE)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(EVPL_LIBDEPS ${EVPL_LIBDEPS} numa)
 endif()
 
@@ -127,9 +142,12 @@ if (HAVE_TLS)
     set(EVPL_LIBDEPS ${EVPL_LIBDEPS} OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
+if(WIN32)
+    list(APPEND EVPL_LIBDEPS ws2_32)
+endif()
 target_link_libraries(evpl ${EVPL_LIBDEPS})
 
-install(TARGETS evpl DESTINATION lib)
+install(TARGETS evpl RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 
 if (NOT DISABLE_TESTS)
     add_subdirectory(tests)

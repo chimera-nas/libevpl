@@ -35,6 +35,8 @@ main(
         evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_KQUEUE);
     } else if (strcmp(name, "select") == 0) {
         evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_SELECT);
+    } else if (strcmp(name, "iocp") == 0) {
+        evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_IOCP);
     } else {
         fprintf(stderr, "unknown core mechanism '%s'\n", name);
         return 1;
