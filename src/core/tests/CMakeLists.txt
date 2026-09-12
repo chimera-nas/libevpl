@@ -12,7 +12,7 @@ unit_test(core init_core_mech init_core_mech.c)
 
 foreach(mech ${EVPL_MECHANISMS})
     add_test(NAME libevpl/core/init_core_mech_${mech}
-             COMMAND ${CMAKE_CURRENT_BINARY_DIR}/core_init_core_mech ${mech})
+             COMMAND $<TARGET_FILE:core_init_core_mech> ${mech})
 endforeach()
 unit_test(core init_auto_no_config init_auto_no_config.c)
 unit_test(core init_with_clean_config init_with_clean_config.c)
@@ -46,6 +46,11 @@ endforeach()
 # Growing an iovec ring with a wrapped waist.  Drives the ring directly rather
 # than through a protocol, since the waist is only advanced by the RDMA CM one.
 unit_test(core iovec_ring_resize iovec_ring_resize.c)
+
+if(EVPL_CORE_ONLY)
+    unit_test_local(core endpoint_inproc endpoint_inproc.c)
+    return()
+endif()
 
 # The public fd-event API against a pipe: latched readiness, quiescence after
 # drain, mark_readable without a kernel edge, and retiring an event from its

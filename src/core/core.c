@@ -15,7 +15,9 @@
  * compiled in as a portable fallback but is never the default when a scalable
  * mechanism is present.
  */
-#if defined(EVPL_HAVE_EPOLL)
+#if defined(EVPL_HAVE_IOCP)
+#define EVPL_CORE_MECH_PLATFORM EVPL_CORE_MECH_IOCP
+#elif defined(EVPL_HAVE_EPOLL)
 #define EVPL_CORE_MECH_PLATFORM EVPL_CORE_MECH_EPOLL
 #elif defined(EVPL_HAVE_KQUEUE)
 #define EVPL_CORE_MECH_PLATFORM EVPL_CORE_MECH_KQUEUE
@@ -33,6 +35,9 @@ evpl_core_ops_lookup(unsigned int mech)
     }
 
     switch (mech) {
+#ifdef EVPL_HAVE_IOCP
+        case EVPL_CORE_MECH_IOCP: return &evpl_core_iocp_ops;
+#endif /* ifdef EVPL_HAVE_IOCP */
 #ifdef EVPL_HAVE_EPOLL
         case EVPL_CORE_MECH_EPOLL:
             return &evpl_core_epoll_ops;
@@ -54,6 +59,7 @@ const char *
 evpl_core_mech_name(unsigned int mech)
 {
     switch (mech) {
+        case EVPL_CORE_MECH_IOCP: return "iocp";
         case EVPL_CORE_MECH_DEFAULT:
             return "default";
         case EVPL_CORE_MECH_EPOLL:

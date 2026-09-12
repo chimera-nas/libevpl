@@ -19,13 +19,13 @@ macro(unit_test module test_name)
     list(GET sources 0 first_source)
 
     if(LIBEVPL_NETNS_TESTING)
-        add_test(NAME libevpl/${module}/${test_name} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
+        add_test(NAME libevpl/${module}/${test_name} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh $<TARGET_FILE:${module}_${test_name}>)
 
         set_tests_properties(libevpl/${module}/${test_name} PROPERTIES
             TIMEOUT 60
             ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source}")
     else()
-        add_test(NAME libevpl/${module}/${test_name} COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
+        add_test(NAME libevpl/${module}/${test_name} COMMAND $<TARGET_FILE:${module}_${test_name}>)
 
         set_tests_properties(libevpl/${module}/${test_name} PROPERTIES
             RESOURCE_LOCK evpl_net
@@ -52,12 +52,12 @@ macro(unit_test_all_mechs module test_name)
         set(_test libevpl/${module}/${test_name}_${mech})
 
         if(LIBEVPL_NETNS_TESTING)
-            add_test(NAME ${_test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
+            add_test(NAME ${_test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh $<TARGET_FILE:${module}_${test_name}>)
 
             set_tests_properties(${_test} PROPERTIES
                 ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source};EVPL_TEST_CORE_MECH=${mech}")
         else()
-            add_test(NAME ${_test} COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
+            add_test(NAME ${_test} COMMAND $<TARGET_FILE:${module}_${test_name}>)
 
             set_tests_properties(${_test} PROPERTIES
                 RESOURCE_LOCK evpl_net
@@ -79,12 +79,12 @@ macro(unit_test_bin_all_mechs module test_name binary_name)
         get_target_property(test_file ${binary_name} TEST_FILE)
 
         if(LIBEVPL_NETNS_TESTING)
-            add_test(NAME ${_test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${TEST_BIN}/${binary_name} ${ARGN})
+            add_test(NAME ${_test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh $<TARGET_FILE:${binary_name}> ${ARGN})
 
             set_tests_properties(${_test} PROPERTIES
                 ENVIRONMENT "TEST_FILE=${test_file};EVPL_TEST_CORE_MECH=${mech}")
         else()
-            add_test(NAME ${_test} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
+            add_test(NAME ${_test} COMMAND $<TARGET_FILE:${binary_name}> ${ARGN})
 
             set_tests_properties(${_test} PROPERTIES
                 RESOURCE_LOCK evpl_net
@@ -96,13 +96,13 @@ endmacro()
 macro(unit_test_bin module test_name binary_name)
 
     if(LIBEVPL_NETNS_TESTING)
-        add_test(NAME libevpl/${module}/${test_name} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh ${TEST_BIN}/${binary_name} ${ARGN})
+        add_test(NAME libevpl/${module}/${test_name} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh $<TARGET_FILE:${binary_name}> ${ARGN})
 
         get_target_property(test_file ${binary_name} TEST_FILE)
         set_tests_properties(libevpl/${module}/${test_name} PROPERTIES
             ENVIRONMENT "TEST_FILE=${test_file}")
     else()
-        add_test(NAME libevpl/${module}/${test_name} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
+        add_test(NAME libevpl/${module}/${test_name} COMMAND $<TARGET_FILE:${binary_name}> ${ARGN})
 
         get_target_property(test_file ${binary_name} TEST_FILE)
         set_tests_properties(libevpl/${module}/${test_name} PROPERTIES
@@ -142,7 +142,7 @@ macro(unit_test_local module test_name)
     foreach(mech ${EVPL_MECHANISMS})
         set(_test libevpl/${module}/${test_name}_${mech})
 
-        add_test(NAME ${_test} COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${module}_${test_name})
+        add_test(NAME ${_test} COMMAND $<TARGET_FILE:${module}_${test_name}>)
 
         set_tests_properties(${_test} PROPERTIES
             ENVIRONMENT "TEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/${first_source};EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR}")
@@ -158,7 +158,7 @@ macro(unit_test_bin_local module test_name binary_name)
 
         get_target_property(test_file ${binary_name} TEST_FILE)
 
-        add_test(NAME ${_test} COMMAND ${TEST_BIN}/${binary_name} ${ARGN})
+        add_test(NAME ${_test} COMMAND $<TARGET_FILE:${binary_name}> ${ARGN})
 
         set_tests_properties(${_test} PROPERTIES
             ENVIRONMENT "TEST_FILE=${test_file};EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR}")
@@ -182,7 +182,7 @@ macro(unit_test_xdr module test_name xdr_file)
     )
 
     set_source_files_properties(
-        ${XDR_C} PROPERTIES COMPILE_OPTIONS -Wno-unused
+        ${XDR_C} PROPERTIES COMPILE_OPTIONS "${EVPL_XDR_WARNING_FLAGS}"
     )
 
     include_directories(${CMAKE_CURRENT_BINARY_DIR})
@@ -193,11 +193,14 @@ endmacro()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-if (NOT DISABLE_TESTS)
+if (NOT DISABLE_TESTS AND NOT EVPL_CORE_ONLY)
     add_subdirectory(tests)
 endif()
 
 add_subdirectory(core)
+if(EVPL_CORE_ONLY)
+    return()
+endif()
 add_subdirectory(http)
 add_subdirectory(rpc2)
 
