@@ -1,15 +1,20 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 #include "evpl/evpl_platform.h"
 #include <string.h>
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif /* ifndef _WIN32 */
 #ifdef __linux__
 #include <linux/memfd.h>
 #endif /* ifdef __linux__ */
-#include <unistd.h>
+
 #include <time.h>
 #include <utlist.h>
 
@@ -45,7 +50,7 @@ extern struct evpl_shared *evpl_shared;
 #error EVPL_SHARED_BUFFER_CACHE_HIGH must be greater than EVPL_SHARED_BUFFER_CACHE_LOW
 #endif /* EVPL_SHARED_BUFFER_CACHE_HIGH <= EVPL_SHARED_BUFFER_CACHE_LOW */
 
-struct evpl_slab {
+struct EVPL_ALIGN(64) evpl_slab {
     void                  *data;
     struct evpl_allocator *allocator;
     uint64_t               refcnt;
@@ -54,7 +59,7 @@ struct evpl_slab {
     struct evpl_buffer    *buffers;
     void                  *framework_private[EVPL_NUM_FRAMEWORK];
     struct evpl_slab      *next;
-} __attribute__((aligned(64)));
+};
 
 static void *
 evpl_allocator_prealloc_thread(
@@ -209,7 +214,9 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
         }
 
         if (slab->hugepages) {
+#ifndef _WIN32
             munmap(slab->data, evpl_shared->config->slab_size);
+#endif /* ifndef _WIN32 */
         } else {
             evpl_free(slab->data);
         }
@@ -348,7 +355,7 @@ evpl_allocator_install_slab(
 
     for (i = 0; i < num_buffers; i++) {
         buffer           = &slab->buffers[i];
-        buffer->data     = slab->data + i * config->buffer_size;
+        buffer->data     = (char *) slab->data + i * config->buffer_size;
         buffer->ref.slab = slab;
         buffer->used     = 0;
         buffer->size     = config->buffer_size;
@@ -510,7 +517,7 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
              */
             if (!did_wait) {
                 did_wait = 1;
-                clock_gettime(CLOCK_MONOTONIC, &wait_start);
+                evpl_clock_gettime(CLOCK_MONOTONIC, &wait_start);
             }
             evpl_cond_wait(&allocator->consumer_cv, &allocator->lock);
             continue;
@@ -533,7 +540,7 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
     }
 
     if (did_wait) {
-        clock_gettime(CLOCK_MONOTONIC, &wait_end);
+        evpl_clock_gettime(CLOCK_MONOTONIC, &wait_end);
         uint64_t ns = (wait_end.tv_sec - wait_start.tv_sec) * 1000000000ULL +
             (wait_end.tv_nsec - wait_start.tv_nsec);
         if (allocator->m_consumer_waits) {

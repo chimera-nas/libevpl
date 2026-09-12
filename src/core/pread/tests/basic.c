@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Round-trip the pread block backend on a single thread: sized correctly,
  * writes land where they were addressed, reads bring back what was written,
@@ -11,7 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <fcntl.h>
 #include <sys/stat.h>
 

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
 /*
@@ -22,7 +23,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
-#include <unistd.h>
+
 
 #ifdef __linux__
 #include <sys/eventfd.h>

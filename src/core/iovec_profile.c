@@ -1,8 +1,10 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
 // SPDX-FileCopyrightText: 2026 Chimera-NAS Project Contributors
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 
 #include <execinfo.h>
 #include "evpl/evpl_platform.h"

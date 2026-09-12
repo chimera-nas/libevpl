@@ -2,12 +2,13 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "evpl/evpl_platform.h"
-#include <sys/uio.h>
-#include <unistd.h>
+
+
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"

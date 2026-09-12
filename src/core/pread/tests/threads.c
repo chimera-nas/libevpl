@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * One device, several evpl threads.
  *
@@ -17,7 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <fcntl.h>
 
 #include "core/test_log.h"
@@ -191,7 +192,7 @@ main(
      * last one rather than for any particular amount of time.  A worker that
      * never completes hangs here and is caught by the ctest timeout. */
     while (__atomic_load_n(&shared.finished, __ATOMIC_ACQUIRE) < NUM_WORKERS) {
-        usleep(1000);
+        evpl_sleep_us(1000);
     }
 
     evpl_threadpool_destroy(pool);

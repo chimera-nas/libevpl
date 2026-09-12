@@ -1,9 +1,11 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <complex.h>
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -350,7 +352,7 @@ static FORCE_INLINE uint32_t
 rpc2_hton32(uint32_t value)
 {
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-    return __builtin_bswap32(value);
+    return evpl_bswap32(value);
 #else  /* if __BYTE_ORDER == __LITTLE_ENDIAN */
     return value;
 #endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
@@ -360,7 +362,7 @@ static FORCE_INLINE uint32_t
 rpc2_ntoh32(uint32_t value)
 {
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-    return __builtin_bswap32(value);
+    return evpl_bswap32(value);
 #else  /* if __BYTE_ORDER == __LITTLE_ENDIAN */
     return value;
 #endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
@@ -1053,7 +1055,7 @@ evpl_rpc2_send_reply(
 
         offset = marshall_length_rdma_msg(&rdma_msg);
 
-        msg_iov[0].data   += reserve - (rpc_len + offset);
+        msg_iov[0].data    = (char *) msg_iov[0].data + reserve - (rpc_len + offset);
         msg_iov[0].length -= reserve - (rpc_len + offset);
         length            -= reserve - (rpc_len + offset);
 
@@ -1068,7 +1070,7 @@ evpl_rpc2_send_reply(
     } else {
         offset = 4;
 
-        msg_iov[0].data   += reserve - (rpc_len + offset);
+        msg_iov[0].data    = (char *) msg_iov[0].data + reserve - (rpc_len + offset);
         msg_iov[0].length -= reserve - (rpc_len + offset);
         length            -= reserve - (rpc_len + offset);
     }
@@ -1102,7 +1104,7 @@ evpl_rpc2_send_reply(
         final_reply_niov   = 1;
         final_reply_length = offset;
 
-        msg_iov[0].data   += offset;
+        msg_iov[0].data    = (char *) msg_iov[0].data + offset;
         msg_iov[0].length -= offset;
 
         evpl_rpc2_iovec_cursor_init(&reply_cursor, msg_iov, msg_niov);
@@ -1859,7 +1861,7 @@ evpl_rpc2_gss_unwrap_privacy(
      * header travels in the clear and can be edited, the seal cannot be
      * without the key. */
     lp = inner->data;
-    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) inner->data + 4, &embedded);
+    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) (char *) inner->data + 4, &embedded);
     if (embedded != seq) {
         evpl_rpc2_debug("rpcsec_gss: privacy seq mismatch embedded=%u cred=%u",
                         embedded, seq);
@@ -1870,7 +1872,7 @@ evpl_rpc2_gss_unwrap_privacy(
      * seq.  Advance the view rather than copying; the buffer reference is
      * unchanged, so releasing this iovec still frees the whole allocation. */
     inner_len     = (uint32_t) plain_len - 4;
-    inner->data   = (uint8_t *) inner->data + 4;
+    inner->data   = (uint8_t *) (char *) inner->data + 4;
     inner->length = inner_len;
 
     /* The received iovecs held the ciphertext and nothing else needs them. */
@@ -1933,7 +1935,7 @@ evpl_rpc2_gss_wrap_reply_integrity(
         return -1;
     }
 
-    p = (uint8_t *) out_iov->data + reserve;
+    p = (uint8_t *) (char *) out_iov->data + reserve;
 
     /* databody length prefix */
     pp = p;
@@ -2056,7 +2058,7 @@ evpl_rpc2_gss_wrap_reply_privacy(
         return -1;
     }
 
-    tok = (uint8_t *) out_iov->data + reserve + 4;
+    tok = (uint8_t *) (char *) out_iov->data + reserve + 4;
 
     evpl_mutex_lock(&evpl_rpc2_gss_lock);
     ctx = evpl_rpc2_gss_ctx_lookup(request->gss_handle);
@@ -2076,7 +2078,7 @@ evpl_rpc2_gss_wrap_reply_privacy(
 
     /* databody_priv opaque: the length prefix, the token already in place,
      * then the XDR pad. */
-    pp = (uint8_t *) out_iov->data + reserve;
+    pp = (uint8_t *) (char *) out_iov->data + reserve;
     if (evpl_rpc2_gss_wr_u32(&pp, pp + 4, (uint32_t) token_len)) {
         evpl_iovec_release(evpl, out_iov);
         return -1;
@@ -2122,9 +2124,9 @@ evpl_rpc2_gss_send_init_res(
                             8, 1, 0, &iov);
     evpl_rpc2_abort_if(niov != 1, "Failed to allocate gss init reply iovec");
 
-    body = (uint8_t *) iov.data + EVPL_RPC2_GSS_REPLY_RESERVE;
+    body = (uint8_t *) (char *) iov.data + EVPL_RPC2_GSS_REPLY_RESERVE;
     p    = body;
-    end  = (uint8_t *) iov.data + iov.length;
+    end  = (uint8_t *) (char *) iov.data + iov.length;
 
     evpl_rpc2_abort_if(
         evpl_rpc2_gss_wr_opaque(&p, end, &ctx->handle, sizeof(ctx->handle)) ||
@@ -2593,7 +2595,7 @@ evpl_rpc2_gss_wrap_call_integrity(
         return -1;
     }
 
-    p  = (uint8_t *) out_iov->data + reserve;
+    p  = (uint8_t *) (char *) out_iov->data + reserve;
     pp = p;
 
     if (evpl_rpc2_gss_wr_u32(&pp, p + 4, db_len)) {
@@ -2696,7 +2698,7 @@ evpl_rpc2_gss_wrap_call_privacy(
         return -1;
     }
 
-    tok = (uint8_t *) out_iov->data + reserve + 4;
+    tok = (uint8_t *) (char *) out_iov->data + reserve + 4;
 
     if (gc->provider->wrap(gc->provider_arg, gc->gss_ctx, pt, pt_len, tok,
                            cap - reserve - 4, &token_len) || token_len == 0) {
@@ -2707,7 +2709,7 @@ evpl_rpc2_gss_wrap_call_privacy(
 
     evpl_iovec_release(evpl, &plain_iov);
 
-    pp = (uint8_t *) out_iov->data + reserve;
+    pp = (uint8_t *) (char *) out_iov->data + reserve;
 
     if (evpl_rpc2_gss_wr_u32(&pp, pp + 4, (uint32_t) token_len)) {
         evpl_iovec_release(evpl, out_iov);
@@ -2841,7 +2843,7 @@ evpl_rpc2_gss_unwrap_reply(
     }
 
     lp = inner->data;
-    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) inner->data + 4, &embedded);
+    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) (char *) inner->data + 4, &embedded);
 
     if (embedded != seq) {
         evpl_rpc2_debug("rpcsec_gss: reply seq %u, expected %u", embedded, seq);
@@ -2850,7 +2852,7 @@ evpl_rpc2_gss_unwrap_reply(
     }
 
     /* Past the echoed seq lie the results themselves. */
-    inner->data   = (uint8_t *) inner->data + 4;
+    inner->data   = (uint8_t *) (char *) inner->data + 4;
     inner->length = inner_len - 4;
 
     ninner  = 1;
@@ -4547,7 +4549,7 @@ evpl_rpc2_call_gss_init(
         return -1;
     }
 
-    p   = (uint8_t *) arg_iov.data + reserve;
+    p   = (uint8_t *) (char *) arg_iov.data + reserve;
     end = p + arg_len;
 
     if (evpl_rpc2_gss_wr_opaque(&p, end, token, token_len)) {

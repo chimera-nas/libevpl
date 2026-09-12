@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#include <unistd.h>
+#include "core/os.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -52,7 +53,7 @@ evpl_global_config_init(void)
      * that no longer exists. */
     config->rpc2_max_message_size = 0;
 
-    config->page_size = sysconf(_SC_PAGESIZE);
+    config->page_size = evpl_page_size();
 
     if (config->page_size == -1) {
         config->page_size = 4096;

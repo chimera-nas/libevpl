@@ -1,3 +1,4 @@
+#include "core/os.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -38,15 +39,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <getopt.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <time.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
+
+
+
+
 
 /* The raw-socket helpers below drive a peer directly, without going through
  * libevpl, so they have to handle the same portability wrinkles it does:
@@ -287,7 +288,7 @@ now_ms(void)
 {
     struct timespec ts;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 } /* now_ms */
 
@@ -454,9 +455,9 @@ put_bytes(
     uint32_t pad = (4 - (n & 3)) & 3;
 
     evpl_test_abort_if(b->len + n + pad > sizeof(b->data), "wire buffer overflow");
-    memcpy(b->data + b->len, src, n);
+    memcpy((char *) b->data + b->len, src, n);
     b->len += n;
-    memset(b->data + b->len, 0, pad);
+    memset((char *) b->data + b->len, 0, pad);
     b->len += pad;
 } /* put_bytes */
 
@@ -1022,7 +1023,7 @@ deliver_fragmented(
         hdr[3] = (uint8_t) this_len;
 
         if (send_all(evpl, hdr, 4) ||
-            send_all(evpl, msg->data + off, this_len)) {
+            send_all(evpl, (char *) msg->data + off, this_len)) {
             return -1;
         }
 

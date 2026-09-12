@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 
 #define EVPL_LOG_NONE  0
@@ -30,7 +31,7 @@ void evpl_error(
     const char *fmt,
     ...);
 
-__attribute__((noreturn))
+EVPL_NORETURN
 void evpl_fatal(
     const char *mod,
     const char *srcfile,
@@ -38,7 +39,7 @@ void evpl_fatal(
     const char *fmt,
     ...);
 
-__attribute__((noreturn))
+EVPL_NORETURN
 void evpl_abort(
     const char *mod,
     const char *srcfile,

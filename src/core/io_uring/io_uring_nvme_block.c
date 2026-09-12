@@ -1,8 +1,11 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 #include <errno.h>
 #include <liburing.h>
 #include <linux/fs.h>
@@ -13,7 +16,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
+
 
 #include "core/io_uring/io_uring.h"
 #include "core/io_uring/io_uring_internal.h"

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Client-side RPCSEC_GSS: establish a context and make a call under it.
  *
@@ -22,7 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <getopt.h>
 
 #include "evpl/evpl.h"

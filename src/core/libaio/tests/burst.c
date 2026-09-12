@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Stage more block writes in one event-loop iteration than the aio ring holds.
  *
@@ -20,7 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <unistd.h>
+
 #include <fcntl.h>
 
 #include "evpl/evpl.h"

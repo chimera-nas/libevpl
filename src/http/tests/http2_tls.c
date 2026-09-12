@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Drives the libevpl HTTP/2 server with libcurl over TLS, with HTTP/2 selected
  * via ALPN ("h2").  The server uses an auto-generated self-signed certificate
@@ -11,7 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include "evpl/evpl_platform.h"
 #include <curl/curl.h>
 

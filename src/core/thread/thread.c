@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include "evpl/evpl_platform.h"
-#include <unistd.h>
+
 #include <errno.h>
 #include <string.h>
 
@@ -12,7 +13,6 @@
 #include "core/evpl_shared.h"
 #include "core/event_fn.h"
 #include "core/macros.h"
-#include "core/wakeup.h"
 #include "core/pthread_util.h"
 
 extern struct evpl_shared *evpl_shared;

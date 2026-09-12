@@ -2,16 +2,17 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdlib.h>
 #include <fcntl.h>
 #include <sys/eventfd.h>
 #include <rdma/rdma_cma.h>
 #include <infiniband/verbs.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <unistd.h>
+
+
+
+
+
 #include <utlist.h>
 
 #include "core/evpl.h"
@@ -851,7 +852,7 @@ evpl_rdmacm_poll_cq(
 
                         if (wc_flags & IBV_WC_GRH) {
                             req->iovec.length -= 40;
-                            req->iovec.data   += 40;
+                            req->iovec.data    = (char *) iovec.data + 40;
                         }
 
                         rdmacm_id->dbg_req_recv++;

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Exercises the libevpl HTTP client against the libevpl HTTP server over plain
  * HTTP/1.1: GET (no body), POST (fixed Content-Length), and a chunked request
@@ -15,7 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include "evpl/evpl_platform.h"
 
 #include "evpl/evpl.h"

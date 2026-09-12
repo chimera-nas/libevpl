@@ -1,14 +1,17 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <unistd.h>
+
 #include <time.h>
 #include <sys/types.h>
 #include "evpl/evpl_platform.h"
@@ -21,7 +24,9 @@
 static inline uint64_t
 evpl_gettid(void)
 {
-#ifdef __APPLE__
+#ifdef _WIN32
+    return GetCurrentThreadId();
+#elif defined(__APPLE__)
     uint64_t tid = 0;
     pthread_threadid_np(NULL, &tid);
     return tid;
@@ -67,11 +72,11 @@ evpl_vlog(
     char            buf[512], *bp = buf;
     uint64_t        pid, tid;
 
-    clock_gettime(CLOCK_REALTIME, &ts);
+    evpl_clock_gettime(CLOCK_REALTIME, &ts);
 
-    gmtime_r(&ts.tv_sec, &tm_info);
+    evpl_gmtime(&ts.tv_sec, &tm_info);
 
-    pid = getpid();
+    pid = evpl_process_id();
 
     tid = evpl_gettid();
 
@@ -157,7 +162,7 @@ evpl_fatal(
     exit(1);
 } /* evpl_fatal */
 
-SYMBOL_EXPORT __attribute__((noreturn)) void
+SYMBOL_EXPORT EVPL_NORETURN void
 evpl_abort(
     const char *mod,
     const char *srcfile,

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Multi-fragment ONC RPC TCP record-mark reassembly test.
  *
@@ -15,13 +16,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <getopt.h>
 #include "evpl/evpl_platform.h"
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
+
+
+
+
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"
@@ -340,7 +341,7 @@ main(
     evpl_test_abort_if(rc != 0, "evpl_native_thread_create: %d", rc);
 
     while (!ctx.ready) {
-        usleep(1000);
+        evpl_sleep_us(1000);
     }
 
     /* Sub-test 1: 3-way fragmented CALL. */
@@ -357,7 +358,7 @@ main(
 
     /* Verify the server actually handled the expected calls. */
     for (i = 0; i < 200 && ctx.received_count < 3; i++) {
-        usleep(5000);
+        evpl_sleep_us(5000);
     }
     evpl_test_abort_if(ctx.received_count != 3,
                        "server processed %d calls, expected 3",

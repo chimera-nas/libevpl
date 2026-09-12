@@ -2,10 +2,11 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
 #include <string.h>
-#include <sys/uio.h>
+
 
 #include "core/evpl.h"
 #include "core/iovec.h"
@@ -361,7 +362,7 @@ evpl_iovec_ring_consume(
             ring->tail = (ring->tail + 1) & ring->mask;
             n++;
         } else {
-            iovec->data   += length;
+            iovec->data    = (char *) iovec->data + length;
             iovec->length -= length;
 
             length = 0;
@@ -394,7 +395,7 @@ evpl_iovec_ring_copyv(
              */
             chunk = left;
             evpl_iovec_clone_segment(&out[niov], iovec, 0, left);
-            iovec->data   += left;
+            iovec->data    = (char *) iovec->data + left;
             iovec->length -= left;
         } else {
             /*
@@ -450,7 +451,7 @@ evpl_iovec_ring_append(
     head = evpl_iovec_ring_head(ring);
 
     if (head && evpl_iovec_get_ref(head) == evpl_iovec_get_ref(append) &&
-        head->data + head->length == append->data) {
+        (char *) head->data + head->length == append->data) {
         /*
          * The head iovec is from the same buffer as the one to be
          * appended and they are contiguous. Extend the head iovec.
@@ -474,7 +475,7 @@ evpl_iovec_ring_append(
         }
     }
 
-    append->data   += length;
+    append->data    = (char *) append->data + length;
     append->length -= length;
 
     ring->length += length;

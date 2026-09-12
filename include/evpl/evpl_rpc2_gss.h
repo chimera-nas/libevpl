@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 /*
  * RPCSEC_GSS provider interface (RFC 2203 / RFC 5403).
@@ -82,7 +83,7 @@ struct evpl_rpc2_gss_provider {
      * return *complete is 1 when the context is ready and 0 when another leg
      * is needed, and *out_token is the token to send (freed by the caller).
      */
-    int  (*init)(
+    int (*init)(
         void       *provider_arg,
         void      **gss_ctx,
         const char *target,
@@ -207,17 +208,17 @@ typedef void (*evpl_rpc2_gss_client_callback_t)(
  * section 5.2 requires, so the program must be one the peer serves.  status is
  * 0 on success; on failure the client is NULL and nothing needs freeing.
  */
-void
+EVPL_RPC2_API void
 evpl_rpc2_gss_client_create(
-    struct evpl                          *evpl,
-    struct evpl_rpc2_program             *program,
-    struct evpl_rpc2_conn                *conn,
-    const struct evpl_rpc2_gss_provider  *provider,
-    void                                 *provider_arg,
-    uint32_t                              service,
-    const char                           *target,
-    evpl_rpc2_gss_client_callback_t       callback,
-    void                                 *private_data);
+    struct evpl                         *evpl,
+    struct evpl_rpc2_program            *program,
+    struct evpl_rpc2_conn               *conn,
+    const struct evpl_rpc2_gss_provider *provider,
+    void                                *provider_arg,
+    uint32_t                             service,
+    const char                          *target,
+    evpl_rpc2_gss_client_callback_t      callback,
+    void                                *private_data);
 
 /*
  * Retire a context.  Sends RPCSEC_GSS_DESTROY so the peer can drop its half
@@ -225,7 +226,7 @@ evpl_rpc2_gss_client_create(
  * expires contexts on its own schedule, so a destroy that never arrives costs
  * the peer a timeout rather than correctness.
  */
-void
+EVPL_RPC2_API void
 evpl_rpc2_gss_client_destroy(
     struct evpl                 *evpl,
     struct evpl_rpc2_gss_client *client);
@@ -238,7 +239,7 @@ evpl_rpc2_gss_client_destroy(
  *
  * The provider vtable and provider_arg must outlive the thread.
  */
-void
+EVPL_RPC2_API void
 evpl_rpc2_set_gss_provider(
     struct evpl_rpc2_thread             *thread,
     const struct evpl_rpc2_gss_provider *provider,

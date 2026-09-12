@@ -256,7 +256,7 @@ evpl_http2_send_data(
         } else {
             evpl_iovec_clone_segment(&part, iovp, 0, left);
             evpl_sendv(evpl, bind, &part, 1, left, EVPL_SEND_FLAG_TAKE_REF);
-            iovp->data                += left;
+            iovp->data                 = (char *) iovp->data + left;
             iovp->length              -= left;
             request->send_ring.length -= left;
             left                       = 0;

@@ -1,18 +1,21 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 
-#include <alloca.h>
-#include <sys/socket.h>
+
+
 #include <sys/types.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <netinet/tcp.h> // For TCP_NODELAY
+
+
+
 #include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
+
 
 #include "core/bind.h"
 #include "core/io_uring/io_uring.h"

@@ -2,12 +2,13 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <errno.h>
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/types.h>
-#include <sys/uio.h>
-#include <unistd.h>
+
+
 
 #include "libaio_internal.h"
 

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_bind.h directly, include evpl/evpl.h instead"
@@ -27,8 +28,8 @@ struct evpl_notify {
             struct evpl_address *addr;
         } recv_msg;
         struct {
-            unsigned long bytes;
-            unsigned long msgs;
+            uint64_t bytes;
+            uint64_t msgs;
         } sent;
     };
 };
@@ -46,7 +47,7 @@ typedef void (*evpl_notify_callback_t)(
     void               *private_data);
 
 /* Transfers iovec ownership only; destination addresses remain borrowed. */
-#define EVPL_SEND_FLAG_TAKE_REF  0x01
+#define EVPL_SEND_FLAG_TAKE_REF 0x01
 
 /*
  * Framing callback for a stream transport: inspect what has been buffered so
@@ -74,32 +75,32 @@ typedef void (*evpl_attach_callback_t)(
     void                   **conn_private_data,
     void                    *private_data);
 
-struct evpl_listener *
+EVPL_API struct evpl_listener *
 evpl_listener_create(
     void);
 
-void
+EVPL_API void
 evpl_listener_destroy(
     struct evpl_listener *listener);
 
-struct evpl_listener_binding *
+EVPL_API struct evpl_listener_binding *
 evpl_listener_attach(
     struct evpl           *evpl,
     struct evpl_listener  *listener,
     evpl_attach_callback_t attach_callback,
     void                  *private_data);
 
-void evpl_listener_detach(
+EVPL_API void evpl_listener_detach(
     struct evpl                  *evpl,
     struct evpl_listener_binding *binding);
 
-int
+EVPL_API int
 evpl_listen(
     struct evpl_listener *listener,
     enum evpl_protocol_id protocol,
     struct evpl_endpoint *endpoint);
 
-struct evpl_bind *
+EVPL_API struct evpl_bind *
 evpl_connect(
     struct evpl            *evpl,
     enum evpl_protocol_id   protocol_id,
@@ -109,7 +110,7 @@ evpl_connect(
     evpl_segment_callback_t segment_callback,
     void                   *private_data);
 
-struct evpl_bind *
+EVPL_API struct evpl_bind *
 evpl_bind(
     struct evpl           *evpl,
     enum evpl_protocol_id  protocol,
@@ -117,17 +118,17 @@ evpl_bind(
     evpl_notify_callback_t callback,
     void                  *private_data);
 
-void evpl_bind_request_send_notifications(
+EVPL_API void evpl_bind_request_send_notifications(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 
-void evpl_send(
+EVPL_API void evpl_send(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     const void       *buffer,
     unsigned int      length);
 
-void evpl_sendv(
+EVPL_API void evpl_sendv(
     struct evpl       *evpl,
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
@@ -135,21 +136,21 @@ void evpl_sendv(
     int                length,
     unsigned int       flags);
 
-void evpl_sendto(
+EVPL_API void evpl_sendto(
     struct evpl         *evpl,
     struct evpl_bind    *bind,
     struct evpl_address *address,
     const void          *buffer,
     unsigned int         length);
 
-void evpl_sendtoep(
+EVPL_API void evpl_sendtoep(
     struct evpl          *evpl,
     struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
     const void           *buffer,
     unsigned int          length);
 
-void evpl_sendtov(
+EVPL_API void evpl_sendtov(
     struct evpl         *evpl,
     struct evpl_bind    *bind,
     struct evpl_address *address,
@@ -158,7 +159,7 @@ void evpl_sendtov(
     int                  length,
     unsigned int         flags);
 
-void evpl_sendtoepv(
+EVPL_API void evpl_sendtoepv(
     struct evpl          *evpl,
     struct evpl_bind     *bind,
     struct evpl_endpoint *endpoint,
@@ -167,34 +168,34 @@ void evpl_sendtoepv(
     int                   length,
     unsigned int          flags);
 
-int evpl_peek(
+EVPL_API int evpl_peek(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     void             *buffer,
     int               length);
 
-int evpl_peekv(
+EVPL_API int evpl_peekv(
     struct evpl       *evpl,
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
     int                maxiovecs,
     int                length);
 
-int evpl_consume(
+EVPL_API int evpl_consume(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     int               length);
 
 #define EVPL_RECV_FLAG_ALL_OR_NONE 0x1
 
-int evpl_recv(
+EVPL_API int evpl_recv(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     void             *buffer,
     int               maxlength,
     unsigned int      flags);
 
-int evpl_recvv(
+EVPL_API int evpl_recvv(
     struct evpl       *evpl,
     struct evpl_bind  *bind,
     struct evpl_iovec *iovecs,
@@ -202,26 +203,26 @@ int evpl_recvv(
     int                maxlength,
     int               *length);
 
-void evpl_close(
+EVPL_API void evpl_close(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 
-void evpl_finish(
+EVPL_API void evpl_finish(
     struct evpl      *evpl,
     struct evpl_bind *bind);
 
 /* Size a buffer passed to evpl_bind_get_local_address() or
- * evpl_bind_get_remote_address() to at least this and no representable
- * address is truncated.  The longest form is an inproc connection,
- * "inproc:" + a 107-byte name + "#" + a 10-digit serial. */
+* evpl_bind_get_remote_address() to at least this and no representable
+* address is truncated.  The longest form is an inproc connection,
+* "inproc:" + a 107-byte name + "#" + a 10-digit serial. */
 #define EVPL_ADDRESS_STRLEN 128
 
-void evpl_bind_get_local_address(
+EVPL_API void evpl_bind_get_local_address(
     struct evpl_bind *bind,
     char             *str,
     int               len);
 
-void evpl_bind_get_remote_address(
+EVPL_API void evpl_bind_get_remote_address(
     struct evpl_bind *bind,
     char             *str,
     int               len);
@@ -229,7 +230,7 @@ void evpl_bind_get_remote_address(
 enum evpl_protocol_id evpl_bind_get_protocol(
     struct evpl_bind *bind);
 
-int evpl_bind_is_rdma(
+EVPL_API int evpl_bind_is_rdma(
     struct evpl_bind *bind);
 
 /* True once the peer's close has been observed on this bind (read-side FIN seen,
@@ -239,5 +240,5 @@ int evpl_bind_is_rdma(
  * its way out (its reservations will be released once the disconnect lands) from
  * one that is still connected, even in the window before the disconnect callback
  * runs. */
-int evpl_bind_is_closing(
+EVPL_API int evpl_bind_is_closing(
     struct evpl_bind *bind);

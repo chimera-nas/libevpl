@@ -1,3 +1,4 @@
+#include "core/os.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -46,7 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
+
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
@@ -1077,7 +1078,7 @@ monotonic_ns(void)
 {
     struct timespec ts;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
 
     return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
 } /* monotonic_ns */
@@ -1332,12 +1333,12 @@ do_listen(
 
     if (evpl_protocol_is_local(ps->proto)) {
         int len = snprintf(name, sizeof(name), "%s/cc-%d-%d-%d.sock",
-                           socket_dir(), (int) getpid(), prog,
+                           socket_dir(), (int) evpl_process_id(), prog,
                            ps->listen_seq++);
 
         if (len < 0 || (size_t) len >= sizeof(name)) {
             snprintf(name, sizeof(name), "/tmp/cc-%d-%d-%d.sock",
-                     (int) getpid(), prog, ps->listen_seq++);
+                     (int) evpl_process_id(), prog, ps->listen_seq++);
         }
 
         ps->endpoint = evpl_endpoint_create_local(name);
@@ -1347,7 +1348,7 @@ do_listen(
          * but the program and sequence numbers are, because a name is only
          * released when its listener is destroyed and a program may listen
          * more than once. */
-        snprintf(name, sizeof(name), "core-conf-%d-%d-%d", (int) getpid(),
+        snprintf(name, sizeof(name), "core-conf-%d-%d-%d", (int) evpl_process_id(),
                  prog, ps->listen_seq++);
 
         ps->endpoint = evpl_endpoint_create_inproc(name);
@@ -1659,7 +1660,7 @@ block_device_open(
     int fd;
 
     snprintf(ps->device_path, sizeof(ps->device_path),
-             "core_conf_block-%d-%d.img", (int) getpid(), prog);
+             "core_conf_block-%d-%d.img", (int) evpl_process_id(), prog);
 
     fd = open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
 
