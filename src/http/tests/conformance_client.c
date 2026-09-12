@@ -1,3 +1,4 @@
+#include "core/os.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -48,8 +49,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <unistd.h>
+
+
 #include <getopt.h>
 #include <errno.h>
 #include "evpl/evpl_platform.h"
@@ -57,10 +58,10 @@
 #include <poll.h>
 #include <time.h>
 #include <sched.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
+
+
+
+
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"
@@ -372,7 +373,7 @@ wb_append(
         wb->data = grown;
     }
 
-    memcpy(wb->data + wb->len, bytes, len);
+    memcpy((char *) wb->data + wb->len, bytes, len);
     wb->len += len;
 } /* wb_append */
 
@@ -909,22 +910,22 @@ deliver(
             half = wb->len / 2;
 
             if (write_all(fd, wb->data, half) == 0) {
-                usleep(SPLIT_DELAY_US);
-                write_all(fd, wb->data + half, wb->len - half);
+                evpl_sleep_us(SPLIT_DELAY_US);
+                write_all(fd, (char *) wb->data + half, wb->len - half);
             }
             break;
         case HDLV_DRIBBLE:
             dribble = wb->len < DRIBBLE_MAX_BYTES ? wb->len : DRIBBLE_MAX_BYTES;
 
             for (i = 0; i < dribble; i++) {
-                if (write_all(fd, wb->data + i, 1) < 0) {
+                if (write_all(fd, (char *) wb->data + i, 1) < 0) {
                     return;
                 }
-                usleep(DRIBBLE_DELAY_US);
+                evpl_sleep_us(DRIBBLE_DELAY_US);
             }
 
             if (dribble < wb->len) {
-                write_all(fd, wb->data + dribble, wb->len - dribble);
+                write_all(fd, (char *) wb->data + dribble, wb->len - dribble);
             }
             break;
         default:
@@ -1175,7 +1176,7 @@ drain_requests(
     g_request_host_count = -1;
     g_requests_seen      = 0;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
     deadline = (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000 +
         CASE_TIMEOUT_MS;
 
@@ -1204,7 +1205,7 @@ drain_requests(
             continue;
         }
 
-        clock_gettime(CLOCK_MONOTONIC, &ts);
+        evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
         n = (int) (deadline -
                    ((int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000));
 
@@ -1284,7 +1285,7 @@ raw_server_function(void *ptr)
          * driver sets case_done; nothing here can, which is what makes the
          * wait a handshake rather than a deadlock. */
         while (!raw->case_done) {
-            usleep(500);
+            evpl_sleep_us(500);
         }
 
         if (fd >= 0) {
@@ -1497,7 +1498,7 @@ now_ms(void)
 {
     struct timespec ts;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
 
     return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 } /* now_ms */

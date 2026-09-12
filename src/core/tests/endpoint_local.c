@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Local (AF_UNIX) endpoint construction, protocol pairing, and address
  * rendering.
@@ -15,8 +16,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <sys/un.h>
+
+
 
 #include "evpl/evpl.h"
 
@@ -122,7 +123,7 @@ main(
     }
 
     snprintf(sockpath, sizeof(sockpath), "%s/evpl-endpoint-local-%d.sock",
-             dir, (int) getpid());
+             dir, (int) evpl_process_id());
 
     /* --- rejected forms --- */
     CHECK(evpl_endpoint_create_local("relative/path") == NULL,
@@ -183,7 +184,7 @@ main(
 
 #ifdef __linux__
     snprintf(abstractname, sizeof(abstractname), "@evpl-endpoint-local-%d",
-             (int) getpid());
+             (int) evpl_process_id());
 
     abstract_ep = evpl_endpoint_create(abstractname, 0);
     CHECK(abstract_ep && evpl_endpoint_is_local(abstract_ep),
@@ -252,10 +253,10 @@ main(
      * reason. */
 #ifdef __linux__
     snprintf(deniedpath, sizeof(deniedpath), "/proc/evpl-denied-%d.sock",
-             (int) getpid());
+             (int) evpl_process_id());
 #else  /* ifdef __linux__ */
     snprintf(deniedpath, sizeof(deniedpath), "/System/evpl-denied-%d.sock",
-             (int) getpid());
+             (int) evpl_process_id());
 #endif /* ifdef __linux__ */
 
     ep_denied = evpl_endpoint_create_local(deniedpath);

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Block backend built on plain pread()/pwrite().
  *
@@ -43,8 +44,8 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/uio.h>
-#include <unistd.h>
+
+
 
 #ifdef __linux__
 #include <linux/fs.h>

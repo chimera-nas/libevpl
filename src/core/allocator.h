@@ -51,7 +51,7 @@ struct evpl_allocator {
     struct prometheus_gauge_instance   *m_total_slabs;
 };
 
-struct evpl_buffer {
+struct EVPL_ALIGN(64) evpl_buffer {
     void                 *data;
     unsigned int          used;
     unsigned int          size;
@@ -59,7 +59,7 @@ struct evpl_buffer {
     struct evpl_iovec_ref ref;
 
     struct evpl_buffer   *next;
-} __attribute__((aligned(64)));
+};
 
 
 struct evpl_allocator *

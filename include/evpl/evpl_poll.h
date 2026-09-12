@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_poll.h directly, include evpl/evpl.h instead"
@@ -22,7 +23,7 @@ typedef void (*evpl_poll_callback_t)(
     struct evpl *evpl,
     void        *private_data);
 
-struct evpl_poll *
+EVPL_API struct evpl_poll *
 evpl_add_poll(
     struct evpl               *evpl,
     evpl_poll_enter_callback_t enter_callback,
@@ -30,14 +31,14 @@ evpl_add_poll(
     evpl_poll_callback_t       callback,
     void                      *private_data);
 
-void
+EVPL_API void
 evpl_remove_poll(
     struct evpl      *evpl,
     struct evpl_poll *poll);
 
 /* Mark loop activity so a poll-mode thread does not fall back to event mode
  * after spin_ns of apparent inactivity (e.g. after servicing a polled ring). */
-void
+EVPL_API void
 evpl_activity(
     struct evpl *evpl);
 
@@ -47,10 +48,10 @@ evpl_activity(
  * by polling -- e.g. a request handed to another thread whose completion this
  * thread reaps from a polled ring -- so the loop never sleeps and misses it.
  */
-void
+EVPL_API void
 evpl_poll_pin(
     struct evpl *evpl);
 
-void
+EVPL_API void
 evpl_poll_unpin(
     struct evpl *evpl);

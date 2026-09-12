@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Drives the libevpl HTTP/2 server with libcurl using h2c prior-knowledge
  * (cleartext HTTP/2, no Upgrade).  The server code is identical to the HTTP/1.x
@@ -11,7 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include "evpl/evpl_platform.h"
 #include <curl/curl.h>
 

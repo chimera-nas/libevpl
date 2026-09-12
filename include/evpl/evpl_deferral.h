@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_deferral.h directly, include evpl/evpl.h instead"
@@ -18,7 +19,7 @@ struct evpl_deferral {
     uint64_t            armed;
 };
 
-void
+EVPL_API void
 evpl_deferral_init(
     struct evpl_deferral *deferral,
     deferral_callback_t   callback,
@@ -32,7 +33,7 @@ evpl_deferral_init(
  * callback is legal and produces another, since the deferral is disarmed
  * before it is called.
  */
-void
+EVPL_API void
 evpl_defer(
     struct evpl          *evpl,
     struct evpl_deferral *deferral);
@@ -47,7 +48,7 @@ evpl_defer(
  * loop holds the pointer until the deferral fires, so tearing the object down
  * without this leaves the callback to run against freed memory.
  */
-void
+EVPL_API void
 evpl_remove_deferral(
     struct evpl          *evpl,
     struct evpl_deferral *deferral);

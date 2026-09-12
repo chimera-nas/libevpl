@@ -10,7 +10,6 @@
 #define EVPL_INTERNAL 1
 #include "event.h"
 #include "doorbell.h"
-#include "wakeup.h"
 #include "evpl/evpl.h"
 
 

@@ -2,16 +2,17 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <time.h>
 #include "evpl/evpl_platform.h"
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
+
+
+
+
+
 #include <utlist.h>
 
 #include "core/macros.h"
@@ -403,7 +404,7 @@ evpl_endpoint_resolve(struct evpl_endpoint *endpoint)
     struct evpl_address *addr, *old;
     struct timespec      now;
 
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &now);
 
     evpl_rwlock_rdlock(&endpoint->lock);
 

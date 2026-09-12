@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_doorbell.h directly, include evpl/evpl.h instead"
@@ -20,7 +21,7 @@ typedef void (*evpl_doorbell_callback_t)(
     struct evpl          *evpl,
     struct evpl_doorbell *doorbell);
 
-void
+EVPL_API void
 evpl_add_doorbell(
     struct evpl             *evpl,
     struct evpl_doorbell    *doorbell,
@@ -34,16 +35,16 @@ evpl_add_doorbell(
  * the caller may free the storage it lives in -- including from inside the
  * doorbell's own callback.
  */
-void
+EVPL_API void
 evpl_remove_doorbell(
     struct evpl          *evpl,
     struct evpl_doorbell *doorbell);
 
-int
+EVPL_API int
 evpl_doorbell_fd(
     struct evpl_doorbell *doorbell);
 
-void
+EVPL_API void
 evpl_ring_doorbell(
     struct evpl_doorbell *doorbell);
 
@@ -56,12 +57,12 @@ evpl_ring_doorbell(
  * Legacy ring(receiver) still requires caller synchronization against removal.
  */
 struct evpl_doorbell_sender;
-struct evpl_doorbell_sender * evpl_doorbell_sender(
+EVPL_API struct evpl_doorbell_sender * evpl_doorbell_sender(
     struct evpl_doorbell *receiver);
-void evpl_doorbell_sender_retain(
+EVPL_API void evpl_doorbell_sender_retain(
     struct evpl_doorbell_sender *sender);
-void evpl_doorbell_sender_release(
+EVPL_API void evpl_doorbell_sender_release(
     struct evpl_doorbell_sender *sender);
 /* Returns zero, ECANCELED for a closed receiver, or an error code. */
-int evpl_doorbell_signal(
+EVPL_API int evpl_doorbell_signal(
     struct evpl_doorbell_sender *sender);

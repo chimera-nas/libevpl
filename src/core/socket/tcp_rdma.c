@@ -2,16 +2,17 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h>
+
+
+
 #include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
+
 #include "evpl/evpl_platform.h"
 
 #include "core/endian_compat.h"
@@ -677,7 +678,7 @@ tcp_rdma_handle_write_request(
                 bind->iovec_recv.tail = (bind->iovec_recv.tail + 1) &
                     bind->iovec_recv.mask;
             } else {
-                src_iov->data   += chunk;
+                src_iov->data    = (char *) src_iov->data + chunk;
                 src_iov->length -= chunk;
             }
             bind->iovec_recv.length -= chunk;

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * evpl_rpc2_conn_{get,set}_next_xid: the caller can observe, and choose, the
  * XID a client connection puts on its next call.
@@ -21,7 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <getopt.h>
 
 #include "evpl/evpl.h"

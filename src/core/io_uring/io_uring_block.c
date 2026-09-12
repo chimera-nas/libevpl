@@ -1,15 +1,18 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 #include <string.h>
 #include <liburing.h>
 #include <sys/eventfd.h>
 #include <sys/fcntl.h>
 #include <sys/mman.h>
 #include <sys/types.h>
-#include <unistd.h>
+
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <linux/fs.h>
@@ -37,13 +40,16 @@ evpl_io_uring_callback(
 
 static void
 evpl_io_uring_read(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    struct evpl_iovec *iov,
-    int niov,
-    uint64_t offset,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    struct evpl_iovec       *iov,
+    int                      niov,
+    uint64_t                 offset,
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_io_uring_device  *dev = queue->private_data;
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
@@ -92,14 +98,17 @@ evpl_io_uring_read(
 
 static void
 evpl_io_uring_write(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
     const struct evpl_iovec *iov,
-    int niov,
-    uint64_t offset,
-    int sync,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    int                      niov,
+    uint64_t                 offset,
+    int                      sync,
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_io_uring_device  *dev = queue->private_data;
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
@@ -159,10 +168,13 @@ evpl_io_uring_write(
 
 static void
 evpl_io_uring_flush(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_io_uring_device  *dev = queue->private_data;
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);

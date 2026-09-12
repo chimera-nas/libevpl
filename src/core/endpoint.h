@@ -2,9 +2,10 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
-#include <sys/time.h>
+
 #include "evpl/evpl_platform.h"
 
 #include "core/address.h"

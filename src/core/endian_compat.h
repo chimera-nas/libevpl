@@ -13,7 +13,22 @@
  * unconditionally.
  */
 
-#ifdef __APPLE__
+#ifdef _WIN32
+#include <stdlib.h>
+#include <stdint.h>
+#define htobe16(x) _byteswap_ushort((uint16_t) (x))
+#define be16toh(x) htobe16(x)
+#define htobe32(x) _byteswap_ulong((uint32_t) (x))
+#define be32toh(x) htobe32(x)
+#define htobe64(x) _byteswap_uint64((uint64_t) (x))
+#define be64toh(x) htobe64(x)
+#define htole16(x) ((uint16_t) (x))
+#define le16toh(x) htole16(x)
+#define htole32(x) ((uint32_t) (x))
+#define le32toh(x) htole32(x)
+#define htole64(x) ((uint64_t) (x))
+#define le64toh(x) htole64(x)
+#elif defined(__APPLE__)
 
 #include <libkern/OSByteOrder.h>
 

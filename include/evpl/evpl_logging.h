@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_logging.h directly, include evpl/evpl.h instead"
@@ -21,11 +22,11 @@ typedef void (*evpl_log_fn)(
 typedef void (*evpl_flush_fn)(
     void);
 
-void evpl_set_log_fn(
+EVPL_API void evpl_set_log_fn(
     evpl_log_fn   log_fn,
     evpl_flush_fn flush_fn);
 
-__attribute__((noreturn)) void
+EVPL_API EVPL_NORETURN void
 evpl_abort(
     const char *mod,
     const char *srcfile,

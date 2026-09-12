@@ -1,13 +1,16 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif // ifndef _GNU_SOURCE
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
 
-#define _GNU_SOURCE
 
 #include <sys/epoll.h>
-#include <sys/socket.h>
+
 #include <mellanox/xlio_extra.h>
 #include <infiniband/verbs.h>
 #include <utlist.h>

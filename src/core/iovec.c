@@ -64,7 +64,7 @@ evpl_iovec_reserve(
 
         iovec = &r_iovec[niovs++];
 
-        iovec->data   = buffer->data + buffer->used + pad;
+        iovec->data   = (char *) buffer->data + buffer->used + pad;
         iovec->length = chunk - pad;
 
         evpl_iovec_take_ref(iovec, &buffer->ref);
@@ -98,7 +98,7 @@ evpl_iovec_commit(
 
         buffer = container_of(evpl_iovec_get_ref(iovec), struct evpl_buffer, ref);
 
-        buffer->used  = (iovec->data + iovec->length) - buffer->data;
+        buffer->used  = ((char *) iovec->data + iovec->length) - (char *) buffer->data;
         buffer->used += evpl_buffer_pad(buffer, alignment);
     }
 
@@ -172,7 +172,7 @@ evpl_iovec_alloc(
 
         iovec = &r_iovec[niovs++];
 
-        iovec->data   = buffer->data + buffer->used + pad;
+        iovec->data   = (char *) buffer->data + buffer->used + pad;
         iovec->length = chunk - pad;
 
         evpl_iovec_take_ref(iovec, &buffer->ref);
@@ -240,7 +240,7 @@ evpl_iovec_alloc_datagram(
 
     buffer = evpl->datagram_buffer;
 
-    r_iovec->data   = buffer->data + buffer->used;
+    r_iovec->data   = (char *) buffer->data + buffer->used;
     r_iovec->length = size;
 
     buffer->used += size;

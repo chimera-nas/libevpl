@@ -2,10 +2,11 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
-#include <unistd.h>
+
 #include <errno.h>
 
 #include "core/epoll.h"

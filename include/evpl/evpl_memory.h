@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_memory.h directly, include evpl/evpl.h instead"
@@ -170,13 +171,13 @@ evpl_iovec_canary_move(
 #endif /* EVPL_IOVEC_TRACE */
 
 #ifdef EVPL_IOVEC_PROFILE
-uint32_t evpl_iovec_profile_capture(
+EVPL_API uint32_t evpl_iovec_profile_capture(
     void);
-void evpl_iovec_profile_ref(
+EVPL_API void evpl_iovec_profile_ref(
     uint32_t site);
-void evpl_iovec_profile_unref(
+EVPL_API void evpl_iovec_profile_unref(
     uint32_t site);
-void evpl_iovec_profile_dump(
+EVPL_API void evpl_iovec_profile_dump(
     const char *reason);
 
 static inline void
@@ -212,11 +213,11 @@ static inline void evpl_iovec_profile_move(
 /* dump is defined (as an exported no-op) in iovec_profile.c for this branch,
  * so it is only declared here -- defining it static inline as well would
  * collide with that definition inside the iovec_profile.c translation unit. */
-void evpl_iovec_profile_dump(
+EVPL_API void evpl_iovec_profile_dump(
     const char *reason);
 #endif /* EVPL_IOVEC_PROFILE */
 
-int evpl_iovec_alloc(
+EVPL_API int evpl_iovec_alloc(
     struct evpl       *evpl,
     unsigned int       length,
     unsigned int       alignment,
@@ -231,18 +232,18 @@ int evpl_iovec_alloc(
  * exactly once with evpl_iovec_release().  Clones of it are non-owning borrows.
  * Do not sub-carve or otherwise share the buffer behind a GLOBAL iovec.
  */
-void evpl_iovec_alloc_global(
+EVPL_API void evpl_iovec_alloc_global(
     struct evpl       *evpl,
     struct evpl_iovec *r_iovec);
 
-int evpl_iovec_reserve(
+EVPL_API int evpl_iovec_reserve(
     struct evpl       *evpl,
     unsigned int       length,
     unsigned int       alignment,
     unsigned int       max_vec,
     struct evpl_iovec *r_iovec);
 
-void evpl_iovec_commit(
+EVPL_API void evpl_iovec_commit(
     struct evpl       *evpl,
     unsigned int       alignment,
     struct evpl_iovec *iovecs,
@@ -440,7 +441,7 @@ evpl_iovec_clone_segment(
         evpl_abort("core", __FILE__, __LINE__, "offset + length is greater than src->length");
     }
 
-    dst->data   = src->data + offset;
+    dst->data   = (char *) src->data + offset;
     dst->length = length;
 } /* evpl_iovec_addref_to */
 
@@ -488,7 +489,7 @@ evpl_iovec_move_segment(
         evpl_abort("core", __FILE__, __LINE__, "offset + length is greater than src->length");
     }
 
-    dst->data   = src->data + offset;
+    dst->data   = (char *) src->data + offset;
     dst->length = length;
 } /* evpl_iovec_move_segment */
 
@@ -551,10 +552,10 @@ evpl_iovec_get_ref(const struct evpl_iovec *iovec)
 #endif // ifdef EVPL_IOVEC_TRACE
 } /* evpl_iovec_get_ref */
 
-uint64_t evpl_get_slab_size(
+EVPL_API uint64_t evpl_get_slab_size(
     void);
 
-void *
+EVPL_API void *
 evpl_slab_alloc(
     void **slab_private);
 

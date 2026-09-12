@@ -2,16 +2,17 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h>
+
+
+
 #include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
+
 
 #include "core/allocator.h"
 #include "core/endpoint.h"

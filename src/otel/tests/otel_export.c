@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * End-to-end transport test: emit a parent + child span through oteltracing-c,
  * ship them with the evpl_otel exporter over h2c to a libevpl HTTP/2 server, and
@@ -16,9 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include "evpl/evpl_platform.h"
-#include <arpa/inet.h>
+
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"

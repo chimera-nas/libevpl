@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Trailer fields in both directions, over the evpl client <-> evpl server
  * harness of http1_client:
@@ -22,7 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include "evpl/evpl_platform.h"
 
 #include "evpl/evpl.h"

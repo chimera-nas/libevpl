@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
 #include <errno.h>
 #include "evpl/evpl_platform.h"
-#include <unistd.h>
+
 
 /*
  * evpl_native_thread_create with bounded retry on EAGAIN.
@@ -28,9 +29,9 @@ evpl_pthread_create(
         void *),
     void                            *arg)
 {
-    useconds_t delay = 1000;
-    int        attempt;
-    int        rc;
+    unsigned int delay = 1000;
+    int          attempt;
+    int          rc;
 
     for (attempt = 0; ; attempt++) {
         rc = evpl_native_thread_create(thread, attr, start_routine, arg);
@@ -39,7 +40,7 @@ evpl_pthread_create(
             return rc;
         }
 
-        usleep(delay);
+        evpl_sleep_us(delay);
 
         if (delay < 100000) {
             delay *= 2;

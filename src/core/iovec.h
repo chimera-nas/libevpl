@@ -40,7 +40,7 @@ evpl_iovec_memcpy(
     unsigned int       length)
 {
     struct evpl_iovec *iovec = iovecs;
-    const void        *ptr   = buffer;
+    const char        *ptr   = buffer;
     unsigned int       left = length, chunk;
 
     while (left) {

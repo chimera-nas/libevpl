@@ -1,11 +1,14 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 #include <string.h>
 #include <stdio.h>
-#include <unistd.h>
+
 #include <linux/vfio.h>
 #include <linux/pci.h>
 #include <sys/eventfd.h>
@@ -161,7 +164,7 @@ evpl_vfio_now_ms(void)
 {
     struct timespec ts;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
 
     return (uint64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 } /* evpl_vfio_now_ms */

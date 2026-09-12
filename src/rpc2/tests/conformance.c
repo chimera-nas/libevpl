@@ -1,3 +1,4 @@
+#include "core/os.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -33,16 +34,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <getopt.h>
 #include <math.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/un.h>
+
+
+
+
+
 #include <stddef.h>
 
 /* The raw-socket helpers below drive a peer directly, without going through
@@ -777,7 +778,7 @@ now_ms(void)
 {
     struct timespec ts;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 } /* now_ms */
 
@@ -1861,9 +1862,9 @@ put_bytes(
     uint32_t pad = (4 - (n & 3)) & 3;
 
     evpl_test_abort_if(b->len + n + pad > sizeof(b->data), "wire buffer overflow");
-    memcpy(b->data + b->len, src, n);
+    memcpy((char *) b->data + b->len, src, n);
     b->len += n;
-    memset(b->data + b->len, 0, pad);
+    memset((char *) b->data + b->len, 0, pad);
     b->len += pad;
 } /* put_bytes */
 
@@ -2436,7 +2437,7 @@ build_args_into(
     build_args(&tmp, target);
     evpl_test_abort_if(b->len + tmp.len > sizeof(b->data),
                        "wire buffer overflow");
-    memcpy(b->data + b->len, tmp.data, tmp.len);
+    memcpy((char *) b->data + b->len, tmp.data, tmp.len);
     b->len += tmp.len;
 } /* build_args_into */
 
@@ -2585,7 +2586,7 @@ gss_exchange_split(
         hdr[3] = (uint8_t) m;
 
         if (send_all(evpl, fd, hdr, 4) ||
-            send_all(evpl, fd, msg->data + off, part[i])) {
+            send_all(evpl, fd, (char *) msg->data + off, part[i])) {
             return ACT_MALFORMED;
         }
         off += part[i];
@@ -4135,7 +4136,7 @@ run_defect_case(
     if (cred.len) {
         evpl_test_abort_if(msg.len + cred.len > sizeof(msg.data),
                            "message buffer overflow");
-        memcpy(msg.data + msg.len, cred.data, cred.len);
+        memcpy((char *) msg.data + msg.len, cred.data, cred.len);
         msg.len += cred.len;
     }
     put32(&msg, 0);               /* verf flavor AUTH_NONE */
@@ -4147,13 +4148,13 @@ run_defect_case(
     if (args.len) {
         evpl_test_abort_if(msg.len + args.len > sizeof(msg.data),
                            "message buffer overflow");
-        memcpy(msg.data + msg.len, args.data, args.len);
+        memcpy((char *) msg.data + msg.len, args.data, args.len);
         msg.len += args.len;
     }
     if (trailing > 0) {
         evpl_test_abort_if(msg.len + trailing > (int) sizeof(msg.data),
                            "message buffer overflow");
-        memset(msg.data + msg.len, 0xa5, trailing);
+        memset((char *) msg.data + msg.len, 0xa5, trailing);
         msg.len += trailing;
     }
 
@@ -4222,7 +4223,7 @@ run_defect_case(
             if (sent + this_len > msg.len) {
                 this_len = msg.len - sent;
             }
-            send_fragment(evpl, fd, msg.data + sent, this_len,
+            send_fragment(evpl, fd, (char *) msg.data + sent, this_len,
                           sent + this_len >= msg.len);
             sent += this_len;
         }

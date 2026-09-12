@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Exercises the configurable HTTP header block limit (http_max_header_size,
  * default 8192) in all four places it is enforced:
@@ -25,12 +26,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include "evpl/evpl_platform.h"
 #include <signal.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+
+
+
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"
@@ -429,7 +430,7 @@ raw_server_function(void *ptr)
     n = write(cfd, buf, off);
     (void) n;
 
-    usleep(200000);
+    evpl_sleep_us(200000);
     close(cfd);
     close(lfd);
 
@@ -456,7 +457,7 @@ test_inbound_client_limit(struct evpl *evpl)
     memset(&rc, 0, sizeof(rc));
 
     evpl_native_thread_create(&raw_thread, NULL, raw_server_function, NULL);
-    usleep(100000); /* let the raw server reach accept() */
+    evpl_sleep_us(100000); /* let the raw server reach accept() */
 
     agent = evpl_http_init(evpl);
 

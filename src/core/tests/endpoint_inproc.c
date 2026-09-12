@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * In-process endpoint construction, protocol pairing, name registration and
  * address rendering.
@@ -20,7 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
+
 
 #include "evpl/evpl.h"
 
@@ -157,7 +158,7 @@ main(
     }
 
     snprintf(sockpath, sizeof(sockpath), "%s/evpl-endpoint-inproc-%d.sock",
-             dir, (int) getpid());
+             dir, (int) evpl_process_id());
 
     /* --- rejected forms --- */
     CHECK(evpl_endpoint_create_inproc(NULL) == NULL, "NULL name rejected");

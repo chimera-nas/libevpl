@@ -2,9 +2,10 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
-#include <netinet/tcp.h> // For TCP_NODELAY
+
 #include <utlist.h>
 
 #include "evpl/evpl.h"
