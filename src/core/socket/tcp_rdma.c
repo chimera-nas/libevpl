@@ -12,7 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #include "core/endian_compat.h"
 #include "core/allocator.h"
@@ -179,11 +179,13 @@ tcp_rdma_pending_ring_resize(struct tcp_rdma_pending_ring *ring)
 static uint64_t
 tcp_rdma_pending_add(
     struct evpl_tcp_rdma_socket *ts,
-    struct evpl_iovec *iov,
-    int niov,
-    int length,
-    void ( *callback )(int status, void *private_data),
-    void *private_data)
+    struct evpl_iovec           *iov,
+    int                          niov,
+    int                          length,
+    void                      ( *callback )(
+        int   status,
+        void *private_data),
+    void                        *private_data)
 {
     struct tcp_rdma_pending_ring *ring = &ts->pending_ring;
     struct tcp_rdma_pending_op   *op;

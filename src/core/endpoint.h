@@ -5,7 +5,7 @@
 #pragma once
 
 #include <sys/time.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #include "core/address.h"
 
@@ -29,7 +29,7 @@ struct evpl_endpoint {
     enum evpl_endpoint_kind kind;
     struct timespec       last_resolved;
     struct evpl_address  *resolved_addr;
-    pthread_rwlock_t      lock;
+    evpl_rwlock_t         lock;
     struct evpl_endpoint *prev;
     struct evpl_endpoint *next;
 };

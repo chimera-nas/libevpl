@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -361,7 +361,7 @@ main(
     int   argc,
     char *argv[])
 {
-    pthread_t                     thr;
+    evpl_native_thread_t          thr;
     struct evpl                  *evpl;
     struct evpl_endpoint         *me;
     struct evpl_listener         *listener;
@@ -413,11 +413,11 @@ main(
     evpl_test_abort_if(evpl_listen(listener, proto, me),
                        "failed to listen");
 
-    pthread_create(&thr, NULL, client_thread, &client_state);
+    evpl_native_thread_create(&thr, NULL, client_thread, &client_state);
 
     evpl_run(evpl);
 
-    pthread_join(thr, NULL);
+    evpl_native_thread_join(thr, NULL);
 
     evpl_listener_detach(evpl, binding);
 

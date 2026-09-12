@@ -17,7 +17,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -103,7 +103,7 @@ server_pump(void *arg)
     /* Publish evpl so the main thread can signal evpl_stop. The
      * store must be visible before ctx->ready, so use a barrier. */
     ctx->evpl = evpl;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     ctx->ready = 1;
 
     /* evpl_run blocks on epoll until evpl_stop writes the eventfd
@@ -308,10 +308,10 @@ main(
     int   argc,
     char *argv[])
 {
-    struct server_ctx ctx = { 0 };
-    pthread_t         pump;
-    int               opt, rc;
-    int               i;
+    struct server_ctx    ctx = { 0 };
+    evpl_native_thread_t pump;
+    int                  opt, rc;
+    int                  i;
 
     test_evpl_config();
 
@@ -336,8 +336,8 @@ main(
         return 0;
     }
 
-    rc = pthread_create(&pump, NULL, server_pump, &ctx);
-    evpl_test_abort_if(rc != 0, "pthread_create: %d", rc);
+    rc = evpl_native_thread_create(&pump, NULL, server_pump, &ctx);
+    evpl_test_abort_if(rc != 0, "evpl_native_thread_create: %d", rc);
 
     while (!ctx.ready) {
         usleep(1000);
@@ -364,7 +364,7 @@ main(
                        ctx.received_count);
 
     evpl_stop(ctx.evpl);
-    pthread_join(pump, NULL);
+    evpl_native_thread_join(pump, NULL);
 
     printf("Test PASSED\n");
     return 0;

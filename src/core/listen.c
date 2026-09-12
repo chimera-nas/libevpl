@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
@@ -15,7 +15,7 @@
 #include "core/evpl_shared.h"
 #include "core/evpl.h"
 
-static pthread_mutex_t EvplListenerLock = PTHREAD_MUTEX_INITIALIZER;
+static evpl_mutex_t EvplListenerLock = EVPL_MUTEX_INITIALIZER;
 
 static void
 evpl_listener_accept(
@@ -31,10 +31,10 @@ evpl_listener_accept(
     ssize_t                       rc;
     int                           err;
 
-    pthread_mutex_lock(&EvplListenerLock);
+    evpl_mutex_lock(&EvplListenerLock);
 
     if (listener->num_attached == 0) {
-        pthread_mutex_unlock(&EvplListenerLock);
+        evpl_mutex_unlock(&EvplListenerLock);
         return;
     }
 
@@ -58,9 +58,9 @@ evpl_listener_accept(
     request->accepted        = accepted;
     request->private_data    = binding->private_data;
 
-    pthread_mutex_lock(&binding->evpl->lock);
+    evpl_mutex_lock(&binding->evpl->lock);
     DL_APPEND(binding->evpl->connect_requests, request);
-    pthread_mutex_unlock(&binding->evpl->lock);
+    evpl_mutex_unlock(&binding->evpl->lock);
 
     rc = evpl_wakeup_signal(&binding->evpl->run_wakeup);
 
@@ -70,7 +70,7 @@ evpl_listener_accept(
                        "evpl_listener_accept: wakeup signal (fd %d) failed: rc=%zd errno=%d (%s)",
                        binding->evpl->run_wakeup.wfd, rc, err, strerror(err));
 
-    pthread_mutex_unlock(&EvplListenerLock);
+    evpl_mutex_unlock(&EvplListenerLock);
 } /* evpl_listener_accept */
 
 static void
@@ -82,7 +82,7 @@ evpl_listener_callback(
     struct evpl_listen_request *request;
     struct evpl_bind           *bind, **new_binds;
 
-    pthread_mutex_lock(&EvplListenerLock);
+    evpl_mutex_lock(&EvplListenerLock);
 
     while (listener->requests) {
         request = listener->requests;
@@ -106,10 +106,10 @@ evpl_listener_callback(
              * connection that never existed. */
             evpl_bind_abort(evpl, bind);
 
-            pthread_mutex_lock(&request->lock);
+            evpl_mutex_lock(&request->lock);
             request->complete = 1;
-            pthread_cond_signal(&request->cond);
-            pthread_mutex_unlock(&request->lock);
+            evpl_cond_signal(&request->cond);
+            evpl_mutex_unlock(&request->lock);
 
             continue;
         }
@@ -128,13 +128,13 @@ evpl_listener_callback(
 
         listener->binds[listener->num_binds++] = bind;
 
-        pthread_mutex_lock(&request->lock);
+        evpl_mutex_lock(&request->lock);
         request->complete = 1;
-        pthread_cond_signal(&request->cond);
-        pthread_mutex_unlock(&request->lock);
+        evpl_cond_signal(&request->cond);
+        evpl_mutex_unlock(&request->lock);
     }
 
-    pthread_mutex_unlock(&EvplListenerLock);
+    evpl_mutex_unlock(&EvplListenerLock);
 
 } /* evpl_listener_callback */
 
@@ -147,7 +147,7 @@ evpl_listener_init(
 
     evpl_add_doorbell(evpl, &listener->doorbell, evpl_listener_callback);
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     listener->running = 1;
 
@@ -173,7 +173,7 @@ evpl_listener_create(void)
     listener->attached     = evpl_calloc(listener->max_attached, sizeof(struct evpl_listener_binding *));
 
     while (!listener->running) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     return listener;
@@ -183,12 +183,12 @@ SYMBOL_EXPORT void
 evpl_listener_destroy(struct evpl_listener *listener)
 {
 
-    pthread_mutex_lock(&EvplListenerLock);
+    evpl_mutex_lock(&EvplListenerLock);
 
     for (int i = 0; i < listener->num_attached; i++) {
         listener->attached[i]->listener = NULL;
     }
-    pthread_mutex_unlock(&EvplListenerLock);
+    evpl_mutex_unlock(&EvplListenerLock);
 
     evpl_thread_destroy(listener->thread);
 
@@ -216,7 +216,7 @@ evpl_listener_attach(
 
     DL_APPEND(evpl->listener_bindings, binding);
 
-    pthread_mutex_lock(&EvplListenerLock);
+    evpl_mutex_lock(&EvplListenerLock);
 
     if (listener->num_attached >= listener->max_attached) {
 
@@ -233,7 +233,7 @@ evpl_listener_attach(
 
     listener->attached[listener->num_attached++] = binding;
 
-    pthread_mutex_unlock(&EvplListenerLock);
+    evpl_mutex_unlock(&EvplListenerLock);
 
     return binding;
 } /* evpl_listener_attach */
@@ -248,7 +248,7 @@ evpl_listener_detach(
     evpl_core_abort_if(!binding,
                        "evpl_listener_detach called with NULL binding");
 
-    pthread_mutex_lock(&EvplListenerLock);
+    evpl_mutex_lock(&EvplListenerLock);
 
     listener = binding->listener;
 
@@ -273,7 +273,7 @@ evpl_listener_detach(
 
     }
 
-    pthread_mutex_unlock(&EvplListenerLock);
+    evpl_mutex_unlock(&EvplListenerLock);
 
     DL_DELETE(evpl->listener_bindings, binding);
 
@@ -321,25 +321,25 @@ evpl_listen(
 
     request = evpl_zalloc(sizeof(*request));
 
-    pthread_mutex_init(&request->lock, NULL);
-    pthread_cond_init(&request->cond, NULL);
+    evpl_mutex_init(&request->lock, NULL);
+    evpl_cond_init(&request->cond, NULL);
 
     request->protocol_id = protocol_id;
     request->address     = address;
 
-    pthread_mutex_lock(&EvplListenerLock);
+    evpl_mutex_lock(&EvplListenerLock);
     DL_APPEND(listener->requests, request);
-    pthread_mutex_unlock(&EvplListenerLock);
+    evpl_mutex_unlock(&EvplListenerLock);
 
     evpl_ring_doorbell(&listener->doorbell);
 
-    pthread_mutex_lock(&request->lock);
+    evpl_mutex_lock(&request->lock);
 
     while (!request->complete) {
-        pthread_cond_wait(&request->cond, &request->lock);
+        evpl_cond_wait(&request->cond, &request->lock);
     }
 
-    pthread_mutex_unlock(&request->lock);
+    evpl_mutex_unlock(&request->lock);
 
     status = request->status;
 

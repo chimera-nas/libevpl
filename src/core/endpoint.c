@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <time.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/in.h>
@@ -30,11 +30,11 @@
 static void
 evpl_endpoint_register(struct evpl_endpoint *ep)
 {
-    pthread_rwlock_init(&ep->lock, NULL);
+    evpl_rwlock_init(&ep->lock, NULL);
 
-    pthread_mutex_lock(&evpl_shared->lock);
+    evpl_mutex_lock(&evpl_shared->lock);
     DL_APPEND(evpl_shared->endpoints, ep);
-    pthread_mutex_unlock(&evpl_shared->lock);
+    evpl_mutex_unlock(&evpl_shared->lock);
 } /* evpl_endpoint_register */
 
 /* Validate a local socket name and build an endpoint for it, or return NULL.
@@ -214,17 +214,17 @@ evpl_endpoint_inproc_name(const struct evpl_endpoint *ep)
 SYMBOL_EXPORT void
 evpl_endpoint_close(struct evpl_endpoint *endpoint)
 {
-    pthread_rwlock_wrlock(&endpoint->lock);
+    evpl_rwlock_wrlock(&endpoint->lock);
 
-    pthread_mutex_lock(&evpl_shared->lock);
+    evpl_mutex_lock(&evpl_shared->lock);
     DL_DELETE(evpl_shared->endpoints, endpoint);
-    pthread_mutex_unlock(&evpl_shared->lock);
+    evpl_mutex_unlock(&evpl_shared->lock);
 
     if (endpoint->resolved_addr) {
         evpl_address_release(endpoint->resolved_addr);
     }
 
-    pthread_rwlock_unlock(&endpoint->lock);
+    evpl_rwlock_unlock(&endpoint->lock);
 
     evpl_free(endpoint);
 } /* evpl_endpoint_close */
@@ -405,17 +405,17 @@ evpl_endpoint_resolve(struct evpl_endpoint *endpoint)
 
     clock_gettime(CLOCK_MONOTONIC, &now);
 
-    pthread_rwlock_rdlock(&endpoint->lock);
+    evpl_rwlock_rdlock(&endpoint->lock);
 
     if (likely(evpl_endpoint_cache_valid(endpoint, &now))) {
         addr = endpoint->resolved_addr;
         evpl_address_incref(addr);
-        pthread_rwlock_unlock(&endpoint->lock);
+        evpl_rwlock_unlock(&endpoint->lock);
         return addr;
     }
 
-    pthread_rwlock_unlock(&endpoint->lock);
-    pthread_rwlock_wrlock(&endpoint->lock);
+    evpl_rwlock_unlock(&endpoint->lock);
+    evpl_rwlock_wrlock(&endpoint->lock);
 
     /* Recheck under the write lock: another thread may have resolved while
      * the lock was dropped, and getaddrinfo is expensive enough to be worth
@@ -423,7 +423,7 @@ evpl_endpoint_resolve(struct evpl_endpoint *endpoint)
     if (evpl_endpoint_cache_valid(endpoint, &now)) {
         addr = endpoint->resolved_addr;
         evpl_address_incref(addr);
-        pthread_rwlock_unlock(&endpoint->lock);
+        evpl_rwlock_unlock(&endpoint->lock);
         return addr;
     }
 
@@ -444,7 +444,7 @@ evpl_endpoint_resolve(struct evpl_endpoint *endpoint)
          * front (as this function used to) both destroyed a working address
          * on a transient DNS failure and left endpoint->resolved_addr
          * dangling, which the next call would release a second time. */
-        pthread_rwlock_unlock(&endpoint->lock);
+        evpl_rwlock_unlock(&endpoint->lock);
         return NULL;
     }
 
@@ -455,7 +455,7 @@ evpl_endpoint_resolve(struct evpl_endpoint *endpoint)
 
     evpl_address_incref(addr); /* one ref for the cache, one for the caller */
 
-    pthread_rwlock_unlock(&endpoint->lock);
+    evpl_rwlock_unlock(&endpoint->lock);
 
     /* Released outside the lock: framework release_address callbacks run
      * here and should not be serialized behind the endpoint rwlock. */

@@ -5,7 +5,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #define EVPL_INTERNAL 1
 #include "event.h"
@@ -147,7 +147,7 @@ struct evpl {
     int                           running;
     struct evpl_event             run_event;
 
-    pthread_mutex_t               lock;
+    evpl_mutex_t                  lock;
     struct evpl_connect_request  *connect_requests;
 
     struct evpl_event           **active_events;
@@ -195,8 +195,8 @@ struct evpl {
 
 struct evpl_listen_request {
     enum evpl_protocol_id protocol_id;
-    pthread_mutex_t             lock;
-    pthread_cond_t              cond;
+    evpl_mutex_t                lock;
+    evpl_cond_t                 cond;
     int                         complete;
     /* Result of the protocol's listen callback, carried back to the thread
      * blocked in evpl_listen().  The bind happens on the listener thread, so

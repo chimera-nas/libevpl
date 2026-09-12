@@ -6,14 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <curl/curl.h>
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     int                  run;
     struct evpl_doorbell doorbell;
 };
@@ -114,7 +114,7 @@ server_function(void *ptr)
         exit(1);
     }
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     server_ctx->run = 1;
 
@@ -199,10 +199,10 @@ main(
 
     server.run = 0;
 
-    pthread_create(&server.thread, NULL, server_function, &server);
+    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
 
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     curl = curl_easy_init();
@@ -237,11 +237,11 @@ main(
     curl_easy_cleanup(curl);
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     evpl_ring_doorbell(&server.doorbell);
 
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     return (res == CURLE_OK && http_code == 200) ? 0 : 1;
 } /* main */

@@ -10,7 +10,7 @@
 #include <linux/pci.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <errno.h>
 #include <time.h>
 #include <sys/fcntl.h>
@@ -116,7 +116,7 @@ struct evpl_vfio_shared {
      * MAP_DMA would EINVAL).  Mapped by evpl_vfio_flush_pending once the first
      * device attach establishes the IOMMU and the valid IOVA window. */
     struct evpl_vfio_mr    *pending;
-    pthread_mutex_t         lock;
+    evpl_mutex_t            lock;
 };
 
 struct evpl_vfio_device {
@@ -152,7 +152,7 @@ struct evpl_vfio_device {
     struct nvme_controller_reg *reg;
     struct evpl_vfio_queue     *adminq;
     struct evpl_vfio_queue     *ioq;
-    pthread_mutex_t             lock;
+    evpl_mutex_t                lock;
 };
 
 
@@ -207,7 +207,7 @@ evpl_vfio_init(void)
     shared->iova_current = VFIO_IOVA_START;
     shared->iova_max     = VFIO_IOVA_MAX;
 
-    pthread_mutex_init(&shared->lock, NULL);
+    evpl_mutex_init(&shared->lock, NULL);
 
     return shared;
 } /* evpl_vfio_init */
@@ -226,7 +226,7 @@ evpl_vfio_cleanup(void *framework_private)
     }
 
     close(shared->container_fd);
-    pthread_mutex_destroy(&shared->lock);
+    evpl_mutex_destroy(&shared->lock);
     evpl_free(shared);
 } /* evpl_vfio_cleanup */
 
@@ -407,7 +407,7 @@ evpl_vfio_flush_pending(struct evpl_vfio_shared *vfio)
 {
     struct evpl_vfio_mr *mr;
 
-    pthread_mutex_lock(&vfio->lock);
+    evpl_mutex_lock(&vfio->lock);
 
     while (vfio->pending) {
         mr = vfio->pending;
@@ -415,7 +415,7 @@ evpl_vfio_flush_pending(struct evpl_vfio_shared *vfio)
         evpl_vfio_map_locked(vfio, mr);
     }
 
-    pthread_mutex_unlock(&vfio->lock);
+    evpl_mutex_unlock(&vfio->lock);
 } /* evpl_vfio_flush_pending */
 
 static struct evpl_vfio_mr *
@@ -430,7 +430,7 @@ evpl_vfio_register(
     mr->buffer = buffer;
     mr->size   = (size + 4095) & ~4095;
 
-    pthread_mutex_lock(&vfio->lock);
+    evpl_mutex_lock(&vfio->lock);
 
     if (vfio->iommu_set) {
         evpl_vfio_map_locked(vfio, mr);
@@ -441,7 +441,7 @@ evpl_vfio_register(
         DL_APPEND(vfio->pending, mr);
     }
 
-    pthread_mutex_unlock(&vfio->lock);
+    evpl_mutex_unlock(&vfio->lock);
 
     return mr;
 } /* evpl_vfio_register */
@@ -453,7 +453,7 @@ evpl_vfio_unregister(
 {
     struct vfio_iommu_type1_dma_unmap unmap = { 0 };
 
-    pthread_mutex_lock(&vfio->lock);
+    evpl_mutex_lock(&vfio->lock);
 
     if (mr->mapped) {
         unmap.argsz = sizeof(unmap);
@@ -467,7 +467,7 @@ evpl_vfio_unregister(
         DL_DELETE(vfio->pending, mr);
     }
 
-    pthread_mutex_unlock(&vfio->lock);
+    evpl_mutex_unlock(&vfio->lock);
 
     evpl_free(mr);
 } /* evpl_vfio_unregister */
@@ -945,7 +945,7 @@ evpl_vfio_create_ioq(
     struct evpl_vfio_queue      *ioq;
     int                          id;
 
-    pthread_mutex_lock(&device->lock);
+    evpl_mutex_lock(&device->lock);
 
     if (device->num_free_ioq_ids > 0) {
         /* Reuse a previously-closed queue's id (and its doorbell, eventfd and
@@ -1006,7 +1006,7 @@ evpl_vfio_create_ioq(
 
     DL_APPEND(device->ioq, ioq);
 
-    pthread_mutex_unlock(&device->lock);
+    evpl_mutex_unlock(&device->lock);
 
     return ioq;
 } /* evpl_vfio_create_ioq */
@@ -1576,7 +1576,7 @@ evpl_vfio_close_queue(
     struct evpl_vfio_queue  *queue  = bqueue->private_data;
     struct evpl_vfio_device *device = queue->device;
 
-    pthread_mutex_lock(&device->lock);
+    evpl_mutex_lock(&device->lock);
 
     if (evpl_vfio_delete_ioq_locked(device, queue) == 0) {
         DL_DELETE(device->ioq, queue);
@@ -1593,7 +1593,7 @@ evpl_vfio_close_queue(
         device->free_ioq_ids[device->num_free_ioq_ids++] = queue->id;
     }
 
-    pthread_mutex_unlock(&device->lock);
+    evpl_mutex_unlock(&device->lock);
 
     evpl_vfio_queue_close(device, evpl, queue);
 
@@ -1603,7 +1603,8 @@ evpl_vfio_close_queue(
 static int
 evpl_vfio_wait_csts(
     struct evpl_vfio_device *dev,
-    int (                   *predicate )(union nvme_controller_status status),
+    int                   ( *predicate )(
+        union nvme_controller_status status),
     const char              *what)
 {
     uint64_t deadline = evpl_vfio_now_ms() + evpl_vfio_timeout_ms(dev);
@@ -1789,10 +1790,10 @@ evpl_vfio_close_device(struct evpl_block_device *bdev)
     {
         evpl_vfio_error("Closing VFIO device with I/O queue %d still open", queue->id);
 
-        pthread_mutex_lock(&dev->lock);
+        evpl_mutex_lock(&dev->lock);
         evpl_vfio_delete_ioq_locked(dev, queue);
         DL_DELETE(dev->ioq, queue);
-        pthread_mutex_unlock(&dev->lock);
+        evpl_mutex_unlock(&dev->lock);
 
         evpl_vfio_queue_close(dev, NULL, queue);
     }
@@ -1819,9 +1820,9 @@ evpl_vfio_close_device(struct evpl_block_device *bdev)
     close(dev->fd);
 
     if (dev->group) {
-        pthread_mutex_lock(&dev->vfio->lock);
+        evpl_mutex_lock(&dev->vfio->lock);
         DL_DELETE(dev->vfio->groups, dev->group);
-        pthread_mutex_unlock(&dev->vfio->lock);
+        evpl_mutex_unlock(&dev->vfio->lock);
 
         if (ioctl(dev->group->fd, VFIO_GROUP_UNSET_CONTAINER)) {
             evpl_vfio_error("Failed to unset VFIO group container: %s", strerror(errno));
@@ -1831,7 +1832,7 @@ evpl_vfio_close_device(struct evpl_block_device *bdev)
         evpl_free(dev->group);
     }
 
-    pthread_mutex_destroy(&dev->lock);
+    evpl_mutex_destroy(&dev->lock);
 
     evpl_free(dev);
     evpl_free(bdev);
@@ -1859,7 +1860,7 @@ evpl_vfio_open_device(
 
     dev = evpl_zalloc(sizeof(*dev));
 
-    pthread_mutex_init(&dev->lock, NULL);
+    evpl_mutex_init(&dev->lock, NULL);
 
     dev->next_ioq_id = 1;
 

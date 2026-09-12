@@ -51,7 +51,6 @@
  */
 #define EVPL_RPC2_REPLY_RDMA_ERROR   (-4)
 
-#include <pthread.h>
 struct prometheus_histogram_instance;
 
 #ifndef container_of

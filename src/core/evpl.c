@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/socket.h>
@@ -71,7 +71,7 @@
 #include "tls/tls.h"
 #endif /* ifdef HAVE_TLS */
 
-pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
+evpl_once_t         evpl_shared_once = EVPL_ONCE_INIT;
 struct evpl_shared *evpl_shared      = NULL;
 
 #ifdef EVPL_IOVEC_PROFILE
@@ -143,7 +143,7 @@ evpl_shared_init(struct evpl_global_config *config)
 {
     evpl_shared = evpl_zalloc(sizeof(*evpl_shared));
 
-    pthread_mutex_init(&evpl_shared->lock, NULL);
+    evpl_mutex_init(&evpl_shared->lock, NULL);
 
     if (!config) {
         config = evpl_global_config_init();
@@ -393,7 +393,7 @@ evpl_init_once(void)
 void
 __evpl_init(void)
 {
-    pthread_once(&evpl_shared_once, evpl_init_once);
+    evpl_once(&evpl_shared_once, evpl_init_once);
 } /* __evpl_init */
 
 SYMBOL_EXPORT int
@@ -430,10 +430,10 @@ evpl_get_config(void)
 {
     struct evpl_global_config *config;
 
-    pthread_mutex_lock(&evpl_shared->lock);
+    evpl_mutex_lock(&evpl_shared->lock);
     evpl_shared->config->refcnt++;
     config = evpl_shared->config;
-    pthread_mutex_unlock(&evpl_shared->lock);
+    evpl_mutex_unlock(&evpl_shared->lock);
 
     return config;
 } /* evpl_get_config */
@@ -451,7 +451,7 @@ evpl_ipc_callback(
         return;
     }
 
-    pthread_mutex_lock(&evpl->lock);
+    evpl_mutex_lock(&evpl->lock);
 
     while (evpl->connect_requests) {
 
@@ -475,7 +475,7 @@ evpl_ipc_callback(
         evpl_free(request);
     }
 
-    pthread_mutex_unlock(&evpl->lock);
+    evpl_mutex_unlock(&evpl->lock);
 
 } /* evpl_stop_callback */
 
@@ -488,7 +488,7 @@ evpl_create(struct evpl_thread_config *config)
 
     evpl = evpl_zalloc(sizeof(*evpl));
 
-    pthread_mutex_init(&evpl->lock, NULL);
+    evpl_mutex_init(&evpl->lock, NULL);
 
     evpl->poll     = evpl_calloc(256, sizeof(struct evpl_poll));
     evpl->max_poll = 256;
@@ -862,7 +862,7 @@ evpl_stop(struct evpl *evpl)
 
     evpl->running = 0;
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     len = evpl_wakeup_signal(&evpl->run_wakeup);
 

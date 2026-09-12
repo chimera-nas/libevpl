@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/types.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #include "logging.h"
 #include "macros.h"

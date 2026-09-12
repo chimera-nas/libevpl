@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #define _GNU_SOURCE
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <string.h>
 #include <sys/mman.h>
 #ifdef __linux__
@@ -71,9 +71,9 @@ evpl_allocator_create()
     unsigned int           slabs, threads;
     int                    i;
 
-    pthread_mutex_init(&allocator->lock, NULL);
-    pthread_cond_init(&allocator->producer_cv, NULL);
-    pthread_cond_init(&allocator->consumer_cv, NULL);
+    evpl_mutex_init(&allocator->lock, NULL);
+    evpl_cond_init(&allocator->producer_cv, NULL);
+    evpl_cond_init(&allocator->consumer_cv, NULL);
 
     allocator->hugepages = evpl_shared->config->huge_pages;
 
@@ -97,7 +97,7 @@ evpl_allocator_create()
     evpl_allocator_register_metrics(allocator);
 
     if (threads > 0) {
-        allocator->prealloc_threads = evpl_zalloc(threads * sizeof(pthread_t));
+        allocator->prealloc_threads = evpl_zalloc(threads * sizeof(evpl_native_thread_t));
 
         for (i = 0; i < (int) threads; i++) {
             int rc = evpl_pthread_create(&allocator->prealloc_threads[i], NULL,
@@ -105,9 +105,9 @@ evpl_allocator_create()
                                          allocator);
 
             /* A missing producer would leave outstanding_slabs credits that
-            * nothing services and destroy() joining a garbage pthread_t. */
+             * nothing services and destroy() joining a garbage evpl_native_thread_t. */
             evpl_core_abort_if(rc,
-                               "evpl_allocator_create: pthread_create failed: %s",
+                               "evpl_allocator_create: evpl_native_thread_create failed: %s",
                                strerror(rc));
         }
 
@@ -117,14 +117,14 @@ evpl_allocator_create()
          * evpl_init returns), but the slab inventory builds up at startup
          * either way.
          */
-        pthread_mutex_lock(&allocator->lock);
+        evpl_mutex_lock(&allocator->lock);
         allocator->outstanding_slabs = slabs;
         allocator->wakeup_credits    = slabs;
         prometheus_gauge_set(allocator->m_outstanding_slabs, slabs);
         for (i = 0; i < (int) slabs; i++) {
-            pthread_cond_signal(&allocator->producer_cv);
+            evpl_cond_signal(&allocator->producer_cv);
         }
-        pthread_mutex_unlock(&allocator->lock);
+        evpl_mutex_unlock(&allocator->lock);
     }
 
     return allocator;
@@ -141,13 +141,13 @@ evpl_allocator_destroy(struct evpl_allocator *allocator)
     int                    i;
 
     if (allocator->num_prealloc_threads > 0) {
-        pthread_mutex_lock(&allocator->lock);
+        evpl_mutex_lock(&allocator->lock);
         allocator->shutdown = 1;
-        pthread_cond_broadcast(&allocator->producer_cv);
-        pthread_mutex_unlock(&allocator->lock);
+        evpl_cond_broadcast(&allocator->producer_cv);
+        evpl_mutex_unlock(&allocator->lock);
 
         for (i = 0; i < allocator->num_prealloc_threads; i++) {
-            pthread_join(allocator->prealloc_threads[i], NULL);
+            evpl_native_thread_join(allocator->prealloc_threads[i], NULL);
         }
 
         evpl_free(allocator->prealloc_threads);
@@ -423,7 +423,7 @@ evpl_allocator_maybe_signal(struct evpl_allocator *allocator)
     }
 
     while (wake-- > 0) {
-        pthread_cond_signal(&allocator->producer_cv);
+        evpl_cond_signal(&allocator->producer_cv);
     }
 } /* evpl_allocator_maybe_signal */
 
@@ -435,20 +435,20 @@ evpl_allocator_prealloc_thread(void *arg)
 
     for ( ; ;) {
 
-        pthread_mutex_lock(&allocator->lock);
+        evpl_mutex_lock(&allocator->lock);
 
         while (allocator->wakeup_credits == 0 && !allocator->shutdown) {
-            pthread_cond_wait(&allocator->producer_cv, &allocator->lock);
+            evpl_cond_wait(&allocator->producer_cv, &allocator->lock);
         }
 
         if (allocator->shutdown) {
-            pthread_mutex_unlock(&allocator->lock);
+            evpl_mutex_unlock(&allocator->lock);
             break;
         }
 
         allocator->wakeup_credits--;
 
-        pthread_mutex_unlock(&allocator->lock);
+        evpl_mutex_unlock(&allocator->lock);
 
         /* Heavy lifting (mmap + ibv_reg_mr + prefault) outside the
          * lock so consumers can keep draining free_buffers in
@@ -458,7 +458,7 @@ evpl_allocator_prealloc_thread(void *arg)
          */
         slab = evpl_allocator_build_slab(allocator, 1);
 
-        pthread_mutex_lock(&allocator->lock);
+        evpl_mutex_lock(&allocator->lock);
 
         evpl_allocator_install_slab(allocator, slab);
 
@@ -479,9 +479,9 @@ evpl_allocator_prealloc_thread(void *arg)
             prometheus_gauge_add(allocator->m_total_slabs, 1);
         }
 
-        pthread_cond_broadcast(&allocator->consumer_cv);
+        evpl_cond_broadcast(&allocator->consumer_cv);
 
-        pthread_mutex_unlock(&allocator->lock);
+        evpl_mutex_unlock(&allocator->lock);
     }
 
     return NULL;
@@ -495,7 +495,7 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
     struct timespec     wait_start, wait_end;
     int                 did_wait = 0;
 
-    pthread_mutex_lock(&allocator->lock);
+    evpl_mutex_lock(&allocator->lock);
 
     /* Top up the pool first; any deficit (including from this
      * allocation about to happen) wakes a producer.
@@ -512,7 +512,7 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
                 did_wait = 1;
                 clock_gettime(CLOCK_MONOTONIC, &wait_start);
             }
-            pthread_cond_wait(&allocator->consumer_cv, &allocator->lock);
+            evpl_cond_wait(&allocator->consumer_cv, &allocator->lock);
             continue;
         }
 
@@ -520,9 +520,9 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
          * No prefault: the calling thread is waiting, and only the
          * pages it (and later consumers) actually touch should fault.
          */
-        pthread_mutex_unlock(&allocator->lock);
+        evpl_mutex_unlock(&allocator->lock);
         slab = evpl_allocator_build_slab(allocator, 0);
-        pthread_mutex_lock(&allocator->lock);
+        evpl_mutex_lock(&allocator->lock);
         evpl_allocator_install_slab(allocator, slab);
         if (allocator->m_slabs_inline) {
             prometheus_counter_increment(allocator->m_slabs_inline);
@@ -557,7 +557,7 @@ evpl_allocator_alloc(struct evpl_allocator *allocator)
      */
     evpl_allocator_maybe_signal(allocator);
 
-    pthread_mutex_unlock(&allocator->lock);
+    evpl_mutex_unlock(&allocator->lock);
 
     return buffer;
 
@@ -570,7 +570,7 @@ evpl_allocator_reregister(struct evpl_allocator *allocator)
     struct evpl_framework *framework;
     int                    i;
 
-    pthread_mutex_lock(&allocator->lock);
+    evpl_mutex_lock(&allocator->lock);
 
     LL_FOREACH(allocator->slabs, slab)
     {
@@ -591,7 +591,7 @@ evpl_allocator_reregister(struct evpl_allocator *allocator)
         }
     }
 
-    pthread_mutex_unlock(&allocator->lock);
+    evpl_mutex_unlock(&allocator->lock);
 
 } /* evpl_allocator_reregister */
 
@@ -615,7 +615,7 @@ evpl_allocator_free_list(
         return;
     }
 
-    pthread_mutex_lock(&allocator->lock);
+    evpl_mutex_lock(&allocator->lock);
     tail->next                    = allocator->free_buffers;
     allocator->free_buffers       = head;
     allocator->free_buffer_count += count;
@@ -623,7 +623,7 @@ evpl_allocator_free_list(
         prometheus_gauge_set(allocator->m_free_buffers,
                              allocator->free_buffer_count);
     }
-    pthread_mutex_unlock(&allocator->lock);
+    evpl_mutex_unlock(&allocator->lock);
 } /* evpl_allocator_free_list */
 
 void *
@@ -633,7 +633,7 @@ evpl_allocator_alloc_slab(
 {
     struct evpl_slab *slab;
 
-    pthread_mutex_lock(&allocator->lock);
+    evpl_mutex_lock(&allocator->lock);
     slab = evpl_allocator_create_slab(allocator);
     /* Whole-slab loanouts (e.g. XLIO mem_alloc callback) count under
      * "inline" since they synchronously stall the caller exactly like
@@ -645,7 +645,7 @@ evpl_allocator_alloc_slab(
     if (allocator->m_total_slabs) {
         prometheus_gauge_add(allocator->m_total_slabs, 1);
     }
-    pthread_mutex_unlock(&allocator->lock);
+    evpl_mutex_unlock(&allocator->lock);
 
     *slab_private = slab;
 
@@ -861,7 +861,7 @@ evpl_buffer_alloc(
     buffer->ref.flags  = flags;
     buffer->used       = 0;
 #ifdef EVPL_IOVEC_TRACE
-    buffer->ref.owner_thread = pthread_self();
+    buffer->ref.owner_thread = evpl_current_thread();
 #endif /* ifdef EVPL_IOVEC_TRACE */
 
     if (flags & EVPL_IOVEC_FLAG_SHARED) {

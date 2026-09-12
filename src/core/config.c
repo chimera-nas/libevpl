@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #include "core/evpl.h"
 #include "core/evpl_shared.h"
@@ -193,7 +193,7 @@ evpl_global_config_release(struct evpl_global_config *config)
         return;
     }
 
-    pthread_mutex_lock(&evpl_shared->lock);
+    evpl_mutex_lock(&evpl_shared->lock);
 
     evpl_core_abort_if(config->refcnt == 0,
                        "config refcnt %d", config->refcnt);
@@ -204,7 +204,7 @@ evpl_global_config_release(struct evpl_global_config *config)
         evpl_global_config_free(config);
     }
 
-    pthread_mutex_unlock(&evpl_shared->lock);
+    evpl_mutex_unlock(&evpl_shared->lock);
 } /* evpl_release_config */
 
 SYMBOL_EXPORT void
