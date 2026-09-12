@@ -54,9 +54,23 @@ poll_callback(
 } /* poll_callback */
 
 /* Clear the counters and run the loop long enough that every registered poller
- * has certainly been dispatched.  The loop only visits pollers while it is in
- * poll mode, which it enters on its own as soon as one is registered and holds
- * while a caller keeps pumping. */
+ * has certainly been dispatched.
+ *
+ * The loop only visits pollers while it is in poll mode, and pumping alone does
+ * not keep it there: poll mode is held against *activity*, not against calls.
+ * A loop that has gone spin_ns (1 ms by default) without an evpl_activity()
+ * leaves poll mode -- and on the very first evpl_continue(), where poll_mode is
+ * still 0, that grace period is measured from evpl_create(), so a thread merely
+ * scheduled away for a moment between the two never enters poll mode at all.
+ * With no fd, timer or event registered here, the loop then waits on the one
+ * thing that can still wake it, which is nothing: wait_ms defaults to -1 and it
+ * blocks in epoll forever.  That is a hang, not a slow test, and it is why this
+ * used to fail only under CPU contention.
+ *
+ * evpl_poll_pin() is the primitive for "work that can only be observed by
+ * polling, so never sleep".  It holds poll mode by refcount rather than against
+ * the clock, which is what makes the dispatch counts below depend on the poller
+ * bookkeeping under test and not on how this process was scheduled. */
 static void
 pump(struct evpl *evpl)
 {
@@ -81,6 +95,11 @@ main(
     evpl_init(NULL);
 
     evpl = evpl_create(NULL);
+
+    /* Before the first evpl_continue(): the grace period this defeats is
+     * already running by then.  Held for the whole body -- every pump below
+     * relies on poll dispatch happening. */
+    evpl_poll_pin(evpl);
 
     for (i = 0; i < 4; ++i) {
         handle[i] = evpl_add_poll(evpl, NULL, NULL, poll_callback,
@@ -123,6 +142,8 @@ main(
 
     evpl_remove_poll(evpl, handle[4]);
     evpl_remove_poll(evpl, handle[2]);
+
+    evpl_poll_unpin(evpl);
 
     evpl_destroy(evpl);
 
