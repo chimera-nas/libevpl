@@ -27,6 +27,7 @@
 struct evpl_bind {
     struct evpl_protocol   *protocol;
     uint64_t                flags;
+    unsigned int            outstanding;
     struct evpl_deferral    flush_deferral;
     struct evpl_deferral    close_deferral;
     evpl_notify_callback_t  notify_callback;
@@ -75,3 +76,17 @@ evpl_bind_abort(
 #define evpl_bind_private(bind) ((void *) ((bind) + 1))
 #define evpl_private2bind(ptr)  (((struct evpl_bind *) (ptr)) - 1)
 
+
+/* Loop-affine ownership for backend requests, including multishot requests.
+ * Retire only at the terminal result; freeing happens at a dispatch boundary. */
+static inline void
+evpl_bind_operation_begin(struct evpl_bind *bind)
+{
+    bind->outstanding++;
+} // evpl_bind_operation_begin
+static inline void
+evpl_bind_operation_end(struct evpl_bind *bind)
+{
+    evpl_core_assert(bind->outstanding != 0);
+    bind->outstanding--;
+} // evpl_bind_operation_end

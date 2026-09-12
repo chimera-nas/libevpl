@@ -536,7 +536,7 @@ evpl_continue(struct evpl *evpl)
     struct evpl_deferral *deferral;
     struct evpl_poll     *poll;
     struct evpl_timer    *timer;
-    int                   i, n;
+    int                   i;
     int                   msecs = evpl->config.wait_ms;
     uint64_t              elapsed;
     int64_t               remain;
@@ -639,7 +639,7 @@ evpl_continue(struct evpl *evpl)
         }
 
         if (evpl->poll_mode || (evpl->config.poll_mode && evpl->activity != evpl->last_activity) ||
-            evpl->num_active_events || evpl->num_active_deferrals || evpl->pending_close_binds) {
+            evpl->num_active_events || evpl->num_active_deferrals) {
             msecs = 0;
         }
 
@@ -655,28 +655,10 @@ evpl_continue(struct evpl *evpl)
             evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
         }
 
-        n = evpl_core_wait(&evpl->core, msecs);
+        (void) evpl_core_wait(&evpl->core, msecs);
 
         if (evpl->loop_hooks.post_wait) {
             evpl->loop_hooks.post_wait(evpl, evpl->loop_hooks.private_data);
-        }
-
-        if (evpl->pending_close_binds && n == 0) {
-            struct evpl_bind *next;
-
-            bind = evpl->pending_close_binds;
-            while (bind) {
-                next = bind->next;
-                /* A protocol with an asynchronous teardown (RDMA) keeps the
-                 * bind parked here until its disconnect event arrives; do not
-                 * finalize it yet or its private state would be freed while
-                 * the protocol still references it. */
-                if (!(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
-                    bind->protocol->close(evpl, bind);
-                    evpl_bind_destroy(evpl, bind);
-                }
-                bind = next;
-            }
         }
 
         evpl->poll_iterations = 0;
@@ -757,6 +739,21 @@ evpl_continue(struct evpl *evpl)
         deferral->armed = 0;
 
         deferral->callback(evpl, deferral->private_data);
+    }
+
+    /* Backends unregister readiness before closing, and retain every live
+     * asynchronous operation. Reclamation therefore needs no empty poll batch. */
+    {
+        struct evpl_bind *next;
+        bind = evpl->pending_close_binds;
+        while (bind) {
+            next = bind->next;
+            if (!bind->outstanding && !(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
+                bind->protocol->close(evpl, bind);
+                evpl_bind_destroy(evpl, bind);
+            }
+            bind = next;
+        }
     }
 
     if (evpl->loop_hooks.iteration_end) {
@@ -863,7 +860,7 @@ evpl_destroy_close_bind(struct evpl *evpl)
     }
 
     /* Pump events until we have no pending close binds */
-    while (evpl->binds || evpl->pending_close_binds) {
+    while (evpl->binds) {
         evpl_continue(evpl);
     }
 

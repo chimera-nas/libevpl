@@ -1110,6 +1110,7 @@ evpl_tls_pending_close(
     evpl_event_write_disinterest(evpl, &t->event);
 
     if (t->fd >= 0) {
+        evpl_remove_event(evpl, &t->event);
         close(t->fd);
         t->fd = -1;
     }

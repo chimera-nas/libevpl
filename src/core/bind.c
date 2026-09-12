@@ -232,9 +232,10 @@ evpl_bind_prepare(
     bind->private_data     = NULL;
     bind->flags            = 0;
 
-    bind->protocol = protocol;
-    bind->local    = local;
-    bind->remote   = remote;
+    bind->outstanding = 0;
+    bind->protocol    = protocol;
+    bind->local       = local;
+    bind->remote      = remote;
 
     memset(bind + 1, 0, EVPL_MAX_PRIVATE);
 
