@@ -39,14 +39,10 @@ struct evpl_thread {
     evpl_mutex_t                    lock;
     evpl_cond_t                     cond;
     int                             ready;
-    /* Stop signal.  Owned by evpl_thread (this struct outlives the worker's
-     * evpl, since it is freed only after evpl_native_thread_join), so evpl_thread_destroy
-     * can stop the worker by writing this fd without ever dereferencing the
-     * worker's evpl -- which the worker creates, runs, and destroys entirely on
-     * its own thread.  The event is registered on the worker's evpl and its
-     * handler clears running from the worker thread. */
-    struct evpl_wakeup              stop_wakeup;
-    struct evpl_event               stop_event;
+    /* The sender outlives the worker loop; a worker that has already stopped
+     * safely rejects subsequent stop requests. */
+    struct evpl_doorbell            stop_receiver;
+    struct evpl_doorbell_sender    *stop_sender;
     struct evpl_thread_config      *config;
     struct evpl                    *evpl;
     evpl_thread_init_callback_t     init_callback;
@@ -67,13 +63,10 @@ struct evpl_threadpool {
  */
 void
 evpl_thread_event(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell)
 {
-    if (evpl_wakeup_drain(event->fd) < 0) {
-        evpl_event_mark_unreadable(evpl, event);
-    }
-
+    (void) doorbell;
     evpl->running = 0;
 } /* evpl_thread_event */
 
@@ -87,13 +80,8 @@ evpl_thread_function(void *ptr)
 
     evpl_thread->evpl = evpl;
 
-    /* Register the stop fd (created by evpl_thread_create) on our own evpl, so
-     * a write from evpl_thread_destroy wakes us and clears running on this
-     * thread.  Done before signaling ready so the event is always live by the
-     * time a destroyer can run. */
-    evpl_add_event(evpl, &evpl_thread->stop_event, evpl_thread->stop_wakeup.rfd,
-                   evpl_thread_event, NULL, NULL);
-    evpl_event_read_interest(evpl, &evpl_thread->stop_event);
+    evpl_add_doorbell(evpl, &evpl_thread->stop_receiver, evpl_thread_event);
+    evpl_thread->stop_sender = evpl_doorbell_sender(&evpl_thread->stop_receiver);
 
     if (evpl_thread->init_callback) {
         evpl_thread->private_data = evpl_thread->init_callback(
@@ -108,7 +96,7 @@ evpl_thread_function(void *ptr)
 
     evpl_run(evpl);
 
-    evpl_remove_event(evpl, &evpl_thread->stop_event);
+    evpl_remove_doorbell(evpl, &evpl_thread->stop_receiver);
 
     evpl_destroy_close_bind(evpl);
 
@@ -139,9 +127,6 @@ evpl_thread_create(
     evpl_thread->init_callback     = init_function;
     evpl_thread->shutdown_callback = shutdown_function;
     evpl_thread->private_data      = private_data;
-
-    evpl_thread_abort_if(evpl_wakeup_open(&evpl_thread->stop_wakeup) < 0,
-                         "evpl_thread_create: wakeup open failed");
 
     evpl_mutex_init(&evpl_thread->lock, NULL);
     evpl_cond_init(&evpl_thread->cond, NULL);
@@ -178,20 +163,13 @@ evpl_thread_create(
 SYMBOL_EXPORT void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
-    ssize_t len;
+    int rc = evpl_doorbell_signal(evpl_thread->stop_sender);
 
-    /* Signal stop via our own fd (never touch the worker's evpl, which the
-     * worker frees on its own thread); the worker's stop_event handler clears
-     * running.  Then join and only then close the fd. */
-    len = evpl_wakeup_signal(&evpl_thread->stop_wakeup);
-
-    evpl_thread_abort_if(len != sizeof(uint64_t),
-                         "evpl_thread_destroy: stop wakeup signal failed: "
-                         "len=%zd errno=%d (%s)", len, errno, strerror(errno));
-
+    evpl_thread_abort_if(rc && rc != ECANCELED, "thread stop signal failed: %d", rc);
     evpl_native_thread_join(evpl_thread->thread, NULL);
-
-    evpl_wakeup_close(&evpl_thread->stop_wakeup);
+    evpl_doorbell_sender_release(evpl_thread->stop_sender);
+    evpl_cond_destroy(&evpl_thread->cond);
+    evpl_mutex_destroy(&evpl_thread->lock);
 
     evpl_free(evpl_thread);
 } /* evpl_thread_destroy */

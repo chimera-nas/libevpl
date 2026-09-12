@@ -77,33 +77,20 @@
  * consumer is the thread that owns the bind this queue feeds.
  */
 struct evpl_inproc_queue {
-    evpl_mutex_t           lock;
+    evpl_mutex_t                 lock;
 
     /* Positionally paired, exactly as a bind's iovec_send/dgram_send are: the
      * Nth dgram owns the next dgram->niov iovecs. */
-    struct evpl_iovec_ring iovec;
-    struct evpl_dgram_ring dgram;
+    struct evpl_iovec_ring       iovec;
+    struct evpl_dgram_ring       dgram;
 
-    /* The consumer's doorbell, or NULL.  A pointer rather than the doorbell
-     * itself, so that it lives in the consuming bind's private area alongside
-     * every other backend's event rather than in this shared, heap-freed
-     * channel -- the doorbell is owned by one thread's event loop, and putting
-     * it in memory the peer also reaches only invites confusion about who may
-     * retire it.
-     *
-     * doorbell_valid is what makes the producer's ring safe: both sides touch
-     * it under this lock, and the consumer clears it before calling
-     * evpl_remove_doorbell(), so a producer can never write to an eventfd that
-     * has already been closed.  It also starts clear on the accepting end,
-     * which is what lets a send that arrives before the accept has run simply
-     * skip the wakeup -- evpl_inproc_attach() drains once unconditionally to
-     * pick it up. */
-    struct evpl_doorbell  *doorbell;
-    int                    doorbell_valid;
+    /* Sending reference owned by this shared queue, revoked by receiver close. */
+    struct evpl_doorbell_sender *sender;
+    int                          doorbell_valid;
 
     /* Rung and not yet drained.  Suppresses the wakeup on every message after
      * the first, so a busy producer pays one eventfd write per batch. */
-    int                    notified;
+    int                          notified;
 };
 
 struct evpl_inproc_channel {
@@ -288,7 +275,7 @@ evpl_inproc_queue_arm(
     evpl_add_doorbell(evpl, &ib->doorbell, callback);
 
     evpl_mutex_lock(&q->lock);
-    q->doorbell       = &ib->doorbell;
+    q->sender         = evpl_doorbell_sender(&ib->doorbell);
     q->doorbell_valid = 1;
     evpl_mutex_unlock(&q->lock);
 } /* evpl_inproc_queue_arm */
@@ -306,7 +293,10 @@ evpl_inproc_queue_disarm(
     evpl_mutex_lock(&q->lock);
     armed             = q->doorbell_valid;
     q->doorbell_valid = 0;
-    q->doorbell       = NULL;
+    if (q->sender) {
+        evpl_doorbell_sender_release(q->sender);
+    }
+    q->sender = NULL;
     evpl_mutex_unlock(&q->lock);
 
     /* The producer observes doorbell_valid under the same lock, so once the
@@ -325,7 +315,7 @@ evpl_inproc_queue_notify(struct evpl_inproc_queue *q)
 {
     if (!q->notified && q->doorbell_valid) {
         q->notified = 1;
-        evpl_ring_doorbell(q->doorbell);
+        (void) evpl_doorbell_signal(q->sender);
     }
 } /* evpl_inproc_queue_notify */
 

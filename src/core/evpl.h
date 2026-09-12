@@ -143,9 +143,8 @@ struct evpl {
     int                           num_poll;
     int                           max_poll;
 
-    struct evpl_wakeup            run_wakeup;
-    int                           running;
-    struct evpl_event             run_event;
+    struct evpl_doorbell          run_doorbell;
+    atomic_int                    running;
 
     evpl_mutex_t                  lock;
     struct evpl_connect_request  *connect_requests;
@@ -159,7 +158,7 @@ struct evpl {
     int                           force_poll_mode;
     int                           poll_pin_count;
 
-    struct evpl_doorbell         *doorbells;
+    struct evpl_doorbell_sender  *doorbells;
 
 
     struct evpl_timer           **timers;

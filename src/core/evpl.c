@@ -440,16 +440,13 @@ evpl_get_config(void)
 
 static void
 evpl_ipc_callback(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell)
 {
     struct evpl_connect_request *request;
     struct evpl_bind            *new_bind;
 
-    if (evpl_wakeup_drain(event->fd) < 0) {
-        evpl_event_mark_unreadable(evpl, event);
-        return;
-    }
+    (void) doorbell;
 
     evpl_mutex_lock(&evpl->lock);
 
@@ -526,13 +523,7 @@ evpl_create(struct evpl_thread_config *config)
 
     evpl->running = 1;
 
-    evpl_core_abort_if(evpl_wakeup_open(&evpl->run_wakeup) < 0,
-                       "evpl_create: wakeup open failed");
-
-    evpl_add_event(evpl, &evpl->run_event, evpl->run_wakeup.rfd,
-                   evpl_ipc_callback, NULL, NULL);
-
-    evpl_event_read_interest(evpl, &evpl->run_event);
+    evpl_add_doorbell(evpl, &evpl->run_doorbell, evpl_ipc_callback);
 
     return evpl;
 } /* evpl_init */
@@ -855,22 +846,8 @@ evpl_set_loop_hooks(
 SYMBOL_EXPORT void
 evpl_stop(struct evpl *evpl)
 {
-    ssize_t len;
-    int     err;
-
-    evpl_core_assert(evpl->running);
-
     evpl->running = 0;
-
-    atomic_thread_fence(memory_order_seq_cst);
-
-    len = evpl_wakeup_signal(&evpl->run_wakeup);
-
-    err = errno;
-
-    evpl_core_abort_if(len != sizeof(uint64_t),
-                       "evpl_stop: wakeup signal (fd %d) failed: len=%zd errno=%d (%s)",
-                       evpl->run_wakeup.wfd, len, err, strerror(err));
+    evpl_ring_doorbell(&evpl->run_doorbell);
 } /* evpl_stop */
 
 
@@ -956,9 +933,10 @@ evpl_destroy(struct evpl *evpl)
         evpl->free_shared_buffer_count     = 0;
     }
 
+    evpl_doorbell_destroy_all(evpl);
+
     evpl_core_destroy(&evpl->core);
 
-    evpl_wakeup_close(&evpl->run_wakeup);
 
     evpl_free(evpl->active_events);
     evpl_free(evpl->active_deferrals);
