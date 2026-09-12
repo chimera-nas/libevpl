@@ -23,13 +23,13 @@
 #include "evpl/evpl_libfabric.h"
 #include "test_common.h"
 
-const char            hello[]  = "Hello World!";
-const int             hellolen = strlen(hello) + 1;
+const char                hello[]  = "Hello World!";
+const int                 hellolen = sizeof(hello);
 
-enum evpl_protocol_id proto       = EVPL_DATAGRAM_LIBFABRIC_MSG;
-const char            localhost[] = "127.0.0.1";
-const char           *address     = localhost;
-int                   port        = 8000;
+enum evpl_protocol_id     proto       = EVPL_DATAGRAM_LIBFABRIC_MSG;
+const char                localhost[] = "127.0.0.1";
+const char               *address     = localhost;
+int                       port        = 8000;
 
 static struct fi_info    *external_info;
 static struct fid_fabric *external_fabric;
@@ -197,16 +197,16 @@ main(
 
     hints = fi_allocinfo();
 
-    hints->ep_attr->type          = FI_EP_MSG;
-    hints->caps                   = FI_MSG | FI_RMA;
-    hints->addr_format            = FI_SOCKADDR_IN;
-    hints->mode                   = FI_CONTEXT | FI_CONTEXT2;
-    hints->domain_attr->mr_mode   = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
+    hints->ep_attr->type        = FI_EP_MSG;
+    hints->caps                 = FI_MSG | FI_RMA;
+    hints->addr_format          = FI_SOCKADDR_IN;
+    hints->mode                 = FI_CONTEXT | FI_CONTEXT2;
+    hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
         FI_MR_ALLOCATED | FI_MR_PROV_KEY;
     hints->domain_attr->threading = FI_THREAD_SAFE;
     hints->fabric_attr->prov_name = strdup("tcp");
 
-    rc = fi_getinfo(FI_VERSION(1, 18), address, NULL, FI_SOURCE, hints,
+    rc = fi_getinfo(FI_VERSION(1, 17), address, NULL, FI_SOURCE, hints,
                     &external_info);
 
     fi_freeinfo(hints);

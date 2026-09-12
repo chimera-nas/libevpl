@@ -92,7 +92,7 @@ struct evpl_libfabric_device {
     struct fid_domain *domain;
     struct fid_av     *av;        /* shared across threads; RDM only, lazy */
     struct fi_info    *info;      /* dup'd getinfo result */
-    enum fi_ep_type    ep_type;
+    enum fi_ep_type ep_type;
     uint64_t           mr_mode;
     int                mr_local;  /* desc required on local ops */
     int                mr_virt_addr;
@@ -122,19 +122,42 @@ struct evpl_libfabric_mr {
 
 struct evpl_libfabric;
 
+/* Shared MSG receives have no endpoint in their operation context.  A
+ * separate receive CQ identifies the connection without adding wire headers
+ * or relying on FI_SOURCE (which verbs MSG does not implement). */
+struct evpl_libfabric_cq {
+    struct evpl_libfabric_thread_device *tdev;
+    struct evpl_libfabric_ep            *recv_ep;
+    struct fid_cq                       *cq;
+    struct evpl_event                    event;
+    int                                  wait_mode;
+    int                                  epfd;
+    uint64_t                             change_index;
+    struct evpl_libfabric_cq            *prev;
+    struct evpl_libfabric_cq            *next;
+};
+
+struct evpl_libfabric_recvq {
+    struct evpl_libfabric_thread_device *tdev;
+    struct fid_ep                       *ep;
+    struct evpl_libfabric_ep            *owner; /* NULL for shared receives */
+    struct evpl_libfabric_ctx           *posted_recvs;
+    unsigned int                         posted;
+};
+
 /* Per-thread per-device state (CQ/EQ opened lazily on first use) */
 struct evpl_libfabric_thread_device {
     struct evpl_libfabric        *lf;
     struct evpl_libfabric_device *dev;
-    struct fid_cq                *cq;
+    struct evpl_libfabric_cq      cq;
+    struct evpl_libfabric_cq     *recv_cqs;
+    struct evpl_libfabric_recvq   srq;
+    int                           srq_unavailable;
+    unsigned int                  srq_users;
     struct fid_eq                *eq;
-    int                           cq_wait_mode; /* FI_WAIT_FD/POLLFD/NONE */
     int                           eq_wait_mode;
-    struct evpl_event             cq_event;
     struct evpl_event             eq_event;
-    int                           cq_epfd; /* FI_WAIT_POLLFD only */
     int                           eq_epfd;
-    uint64_t                      cq_change_index;
     uint64_t                      eq_change_index;
     int                           num_ep;
 };
@@ -143,13 +166,14 @@ struct evpl_libfabric_thread_device {
  * (fi_context2) MUST be the first member: FI_CONTEXT/FI_CONTEXT2 mode
  * providers treat the op context pointer as their own storage. */
 struct evpl_libfabric_ctx {
-    struct fi_context2         fi_ctx;
-    uint8_t                    op;
-    uint8_t                    last; /* TX: completion retires the tail dgram */
-    struct evpl_libfabric_ep  *lfep;
-    struct evpl_iovec          iovec; /* RECV buffer / coalesced TX staging */
-    struct evpl_libfabric_ctx *prev;
-    struct evpl_libfabric_ctx *next;
+    struct fi_context2           fi_ctx;
+    uint8_t                      op;
+    uint8_t                      last; /* TX: completion retires the tail dgram */
+    struct evpl_libfabric_ep    *lfep;
+    struct evpl_libfabric_recvq *rq;
+    struct evpl_iovec            iovec; /* RECV buffer / coalesced TX staging */
+    struct evpl_libfabric_ctx   *prev;
+    struct evpl_libfabric_ctx   *next;
 };
 
 /* Per-thread framework state */
@@ -180,11 +204,12 @@ struct evpl_libfabric_ep {
     int                                  closed;
     int                                  cur_sends;
     int                                  cur_rdma_reads;
-    int                                  rq_posted;
+    struct evpl_libfabric_cq             recv_cq;
+    struct evpl_libfabric_recvq          private_rq;
+    struct evpl_libfabric_recvq         *rq;
     uint64_t                             send_offset; /* bytes of the waist
                                                        * dgram already posted */
     uint64_t                             read_offset; /* likewise, dgram_read */
-    struct evpl_libfabric_ctx           *posted_recvs;
     struct evpl_libfabric_ctx           *posted_sends;
 };
 
@@ -217,11 +242,11 @@ evpl_libfabric_hints_type(
 
     evpl_libfabric_abort_if(!hints, "failed to allocate fi_info hints");
 
-    hints->ep_attr->type          = ep_type;
-    hints->caps                   = caps;
-    hints->addr_format            = FI_SOCKADDR_IN;
-    hints->mode                   = FI_CONTEXT | FI_CONTEXT2;
-    hints->domain_attr->mr_mode   = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
+    hints->ep_attr->type        = ep_type;
+    hints->caps                 = caps;
+    hints->addr_format          = FI_SOCKADDR_IN;
+    hints->mode                 = FI_CONTEXT | FI_CONTEXT2;
+    hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
         FI_MR_ALLOCATED | FI_MR_PROV_KEY;
     hints->domain_attr->threading = FI_THREAD_SAFE;
 
@@ -497,7 +522,7 @@ evpl_libfabric_register(
 {
     struct evpl_libfabric_devices *devices = framework_global;
     struct evpl_libfabric_device  *dev;
-    struct evpl_libfabric_mr      *mrset   = buffer_private;
+    struct evpl_libfabric_mr      *mrset = buffer_private;
     uint64_t                       requested_key;
     int                            rc, i;
 
@@ -716,9 +741,9 @@ evpl_libfabric_ctx_alloc(struct evpl_libfabric *lf)
         ctx = evpl_zalloc(sizeof(*ctx));
     }
 
-    ctx->last        = 0;
-    ctx->iovec.data  = NULL;
-    ctx->iovec.ref   = NULL;
+    ctx->last       = 0;
+    ctx->iovec.data = NULL;
+    ctx->iovec.ref  = NULL;
 
     return ctx;
 } /* evpl_libfabric_ctx_alloc */
@@ -870,38 +895,39 @@ evpl_libfabric_addr_is_wildcard(struct evpl_address *addr)
  * Completion and event processing
  */
 
-static int  evpl_libfabric_poll_cq(
-    struct evpl                         *evpl,
-    struct evpl_libfabric_thread_device *tdev,
-    int                                  drain);
+static int evpl_libfabric_poll_cq(
+    struct evpl              *evpl,
+    struct evpl_libfabric_cq *cq,
+    int                       drain);
 
-static int  evpl_libfabric_drain_eq(
+static int evpl_libfabric_drain_eq(
     struct evpl                         *evpl,
     struct evpl_libfabric_thread_device *tdev,
     struct fid                          *closed_fid);
 
 static void evpl_libfabric_fill_rq(
-    struct evpl              *evpl,
-    struct evpl_libfabric_ep *lfep);
+    struct evpl                 *evpl,
+    struct evpl_libfabric_recvq *rq);
 
 static void
 evpl_libfabric_handle_recv(
     struct evpl               *evpl,
     struct evpl_libfabric_ctx *ctx,
+    struct evpl_libfabric_ep  *lfep,
     size_t                     len,
     fi_addr_t                  src)
 {
-    struct evpl_libfabric_ep *lfep = ctx->lfep;
-    struct evpl_libfabric    *lf   = lfep->lf;
-    struct evpl_bind         *bind;
-    struct evpl_address      *addr;
-    struct evpl_notify        notify;
-    struct sockaddr_storage   ss;
-    size_t                    sslen;
-    int                       rc;
+    struct evpl_libfabric_recvq *rq = ctx->rq;
+    struct evpl_libfabric       *lf = rq->tdev->lf;
+    struct evpl_bind            *bind;
+    struct evpl_address         *addr;
+    struct evpl_notify           notify;
+    struct sockaddr_storage      ss;
+    size_t                       sslen;
+    int                          rc;
 
-    DL_DELETE(lfep->posted_recvs, ctx);
-    lfep->rq_posted--;
+    DL_DELETE(rq->posted_recvs, ctx);
+    rq->posted--;
 
     if (unlikely(lfep->closed)) {
         evpl_iovec_release_internal(evpl, &ctx->iovec);
@@ -955,8 +981,6 @@ evpl_libfabric_handle_recv(
     }
 
     evpl_libfabric_ctx_free(lf, ctx);
-
-    evpl_libfabric_fill_rq(evpl, lfep);
 } /* evpl_libfabric_handle_recv */
 
 static void
@@ -973,6 +997,7 @@ evpl_libfabric_handle_send(
     struct evpl_notify        notify;
     uint64_t                  length;
     uint8_t                   dgram_type;
+
     void                      (*callback)(
         int   cb_status,
         void *cb_private_data);
@@ -1063,6 +1088,7 @@ evpl_libfabric_handle_read(
     struct evpl_bind         *bind;
     struct evpl_dgram        *dgram;
     struct evpl_iovec        *iovec;
+
     void                      (*callback)(
         int   cb_status,
         void *cb_private_data);
@@ -1108,8 +1134,8 @@ evpl_libfabric_handle_read(
 
 static void
 evpl_libfabric_handle_cq_error(
-    struct evpl                         *evpl,
-    struct evpl_libfabric_thread_device *tdev)
+    struct evpl              *evpl,
+    struct evpl_libfabric_cq *cq)
 {
     struct evpl_libfabric_ctx *ctx;
     struct evpl_libfabric_ep  *lfep;
@@ -1118,14 +1144,14 @@ evpl_libfabric_handle_cq_error(
 
     memset(&err, 0, sizeof(err));
 
-    rc = fi_cq_readerr(tdev->cq, &err, 0);
+    rc = fi_cq_readerr(cq->cq, &err, 0);
 
     if (rc < 0) {
         return;
     }
 
     ctx  = err.op_context;
-    lfep = ctx->lfep;
+    lfep = cq->recv_ep ? cq->recv_ep : ctx->lfep;
 
     if (err.err != FI_ECANCELED && !lfep->closed) {
         evpl_libfabric_error("completion error op %u err %d (%s) prov_errno %d",
@@ -1135,8 +1161,8 @@ evpl_libfabric_handle_cq_error(
 
     switch (ctx->op) {
         case EVPL_LIBFABRIC_OP_RECV:
-            DL_DELETE(lfep->posted_recvs, ctx);
-            lfep->rq_posted--;
+            DL_DELETE(ctx->rq->posted_recvs, ctx);
+            ctx->rq->posted--;
             evpl_iovec_release_internal(evpl, &ctx->iovec);
             evpl_libfabric_ctx_free(lfep->lf, ctx);
             break;
@@ -1153,9 +1179,9 @@ evpl_libfabric_handle_cq_error(
 
 static int
 evpl_libfabric_poll_cq(
-    struct evpl                         *evpl,
-    struct evpl_libfabric_thread_device *tdev,
-    int                                  drain)
+    struct evpl              *evpl,
+    struct evpl_libfabric_cq *cq,
+    int                       drain)
 {
     struct fi_cq_msg_entry     comps[64];
     fi_addr_t                  src[64];
@@ -1163,25 +1189,33 @@ evpl_libfabric_poll_cq(
     ssize_t                    n;
     int                        i, total = 0;
 
-    if (!tdev->cq) {
+    if (!cq->cq) {
         return 0;
     }
 
  again:
 
-    n = fi_cq_readfrom(tdev->cq, comps, 64, src);
+    /* MSG does not need source addresses; verbs does not implement readfrom. */
+    if (cq->tdev->dev->ep_type == FI_EP_RDM) {
+        n = fi_cq_readfrom(cq->cq, comps, 64, src);
+    } else {
+        n = fi_cq_read(cq->cq, comps, 64);
+    }
 
     if (n == -FI_EAGAIN) {
+        if (cq->recv_ep && !cq->recv_ep->closed) {
+            evpl_libfabric_fill_rq(evpl, cq->recv_ep->rq);
+        }
         return total;
     }
 
     if (n == -FI_EAVAIL) {
-        evpl_libfabric_handle_cq_error(evpl, tdev);
+        evpl_libfabric_handle_cq_error(evpl, cq);
         total++;
         goto again;
     }
 
-    evpl_libfabric_abort_if(n < 0, "fi_cq_readfrom: %s", fi_strerror(-n));
+    evpl_libfabric_abort_if(n < 0, "CQ read: %s", fi_strerror(-n));
 
     evpl_activity(evpl);
 
@@ -1191,7 +1225,9 @@ evpl_libfabric_poll_cq(
 
         switch (ctx->op) {
             case EVPL_LIBFABRIC_OP_RECV:
-                evpl_libfabric_handle_recv(evpl, ctx, comps[i].len, src[i]);
+                evpl_libfabric_handle_recv(evpl, ctx,
+                                           cq->recv_ep ? cq->recv_ep : ctx->lfep, comps[i].len,
+                                           cq->tdev->dev->ep_type == FI_EP_RDM ? src[i] : FI_ADDR_NOTAVAIL);
                 break;
             case EVPL_LIBFABRIC_OP_SEND:
                 evpl_libfabric_handle_send(evpl, ctx, 0);
@@ -1204,6 +1240,9 @@ evpl_libfabric_poll_cq(
         } /* switch */
     }
 
+    if (cq->recv_ep && !cq->recv_ep->closed) {
+        evpl_libfabric_fill_rq(evpl, cq->recv_ep->rq);
+    }
     total += n;
 
     if (drain && n > 0) {
@@ -1281,9 +1320,10 @@ evpl_libfabric_drain_eq(
     uint32_t                  event;
     ssize_t                   rc;
     int                       total = 0;
-    struct {
+
+    union {
         struct fi_eq_cm_entry entry;
-        uint8_t               data[256];
+        uint8_t               data[sizeof(struct fi_eq_cm_entry) + 256];
     } buf;
 
     if (!tdev->eq) {
@@ -1376,10 +1416,10 @@ evpl_libfabric_cq_event_callback(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    struct evpl_libfabric_thread_device *tdev =
-        container_of(event, struct evpl_libfabric_thread_device, cq_event);
+    struct evpl_libfabric_cq *cq =
+        container_of(event, struct evpl_libfabric_cq, event);
 
-    evpl_libfabric_poll_cq(evpl, tdev, 1);
+    evpl_libfabric_poll_cq(evpl, cq, 1);
 
     evpl_event_mark_unreadable(evpl, event);
 } /* evpl_libfabric_cq_event_callback */
@@ -1398,7 +1438,7 @@ evpl_libfabric_eq_event_callback(
 } /* evpl_libfabric_eq_event_callback */
 
 /* For FI_WAIT_POLLFD wait objects the provider exposes a mutable set of
- * fds; mirror them into a private epoll whose fd is what evpl watches */
+* fds; mirror them into a private epoll whose fd is what evpl watches */
 static void
 evpl_libfabric_pollfd_sync(
     struct fid *fid,
@@ -1446,17 +1486,17 @@ evpl_libfabric_cq_pollfd_callback(
     struct evpl       *evpl,
     struct evpl_event *event)
 {
-    struct evpl_libfabric_thread_device *tdev =
-        container_of(event, struct evpl_libfabric_thread_device, cq_event);
-    struct epoll_event evs[8];
+    struct evpl_libfabric_cq *cq =
+        container_of(event, struct evpl_libfabric_cq, event);
+    struct epoll_event        evs[8];
 
     /* consume readiness from the inner epoll */
-    epoll_wait(tdev->cq_epfd, evs, 8, 0);
+    epoll_wait(cq->epfd, evs, 8, 0);
 
-    evpl_libfabric_poll_cq(evpl, tdev, 1);
+    evpl_libfabric_poll_cq(evpl, cq, 1);
 
-    evpl_libfabric_pollfd_sync(&tdev->cq->fid, tdev->cq_epfd,
-                               &tdev->cq_change_index);
+    evpl_libfabric_pollfd_sync(&cq->cq->fid, cq->epfd,
+                               &cq->change_index);
 
     evpl_event_mark_unreadable(evpl, event);
 } /* evpl_libfabric_cq_pollfd_callback */
@@ -1468,7 +1508,7 @@ evpl_libfabric_eq_pollfd_callback(
 {
     struct evpl_libfabric_thread_device *tdev =
         container_of(event, struct evpl_libfabric_thread_device, eq_event);
-    struct epoll_event evs[8];
+    struct epoll_event                   evs[8];
 
     epoll_wait(tdev->eq_epfd, evs, 8, 0);
 
@@ -1482,14 +1522,14 @@ evpl_libfabric_eq_pollfd_callback(
 
 static void
 evpl_libfabric_wire_wait(
-    struct evpl                *evpl,
-    struct fid                 *fid,
-    int                         wait_mode,
-    struct evpl_event          *event,
-    int                        *epfd_out,
-    uint64_t                   *change_index,
-    evpl_event_read_callback_t  fd_callback,
-    evpl_event_read_callback_t  pollfd_callback)
+    struct evpl               *evpl,
+    struct fid                *fid,
+    int                        wait_mode,
+    struct evpl_event         *event,
+    int                       *epfd_out,
+    uint64_t                  *change_index,
+    evpl_event_read_callback_t fd_callback,
+    evpl_event_read_callback_t pollfd_callback)
 {
     int fd = -1;
     int rc;
@@ -1524,6 +1564,89 @@ evpl_libfabric_wire_wait(
     } /* switch */
 } /* evpl_libfabric_wire_wait */
 
+static void
+evpl_libfabric_cq_open(
+    struct evpl                         *evpl,
+    struct evpl_libfabric_thread_device *tdev,
+    struct evpl_libfabric_cq            *cq,
+    struct evpl_libfabric_ep            *recv_ep)
+{
+    struct evpl_libfabric_device *dev = tdev->dev;
+    struct fi_cq_attr             cq_attr;
+    int                           rc;
+
+    cq->tdev    = tdev;
+    cq->recv_ep = recv_ep;
+    cq->epfd    = -1;
+    memset(&cq_attr, 0, sizeof(cq_attr));
+    cq_attr.size = recv_ep ? evpl_shared->config->libfabric_rq_size :
+        evpl_shared->config->libfabric_cq_size;
+    cq_attr.format = FI_CQ_FORMAT_MSG;
+
+    cq_attr.wait_obj = FI_WAIT_FD;
+    rc               = fi_cq_open(dev->domain, &cq_attr, &cq->cq, tdev);
+
+    if (rc == 0) {
+        cq->wait_mode = FI_WAIT_FD;
+    } else {
+        cq_attr.wait_obj = FI_WAIT_POLLFD;
+        rc               = fi_cq_open(dev->domain, &cq_attr, &cq->cq, tdev);
+
+        if (rc == 0) {
+            cq->wait_mode = FI_WAIT_POLLFD;
+        } else {
+            cq_attr.wait_obj = FI_WAIT_NONE;
+            rc               = fi_cq_open(dev->domain, &cq_attr, &cq->cq,
+                                          tdev);
+
+            evpl_libfabric_abort_if(rc, "fi_cq_open(%s): %s",
+                                    dev->info->domain_attr->name,
+                                    fi_strerror(-rc));
+
+            cq->wait_mode = FI_WAIT_NONE;
+        }
+    }
+
+    evpl_libfabric_wire_wait(evpl, &cq->cq->fid, cq->wait_mode,
+                             &cq->event, &cq->epfd,
+                             &cq->change_index,
+                             evpl_libfabric_cq_event_callback,
+                             evpl_libfabric_cq_pollfd_callback);
+
+
+    if (recv_ep) {
+        DL_APPEND(tdev->recv_cqs, cq);
+    }
+    if (evpl->poll_mode && cq->wait_mode != FI_WAIT_NONE) {
+        evpl_event_read_disinterest(evpl, &cq->event);
+    }
+} /* evpl_libfabric_cq_open */
+
+static void
+evpl_libfabric_cq_close(
+    struct evpl              *evpl,
+    struct evpl_libfabric_cq *cq)
+{
+    int rc;
+
+    if (!cq->cq) {
+        return;
+    }
+    if (cq->wait_mode != FI_WAIT_NONE) {
+        evpl_remove_event(evpl, &cq->event);
+    }
+    rc = fi_close(&cq->cq->fid);
+    evpl_libfabric_abort_if(rc, "fi_close(cq): %s", fi_strerror(-rc));
+    cq->cq = NULL;
+    if (cq->epfd >= 0) {
+        close(cq->epfd);
+        cq->epfd = -1;
+    }
+    if (cq->recv_ep) {
+        DL_DELETE(cq->tdev->recv_cqs, cq);
+    }
+} /* evpl_libfabric_cq_close */
+
 static struct evpl_libfabric_thread_device *
 evpl_libfabric_tdev_open(
     struct evpl           *evpl,
@@ -1532,41 +1655,14 @@ evpl_libfabric_tdev_open(
 {
     struct evpl_libfabric_thread_device *tdev = &lf->devices[devindex];
     struct evpl_libfabric_device        *dev  = tdev->dev;
-    struct fi_cq_attr                    cq_attr;
     struct fi_eq_attr                    eq_attr;
     int                                  rc;
 
-    if (tdev->cq) {
+    if (tdev->cq.cq) {
         return tdev;
     }
 
-    memset(&cq_attr, 0, sizeof(cq_attr));
-    cq_attr.size   = evpl_shared->config->libfabric_cq_size;
-    cq_attr.format = FI_CQ_FORMAT_MSG;
-
-    cq_attr.wait_obj = FI_WAIT_FD;
-    rc               = fi_cq_open(dev->domain, &cq_attr, &tdev->cq, tdev);
-
-    if (rc == 0) {
-        tdev->cq_wait_mode = FI_WAIT_FD;
-    } else {
-        cq_attr.wait_obj = FI_WAIT_POLLFD;
-        rc               = fi_cq_open(dev->domain, &cq_attr, &tdev->cq, tdev);
-
-        if (rc == 0) {
-            tdev->cq_wait_mode = FI_WAIT_POLLFD;
-        } else {
-            cq_attr.wait_obj = FI_WAIT_NONE;
-            rc               = fi_cq_open(dev->domain, &cq_attr, &tdev->cq,
-                                          tdev);
-
-            evpl_libfabric_abort_if(rc, "fi_cq_open(%s): %s",
-                                    dev->info->domain_attr->name,
-                                    fi_strerror(-rc));
-
-            tdev->cq_wait_mode = FI_WAIT_NONE;
-        }
-    }
+    evpl_libfabric_cq_open(evpl, tdev, &tdev->cq, NULL);
 
     memset(&eq_attr, 0, sizeof(eq_attr));
 
@@ -1594,12 +1690,6 @@ evpl_libfabric_tdev_open(
         }
     }
 
-    evpl_libfabric_wire_wait(evpl, &tdev->cq->fid, tdev->cq_wait_mode,
-                             &tdev->cq_event, &tdev->cq_epfd,
-                             &tdev->cq_change_index,
-                             evpl_libfabric_cq_event_callback,
-                             evpl_libfabric_cq_pollfd_callback);
-
     evpl_libfabric_wire_wait(evpl, &tdev->eq->fid, tdev->eq_wait_mode,
                              &tdev->eq_event, &tdev->eq_epfd,
                              &tdev->eq_change_index,
@@ -1620,13 +1710,20 @@ evpl_libfabric_poll_enter(
 {
     struct evpl_libfabric               *lf = arg;
     struct evpl_libfabric_thread_device *tdev;
+    struct evpl_libfabric_cq            *cq;
     int                                  i;
 
     for (i = 0; i < lf->num_active_devices; ++i) {
         tdev = lf->active_devices[i];
 
-        if (tdev->cq_wait_mode != FI_WAIT_NONE) {
-            evpl_event_read_disinterest(evpl, &tdev->cq_event);
+        if (tdev->cq.wait_mode != FI_WAIT_NONE) {
+            evpl_event_read_disinterest(evpl, &tdev->cq.event);
+        }
+        DL_FOREACH(tdev->recv_cqs, cq)
+        {
+            if (cq->wait_mode != FI_WAIT_NONE) {
+                evpl_event_read_disinterest(evpl, &cq->event);
+            }
         }
         if (tdev->eq_wait_mode != FI_WAIT_NONE) {
             evpl_event_read_disinterest(evpl, &tdev->eq_event);
@@ -1642,17 +1739,32 @@ evpl_libfabric_poll_exit(
     struct evpl_libfabric               *lf = arg;
     struct evpl_libfabric_thread_device *tdev;
     struct fid                          *fids[2];
+    struct evpl_libfabric_cq            *cq;
     int                                  i, n, try;
     ssize_t                              rc;
 
     for (i = 0; i < lf->num_active_devices; ++i) {
         tdev = lf->active_devices[i];
 
+        DL_FOREACH(tdev->recv_cqs, cq)
+        {
+            if (cq->wait_mode == FI_WAIT_NONE) {
+                continue;
+            }
+            evpl_event_read_interest(evpl, &cq->event);
+            fids[0] = &cq->cq->fid;
+            for (try = 0; try < EVPL_LIBFABRIC_TRYWAIT_MAX; ++try) {
+                if (fi_trywait(tdev->dev->fabric, fids, 1) == FI_SUCCESS) {
+                    break;
+                }
+                evpl_libfabric_poll_cq(evpl, cq, 1);
+            }
+        }
         n = 0;
 
-        if (tdev->cq_wait_mode != FI_WAIT_NONE) {
-            evpl_event_read_interest(evpl, &tdev->cq_event);
-            fids[n++] = &tdev->cq->fid;
+        if (tdev->cq.wait_mode != FI_WAIT_NONE) {
+            evpl_event_read_interest(evpl, &tdev->cq.event);
+            fids[n++] = &tdev->cq.cq->fid;
         }
         if (tdev->eq_wait_mode != FI_WAIT_NONE) {
             evpl_event_read_interest(evpl, &tdev->eq_event);
@@ -1673,7 +1785,7 @@ evpl_libfabric_poll_exit(
                 break;
             }
 
-            evpl_libfabric_poll_cq(evpl, tdev, 1);
+            evpl_libfabric_poll_cq(evpl, &tdev->cq, 1);
             evpl_libfabric_drain_eq(evpl, tdev, NULL);
         }
     }
@@ -1684,11 +1796,16 @@ evpl_libfabric_poll(
     struct evpl *evpl,
     void        *arg)
 {
-    struct evpl_libfabric *lf = arg;
-    int                    i;
+    struct evpl_libfabric    *lf = arg;
+    int                       i;
+    struct evpl_libfabric_cq *cq;
 
     for (i = 0; i < lf->num_active_devices; ++i) {
-        evpl_libfabric_poll_cq(evpl, lf->active_devices[i], 0);
+        evpl_libfabric_poll_cq(evpl, &lf->active_devices[i]->cq, 0);
+        DL_FOREACH(lf->active_devices[i]->recv_cqs, cq)
+        {
+            evpl_libfabric_poll_cq(evpl, cq, 0);
+        }
         evpl_libfabric_drain_eq(evpl, lf->active_devices[i], NULL);
     }
 } /* evpl_libfabric_poll */
@@ -1783,7 +1900,7 @@ evpl_libfabric_create(
     for (i = 0; i < lf->num_devices; ++i) {
         lf->devices[i].lf      = lf;
         lf->devices[i].dev     = &devices->devices[i];
-        lf->devices[i].cq_epfd = -1;
+        lf->devices[i].cq.epfd = -1;
         lf->devices[i].eq_epfd = -1;
     }
 
@@ -1813,24 +1930,16 @@ evpl_libfabric_destroy(
     for (i = 0; i < lf->num_devices; ++i) {
         tdev = &lf->devices[i];
 
-        if (tdev->cq && tdev->cq_wait_mode != FI_WAIT_NONE) {
-            evpl_remove_event(evpl, &tdev->cq_event);
-        }
+        evpl_libfabric_abort_if(tdev->recv_cqs || tdev->srq.ep,
+                                "receive queues remain at thread shutdown");
+        evpl_libfabric_cq_close(evpl, &tdev->cq);
 
         if (tdev->eq && tdev->eq_wait_mode != FI_WAIT_NONE) {
             evpl_remove_event(evpl, &tdev->eq_event);
         }
 
-        if (tdev->cq) {
-            fi_close(&tdev->cq->fid);
-        }
-
         if (tdev->eq) {
             fi_close(&tdev->eq->fid);
-        }
-
-        if (tdev->cq_epfd >= 0) {
-            close(tdev->cq_epfd);
         }
 
         if (tdev->eq_epfd >= 0) {
@@ -1863,11 +1972,11 @@ evpl_libfabric_destroy(
 
 static void
 evpl_libfabric_fill_rq(
-    struct evpl              *evpl,
-    struct evpl_libfabric_ep *lfep)
+    struct evpl                 *evpl,
+    struct evpl_libfabric_recvq *rq)
 {
-    struct evpl_libfabric        *lf     = lfep->lf;
-    struct evpl_libfabric_device *dev    = lfep->tdev->dev;
+    struct evpl_libfabric        *lf     = rq->tdev->lf;
+    struct evpl_libfabric_device *dev    = rq->tdev->dev;
     struct evpl_global_config    *config = evpl_shared->config;
     struct evpl_libfabric_ctx    *ctx;
     struct evpl_libfabric_mr     *mrset;
@@ -1877,18 +1986,31 @@ evpl_libfabric_fill_rq(
     unsigned int                  size;
     ssize_t                       rc;
 
+    unsigned int                  batch = config->libfabric_rq_batch;
+
+    if (!rq->ep || (rq->owner && rq->owner->closed)) {
+        return;
+    }
+    if (!batch || batch > config->libfabric_rq_size) {
+        batch = config->libfabric_rq_size;
+    }
+    if (config->libfabric_rq_size - rq->posted < batch) {
+        return;
+    }
+
     if (config->libfabric_datagram_size_override) {
         size = config->libfabric_datagram_size_override;
     } else {
         size = config->max_datagram_size;
     }
 
-    while (lfep->rq_posted < (int) config->libfabric_rq_size) {
+    while (rq->posted < config->libfabric_rq_size) {
 
         ctx = evpl_libfabric_ctx_alloc(lf);
 
         ctx->op   = EVPL_LIBFABRIC_OP_RECV;
-        ctx->lfep = lfep;
+        ctx->lfep = rq->owner;
+        ctx->rq   = rq;
 
         evpl_iovec_alloc_datagram(evpl, &ctx->iovec, size);
 
@@ -1910,7 +2032,7 @@ evpl_libfabric_fill_rq(
         msg.addr      = FI_ADDR_UNSPEC;
         msg.context   = ctx;
 
-        rc = fi_recvmsg(lfep->ep, &msg, FI_COMPLETION);
+        rc = fi_recvmsg(rq->ep, &msg, FI_COMPLETION);
 
         if (rc == -FI_EAGAIN) {
             evpl_iovec_release_internal(evpl, &ctx->iovec);
@@ -1920,10 +2042,89 @@ evpl_libfabric_fill_rq(
 
         evpl_libfabric_abort_if(rc, "fi_recvmsg: %s", fi_strerror(-rc));
 
-        DL_APPEND(lfep->posted_recvs, ctx);
-        lfep->rq_posted++;
+        DL_APPEND(rq->posted_recvs, ctx);
+        rq->posted++;
     }
 } /* evpl_libfabric_fill_rq */
+
+/* The shared queue is closed only after its last endpoint and receive CQ
+ * have been drained.  A connection close must never free another connection's
+ * posted receives. */
+static void
+evpl_libfabric_rq_release(
+    struct evpl                 *evpl,
+    struct evpl_libfabric_recvq *rq)
+{
+    struct evpl_libfabric_ctx *ctx;
+
+    while (rq->posted_recvs) {
+        ctx = rq->posted_recvs;
+        DL_DELETE(rq->posted_recvs, ctx);
+        evpl_iovec_release_internal(evpl, &ctx->iovec);
+        evpl_libfabric_ctx_free(rq->tdev->lf, ctx);
+    }
+    rq->posted = 0;
+    rq->ep     = NULL;
+} /* evpl_libfabric_rq_release */
+
+static void
+evpl_libfabric_srq_open(struct evpl_libfabric_thread_device *tdev)
+{
+    struct evpl_global_config *config = evpl_shared->config;
+    struct fi_rx_attr          attr;
+    int                        rc;
+
+    if (tdev->srq.ep || tdev->srq_unavailable) {
+        return;
+    }
+    if (!config->libfabric_srq_enabled ||
+        !tdev->dev->info->domain_attr->max_ep_srx_ctx) {
+        tdev->srq_unavailable = 1;
+        return;
+    }
+
+    attr           = *tdev->dev->info->rx_attr;
+    attr.size      = config->libfabric_rq_size;
+    attr.iov_limit = 1;
+    tdev->srq.tdev = tdev;
+    rc             = fi_srx_context(tdev->dev->domain, &attr, &tdev->srq.ep, &tdev->srq);
+    if (rc == -FI_ENOSYS || rc == -FI_EOPNOTSUPP || rc == -FI_ENODATA) {
+        tdev->srq_unavailable = 1;
+        evpl_libfabric_debug("shared receives unavailable on %s; using private queues",
+                             tdev->dev->info->domain_attr->name);
+        return;
+    }
+    evpl_libfabric_abort_if(rc, "fi_srx_context(%s): %s",
+                            tdev->dev->info->domain_attr->name, fi_strerror(-rc));
+} /* evpl_libfabric_srq_open */
+
+static void
+evpl_libfabric_receive_setup(
+    struct evpl              *evpl,
+    struct evpl_libfabric_ep *lfep)
+{
+    struct evpl_libfabric_thread_device *tdev = lfep->tdev;
+    int                                  rc;
+
+    evpl_libfabric_cq_open(evpl, tdev, &lfep->recv_cq, lfep);
+    /* Receive completions are mandatory. In particular tcp SRX does not
+     * propagate per-post FI_COMPLETION to selectively completed endpoints. */
+    rc = fi_ep_bind(lfep->ep, &lfep->recv_cq.cq->fid,
+                    FI_RECV);
+    evpl_libfabric_abort_if(rc, "fi_ep_bind(recv cq): %s", fi_strerror(-rc));
+
+    if (!lfep->rdm && tdev->srq.ep) {
+        rc = fi_ep_bind(lfep->ep, &tdev->srq.ep->fid, 0);
+        evpl_libfabric_abort_if(rc, "fi_ep_bind(srq): %s", fi_strerror(-rc));
+        lfep->rq = &tdev->srq;
+        tdev->srq_users++;
+    } else {
+        lfep->private_rq.tdev  = tdev;
+        lfep->private_rq.ep    = lfep->ep;
+        lfep->private_rq.owner = lfep;
+        lfep->rq               = &lfep->private_rq;
+    }
+} /* evpl_libfabric_receive_setup */
 
 /*
  * Send path
@@ -2328,6 +2529,11 @@ evpl_libfabric_ep_setup(
 
     lfep->tdev = tdev;
 
+    evpl_libfabric_srq_open(tdev);
+    if (tdev->srq.ep) {
+        info->ep_attr->rx_ctx_cnt = FI_SHARED_CONTEXT;
+    }
+
     rc = fi_endpoint(dev->domain, info, &lfep->ep, lfep);
 
     evpl_libfabric_abort_if(rc, "fi_endpoint(%s): %s",
@@ -2337,16 +2543,18 @@ evpl_libfabric_ep_setup(
 
     evpl_libfabric_abort_if(rc, "fi_ep_bind(eq): %s", fi_strerror(-rc));
 
-    rc = fi_ep_bind(lfep->ep, &tdev->cq->fid,
-                    FI_TRANSMIT | FI_RECV | FI_SELECTIVE_COMPLETION);
+    rc = fi_ep_bind(lfep->ep, &tdev->cq.cq->fid,
+                    FI_TRANSMIT | FI_SELECTIVE_COMPLETION);
 
     evpl_libfabric_abort_if(rc, "fi_ep_bind(cq): %s", fi_strerror(-rc));
+
+    evpl_libfabric_receive_setup(evpl, lfep);
 
     rc = fi_enable(lfep->ep);
 
     evpl_libfabric_abort_if(rc, "fi_enable: %s", fi_strerror(-rc));
 
-    evpl_libfabric_fill_rq(evpl, lfep);
+    evpl_libfabric_fill_rq(evpl, lfep->rq);
 
     evpl_libfabric_ep_added(evpl, lf, tdev);
 } /* evpl_libfabric_ep_setup */
@@ -2462,8 +2670,8 @@ evpl_libfabric_attach(
     struct evpl_bind *bind,
     void             *accepted)
 {
-    struct evpl_libfabric          *lf       = evpl_libfabric_thread(evpl);
-    struct evpl_libfabric_ep       *lfep     = evpl_bind_private(bind);
+    struct evpl_libfabric          *lf            = evpl_libfabric_thread(evpl);
+    struct evpl_libfabric_ep       *lfep          = evpl_bind_private(bind);
     struct evpl_libfabric_accepted *accepted_info = accepted;
     int                             rc, devindex;
 
@@ -2617,16 +2825,18 @@ evpl_libfabric_bind(
 
     evpl_libfabric_abort_if(rc, "fi_ep_bind(av): %s", fi_strerror(-rc));
 
-    rc = fi_ep_bind(lfep->ep, &tdev->cq->fid,
-                    FI_TRANSMIT | FI_RECV | FI_SELECTIVE_COMPLETION);
+    rc = fi_ep_bind(lfep->ep, &tdev->cq.cq->fid,
+                    FI_TRANSMIT | FI_SELECTIVE_COMPLETION);
 
     evpl_libfabric_abort_if(rc, "fi_ep_bind(cq): %s", fi_strerror(-rc));
+
+    evpl_libfabric_receive_setup(evpl, lfep);
 
     rc = fi_enable(lfep->ep);
 
     evpl_libfabric_abort_if(rc, "fi_enable(rdm): %s", fi_strerror(-rc));
 
-    evpl_libfabric_fill_rq(evpl, lfep);
+    evpl_libfabric_fill_rq(evpl, lfep->rq);
 
     /* connectionless: ready to transmit immediately */
     lfep->connected = 1;
@@ -2659,6 +2869,7 @@ evpl_libfabric_close(
     struct evpl_libfabric_thread_device *tdev = lfep->tdev;
     struct evpl_libfabric_ctx           *ctx;
     struct fid                          *closed_fid = NULL;
+    int                                  rc;
 
     lfep->closed    = 1;
     lfep->connected = 0;
@@ -2671,7 +2882,11 @@ evpl_libfabric_close(
 
     if (lfep->ep) {
         closed_fid = &lfep->ep->fid;
-        fi_close(&lfep->ep->fid);
+        /* Drain completed shared receives before the provider can discard
+         * them at endpoint close, then consume cancellation completions. */
+        evpl_libfabric_poll_cq(evpl, &lfep->recv_cq, 1);
+        rc = fi_close(&lfep->ep->fid);
+        evpl_libfabric_abort_if(rc, "fi_close(ep): %s", fi_strerror(-rc));
         lfep->ep = NULL;
     }
 
@@ -2680,16 +2895,22 @@ evpl_libfabric_close(
         /* completions already queued for this endpoint (including the
          * FI_ECANCELED entries for its posted receives) must be consumed
          * before the bind memory is recycled */
-        evpl_libfabric_poll_cq(evpl, tdev, 1);
+        evpl_libfabric_poll_cq(evpl, &tdev->cq, 1);
         evpl_libfabric_drain_eq(evpl, tdev, closed_fid);
 
-        /* anything the provider dropped without a completion */
-        while (lfep->posted_recvs) {
-            ctx = lfep->posted_recvs;
-            DL_DELETE(lfep->posted_recvs, ctx);
-            lfep->rq_posted--;
-            evpl_iovec_release_internal(evpl, &ctx->iovec);
-            evpl_libfabric_ctx_free(lf, ctx);
+        if (lfep->rq) {
+            evpl_libfabric_poll_cq(evpl, &lfep->recv_cq, 1);
+            evpl_libfabric_cq_close(evpl, &lfep->recv_cq);
+            if (lfep->rq == &tdev->srq) {
+                if (--tdev->srq_users == 0) {
+                    rc = fi_close(&tdev->srq.ep->fid);
+                    evpl_libfabric_abort_if(rc, "fi_close(srq): %s", fi_strerror(-rc));
+                    evpl_libfabric_rq_release(evpl, &tdev->srq);
+                }
+            } else {
+                evpl_libfabric_rq_release(evpl, &lfep->private_rq);
+            }
+            lfep->rq = NULL;
         }
 
         while (lfep->posted_sends) {

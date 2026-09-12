@@ -144,6 +144,7 @@ evpl_global_config_init(void)
     config->xlio_enabled = 1;
 
     config->libfabric_enabled                = 1;
+    config->libfabric_srq_enabled            = 1;
     config->libfabric_provider               = NULL;
     config->libfabric_cq_size                = 8192;
     config->libfabric_tx_size                = 256;
@@ -623,6 +624,14 @@ evpl_global_config_set_libfabric_enabled(
 {
     config->libfabric_enabled = enabled;
 } /* evpl_global_config_set_libfabric_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_libfabric_srq_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->libfabric_srq_enabled = enabled;
+} /* evpl_global_config_set_libfabric_srq_enabled */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_libfabric_provider(

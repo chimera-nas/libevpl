@@ -229,6 +229,13 @@ void evpl_global_config_set_libfabric_enabled(
     struct evpl_global_config *config,
     int                        enabled);
 
+/* Share MSG receive buffers per thread/domain when supported (default on).
+ * A receive CQ per connection preserves completion identity. Disable to use
+ * private receive buffers; RDM always uses private receive queues. */
+void evpl_global_config_set_libfabric_srq_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
 /* Pin the libfabric provider by name (e.g. "verbs", "tcp"); NULL restores
  * libfabric's own auto-selection.  Ignored when an external domain is set.
  */
@@ -244,10 +251,12 @@ void evpl_global_config_set_libfabric_tx_size(
     struct evpl_global_config *config,
     unsigned int               size);
 
+/* Receive buffers per shared queue, or per endpoint without sharing. */
 void evpl_global_config_set_libfabric_rq_size(
     struct evpl_global_config *config,
     unsigned int               size);
 
+/* Refill after at least this many buffers are consumed; clamped to rq_size. */
 void evpl_global_config_set_libfabric_rq_batch(
     struct evpl_global_config *config,
     unsigned int               batch);
