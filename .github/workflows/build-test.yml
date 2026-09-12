@@ -182,7 +182,9 @@ jobs:
               cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
                     ${launcher} \
                     -DREQUIRE_NETNS_TESTS=ON ${{ matrix.cmake_extra }} /workspace
-              ninja
+              # Require the optional SQLite targets so missing dependencies
+              # cannot silently remove their tests from CI.
+              ninja all otel_sqlite_test otel-trace
               ccache --show-stats || true
               ccache --trim-max-size ${CCACHE_MAXSIZE} || true
               rc=0
@@ -356,7 +358,7 @@ jobs:
           brew update
           # openssl@3 and nghttp2 are keg-only; CMakeLists.txt already adds the
           # Homebrew prefixes for them.  uthash is headers only.
-          brew install cmake ninja openssl@3 nghttp2 uthash protobuf-c oras
+          brew install cmake ninja openssl@3 nghttp2 uthash protobuf-c sqlite oras
           oras pull "${CCACHE_REF}" --output "${RUNNER_TEMP}"
           install -m 0755 "${RUNNER_TEMP}/ccache-darwin" /usr/local/bin/ccache
           ccache --version | head -1
@@ -423,7 +425,8 @@ jobs:
           cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
                 -DCMAKE_C_COMPILER_LAUNCHER=ccache \
                 -S "${{ github.workspace }}" -B "${{ runner.temp }}/build"
-          ninja -C "${{ runner.temp }}/build"
+          # Require SQLite coverage here as well as in the Linux images.
+          ninja -C "${{ runner.temp }}/build" all otel_sqlite_test otel-trace
           ccache --show-stats || true
           ccache --trim-max-size "${CCACHE_MAXSIZE}" || true
 
