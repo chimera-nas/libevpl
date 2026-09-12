@@ -51,19 +51,20 @@ struct evpl_framework {
      * if device changes occur, may be called repeatedly on the
      * same buffer, in which case buffer_private will provide
      * the previous returned value, otherwise buffer_private will be NULL
-     * thread_private is the per-thread state returned from create
+     * framework_global is the process-global state returned from init
+     * (registration happens on the shared allocator, not per thread)
      */
 
     void       * (*register_memory)(
         void *buffer,
         int   size,
         void *buffer_private,
-        void *thread_private);
+        void *framework_global);
 
     /* destroy per-memory-buffer state, passed pointer returned from register_memory */
     void         (*unregister_memory)(
         void *buffer_private,
-        void *thread_private);
+        void *framework_global);
 
 
     /* Fetch key and address for registered memory */
@@ -74,10 +75,10 @@ struct evpl_framework {
         uint64_t          *r_address);
 
 
-    /* release per-address state */
+    /* release per-address state; passed the process-global state from init */
     void         (*release_address)(
         void *address_private,
-        void *thread_private);
+        void *framework_global);
 };
 
 

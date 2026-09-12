@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 Ben Jarvis
+#
+# SPDX-License-Identifier: Unlicense
+
+name: Libfabric
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Libfabric ${{ matrix.compiler }} ${{ matrix.build_type }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Debug, Release]
+    env:
+      FI_PROVIDER: tcp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build flex bison pkg-config \
+            uthash-dev libssl-dev libnuma-dev libcurl4-openssl-dev \
+            libfabric-dev libfabric-bin
+      - name: Configure with libfabric required
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=${{ matrix.compiler }}
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DLIBFABRIC_ENABLED=ON
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test tcp MSG and RDM transports
+        run: ctest --test-dir build -R '/libfabric/' --output-on-failure --timeout 60
