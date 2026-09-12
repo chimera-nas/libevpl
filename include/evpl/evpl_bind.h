@@ -22,6 +22,8 @@ struct evpl_notify {
             struct evpl_iovec   *iovec;
             unsigned int         niov;
             unsigned int         length;
+            /* Borrowed until this callback returns; sendto/sendtov retain
+             * it when queuing a reply. */
             struct evpl_address *addr;
         } recv_msg;
         struct {
@@ -43,6 +45,7 @@ typedef void (*evpl_notify_callback_t)(
     struct evpl_notify *notify,
     void               *private_data);
 
+/* Transfers iovec ownership only; destination addresses remain borrowed. */
 #define EVPL_SEND_FLAG_TAKE_REF  0x01
 
 /*
