@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build flex bison pkg-config uthash-dev libssl-dev libfabric-dev libfabric-bin
+          sudo apt-get install -y cmake ninja-build flex bison pkg-config uthash-dev libssl-dev libnuma-dev libfabric-dev libfabric-bin
       - name: Configure with libfabric required
         run: >-
           cmake -S . -B build -G Ninja
