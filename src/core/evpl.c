@@ -656,7 +656,7 @@ evpl_continue(struct evpl *evpl)
         }
 
         if (evpl->poll_mode || (evpl->config.poll_mode && evpl->activity != evpl->last_activity) ||
-            evpl->num_active_events || evpl->num_active_deferrals || evpl->pending_close_binds) {
+            evpl->num_active_events || evpl->num_active_deferrals) {
             msecs = 0;
         }
 
@@ -687,7 +687,7 @@ evpl_continue(struct evpl *evpl)
             evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
         }
 
-        evpl_core_wait(&evpl->core, msecs);
+        (void) evpl_core_wait(&evpl->core, msecs);
 
         if (evpl->loop_hooks.post_wait) {
             evpl->loop_hooks.post_wait(evpl, evpl->loop_hooks.private_data);
@@ -795,6 +795,21 @@ evpl_continue(struct evpl *evpl)
         deferral->callback(evpl, deferral->private_data);
     }
 
+    /* Backends unregister readiness before closing, and retain every live
+     * asynchronous operation. Reclamation therefore needs no empty poll batch. */
+    {
+        struct evpl_bind *next;
+        bind = evpl->pending_close_binds;
+        while (bind) {
+            next = bind->next;
+            if (!bind->outstanding && !(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
+                bind->protocol->close(evpl, bind);
+                evpl_bind_destroy(evpl, bind);
+            }
+            bind = next;
+        }
+    }
+
     if (evpl->loop_hooks.iteration_end) {
         evpl->loop_hooks.iteration_end(evpl, evpl->loop_hooks.private_data);
     }
@@ -899,7 +914,7 @@ evpl_destroy_close_bind(struct evpl *evpl)
     }
 
     /* Pump events until we have no pending close binds */
-    while (evpl->binds || evpl->pending_close_binds) {
+    while (evpl->binds) {
         evpl_continue(evpl);
     }
 

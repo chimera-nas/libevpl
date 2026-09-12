@@ -131,6 +131,7 @@ evpl_socket_pending_close(
     evpl_event_read_disinterest(evpl, &s->event);
     evpl_event_write_disinterest(evpl, &s->event);
 
+    evpl_remove_event(evpl, &s->event);
     close(s->fd);
 
     s->fd = -1;
