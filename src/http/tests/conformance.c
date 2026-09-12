@@ -44,7 +44,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <errno.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <signal.h>
 #include <poll.h>
 #include <time.h>
@@ -485,7 +485,7 @@ record(
 * ------------------------------------------------------------------ */
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     volatile int         run;
     struct evpl_doorbell doorbell;
 };
@@ -843,7 +843,7 @@ server_function(void *ptr)
 
     evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     ctx->run = 1;
 
@@ -3223,10 +3223,10 @@ main(
 
     server.run = 0;
 
-    pthread_create(&server.thread, NULL, server_function, &server);
+    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
 
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     run_request_phase();
@@ -3234,9 +3234,9 @@ main(
     run_status_phase();
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     report();
 

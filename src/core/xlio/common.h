@@ -46,7 +46,7 @@ struct evpl_xlio_api {
     void              *hdl;
     struct xlio_api_t *extra;
     struct ibv_pd     *pd[EVPL_XLIO_MAX_PD];
-    pthread_mutex_t    pd_lock;
+    evpl_mutex_t       pd_lock;
 };
 
 struct evpl_xlio_ring_fd {

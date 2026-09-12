@@ -5,7 +5,7 @@
 #define _GNU_SOURCE
 
 #include <execinfo.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +38,7 @@ struct evpl_iovec_profile_site {
     void    *frames[EVPL_IOVEC_PROFILE_STACK_DEPTH];
 };
 
-static pthread_mutex_t                evpl_iovec_profile_lock = PTHREAD_MUTEX_INITIALIZER;
+static evpl_mutex_t                   evpl_iovec_profile_lock = EVPL_MUTEX_INITIALIZER;
 static struct evpl_iovec_profile_site evpl_iovec_profile_sites[EVPL_IOVEC_PROFILE_MAX_SITES];
 static uint64_t                       evpl_iovec_profile_dropped;
 static int                            evpl_iovec_profile_enabled = -1;
@@ -120,7 +120,7 @@ evpl_iovec_profile_capture(void)
 
     hash = evpl_iovec_profile_hash(frames, depth);
 
-    pthread_mutex_lock(&evpl_iovec_profile_lock);
+    evpl_mutex_lock(&evpl_iovec_profile_lock);
 
     slot = (int) (hash % EVPL_IOVEC_PROFILE_MAX_SITES);
     for (i = 0; i < EVPL_IOVEC_PROFILE_MAX_SITES; i++) {
@@ -130,12 +130,12 @@ evpl_iovec_profile_capture(void)
             site->hash  = hash;
             site->depth = depth;
             memcpy(site->frames, frames, depth * sizeof(void *));
-            pthread_mutex_unlock(&evpl_iovec_profile_lock);
+            evpl_mutex_unlock(&evpl_iovec_profile_lock);
             return (uint32_t) slot + 1;
         }
 
         if (evpl_iovec_profile_same(site, hash, frames, depth)) {
-            pthread_mutex_unlock(&evpl_iovec_profile_lock);
+            evpl_mutex_unlock(&evpl_iovec_profile_lock);
             return (uint32_t) slot + 1;
         }
 
@@ -146,7 +146,7 @@ evpl_iovec_profile_capture(void)
     }
 
     evpl_iovec_profile_dropped++;
-    pthread_mutex_unlock(&evpl_iovec_profile_lock);
+    evpl_mutex_unlock(&evpl_iovec_profile_lock);
     return 0;
 } /* evpl_iovec_profile_capture */
 
@@ -237,7 +237,7 @@ evpl_iovec_profile_dump(const char *reason)
         return;
     }
 
-    pthread_mutex_lock(&evpl_iovec_profile_lock);
+    evpl_mutex_lock(&evpl_iovec_profile_lock);
     count = evpl_iovec_profile_pick_top(top, &total_live, &total_refs);
 
     evpl_core_error("EVPL_IOVEC_PROFILE dump reason=%s total_live_refs=%llu total_refs=%llu dropped_sites=%llu",
@@ -273,7 +273,7 @@ evpl_iovec_profile_dump(const char *reason)
         }
     }
 
-    pthread_mutex_unlock(&evpl_iovec_profile_lock);
+    evpl_mutex_unlock(&evpl_iovec_profile_lock);
 } /* evpl_iovec_profile_dump */
 
 #else /* EVPL_IOVEC_PROFILE */

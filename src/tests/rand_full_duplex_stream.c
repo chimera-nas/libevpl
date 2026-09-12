@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -23,16 +23,16 @@ uint64_t              total_bytes = 128 * 1024 * 1024;
 
 
 struct thread_state {
-    int               run;
-    int               ready;
-    int               index;
-    int64_t           sent;
-    int64_t           recv;
-    pthread_t         thread;
-    pthread_mutex_t   lock;
-    pthread_cond_t    cond;
-    struct evpl_bind *bind;
-    void             *buffer;
+    int                  run;
+    int                  ready;
+    int                  index;
+    int64_t              sent;
+    int64_t              recv;
+    evpl_native_thread_t thread;
+    evpl_mutex_t         lock;
+    evpl_cond_t          cond;
+    struct evpl_bind    *bind;
+    void                *buffer;
 };
 
 
@@ -151,10 +151,10 @@ client_thread(void *arg)
         evpl_connect(evpl, proto, NULL, ep, client_callback, NULL, state);
     }
 
-    pthread_mutex_lock(&state->lock);
+    evpl_mutex_lock(&state->lock);
     state->ready = 1;
-    pthread_cond_signal(&state->cond);
-    pthread_mutex_unlock(&state->lock);
+    evpl_cond_signal(&state->cond);
+    evpl_mutex_unlock(&state->lock);
 
     while (state->run) {
         dispatch(evpl, state);
@@ -216,23 +216,23 @@ main(
         state[i].run   = 1;
         state[i].index = i;
 
-        pthread_mutex_init(&state[i].lock, NULL);
-        pthread_cond_init(&state[i].cond, NULL);
+        evpl_mutex_init(&state[i].lock, NULL);
+        evpl_cond_init(&state[i].cond, NULL);
 
-        pthread_mutex_lock(&state[i].lock);
+        evpl_mutex_lock(&state[i].lock);
 
-        pthread_create(&state[i].thread, NULL, client_thread, &state[i]);
+        evpl_native_thread_create(&state[i].thread, NULL, client_thread, &state[i]);
 
         while (!state[i].ready) {
-            pthread_cond_wait(&state[i].cond, &state[i].lock);
+            evpl_cond_wait(&state[i].cond, &state[i].lock);
         }
 
-        pthread_mutex_unlock(&state[i].lock);
+        evpl_mutex_unlock(&state[i].lock);
 
     }
 
     for (i = 0; i < 2; ++i) {
-        pthread_join(state[i].thread, NULL);
+        evpl_native_thread_join(state[i].thread, NULL);
     }
 
     return 0;

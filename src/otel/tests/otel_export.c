@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <arpa/inet.h>
 
 #include "evpl/evpl.h"
@@ -32,7 +32,7 @@
 /* ------------------------------------------------------------------ server */
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     volatile int         run;
     volatile int         verified;   /* set once the OTLP body checked out */
     volatile int         failed;
@@ -193,7 +193,7 @@ server_function(void *ptr)
     server   = evpl_http_attach(agent, listener, server_dispatch, NULL);
     evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     server_ctx->run = 1;
 
     while (server_ctx->run) {
@@ -227,9 +227,9 @@ main(
     config = evpl_global_config_init();
     evpl_init(config);
 
-    pthread_create(&server.thread, NULL, server_function, &server);
+    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     evpl = evpl_create(NULL);
@@ -260,9 +260,9 @@ main(
     evpl_destroy(evpl);
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     if (server.failed || !server.verified) {
         fprintf(stderr, "otel_export: FAILED (verified=%d failed=%d)\n",

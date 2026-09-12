@@ -13,7 +13,7 @@
 void
 evpl_rdma_mr_table_init(struct evpl_rdma_mr_table *table)
 {
-    pthread_mutex_init(&table->lock, NULL);
+    evpl_mutex_init(&table->lock, NULL);
 
     table->size = EVPL_RDMA_MR_TABLE_INITIAL_SIZE;
 
@@ -38,7 +38,7 @@ evpl_rdma_mr_table_cleanup(struct evpl_rdma_mr_table *table)
     }
 
     evpl_free(table->entries);
-    pthread_mutex_destroy(&table->lock);
+    evpl_mutex_destroy(&table->lock);
 
     table->entries = NULL;
     table->size    = 0;
@@ -81,7 +81,7 @@ evpl_rdma_mr_register(
     mr->base = buffer;
     mr->size = size;
 
-    pthread_mutex_lock(&table->lock);
+    evpl_mutex_lock(&table->lock);
 
     /* Slots are not reused: memory is unregistered only at process shutdown,
      * so a monotonic key costs nothing and makes a stale rkey from a freed
@@ -95,7 +95,7 @@ evpl_rdma_mr_register(
     mr->rkey             = rkey;
     table->entries[rkey] = mr;
 
-    pthread_mutex_unlock(&table->lock);
+    evpl_mutex_unlock(&table->lock);
 
     return mr;
 } /* evpl_rdma_mr_register */
@@ -105,13 +105,13 @@ evpl_rdma_mr_unregister(
     struct evpl_rdma_mr_table *table,
     struct evpl_rdma_mr       *mr)
 {
-    pthread_mutex_lock(&table->lock);
+    evpl_mutex_lock(&table->lock);
 
     if (mr->rkey < table->size) {
         table->entries[mr->rkey] = NULL;
     }
 
-    pthread_mutex_unlock(&table->lock);
+    evpl_mutex_unlock(&table->lock);
 
     evpl_free(mr);
 } /* evpl_rdma_mr_unregister */
@@ -127,14 +127,14 @@ evpl_rdma_mr_validate(
     struct evpl_rdma_mr *mr = NULL;
     uint64_t             base, end;
 
-    pthread_mutex_lock(&table->lock);
+    evpl_mutex_lock(&table->lock);
 
     if (rkey < table->size) {
         mr = table->entries[rkey];
     }
 
     if (!mr) {
-        pthread_mutex_unlock(&table->lock);
+        evpl_mutex_unlock(&table->lock);
         return -EINVAL;
     }
 
@@ -144,11 +144,11 @@ evpl_rdma_mr_validate(
     /* Compared against the extent's own end rather than by adding length to
      * address, so a length chosen to wrap cannot pass. */
     if (address < base || address > end || length > end - address) {
-        pthread_mutex_unlock(&table->lock);
+        evpl_mutex_unlock(&table->lock);
         return -EINVAL;
     }
 
-    pthread_mutex_unlock(&table->lock);
+    evpl_mutex_unlock(&table->lock);
 
     *out_ptr = (void *) address;
 

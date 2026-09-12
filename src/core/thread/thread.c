@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
@@ -35,12 +35,12 @@ extern struct evpl_shared *evpl_shared;
         evpl_abort_if(cond, "thread", __FILE__, __LINE__, __VA_ARGS__)
 
 struct evpl_thread {
-    pthread_t                       thread;
-    pthread_mutex_t                 lock;
-    pthread_cond_t                  cond;
+    evpl_native_thread_t            thread;
+    evpl_mutex_t                    lock;
+    evpl_cond_t                     cond;
     int                             ready;
     /* Stop signal.  Owned by evpl_thread (this struct outlives the worker's
-     * evpl, since it is freed only after pthread_join), so evpl_thread_destroy
+     * evpl, since it is freed only after evpl_native_thread_join), so evpl_thread_destroy
      * can stop the worker by writing this fd without ever dereferencing the
      * worker's evpl -- which the worker creates, runs, and destroys entirely on
      * its own thread.  The event is registered on the worker's evpl and its
@@ -101,10 +101,10 @@ evpl_thread_function(void *ptr)
             evpl_thread->private_data);
     }
 
-    pthread_mutex_lock(&evpl_thread->lock);
+    evpl_mutex_lock(&evpl_thread->lock);
     evpl_thread->ready = 1;
-    pthread_cond_signal(&evpl_thread->cond);
-    pthread_mutex_unlock(&evpl_thread->lock);
+    evpl_cond_signal(&evpl_thread->cond);
+    evpl_mutex_unlock(&evpl_thread->lock);
 
     evpl_run(evpl);
 
@@ -143,34 +143,34 @@ evpl_thread_create(
     evpl_thread_abort_if(evpl_wakeup_open(&evpl_thread->stop_wakeup) < 0,
                          "evpl_thread_create: wakeup open failed");
 
-    pthread_mutex_init(&evpl_thread->lock, NULL);
-    pthread_cond_init(&evpl_thread->cond, NULL);
+    evpl_mutex_init(&evpl_thread->lock, NULL);
+    evpl_cond_init(&evpl_thread->cond, NULL);
 
     /* Give worker threads an explicit 8MB stack: Linux (glibc) defaults
      * there, but macOS pthreads default to 512KB, which deep inline
      * completion chains (e.g. a synchronous backend walking a
      * near-SYMLOOP_MAX symlink chain under ASan) overflow. */
-    pthread_attr_t thread_attr;
-    pthread_attr_init(&thread_attr);
-    pthread_attr_setstacksize(&thread_attr, 8 * 1024 * 1024);
+    evpl_native_thread_attr_t thread_attr;
+    evpl_native_thread_attr_init(&thread_attr);
+    evpl_native_thread_attr_setstacksize(&thread_attr, 8 * 1024 * 1024);
 
     /* If the thread is never created, the ready-wait below would block
      * forever, so a creation failure must abort rather than fall through. */
     rc = evpl_pthread_create(&evpl_thread->thread, &thread_attr,
                              evpl_thread_function, evpl_thread);
 
-    pthread_attr_destroy(&thread_attr);
+    evpl_native_thread_attr_destroy(&thread_attr);
 
-    evpl_thread_abort_if(rc, "evpl_thread_create: pthread_create failed: %s",
+    evpl_thread_abort_if(rc, "evpl_thread_create: evpl_native_thread_create failed: %s",
                          strerror(rc));
 
-    pthread_mutex_lock(&evpl_thread->lock);
+    evpl_mutex_lock(&evpl_thread->lock);
 
     while (!evpl_thread->ready) {
-        pthread_cond_wait(&evpl_thread->cond, &evpl_thread->lock);
+        evpl_cond_wait(&evpl_thread->cond, &evpl_thread->lock);
     }
 
-    pthread_mutex_unlock(&evpl_thread->lock);
+    evpl_mutex_unlock(&evpl_thread->lock);
 
     return evpl_thread;
 } /* evpl_thread_create */
@@ -189,7 +189,7 @@ evpl_thread_destroy(struct evpl_thread *evpl_thread)
                          "evpl_thread_destroy: stop wakeup signal failed: "
                          "len=%zd errno=%d (%s)", len, errno, strerror(errno));
 
-    pthread_join(evpl_thread->thread, NULL);
+    evpl_native_thread_join(evpl_thread->thread, NULL);
 
     evpl_wakeup_close(&evpl_thread->stop_wakeup);
 

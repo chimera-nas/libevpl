@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -52,7 +52,7 @@ static volatile int g_server_hdrs_refused;
 /* ------------------------------------------------------------- evpl server */
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     volatile int         run;
     struct evpl_doorbell doorbell;
 };
@@ -149,7 +149,7 @@ server_function(void *ptr)
 
     evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     server_ctx->run = 1;
 
@@ -445,7 +445,7 @@ raw_server_function(void *ptr)
 static int
 test_inbound_client_limit(struct evpl *evpl)
 {
-    pthread_t                 raw_thread;
+    evpl_native_thread_t      raw_thread;
     struct evpl_http_agent   *agent;
     struct evpl_endpoint     *endpoint;
     struct evpl_http_conn    *conn;
@@ -455,7 +455,7 @@ test_inbound_client_limit(struct evpl *evpl)
 
     memset(&rc, 0, sizeof(rc));
 
-    pthread_create(&raw_thread, NULL, raw_server_function, NULL);
+    evpl_native_thread_create(&raw_thread, NULL, raw_server_function, NULL);
     usleep(100000); /* let the raw server reach accept() */
 
     agent = evpl_http_init(evpl);
@@ -477,7 +477,7 @@ test_inbound_client_limit(struct evpl *evpl)
         evpl_continue(evpl);
     }
 
-    pthread_join(raw_thread, NULL);
+    evpl_native_thread_join(raw_thread, NULL);
 
     evpl_http_destroy(agent);
 
@@ -523,10 +523,10 @@ main(
 
     server.run = 0;
 
-    pthread_create(&server.thread, NULL, server_function, &server);
+    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
 
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     /* bound event waits so the part-3 pump loop keeps ticking when idle */
@@ -553,9 +553,9 @@ main(
     evpl_destroy(evpl);
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     if (rc == 0) {
         fprintf(stderr, "all header limit checks ok\n");

@@ -82,7 +82,7 @@ evpl_xlio_init()
     snprintf(tmp, sizeof(tmp), "%lu", evpl_shared->config->slab_size);
     setenv("XLIO_MEMORY_LIMIT", tmp, 1);
 
-    pthread_mutex_init(&api->pd_lock, NULL);
+    evpl_mutex_init(&api->pd_lock, NULL);
 
     api->hdl = dlopen("/usr/local/lib/libxlio.so", RTLD_LAZY);
 
@@ -395,7 +395,7 @@ evpl_xlio_attach_pd(
     struct ibv_pd       **cur_pd;
     int                   i;
 
-    pthread_mutex_lock(&api->pd_lock);
+    evpl_mutex_lock(&api->pd_lock);
 
     for (i = 0, cur_pd = api->pd; *cur_pd; i++, cur_pd++) {
         if (*cur_pd == pd) {
@@ -408,7 +408,7 @@ evpl_xlio_attach_pd(
         evpl_allocator_reregister(evpl_shared->allocator);
     }
 
-    pthread_mutex_unlock(&api->pd_lock);
+    evpl_mutex_unlock(&api->pd_lock);
 
     return i;
 } /* evpl_xlio_attach_pd */

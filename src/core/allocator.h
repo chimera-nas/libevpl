@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #define EVPL_INTERNAL 1
 
@@ -19,7 +19,7 @@ struct evpl_allocator {
     struct evpl_slab                   *slabs;
     struct evpl_buffer                 *free_buffers;
     int                                 hugepages;
-    pthread_mutex_t                     lock;
+    evpl_mutex_t                        lock;
 
     /* Preallocation pool — keeps free_buffer_count >= target_buffers
      * by waking worker threads to mmap+register slabs out of the IO
@@ -32,9 +32,9 @@ struct evpl_allocator {
     int                                 wakeup_credits; /* signaled, not yet claimed */
     int                                 num_prealloc_threads;
     int                                 shutdown;
-    pthread_t                          *prealloc_threads;
-    pthread_cond_t                      producer_cv;
-    pthread_cond_t                      consumer_cv;
+    evpl_native_thread_t               *prealloc_threads;
+    evpl_cond_t                         producer_cv;
+    evpl_cond_t                         consumer_cv;
 
     /* Diagnostic metrics, registered on libevpl's internal metrics
      * registry by evpl_allocator_register_metrics() at create time and

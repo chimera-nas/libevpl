@@ -52,7 +52,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <errno.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <signal.h>
 #include <poll.h>
 #include <time.h>
@@ -856,11 +856,11 @@ build_response(
 * ------------------------------------------------------------------ */
 
 struct raw_server {
-    pthread_t    thread;
-    int          listen_fd;
-    volatile int case_index; /* set by the driver before the client connects */
-    volatile int ready;      /* the thread is in accept(), waiting for one    */
-    volatile int case_done;  /* set by the driver when it has finished a case */
+    evpl_native_thread_t thread;
+    int                  listen_fd;
+    volatile int         case_index; /* set by the driver before the client connects */
+    volatile int         ready; /* the thread is in accept(), waiting for one    */
+    volatile int         case_done; /* set by the driver when it has finished a case */
 };
 
 static struct raw_server g_raw;
@@ -1249,7 +1249,7 @@ raw_server_function(void *ptr)
     for (i = 0; i <= HTTP_NUM_CLIENT_CASES; i++) {
 
         raw->ready = 1;
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
 
         fd = accept(raw->listen_fd, NULL, NULL);
 
@@ -1786,7 +1786,7 @@ run_client_case(
 
     g_raw.case_index = (int) index;
     g_raw.case_done  = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     conn = evpl_http_client_connect(agent, EVPL_STREAM_SOCKET_TCP, endpoint,
                                     EVPL_HTTP_VERSION_HTTP1, ctx);
@@ -1797,7 +1797,7 @@ run_client_case(
                 http_client_defect_name(c->defect));
         g_results.unexpected++;
         g_raw.case_done = 1;
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
         return;
     }
 
@@ -1883,7 +1883,7 @@ run_client_case(
     }
 
     g_raw.case_done = 1;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     deadline = now_ms() + 20;
 
@@ -1928,7 +1928,7 @@ run_api_cases(
 
     g_raw.case_index = (int) HTTP_NUM_CLIENT_CASES;
     g_raw.case_done  = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     conn = evpl_http_client_connect(agent, EVPL_STREAM_SOCKET_TCP, endpoint,
                                     EVPL_HTTP_VERSION_HTTP1, ctx1);
@@ -1998,7 +1998,7 @@ run_api_cases(
     evpl_http_client_close(agent, conn);
 
     g_raw.case_done = 1;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 } /* run_api_cases */
 
 /* ------------------------------------------------------------------ *
@@ -2089,7 +2089,7 @@ main(
 
     evpl_init(NULL);
 
-    pthread_create(&g_raw.thread, NULL, raw_server_function, &g_raw);
+    evpl_native_thread_create(&g_raw.thread, NULL, raw_server_function, &g_raw);
 
     /* Bound event waits so the per-case pump keeps ticking while nothing is
      * arriving, which is what lets a case reach its deadline. */
@@ -2106,7 +2106,7 @@ main(
 
     run_api_cases(evpl, agent, endpoint);
 
-    pthread_join(g_raw.thread, NULL);
+    evpl_native_thread_join(g_raw.thread, NULL);
     close(g_raw.listen_fd);
 
     evpl_http_destroy(agent);

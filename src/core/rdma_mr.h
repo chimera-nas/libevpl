@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 /*
  * Memory registration for transports that emulate RDMA inside one address
@@ -35,7 +35,7 @@ struct evpl_rdma_mr_table {
     struct evpl_rdma_mr **entries;    /* NULL slot == unused */
     uint32_t              size;       /* power of two */
     uint32_t              next_rkey;  /* slots are never reused */
-    pthread_mutex_t       lock;
+    evpl_mutex_t          lock;
 };
 
 void

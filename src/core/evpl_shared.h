@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #define EVPL_INTERNAL 1
 
@@ -17,7 +17,7 @@
 struct evpl_allocator;
 
 struct evpl_shared {
-    pthread_mutex_t              lock;
+    evpl_mutex_t                 lock;
     struct evpl_global_config   *config;
     struct evpl_numa_config     *numa_config;
     struct evpl_endpoint        *endpoints;
@@ -111,7 +111,7 @@ evpl_attach_framework_shared(enum evpl_framework_id framework_id)
 {
     struct evpl_framework *framework = evpl_shared->framework[framework_id];
 
-    pthread_mutex_lock(&evpl_shared->lock);
+    evpl_mutex_lock(&evpl_shared->lock);
 
     if (!evpl_shared->framework_private[framework->id]) {
 
@@ -122,5 +122,5 @@ evpl_attach_framework_shared(enum evpl_framework_id framework_id)
         }
     }
 
-    pthread_mutex_unlock(&evpl_shared->lock);
+    evpl_mutex_unlock(&evpl_shared->lock);
 } /* evpl_attach_framework_shared */
