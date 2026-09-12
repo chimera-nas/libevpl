@@ -26,9 +26,23 @@ unit_test_bin_all_mechs(libfabric hello_world_msg hello_world_msg -r DATAGRAM_LI
 unit_test_bin_all_mechs(libfabric ping_pong_msg ping_pong_msg -r DATAGRAM_LIBFABRIC_RDM)
 unit_test_bin_all_mechs(libfabric bulk_msg bulk_msg -r DATAGRAM_LIBFABRIC_RDM)
 
-# The only test that opens libfabric objects itself (the external-domain
-# handoff), so it links libfabric directly and needs the test harness
-# include path for test_common.h.
-unit_test(libfabric external_domain external_domain.c)
+# External-domain tests open libfabric objects and link it directly.
+unit_test_all_mechs(libfabric external_domain external_domain.c)
 target_include_directories(libfabric_external_domain PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
 target_link_libraries(libfabric_external_domain fabric)
+
+# Real-provider sharing, completion routing, close/reopen, and refill retry.
+unit_test_all_mechs(libfabric shared_receive shared_receive.c)
+target_include_directories(libfabric_shared_receive PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
+target_link_libraries(libfabric_shared_receive fabric)
+foreach(mode disabled unsupported eagain)
+    foreach(mech ${EVPL_MECHANISMS})
+        add_test(NAME libevpl/libfabric/shared_receive_${mode}_${mech}
+                 COMMAND $<TARGET_FILE:libfabric_shared_receive>)
+        set_tests_properties(libevpl/libfabric/shared_receive_${mode}_${mech}
+            PROPERTIES RESOURCE_LOCK evpl_net
+            ENVIRONMENT "EVPL_TEST_CORE_MECH=${mech}")
+        set_property(TEST libevpl/libfabric/shared_receive_${mode}_${mech}
+                     APPEND PROPERTY ENVIRONMENT EVPL_TEST_SRQ_MODE=${mode})
+    endforeach()
+endforeach()

@@ -93,6 +93,7 @@ struct evpl_global_config {
     unsigned int              xlio_enabled;
 
     unsigned int              libfabric_enabled;
+    unsigned int              libfabric_srq_enabled;
     char                     *libfabric_provider;
     unsigned int              libfabric_cq_size;
     unsigned int              libfabric_tx_size;
