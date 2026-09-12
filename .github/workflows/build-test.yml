@@ -492,3 +492,45 @@ jobs:
               exit 1
             fi
           done
+
+  native:
+    name: MSVC ${{ matrix.arch }} ${{ matrix.config }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-2022, arch: x64, config: Debug}
+          - {runner: windows-2022, arch: x64, config: Release}
+          - {runner: windows-11-arm, arch: ARM64, config: Debug}
+          - {runner: windows-11-arm, arch: ARM64, config: Release}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install headers
+        shell: pwsh
+        run: |
+          $headers = "$env:RUNNER_TEMP/uthash"
+          New-Item -ItemType Directory -Force $headers | Out-Null
+          foreach ($header in @('uthash.h', 'utlist.h')) {
+            Invoke-WebRequest "https://raw.githubusercontent.com/troydhanson/uthash/e493aa90a2833b4655927598f169c31cfcdf7861/src/$header" -OutFile "$headers/$header"
+          }
+      - name: Configure native core
+        shell: pwsh
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} -DEVPL_CORE_ONLY=ON "-DUTHASH_INCLUDE_DIR=$env:RUNNER_TEMP/uthash"
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
+      - name: Test native core
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error --timeout 60 --output-junit results.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-${{ matrix.arch }}-${{ matrix.config }}
+          path: |
+            build/results.xml
+            build/Testing/Temporary/
+          if-no-files-found: ignore
