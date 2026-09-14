@@ -478,6 +478,7 @@ evpl_io_uring_close(
     struct evpl_io_uring_socket  *s   = evpl_bind_private(bind);
 
     (void) ctx;
+    (void) s;
     evpl_core_assert(!s->recv_req && !s->accept_req && !bind->outstanding);
 } /* evpl_io_uring_tcp_close */
 

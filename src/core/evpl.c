@@ -349,7 +349,7 @@ evpl_shared_init(struct evpl_global_config *config)
 } /* evpl_shared_init */
 
 void
-evpl_cleanup()
+evpl_cleanup(void)
 {
     struct evpl_endpoint *endpoint;
     unsigned int          i;

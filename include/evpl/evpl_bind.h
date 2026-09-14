@@ -227,7 +227,7 @@ EVPL_API void evpl_bind_get_remote_address(
     char             *str,
     int               len);
 
-enum evpl_protocol_id evpl_bind_get_protocol(
+EVPL_API enum evpl_protocol_id evpl_bind_get_protocol(
     struct evpl_bind *bind);
 
 EVPL_API int evpl_bind_is_rdma(

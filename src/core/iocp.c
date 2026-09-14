@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Ben Jarvis
 // SPDX-License-Identifier: LGPL-2.1-only
 #include "core/evpl.h"
+#include "core/logging.h"
 #include "core/iocp.h"
 #include "core/macros.h"
 

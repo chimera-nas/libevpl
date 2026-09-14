@@ -245,7 +245,9 @@ evpl_global_config_set_huge_page_size(
     struct evpl_global_config *config,
     uint64_t                   size)
 {
+#ifdef __linux__
     char path[64];
+#endif
 
     /* A hugetlb page size is always a power of two strictly larger than the
      * base page.  Bound it sanely (the largest real page on any arch today is
@@ -266,6 +268,7 @@ evpl_global_config_set_huge_page_size(
     /* Warn (but accept) if the running kernel exposes no hugetlb pool of this
      * size: the slab mmap will simply fall back to base pages.  This is a soft
      * check so a sandboxed /sys does not block a legitimate size. */
+#ifdef __linux__
     snprintf(path, sizeof(path), "/sys/kernel/mm/hugepages/hugepages-%llukB",
              (unsigned long long) (size / 1024));
     if (access(path, F_OK) != 0) {
@@ -274,6 +277,8 @@ evpl_global_config_set_huge_page_size(
             "fall back to base pages unless one is reserved",
             (unsigned long long) (size / 1024), path);
     }
+
+#endif
 
     config->huge_page_size = size;
 } /* evpl_global_config_set_huge_page_size */

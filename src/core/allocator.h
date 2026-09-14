@@ -82,7 +82,7 @@ evpl_allocator_alloc_slab(
     struct evpl_allocator *allocator,
     void                 **slab_private);
 
-void
+EVPL_API void
 evpl_allocator_free(
     struct evpl_allocator *allocator,
     struct evpl_buffer    *buffer);

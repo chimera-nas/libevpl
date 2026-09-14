@@ -852,7 +852,7 @@ evpl_rdmacm_poll_cq(
 
                         if (wc_flags & IBV_WC_GRH) {
                             req->iovec.length -= 40;
-                            req->iovec.data    = (char *) iovec.data + 40;
+                            req->iovec.data    = (char *) req->iovec.data + 40;
                         }
 
                         rdmacm_id->dbg_req_recv++;

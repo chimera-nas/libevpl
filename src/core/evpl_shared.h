@@ -98,11 +98,11 @@ evpl_ticks_to_ns(uint64_t ticks)
     return stopwatch_ticks_to_ns(&evpl_shared->hf_stopwatch, ticks);
 } /* evpl_ticks_to_ns */
 
-struct prometheus_gauge_series * evpl_rpc2_queue_depth_create_series(
+EVPL_API struct prometheus_gauge_series * evpl_rpc2_queue_depth_create_series(
     const char *role,
     const char *thread);
 
-void evpl_rpc2_queue_depth_destroy_series(
+EVPL_API void evpl_rpc2_queue_depth_destroy_series(
     struct prometheus_gauge_series *series);
 
 

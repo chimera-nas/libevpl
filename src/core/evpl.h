@@ -43,7 +43,7 @@ struct evpl_thread_config {
  * than public API: the value is set through
  * evpl_global_config_set_rpc2_max_message_size() like every other knob.
  */
-unsigned int
+EVPL_API unsigned int
 evpl_config_rpc2_max_message_size(
     void);
 
@@ -116,7 +116,7 @@ struct evpl_global_config {
 /* Read the configured HTTP header block limit from the live global config.
  * Exported so the http module (a separate library that cannot see the
  * hidden evpl_shared symbol) can fetch it at agent init. */
-unsigned int
+EVPL_API unsigned int
 evpl_global_config_get_http_max_header_size(
     void);
 

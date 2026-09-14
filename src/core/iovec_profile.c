@@ -6,7 +6,9 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 
+#ifndef _WIN32
 #include <execinfo.h>
+#endif
 #include "evpl/evpl_platform.h"
 #include <stdint.h>
 #include <stdio.h>
