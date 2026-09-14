@@ -475,7 +475,7 @@ evpl_iovec_ring_append(
         }
     }
 
-    append->data    = (char *) append->data + length;
+    append->data    = append->length == length ? NULL : (char *) append->data + length;
     append->length -= length;
 
     ring->length += length;

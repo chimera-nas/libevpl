@@ -240,20 +240,21 @@ struct evpl_listener {
     int                            rotor;
 };
 
-void * evpl_malloc(
+EVPL_API void * evpl_malloc(
     unsigned int size);
-void * evpl_zalloc(
+EVPL_API void * evpl_zalloc(
     unsigned int size);
-void * evpl_calloc(
+EVPL_API void * evpl_calloc(
     unsigned int n,
     unsigned int size);
-void * evpl_realloc(
+EVPL_API void * evpl_realloc(
     void        *p,
     unsigned int size);
-void * evpl_valloc(
+EVPL_API void * evpl_valloc(
     unsigned int size,
     unsigned int alignment);
-void evpl_free(
+EVPL_API char *evpl_strdup(const char *str);
+EVPL_API void evpl_free(
     void *p);
 
 void
