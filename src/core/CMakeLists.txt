@@ -64,7 +64,7 @@ add_subdirectory(inproc)
 # Block I/O over plain pread()/pwrite() on a per-device service thread.  Needs
 # no kernel async facility either, so it is the block backend that exists
 # everywhere -- notably macOS, which has nothing io_uring/libaio-shaped.
-if(NOT EVPL_BOOTSTRAP_NATIVE)
+if(NOT EVPL_BOOTSTRAP_NATIVE OR WIN32)
 set(CORE_SRC ${CORE_SRC} pread/pread_block.c pread/pread.h)
 add_subdirectory(pread)
 endif()

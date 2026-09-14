@@ -284,7 +284,7 @@ evpl_shared_init(struct evpl_global_config *config)
      * no kernel async facility, so like the socket protocols it is always
      * present rather than gated on a build option -- it is the only block
      * backend on platforms without io_uring or libaio. */
-#ifndef EVPL_BOOTSTRAP_NATIVE
+#if !defined(EVPL_BOOTSTRAP_NATIVE) || defined(_WIN32)
     if (config->pread_enabled) {
         evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_PREAD,
                                  &evpl_block_protocol_pread);

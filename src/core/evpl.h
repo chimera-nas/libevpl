@@ -268,7 +268,8 @@ EVPL_API void * evpl_realloc(
 EVPL_API void * evpl_valloc(
     unsigned int size,
     unsigned int alignment);
-EVPL_API char *evpl_strdup(const char *str);
+EVPL_API char * evpl_strdup(
+    const char *str);
 EVPL_API void evpl_free(
     void *p);
 
@@ -284,15 +285,15 @@ evpl_destroy_close_bind(
 
 /* Exported (defined in poll.c); also declared in the public evpl/evpl_poll.h so
  * out-of-tree consumers can use them.  See evpl_poll.h for semantics. */
-void
+EVPL_API void
 evpl_activity(
     struct evpl *evpl);
 
-void
+EVPL_API void
 evpl_poll_pin(
     struct evpl *evpl);
 
-void
+EVPL_API void
 evpl_poll_unpin(
     struct evpl *evpl);
 

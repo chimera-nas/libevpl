@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include "core/os.h"
+#include "tests/test_file.h"
 /*
  * Round-trip the pread block backend on a single thread: sized correctly,
  * writes land where they were addressed, reads bring back what was written,
@@ -76,15 +77,15 @@ main(
 
     test_evpl_config();
 
-    fd = open(DEVICE_PATH, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    fd = evpl_test_open(DEVICE_PATH, O_RDWR | O_CREAT | O_TRUNC, 0644);
 
     evpl_test_abort_if(fd < 0, "failed to create " DEVICE_PATH);
 
-    rc = ftruncate(fd, DEVICE_SIZE);
+    rc = evpl_test_truncate(fd, DEVICE_SIZE);
 
     evpl_test_abort_if(rc < 0, "failed to size " DEVICE_PATH);
 
-    close(fd);
+    evpl_test_close(fd);
 
     evpl = evpl_create(NULL);
 
@@ -189,18 +190,24 @@ main(
                                               "pread_basic_absent.img"),
                        "opening a nonexistent path produced a device");
 
-    unlink(FIFO_PATH);
+#ifndef _WIN32
+    evpl_test_unlink(FIFO_PATH);
 
     if (mkfifo(FIFO_PATH, 0644) == 0) {
         evpl_test_abort_if(evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD,
                                                   FIFO_PATH),
                            "opening a fifo produced a device");
-        unlink(FIFO_PATH);
+        evpl_test_unlink(FIFO_PATH);
     }
+
+#endif /* ifndef _WIN32 */
+
+    evpl_test_abort_if(evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD, "."),
+                       "opening a directory produced a device");
 
     evpl_destroy(evpl);
 
-    unlink(DEVICE_PATH);
+    evpl_test_unlink(DEVICE_PATH);
 
     return 0;
 } /* main */

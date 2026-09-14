@@ -41,7 +41,9 @@
 #include <fcntl.h>
 #include "evpl/evpl_platform.h"
 #include <string.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
+#endif /* ifndef _WIN32 */
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -97,8 +99,16 @@ struct evpl_pread_request {
     struct evpl_pread_request *next;
 };
 
+#ifdef _WIN32
+typedef HANDLE evpl_pread_fd;
+#define evpl_pread_close_fd CloseHandle
+#else  /* ifdef _WIN32 */
+typedef int evpl_pread_fd;
+#define evpl_pread_close_fd close
+#endif /* ifdef _WIN32 */
+
 struct evpl_pread_device {
-    int                        fd;
+    evpl_pread_fd              fd;
 
     evpl_native_thread_t       thread;
     int                        thread_started;
@@ -195,21 +205,48 @@ evpl_pread_request_free(
  */
 static int
 evpl_pread_transfer(
-    int                        fd,
+    evpl_pread_fd              fd,
     struct evpl_pread_request *req,
     int                        is_write)
 {
-    uint64_t offset = req->offset;
-    ssize_t  len;
-    char    *base;
-    size_t   left;
-    int      i;
+    uint64_t      offset = req->offset;
+    ssize_t       len;
+
+#ifdef _WIN32
+    LARGE_INTEGER position;
+    DWORD         transferred;
+    BOOL          success;
+    if (offset > INT64_MAX) {
+        return EINVAL;
+    }
+    position.QuadPart = (LONGLONG) offset;
+    /* Only the device service thread uses this synchronous handle, so its
+     * file position cannot race another queue. The evpl threads never block. */
+    if (!SetFilePointerEx(fd, position, NULL, FILE_BEGIN)) {
+        return evpl_windows_error(GetLastError());
+    }
+#endif /* ifdef _WIN32 */
+    char  *base;
+    size_t left;
+    int    i;
 
     for (i = 0; i < req->niov; i++) {
         base = req->iov[i].iov_base;
         left = req->iov[i].iov_len;
 
         while (left) {
+#ifdef _WIN32
+            DWORD amount = left > MAXDWORD ? MAXDWORD : (DWORD) left;
+            if (is_write) {
+                success = WriteFile(fd, base, amount, &transferred, NULL);
+            } else {
+                success = ReadFile(fd, base, amount, &transferred, NULL);
+            }
+            if (!success) {
+                return evpl_windows_error(GetLastError());
+            }
+            len = transferred;
+#else  /* ifdef _WIN32 */
             if (is_write) {
                 len = pwrite(fd, base, left, offset);
             } else {
@@ -222,6 +259,8 @@ evpl_pread_transfer(
                 }
                 return errno;
             }
+
+#endif /* ifdef _WIN32 */
 
             if (len == 0) {
                 /* End of device with bytes still owed. */
@@ -238,8 +277,11 @@ evpl_pread_transfer(
 } /* evpl_pread_transfer */
 
 static int
-evpl_pread_sync(int fd)
+evpl_pread_sync(evpl_pread_fd fd)
 {
+#ifdef _WIN32
+    return FlushFileBuffers(fd) ? 0 : evpl_windows_error(GetLastError());
+#else  /* ifdef _WIN32 */
     int rc;
 
     do {
@@ -260,6 +302,7 @@ evpl_pread_sync(int fd)
     } while (rc < 0 && errno == EINTR);
 
     return rc < 0 ? errno : 0;
+#endif /* ifdef _WIN32 */
 } /* evpl_pread_sync */
 
 /*
@@ -587,7 +630,7 @@ evpl_pread_close_device(struct evpl_block_device *bdev)
     evpl_cond_destroy(&dev->cond);
     evpl_mutex_destroy(&dev->lock);
 
-    close(dev->fd);
+    evpl_pread_close_fd(dev->fd);
 
     evpl_free(dev);
     evpl_free(bdev);
@@ -597,6 +640,7 @@ evpl_pread_close_device(struct evpl_block_device *bdev)
  * Size of the thing behind the fd.  A regular file is its own length; a raw
  * disk has to be asked, and the two platforms ask differently.
  */
+#ifndef _WIN32
 static int
 evpl_pread_device_size(
     int          fd,
@@ -641,6 +685,7 @@ evpl_pread_device_size(
 
     return -1;
 } /* evpl_pread_device_size */
+#endif /* ifndef _WIN32 */
 
 static struct evpl_block_device *
 evpl_pread_open_device(
@@ -649,12 +694,40 @@ evpl_pread_open_device(
 {
     struct evpl_block_device *bdev;
     struct evpl_pread_device *dev;
+
+#ifdef _WIN32
+    wchar_t                  *path;
+    int                       nchars;
+    LARGE_INTEGER             size;
+#else  /* ifdef _WIN32 */
     struct stat               st;
+#endif /* ifdef _WIN32 */
     int                       rc;
 
     bdev = evpl_zalloc(sizeof(*bdev));
     dev  = evpl_zalloc(sizeof(*dev));
 
+#ifdef _WIN32
+    nchars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, uri, -1, NULL, 0);
+    if (!nchars) {
+        evpl_free(dev); evpl_free(bdev); return NULL;
+    }
+    path = evpl_calloc(nchars, sizeof(*path));
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, uri, -1, path, nchars);
+    dev->fd = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                          NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    evpl_free(path);
+    if (dev->fd == INVALID_HANDLE_VALUE) {
+        evpl_pread_error("failed to open %s: Windows error %lu", uri, GetLastError());
+        evpl_free(dev); evpl_free(bdev); return NULL;
+    }
+    if (GetFileType(dev->fd) != FILE_TYPE_DISK || !GetFileSizeEx(dev->fd, &size) || size.QuadPart < 0) {
+        evpl_pread_error("failed to size %s: Windows error %lu", uri, GetLastError());
+        CloseHandle(dev->fd); evpl_free(dev); evpl_free(bdev); return NULL;
+    }
+    bdev->size = (uint64_t) size.QuadPart;
+#else  /* ifdef _WIN32 */
     dev->fd = open(uri, O_RDWR);
 
     if (dev->fd < 0) {
@@ -667,11 +740,13 @@ evpl_pread_open_device(
     if (fstat(dev->fd, &st) < 0 ||
         evpl_pread_device_size(dev->fd, &st, &bdev->size) < 0) {
         evpl_pread_error("failed to size %s: %s", uri, strerror(errno));
-        close(dev->fd);
+        evpl_pread_close_fd(dev->fd);
         evpl_free(dev);
         evpl_free(bdev);
         return NULL;
     }
+
+#endif /* ifdef _WIN32 */
 
     evpl_mutex_init(&dev->lock, NULL);
     evpl_cond_init(&dev->cond, NULL);
@@ -683,7 +758,7 @@ evpl_pread_open_device(
                          uri, strerror(rc));
         evpl_cond_destroy(&dev->cond);
         evpl_mutex_destroy(&dev->lock);
-        close(dev->fd);
+        evpl_pread_close_fd(dev->fd);
         evpl_free(dev);
         evpl_free(bdev);
         return NULL;
