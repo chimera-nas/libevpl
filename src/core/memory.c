@@ -152,12 +152,14 @@ evpl_free(void *p)
 
 #endif /* ifdef _WIN32 */
 
-SYMBOL_EXPORT char *evpl_strdup(const char *str)
+SYMBOL_EXPORT char *
+evpl_strdup(const char *str)
 {
     size_t size = strlen(str) + 1;
-    char *copy;
+    char  *copy;
+
     evpl_core_abort_if(size > UINT_MAX, "string too long");
     copy = evpl_malloc((unsigned int) size);
     memcpy(copy, str, size);
     return copy;
-}
+} /* evpl_strdup */

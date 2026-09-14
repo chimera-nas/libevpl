@@ -5,39 +5,51 @@
 #include "evpl/evpl.h"
 #include "tests/test_common.h"
 
-static void notified(struct evpl *evpl, struct evpl_bind *bind,
-                     struct evpl_notify *notify, void *private_data)
+static void
+notified(
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
     unsigned int *disconnected = private_data;
+
     (void) evpl;
     (void) bind;
-    if (notify->notify_type == EVPL_NOTIFY_DISCONNECTED) (*disconnected)++;
-}
-static void expired(struct evpl *evpl, struct evpl_timer *timer)
+    if (notify->notify_type == EVPL_NOTIFY_DISCONNECTED) {
+        (*disconnected)++;
+    }
+} /* notified */
+static void
+expired(
+    struct evpl       *evpl,
+    struct evpl_timer *timer)
 {
     evpl_stop(evpl);
     (void) timer;
-}
-int main(void)
+} /* expired */
+int
+main(void)
 {
-    SOCKET probe;
-    struct sockaddr_in address = {0};
-    int address_length = sizeof(address);
-    struct evpl *evpl;
-    struct evpl_bind *sender;
+    SOCKET                probe;
+    struct sockaddr_in    address        = { 0 };
+    int                   address_length = sizeof(address);
+    struct evpl          *evpl;
+    struct evpl_bind     *sender;
     struct evpl_endpoint *local, *remote;
-    struct evpl_timer timer;
-    unsigned int disconnected = 0;
+    struct evpl_timer     timer;
+    unsigned int          disconnected = 0;
+
     test_evpl_config();
     probe = socket(AF_INET, SOCK_DGRAM, 0);
     evpl_test_abort_if(probe == INVALID_SOCKET, "probe socket failed");
-    address.sin_family = AF_INET;
+    address.sin_family      = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     evpl_test_abort_if(bind(probe, (struct sockaddr *) &address, sizeof(address)) ||
                        getsockname(probe, (struct sockaddr *) &address, &address_length), "probe bind failed");
     closesocket(probe);
-    evpl = evpl_create(NULL);
-    local = evpl_endpoint_create("127.0.0.1", 0);
+    evpl   = evpl_create(NULL);
+    local  = evpl_endpoint_create("127.0.0.1", 0);
     remote = evpl_endpoint_create("127.0.0.1", ntohs(address.sin_port));
     sender = evpl_bind(evpl, EVPL_DATAGRAM_SOCKET_UDP, local, notified, &disconnected);
     evpl_test_abort_if(!sender, "sender bind failed");
@@ -50,4 +62,4 @@ int main(void)
     evpl_endpoint_close(remote);
     evpl_test_abort_if(disconnected != 1, "destroy did not finish UDP teardown");
     return 0;
-}
+} /* main */
