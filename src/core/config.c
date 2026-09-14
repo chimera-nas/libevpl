@@ -338,7 +338,7 @@ evpl_global_config_set_tls_cert(
         evpl_free(config->tls_cert_file);
     }
 
-    config->tls_cert_file = strdup(cert_file);
+    config->tls_cert_file = evpl_strdup(cert_file);
 } /* evpl_global_config_set_tls_cert */
 
 SYMBOL_EXPORT void
@@ -350,7 +350,7 @@ evpl_global_config_set_tls_key(
         evpl_free(config->tls_key_file);
     }
 
-    config->tls_key_file = strdup(key_file);
+    config->tls_key_file = evpl_strdup(key_file);
 } /* evpl_global_config_set_tls_key */
 
 SYMBOL_EXPORT void
@@ -358,7 +358,8 @@ evpl_global_config_set_tls_ca(
     struct evpl_global_config *config,
     const char                *ca_file)
 {
-    config->tls_ca_file = strdup(ca_file);
+    evpl_free(config->tls_ca_file);
+    config->tls_ca_file = ca_file ? evpl_strdup(ca_file) : NULL;
 } /* evpl_global_config_set_tls_ca */
 
 SYMBOL_EXPORT void
@@ -370,7 +371,7 @@ evpl_global_config_set_tls_cipher_list(
         evpl_free(config->tls_cipher_list);
     }
 
-    config->tls_cipher_list = cipher_list ? strdup(cipher_list) : NULL;
+    config->tls_cipher_list = cipher_list ? evpl_strdup(cipher_list) : NULL;
 } /* evpl_global_config_set_tls_cipher_list */
 
 SYMBOL_EXPORT void

@@ -3,6 +3,9 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdlib.h>
+#include <limits.h>
+#include <string.h>
+#include "core/evpl.h"
 #include "logging.h"
 #include "macros.h"
 
@@ -23,6 +26,7 @@ evpl_allocate(
         alignment = 16;
     }
     evpl_core_abort_if(alignment & (alignment - 1), "invalid allocation alignment");
+    evpl_core_abort_if(size > SIZE_MAX - alignment - sizeof(*header), "allocation too large");
     base = malloc(size + alignment - 1 + sizeof(*header));
     evpl_core_abort_if(!base, "allocation failed");
     address      = ((uintptr_t) base + sizeof(*header) + alignment - 1) & ~(uintptr_t) (alignment - 1);
@@ -147,3 +151,13 @@ evpl_free(void *p)
 } /* evpl_free */
 
 #endif /* ifdef _WIN32 */
+
+SYMBOL_EXPORT char *evpl_strdup(const char *str)
+{
+    size_t size = strlen(str) + 1;
+    char *copy;
+    evpl_core_abort_if(size > UINT_MAX, "string too long");
+    copy = evpl_malloc((unsigned int) size);
+    memcpy(copy, str, size);
+    return copy;
+}
