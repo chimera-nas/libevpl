@@ -264,6 +264,10 @@ evpl_finish(
 {
 
     bind->flags |= EVPL_BIND_FINISH;
+    if (bind->protocol->finish) {
+        bind->protocol->finish(evpl, bind);
+        return;
+    }
 
     /* Close once nothing is left to send.  Transports that frame their output
      * (TCP_RDMA) hold ready-to-write bytes in iovec_send_framed, so it must be

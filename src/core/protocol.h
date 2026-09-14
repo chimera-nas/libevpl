@@ -156,6 +156,12 @@ struct evpl_protocol {
         struct evpl_bind *bind);
 
 
+    /* Optional graceful finish hook for layered protocols. Called with
+     * EVPL_BIND_FINISH set; the protocol drains records before closing. */
+    void                    (*finish)(
+        struct evpl      *evpl,
+        struct evpl_bind *bind);
+
     /*
      * Callbacks for connection-oriented protocols
      */

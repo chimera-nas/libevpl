@@ -12,6 +12,7 @@ option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 project(libevpl LANGUAGES C)
 option(EVPL_BOOTSTRAP_NATIVE "Development profile for bootstrapping native Windows backends" OFF)
+option(EVPL_TLS_MEMORY_BIO "Run TLS over the portable byte-stream backend" ${WIN32})
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 if(EVPL_BOOTSTRAP_NATIVE)
