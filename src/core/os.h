@@ -14,6 +14,24 @@
 #include <io.h>
 #include <malloc.h>
 #include <intrin.h>
+/* Normalize native file errors at the platform boundary. */
+static inline int
+evpl_windows_error(DWORD error)
+{
+    switch (error) {
+        case ERROR_SUCCESS: return 0;
+        case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: return ENOENT;
+        case ERROR_ACCESS_DENIED: return EACCES;
+        case ERROR_SHARING_VIOLATION: case ERROR_LOCK_VIOLATION: return EBUSY;
+        case ERROR_DISK_FULL: case ERROR_HANDLE_DISK_FULL: return ENOSPC;
+        case ERROR_NOT_ENOUGH_MEMORY: case ERROR_OUTOFMEMORY: return ENOMEM;
+        case ERROR_INVALID_PARAMETER: case ERROR_NEGATIVE_SEEK: return EINVAL;
+        case ERROR_INVALID_HANDLE: return EBADF;
+        case ERROR_OPERATION_ABORTED: return ECANCELED;
+        case ERROR_NOT_SUPPORTED: return ENOTSUP;
+        default: return EIO;
+    } // switch
+} // evpl_windows_error
 typedef intptr_t ssize_t;
 typedef int socklen_t;
 typedef ADDRESS_FAMILY sa_family_t;

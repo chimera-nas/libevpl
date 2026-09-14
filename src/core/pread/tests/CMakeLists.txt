@@ -4,3 +4,7 @@
 
 unit_test(pread basic basic.c)
 unit_test(pread threads threads.c)
+
+if(WIN32)
+    unit_test(pread windows_file windows_file.c)
+endif()
