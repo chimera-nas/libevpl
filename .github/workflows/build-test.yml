@@ -531,17 +531,36 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install headers
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: a1cae005c39be7b18ba319fced856b68d7276271
+          path: _vcpkg
+      - uses: actions/cache/restore@v4
+        id: vcpkg-cache
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: vcpkg-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
+      - name: Install parser generators
         shell: pwsh
         run: |
-          $headers = "$env:RUNNER_TEMP/uthash"
-          New-Item -ItemType Directory -Force $headers | Out-Null
-          foreach ($header in @('uthash.h', 'utlist.h')) {
-            Invoke-WebRequest "https://raw.githubusercontent.com/troydhanson/uthash/e493aa90a2833b4655927598f169c31cfcdf7861/src/$header" -OutFile "$headers/$header"
-          }
-      - name: Configure native bootstrap
+          $archive = "$env:RUNNER_TEMP/winflexbison.zip"
+          Invoke-WebRequest https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32b6ac135') { throw 'WinFlexBison checksum mismatch' }
+          Expand-Archive $archive "$env:RUNNER_TEMP/winflexbison"
+      - name: Configure native Windows with dependencies
         shell: pwsh
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} -DEVPL_BOOTSTRAP_NATIVE=ON "-DUTHASH_INCLUDE_DIR=$env:RUNNER_TEMP/uthash"
+        run: |
+          & ./_vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $triplet = '${{ matrix.arch }}'.ToLower() + '-windows'
+          cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} "-DCMAKE_TOOLCHAIN_FILE=$pwd/_vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=$triplet" "-DVCPKG_HOST_TRIPLET=$triplet" "-DFLEX_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_flex.exe" "-DBISON_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_bison.exe" -DOTEL_SQLITE=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/cache/save@v4
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: vcpkg-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
       - name: Build
         run: cmake --build build --config ${{ matrix.config }} --parallel 4
       - name: Test native backends
