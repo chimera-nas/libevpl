@@ -18,6 +18,49 @@
 
 static evpl_mutex_t EvplListenerLock = EVPL_MUTEX_INITIALIZER;
 
+void
+evpl_listener_binding_release(struct evpl_listener_binding *binding)
+{
+    if (atomic_fetch_sub_explicit(&binding->refs, 1, memory_order_acq_rel) == 1) {
+        evpl_free(binding);
+    }
+} /* evpl_listener_binding_release */
+
+/* XLIO needs to attach its detached socket to a poll group before closing.
+ * Its ordinary bind lifecycle performs that operation and drains callbacks. */
+static void
+evpl_listener_discard_notify(
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
+{
+    (void) evpl; (void) bind; (void) private_data;
+    if (notify->notify_type == EVPL_NOTIFY_RECV_MSG) {
+        for (int i = 0; i < notify->recv_msg.niov; i++) {
+            evpl_iovec_release(evpl, &notify->recv_msg.iovec[i]);
+        }
+    }
+} /* evpl_listener_discard_notify */
+
+void
+evpl_listener_discard(
+    struct evpl          *evpl,
+    struct evpl_protocol *protocol,
+    struct evpl_address  *remote,
+    void                 *accepted)
+{
+    if (protocol->discard_accepted) {
+        protocol->discard_accepted(evpl, accepted);
+        evpl_address_release(remote);
+    } else {
+        struct evpl_bind *bind = evpl_bind_prepare(evpl, protocol, NULL, remote);
+        bind->notify_callback = evpl_listener_discard_notify;
+        protocol->attach(evpl, bind, accepted);
+        evpl_close(evpl, bind);
+    }
+} /* evpl_listener_discard */
+
 static void
 evpl_listener_accept(
     struct evpl         *evpl,
@@ -34,6 +77,7 @@ evpl_listener_accept(
 
     if (listener->num_attached == 0) {
         evpl_mutex_unlock(&EvplListenerLock);
+        evpl_listener_discard(evpl, listen_bind->protocol, remote_address, accepted);
         return;
     }
 
@@ -50,12 +94,12 @@ evpl_listener_accept(
     /* Note: local_address is left NULL here. The protocol attach function
     * will set it to the actual interface address using getsockname() or
     * equivalent. This is important when the server binds to 0.0.0.0/:: */
-    request->local_address   = NULL;
-    request->remote_address  = remote_address;
-    request->protocol        = listen_bind->protocol;
-    request->attach_callback = binding->attach_callback;
-    request->accepted        = accepted;
-    request->private_data    = binding->private_data;
+    request->local_address  = NULL;
+    request->remote_address = remote_address;
+    request->protocol       = listen_bind->protocol;
+    request->binding        = binding;
+    atomic_fetch_add_explicit(&binding->refs, 1, memory_order_relaxed);
+    request->accepted = accepted;
 
     evpl_mutex_lock(&binding->evpl->lock);
     DL_APPEND(binding->evpl->connect_requests, request);
@@ -181,6 +225,7 @@ evpl_listener_destroy(struct evpl_listener *listener)
     for (int i = 0; i < listener->num_attached; i++) {
         listener->attached[i]->listener = NULL;
     }
+    listener->num_attached = 0;
     evpl_mutex_unlock(&EvplListenerLock);
 
     evpl_thread_destroy(listener->thread);
@@ -206,6 +251,7 @@ evpl_listener_attach(
     binding->attach_callback = attach_callback;
     binding->private_data    = private_data;
     binding->enabled         = 1;
+    atomic_init(&binding->refs, 1);
 
     DL_APPEND(evpl->listener_bindings, binding);
 
@@ -270,7 +316,8 @@ evpl_listener_detach(
 
     DL_DELETE(evpl->listener_bindings, binding);
 
-    evpl_free(binding);
+    binding->enabled = 0;
+    evpl_listener_binding_release(binding);
 
 } /* evpl_listener_detach */
 

@@ -226,19 +226,19 @@ struct evpl_listener_binding {
     evpl_attach_callback_t        attach_callback;
     void                         *private_data;
     int                           enabled;
+    atomic_uint                   refs;
     struct evpl_listener_binding *prev;
     struct evpl_listener_binding *next;
 };
 
 struct evpl_connect_request {
-    struct evpl_address         *local_address;
-    struct evpl_address         *remote_address;
-    struct evpl_protocol        *protocol;
-    evpl_attach_callback_t       attach_callback;
-    void                        *accepted;
-    void                        *private_data;
-    struct evpl_connect_request *prev;
-    struct evpl_connect_request *next;
+    struct evpl_address          *local_address;
+    struct evpl_address          *remote_address;
+    struct evpl_protocol         *protocol;
+    struct evpl_listener_binding *binding;
+    void                         *accepted;
+    struct evpl_connect_request  *prev;
+    struct evpl_connect_request  *next;
 };
 
 struct evpl_listener {
@@ -297,3 +297,12 @@ EVPL_API void
 evpl_poll_unpin(
     struct evpl *evpl);
 
+
+/* Internal accepted-connection ownership helpers. */
+void evpl_listener_binding_release(
+    struct evpl_listener_binding *binding);
+void evpl_listener_discard(
+    struct evpl          *evpl,
+    struct evpl_protocol *protocol,
+    struct evpl_address  *remote,
+    void                 *accepted);

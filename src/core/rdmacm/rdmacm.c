@@ -399,12 +399,14 @@ evpl_rdmacm_event_callback(
                 accepted_id->id         = cm_event->id;
                 accepted_id->conn_param = cm_event->param.conn;
 
+                rdma_ack_cm_event(cm_event);
                 listen_bind->accept_callback(
                     evpl,
                     listen_bind,
                     remote_addr,
                     accepted_id,
                     listen_bind->private_data);
+                goto again;
 
             } else {
                 /* XXX why is this necessary? */
@@ -1232,6 +1234,19 @@ evpl_rdmacm_destroy(
     evpl_free(rdmacm);
 } /* evpl_rdmacm_destroy */
 
+static void
+evpl_rdmacm_discard(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    struct evpl_rdmacm_accepted_id *a = accepted;
+
+    (void) evpl;
+    rdma_reject(a->id, NULL, 0);
+    rdma_destroy_id(a->id);
+    evpl_free(a);
+} /* evpl_rdmacm_discard */
+
 void
 evpl_rdmacm_attach(
     struct evpl      *evpl,
@@ -1847,33 +1862,35 @@ struct evpl_framework evpl_framework_rdmacm = {
 };
 
 struct evpl_protocol  evpl_rdmacm_rc_datagram = {
-    .id            = EVPL_DATAGRAM_RDMACM_RC,
-    .connected     = 1,
-    .stream        = 0,
-    .rdma          = 1,
-    .name          = "DATAGRAM_RDMACM_RC",
-    .framework     = &evpl_framework_rdmacm,
-    .listen        = evpl_rdmacm_listen,
-    .attach        = evpl_rdmacm_attach,
-    .connect       = evpl_rdmacm_connect,
-    .pending_close = evpl_rdmacm_pending_close,
-    .close         = evpl_rdmacm_close,
-    .flush         = evpl_rdmacm_flush_datagram,
+    .id               = EVPL_DATAGRAM_RDMACM_RC,
+    .connected        = 1,
+    .stream           = 0,
+    .rdma             = 1,
+    .name             = "DATAGRAM_RDMACM_RC",
+    .framework        = &evpl_framework_rdmacm,
+    .listen           = evpl_rdmacm_listen,
+    .attach           = evpl_rdmacm_attach,
+    .discard_accepted = evpl_rdmacm_discard,
+    .connect          = evpl_rdmacm_connect,
+    .pending_close    = evpl_rdmacm_pending_close,
+    .close            = evpl_rdmacm_close,
+    .flush            = evpl_rdmacm_flush_datagram,
 };
 
 struct evpl_protocol  evpl_rdmacm_rc_stream = {
-    .id            = EVPL_STREAM_RDMACM_RC,
-    .connected     = 1,
-    .stream        = 1,
-    .rdma          = 1,
-    .name          = "STREAM_RDMACM_RC",
-    .framework     = &evpl_framework_rdmacm,
-    .listen        = evpl_rdmacm_listen,
-    .attach        = evpl_rdmacm_attach,
-    .connect       = evpl_rdmacm_connect,
-    .pending_close = evpl_rdmacm_pending_close,
-    .close         = evpl_rdmacm_close,
-    .flush         = evpl_rdmacm_flush_datagram,
+    .id               = EVPL_STREAM_RDMACM_RC,
+    .connected        = 1,
+    .stream           = 1,
+    .rdma             = 1,
+    .name             = "STREAM_RDMACM_RC",
+    .framework        = &evpl_framework_rdmacm,
+    .listen           = evpl_rdmacm_listen,
+    .attach           = evpl_rdmacm_attach,
+    .discard_accepted = evpl_rdmacm_discard,
+    .connect          = evpl_rdmacm_connect,
+    .pending_close    = evpl_rdmacm_pending_close,
+    .close            = evpl_rdmacm_close,
+    .flush            = evpl_rdmacm_flush_datagram,
 };
 
 struct evpl_protocol  evpl_rdmacm_ud_datagram = {

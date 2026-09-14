@@ -486,31 +486,33 @@ evpl_ipc_callback(
 
     (void) doorbell;
 
-    evpl_mutex_lock(&evpl->lock);
-
-    while (evpl->connect_requests) {
-
+    for (;;) {
+        evpl_mutex_lock(&evpl->lock);
         request = evpl->connect_requests;
-        DL_DELETE(evpl->connect_requests, request);
+        if (request) {
+            DL_DELETE(evpl->connect_requests, request);
+        }
+        evpl_mutex_unlock(&evpl->lock);
+        if (!request) {
+            break;
+        }
 
-        new_bind = evpl_bind_prepare(evpl,
-                                     request->protocol,
-                                     request->local_address,
-                                     request->remote_address);
-
-        request->attach_callback(evpl,
-                                 new_bind,
-                                 &new_bind->notify_callback,
-                                 &new_bind->segment_callback,
-                                 &new_bind->private_data,
-                                 request->private_data);
-
-        request->protocol->attach(evpl, new_bind, request->accepted);
-
+        if (request->binding->enabled) {
+            new_bind = evpl_bind_prepare(evpl, request->protocol,
+                                         request->local_address, request->remote_address);
+            request->binding->attach_callback(evpl, new_bind,
+                                              &new_bind->notify_callback,
+                                              &new_bind->segment_callback,
+                                              &new_bind->private_data,
+                                              request->binding->private_data);
+            request->protocol->attach(evpl, new_bind, request->accepted);
+        } else {
+            evpl_listener_discard(evpl, request->protocol,
+                                  request->remote_address, request->accepted);
+        }
+        evpl_listener_binding_release(request->binding);
         evpl_free(request);
     }
-
-    evpl_mutex_unlock(&evpl->lock);
 
 } /* evpl_stop_callback */
 
@@ -973,6 +975,10 @@ evpl_destroy(struct evpl *evpl)
     struct evpl_buffer    *buffer;
     int                    i;
 
+    while (evpl->listener_bindings) {
+        evpl_listener_detach(evpl, evpl->listener_bindings);
+    }
+    evpl_ipc_callback(evpl, NULL);
     evpl_destroy_close_bind(evpl);
 
     while (evpl->free_binds) {

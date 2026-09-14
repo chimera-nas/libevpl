@@ -453,14 +453,15 @@ evpl_socket_tcp_listen(
 } /* evpl_socket_tcp_listen */
 
 struct evpl_protocol evpl_socket_tcp = {
-    .id            = EVPL_STREAM_SOCKET_TCP,
-    .connected     = 1,
-    .stream        = 1,
-    .name          = "STREAM_SOCKET_TCP",
-    .connect       = evpl_socket_tcp_connect,
-    .pending_close = evpl_socket_pending_close,
-    .close         = evpl_socket_close,
-    .listen        = evpl_socket_tcp_listen,
-    .attach        = evpl_socket_tcp_attach,
-    .flush         = evpl_socket_flush,
+    .id               = EVPL_STREAM_SOCKET_TCP,
+    .connected        = 1,
+    .stream           = 1,
+    .name             = "STREAM_SOCKET_TCP",
+    .connect          = evpl_socket_tcp_connect,
+    .pending_close    = evpl_socket_pending_close,
+    .close            = evpl_socket_close,
+    .listen           = evpl_socket_tcp_listen,
+    .discard_accepted = evpl_socket_discard_accepted,
+    .attach           = evpl_socket_tcp_attach,
+    .flush            = evpl_socket_flush,
 };

@@ -769,15 +769,36 @@ evpl_inproc_pending_discard(
     struct evpl                *evpl,
     struct evpl_inproc_pending *pending)
 {
-    /* The connecting end still holds its own reference and will find out when
-     * it sees no reply; releasing ours leaves it owning the channel alone. */
+    struct evpl_inproc_queue *q = &pending->chan->q[0];
+    struct evpl_dgram        *fin;
+
+    evpl_mutex_lock(&q->lock);
+    fin             = evpl_dgram_ring_add(&q->dgram);
+    fin->dgram_type = EVPL_INPROC_MSG_FIN;
+    fin->niov       = 0;
+    fin->length     = 0;
+    evpl_inproc_queue_notify(q);
+    evpl_mutex_unlock(&q->lock);
     evpl_inproc_channel_release(evpl, pending->chan);
 
     evpl_address_release(pending->local);
-    evpl_address_release(pending->remote);
+    if (pending->remote) {
+        evpl_address_release(pending->remote);
+    }
 
     evpl_free(pending);
 } /* evpl_inproc_pending_discard */
+
+static void
+evpl_inproc_discard_accepted(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    struct evpl_inproc_pending *pending = accepted;
+
+    pending->remote = NULL;
+    evpl_inproc_pending_discard(evpl, pending);
+} /* evpl_inproc_discard_accepted */
 
 static void
 evpl_inproc_accept(
@@ -1173,19 +1194,20 @@ struct evpl_framework evpl_framework_inproc = {
 };
 
 struct evpl_protocol  evpl_inproc_stream = {
-    .id            = EVPL_STREAM_INPROC,
-    .connected     = 1,
-    .stream        = 1,
-    .rdma          = 0,
-    .endpoint_kind = EVPL_ENDPOINT_INPROC,
-    .name          = "STREAM_INPROC",
-    .framework     = &evpl_framework_inproc,
-    .connect       = evpl_inproc_connect,
-    .listen        = evpl_inproc_listen,
-    .attach        = evpl_inproc_attach,
-    .pending_close = evpl_inproc_pending_close,
-    .close         = evpl_inproc_close,
-    .flush         = evpl_inproc_flush,
+    .id               = EVPL_STREAM_INPROC,
+    .connected        = 1,
+    .stream           = 1,
+    .rdma             = 0,
+    .endpoint_kind    = EVPL_ENDPOINT_INPROC,
+    .name             = "STREAM_INPROC",
+    .framework        = &evpl_framework_inproc,
+    .connect          = evpl_inproc_connect,
+    .listen           = evpl_inproc_listen,
+    .attach           = evpl_inproc_attach,
+    .discard_accepted = evpl_inproc_discard_accepted,
+    .pending_close    = evpl_inproc_pending_close,
+    .close            = evpl_inproc_close,
+    .flush            = evpl_inproc_flush,
 };
 
 /* Message oriented, and the one that carries RDMA -- mirroring the
@@ -1193,17 +1215,18 @@ struct evpl_protocol  evpl_inproc_stream = {
  * its RDMA framing from evpl_bind_is_rdma() and bypasses the segment callback
  * entirely when it is set, so the two are alternatives rather than a pair. */
 struct evpl_protocol  evpl_inproc_datagram = {
-    .id            = EVPL_DATAGRAM_INPROC,
-    .connected     = 1,
-    .stream        = 0,
-    .rdma          = 1,
-    .endpoint_kind = EVPL_ENDPOINT_INPROC,
-    .name          = "DATAGRAM_INPROC",
-    .framework     = &evpl_framework_inproc,
-    .connect       = evpl_inproc_connect,
-    .listen        = evpl_inproc_listen,
-    .attach        = evpl_inproc_attach,
-    .pending_close = evpl_inproc_pending_close,
-    .close         = evpl_inproc_close,
-    .flush         = evpl_inproc_flush,
+    .id               = EVPL_DATAGRAM_INPROC,
+    .connected        = 1,
+    .stream           = 0,
+    .rdma             = 1,
+    .endpoint_kind    = EVPL_ENDPOINT_INPROC,
+    .name             = "DATAGRAM_INPROC",
+    .framework        = &evpl_framework_inproc,
+    .connect          = evpl_inproc_connect,
+    .listen           = evpl_inproc_listen,
+    .attach           = evpl_inproc_attach,
+    .discard_accepted = evpl_inproc_discard_accepted,
+    .pending_close    = evpl_inproc_pending_close,
+    .close            = evpl_inproc_close,
+    .flush            = evpl_inproc_flush,
 };

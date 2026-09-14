@@ -346,15 +346,16 @@ evpl_socket_unix_pending_close(
 } /* evpl_socket_unix_pending_close */
 
 struct evpl_protocol evpl_socket_unix_stream = {
-    .id            = EVPL_STREAM_SOCKET_UNIX,
-    .connected     = 1,
-    .stream        = 1,
-    .endpoint_kind = EVPL_ENDPOINT_LOCAL,
-    .name          = "STREAM_SOCKET_UNIX",
-    .connect       = evpl_socket_unix_connect,
-    .pending_close = evpl_socket_unix_pending_close,
-    .close         = evpl_socket_close,
-    .listen        = evpl_socket_unix_listen,
-    .attach        = evpl_socket_unix_attach,
-    .flush         = evpl_socket_flush,
+    .id               = EVPL_STREAM_SOCKET_UNIX,
+    .connected        = 1,
+    .stream           = 1,
+    .endpoint_kind    = EVPL_ENDPOINT_LOCAL,
+    .name             = "STREAM_SOCKET_UNIX",
+    .connect          = evpl_socket_unix_connect,
+    .pending_close    = evpl_socket_unix_pending_close,
+    .close            = evpl_socket_close,
+    .listen           = evpl_socket_unix_listen,
+    .discard_accepted = evpl_socket_discard_accepted,
+    .attach           = evpl_socket_unix_attach,
+    .flush            = evpl_socket_flush,
 };
