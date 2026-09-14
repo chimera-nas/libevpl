@@ -35,8 +35,8 @@
 
 struct shared_state {
     struct evpl_block_device *bdev;
-    int                       next_index;
-    int                       finished;
+    atomic_int                next_index;
+    atomic_int                finished;
 };
 
 struct worker {
@@ -97,7 +97,7 @@ worker_callback(
     w->reading = 0;
 
     if (w->round == NUM_ROUNDS) {
-        __atomic_add_fetch(&w->shared->finished, 1, __ATOMIC_RELEASE);
+        atomic_fetch_add_explicit(&w->shared->finished, 1, memory_order_release);
         return;
     }
 
@@ -127,7 +127,7 @@ worker_init(
     w = calloc(1, sizeof(*w));
 
     w->shared = shared;
-    w->index  = __atomic_fetch_add(&shared->next_index, 1, __ATOMIC_RELAXED);
+    w->index  = atomic_fetch_add_explicit(&shared->next_index, 1, memory_order_relaxed);
     w->base   = (uint64_t) w->index * REGION;
     w->queue  = evpl_block_open_queue(evpl, shared->bdev);
 
@@ -192,7 +192,7 @@ main(
     /* The workers drive themselves from their own completions; wait for the
      * last one rather than for any particular amount of time.  A worker that
      * never completes hangs here and is caught by the ctest timeout. */
-    while (__atomic_load_n(&shared.finished, __ATOMIC_ACQUIRE) < NUM_WORKERS) {
+    while (atomic_load_explicit(&shared.finished, memory_order_acquire) < NUM_WORKERS) {
         evpl_sleep_us(1000);
     }
 
