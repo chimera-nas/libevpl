@@ -400,12 +400,12 @@ evpl_tls_get_alpn(
     return (int) length;
 } /* evpl_tls_get_alpn */
 struct evpl_protocol evpl_socket_tls = {
-    .id               = EVPL_STREAM_SOCKET_TLS,  .connected             = 1,                             .stream
+    .id               = EVPL_STREAM_SOCKET_TLS,  .connected                 = 1,                             .stream
                       = 1,
-    .name             = "STREAM_SOCKET_TLS",     .framework             = &evpl_framework_tls,
-    .connect          = evpl_stream_tls_connect, .attach                = evpl_stream_tls_attach,
+    .name             = "STREAM_SOCKET_TLS",     .framework                 = &evpl_framework_tls,
+    .connect          = evpl_stream_tls_connect, .attach                    = evpl_stream_tls_attach,
     .discard_accepted = evpl_stream_tls_discard,
-    .listen           = evpl_stream_tls_listen,  .pending_close         = evpl_stream_tls_pending_close,
-    .close            = evpl_stream_tls_close,   .flush                 = evpl_stream_tls_drive,
+    .listen           = evpl_stream_tls_listen,  .pending_close             = evpl_stream_tls_pending_close,
+    .close            = evpl_stream_tls_close,   .flush                     = evpl_stream_tls_drive,
     .finish           = evpl_stream_tls_finish,
 };

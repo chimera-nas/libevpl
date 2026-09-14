@@ -94,7 +94,15 @@ evpl_iocp_associate(
 } /* evpl_iocp_associate */
 
 const struct evpl_core_ops evpl_core_iocp_ops = {
-    .name = "iocp",                   .init     = evpl_iocp_init,           .destroy = evpl_iocp_destroy,
-    .add  = evpl_iocp_fd_unsupported, .remove   = evpl_iocp_fd_unsupported,
-    .wait = evpl_iocp_wait,           .dispatch = evpl_iocp_dispatch,
+    .name = "iocp",                   .init
+          = evpl_iocp_init,
+    .destroy
+        =
+            evpl_iocp_destroy,
+    .add = evpl_iocp_fd_unsupported, .remove
+         =
+            evpl_iocp_fd_unsupported,
+    .wait = evpl_iocp_wait,           .dispatch
+          =
+            evpl_iocp_dispatch,
 };

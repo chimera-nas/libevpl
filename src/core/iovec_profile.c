@@ -8,7 +8,7 @@
 
 #ifndef _WIN32
 #include <execinfo.h>
-#endif
+#endif /* ifndef _WIN32 */
 #include "evpl/evpl_platform.h"
 #include <stdint.h>
 #include <stdio.h>

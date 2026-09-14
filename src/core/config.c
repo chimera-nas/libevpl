@@ -261,7 +261,7 @@ evpl_global_config_set_huge_page_size(
 {
 #ifdef __linux__
     char path[64];
-#endif
+#endif /* ifdef __linux__ */
 
     /* A hugetlb page size is always a power of two strictly larger than the
      * base page.  Bound it sanely (the largest real page on any arch today is
@@ -292,7 +292,7 @@ evpl_global_config_set_huge_page_size(
             (unsigned long long) (size / 1024), path);
     }
 
-#endif
+#endif /* ifdef __linux__ */
 
     config->huge_page_size = size;
 } /* evpl_global_config_set_huge_page_size */
