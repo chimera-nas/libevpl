@@ -41,6 +41,7 @@ struct iovec { void *iov_base; size_t iov_len; };
 #define strcasecmp      _stricmp
 #define strncasecmp     _strnicmp
 #define strdup          _strdup
+#define strtok_r        strtok_s
 #define CLOCK_MONOTONIC 1
 #define CLOCK_REALTIME  2
 static inline int

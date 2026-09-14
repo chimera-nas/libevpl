@@ -16,6 +16,7 @@
  * reference (NGHTTP2_DATA_FLAG_NO_COPY + send_data callback), i.e. zero-copy.
  */
 
+#include "core/os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

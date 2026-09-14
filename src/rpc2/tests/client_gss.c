@@ -24,7 +24,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include "tests/test_options.h"
+#else  /* ifdef _WIN32 */
 #include <getopt.h>
+#endif /* ifdef _WIN32 */
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"

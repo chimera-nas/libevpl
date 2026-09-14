@@ -92,7 +92,7 @@ enum evpl_http_protocol {
  * depends on the transport's capabilities -- a gRPC endpoint, say, which
  * exists only over HTTP/2.
  */
-enum evpl_http_protocol
+EVPL_HTTP_API enum evpl_http_protocol
 evpl_http_request_protocol(
     struct evpl_http_request *request);
 
@@ -159,7 +159,7 @@ evpl_http_request_add_header(
     const char               *value);
 
 
-enum evpl_http_request_type
+EVPL_HTTP_API enum evpl_http_request_type
 evpl_http_request_type(
     struct evpl_http_request *request);
 
