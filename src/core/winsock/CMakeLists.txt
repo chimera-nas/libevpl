@@ -1,4 +1,5 @@
 if(NOT DISABLE_TESTS)
+unit_test(winsock udp_unreachable udp_unreachable.c)
 # SPDX-FileCopyrightText: 2024 - 2026 Ben Jarvis
 #
 # SPDX-License-Identifier: LGPL-2.1-only
