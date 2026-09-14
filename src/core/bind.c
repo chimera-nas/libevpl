@@ -227,6 +227,7 @@ evpl_bind_prepare(
 
     DL_APPEND(evpl->binds, bind);
 
+    bind->accept_callback  = NULL;
     bind->notify_callback  = NULL;
     bind->segment_callback = NULL;
     bind->private_data     = NULL;

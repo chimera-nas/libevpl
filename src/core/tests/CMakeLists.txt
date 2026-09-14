@@ -4,6 +4,7 @@
 
 unit_test(core init_no_config init_no_config.c)
 unit_test_all_mechs(core destroy_pending destroy_pending.c)
+unit_test_all_mechs(core listener_lifetime listener_lifetime.c)
 
 # Builds the binary and registers the platform-default case; the loop below
 # then runs the same binary once per mechanism compiled into this build.

@@ -38,6 +38,18 @@ struct evpl_accepted_socket {
     int fd;
 };
 
+static inline void
+evpl_socket_discard_accepted(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    struct evpl_accepted_socket *a = accepted;
+
+    (void) evpl;
+    close(a->fd);
+    evpl_free(a);
+} // evpl_socket_discard_accepted
+
 struct evpl_socket {
     struct evpl_event            event;
     int                          fd;

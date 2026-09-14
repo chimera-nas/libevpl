@@ -182,6 +182,12 @@ struct evpl_protocol {
         struct evpl      *evpl,
         struct evpl_bind *bind);
 
+    /* Dispose an accepted object that was never attached. The caller owns
+     * and releases the separate remote address. */
+    void                    (*discard_accepted)(
+        struct evpl *evpl,
+        void        *accepted);
+
     /* Called to attach an accepted connection to an evpl context */
     void                    (*attach)(
         struct evpl      *evpl,

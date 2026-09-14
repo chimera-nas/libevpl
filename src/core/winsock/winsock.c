@@ -420,6 +420,18 @@ evpl_win_connect(
 } /* evpl_win_connect */
 
 static void
+evpl_win_attach_discard(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    struct evpl_win_accepted *a = accepted;
+
+    (void) evpl;
+    closesocket(a->socket);
+    evpl_free(a);
+} /* evpl_win_attach_discard */
+
+static void
 evpl_win_attach(
     struct evpl      *evpl,
     struct evpl_bind *bind,
@@ -499,7 +511,7 @@ evpl_win_bind(
     /* An ICMP port-unreachable refers to a previous datagram, not to the
      * lifetime of this unconnected socket. Match BSD UDP semantics. */
     {
-        BOOL report_reset = FALSE;
+        BOOL  report_reset = FALSE;
         DWORD bytes;
         if (WSAIoctl(s->socket, SIO_UDP_CONNRESET, &report_reset, sizeof(report_reset),
                      NULL, 0, &bytes, NULL, NULL)) {
@@ -543,16 +555,32 @@ evpl_win_close(
 } /* evpl_win_close */
 
 struct evpl_protocol evpl_socket_tcp = {
-    .id            = EVPL_STREAM_SOCKET_TCP, .connected                      = 1,                .stream
-                   = 1,
-    .name          = "STREAM_SOCKET_TCP",    .connect                        = evpl_win_connect,
-    .listen        = evpl_win_listen,        .attach                         = evpl_win_attach,
-    .pending_close = evpl_win_pending_close, .close                          = evpl_win_close,   .flush
+    .id = EVPL_STREAM_SOCKET_TCP, .connected
+        = 1,
+    .
+    stream
+          = 1,
+    .name = "STREAM_SOCKET_TCP",    .connect                                                                     =
+        evpl_win_connect,
+    .listen = evpl_win_listen,        .discard_accepted
+            =
+            evpl_win_attach_discard,
+    .attach        = evpl_win_attach,
+    .pending_close = evpl_win_pending_close, .close
                    =
+            evpl_win_close,
+    .flush
+        =
             evpl_win_flush,
 };
 struct evpl_protocol evpl_socket_udp = {
-    .id    = EVPL_DATAGRAM_SOCKET_UDP, .name                                           = "DATAGRAM_SOCKET_UDP",
-    .bind  = evpl_win_bind,            .pending_close                                  = evpl_win_pending_close,
-    .close = evpl_win_close,           .flush                                          = evpl_win_flush,
+    .id = EVPL_DATAGRAM_SOCKET_UDP, .name
+        =
+            "DATAGRAM_SOCKET_UDP",
+    .bind = evpl_win_bind,            .pending_close
+          =
+            evpl_win_pending_close,
+    .close = evpl_win_close,           .flush
+           =
+            evpl_win_flush,
 };

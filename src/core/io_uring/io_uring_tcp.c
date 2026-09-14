@@ -593,6 +593,18 @@ evpl_io_uring_tcp_listen(
 } /* evpl_io_uring_tcp_listen */
 
 static void
+evpl_io_uring_attach_discard(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    struct evpl_io_uring_accepted_socket *a = accepted;
+
+    (void) evpl;
+    close(a->fd);
+    evpl_free(a);
+} /* evpl_io_uring_attach_discard */
+
+static void
 evpl_io_uring_attach(
     struct evpl      *evpl,
     struct evpl_bind *bind,
@@ -639,15 +651,16 @@ evpl_io_uring_flush(
 } /* evpl_io_uring_tcp_flush */
 
 struct evpl_protocol evpl_io_uring_tcp = {
-    .id            = EVPL_STREAM_IO_URING_TCP,
-    .connected     = 1,
-    .stream        = 1,
-    .name          = "STREAM_IO_URING_TCP",
-    .framework     = &evpl_framework_io_uring,
-    .connect       = evpl_io_uring_tcp_connect,
-    .pending_close = evpl_io_uring_pending_close,
-    .close         = evpl_io_uring_close,
-    .listen        = evpl_io_uring_tcp_listen,
-    .attach        = evpl_io_uring_attach,
-    .flush         = evpl_io_uring_flush,
+    .id               = EVPL_STREAM_IO_URING_TCP,
+    .connected        = 1,
+    .stream           = 1,
+    .name             = "STREAM_IO_URING_TCP",
+    .framework        = &evpl_framework_io_uring,
+    .connect          = evpl_io_uring_tcp_connect,
+    .pending_close    = evpl_io_uring_pending_close,
+    .close            = evpl_io_uring_close,
+    .listen           = evpl_io_uring_tcp_listen,
+    .discard_accepted = evpl_io_uring_attach_discard,
+    .attach           = evpl_io_uring_attach,
+    .flush            = evpl_io_uring_flush,
 };

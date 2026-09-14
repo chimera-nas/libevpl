@@ -729,6 +729,18 @@ evpl_tls_connect(
 
 } /* evpl_tls_connect */
 
+static void
+evpl_tls_attach_discard(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    struct evpl_accepted_tls *a = accepted;
+
+    (void) evpl;
+    close(a->fd);
+    evpl_free(a);
+} /* evpl_tls_attach_discard */
+
 void
 evpl_tls_attach(
     struct evpl      *evpl,
@@ -873,15 +885,16 @@ evpl_tls_flush(
 } /* evpl_tls_flush */
 
 struct evpl_protocol evpl_socket_tls = {
-    .id            = EVPL_STREAM_SOCKET_TLS,
-    .connected     = 1,
-    .stream        = 1,
-    .name          = "STREAM_SOCKET_TLS",
-    .framework     = &evpl_framework_tls,
-    .connect       = evpl_tls_connect,
-    .pending_close = evpl_tls_pending_close,
-    .close         = evpl_tls_close,
-    .listen        = evpl_tls_listen,
-    .attach        = evpl_tls_attach,
-    .flush         = evpl_tls_flush,
+    .id               = EVPL_STREAM_SOCKET_TLS,
+    .connected        = 1,
+    .stream           = 1,
+    .name             = "STREAM_SOCKET_TLS",
+    .framework        = &evpl_framework_tls,
+    .connect          = evpl_tls_connect,
+    .pending_close    = evpl_tls_pending_close,
+    .close            = evpl_tls_close,
+    .listen           = evpl_tls_listen,
+    .discard_accepted = evpl_tls_attach_discard,
+    .attach           = evpl_tls_attach,
+    .flush            = evpl_tls_flush,
 };
