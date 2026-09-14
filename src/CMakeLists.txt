@@ -200,9 +200,6 @@ if (NOT DISABLE_TESTS)
 endif()
 
 add_subdirectory(core)
-if(EVPL_BOOTSTRAP_NATIVE)
-    return()
-endif()
 add_subdirectory(http)
 add_subdirectory(rpc2)
 
