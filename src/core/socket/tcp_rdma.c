@@ -4,6 +4,7 @@
 
 #include "core/os.h"
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -23,7 +24,7 @@
 #include "core/event_fn.h"
 #include "core/evpl.h"
 #include "core/rdma_mr.h"
-#include "core/socket/common.h"
+#include "core/logging.h"
 #include "core/socket/tcp.h"
 #include "core/socket/tcp_rdma.h"
 
@@ -49,7 +50,8 @@ struct tcp_rdma_header {
     uint32_t remote_key;
     uint64_t remote_address;
     uint64_t id;
-} __attribute__((packed));
+};
+_Static_assert(sizeof(struct tcp_rdma_header) == TCP_RDMA_HEADER_SIZE, "TCP RDMA wire layout");
 
 /*
  * Pending operation tracking using a ring buffer.
@@ -80,12 +82,9 @@ struct tcp_rdma_pending_ring {
  * Per-connection state (extends evpl_socket)
  */
 struct evpl_tcp_rdma_socket {
-    struct evpl_socket           socket;
+    struct evpl_bind            *wire;
     struct tcp_rdma_pending_ring pending_ring;
 };
-
-#define evpl_event_tcp_rdma_socket(eventp) \
-        container_of((eventp), struct evpl_tcp_rdma_socket, socket.event)
 
 /*
  * Global and per-thread framework state
@@ -101,15 +100,6 @@ struct evpl_tcp_rdma {
 /*
  * Forward declarations
  */
-static void evpl_tcp_rdma_read(
-    struct evpl       *evpl,
-    struct evpl_event *event);
-static void evpl_tcp_rdma_write(
-    struct evpl       *evpl,
-    struct evpl_event *event);
-static void evpl_tcp_rdma_error(
-    struct evpl       *evpl,
-    struct evpl_event *event);
 void evpl_tcp_rdma_flush(
     struct evpl      *evpl,
     struct evpl_bind *bind);
@@ -749,104 +739,59 @@ tcp_rdma_handle_error(
     tcp_rdma_pending_complete(evpl, ts);
 } /* tcp_rdma_handle_error */
 
-/*
- * Connection check (from TCP)
- */
-static inline void
-evpl_tcp_rdma_check_conn(
-    struct evpl                 *evpl,
-    struct evpl_bind            *bind,
-    struct evpl_tcp_rdma_socket *ts)
-{
-    struct evpl_notify notify;
-    socklen_t          len;
-    int                rc, err;
-
-    if (unlikely(!ts->socket.connected)) {
-        len = sizeof(err);
-        rc  = getsockopt(ts->socket.fd, SOL_SOCKET, SO_ERROR, &err, &len);
-        evpl_socket_fatal_if(rc, "Failed to get SO_ERROR from socket");
-
-        if (err) {
-            evpl_close(evpl, bind);
-        } else {
-            notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-            notify.notify_status = 0;
-            bind->notify_callback(evpl, bind, &notify, bind->private_data);
-        }
-
-        ts->socket.connected = 1;
-    }
-} /* evpl_tcp_rdma_check_conn */
-
-/*
- * Read handler - peek-based message parsing
- */
+/* The framing and RDMA operation state are independent of the byte transport.
+ * A child TCP bind owns native I/O and retains this bind until it disconnects. */
 static void
-evpl_tcp_rdma_read(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+evpl_tcp_rdma_wire_notify(
+    struct evpl        *evpl,
+    struct evpl_bind   *wire,
+    struct evpl_notify *notify,
+    void               *private_data)
 {
-    struct evpl_tcp_rdma_socket *ts   = evpl_event_tcp_rdma_socket(event);
-    struct evpl_socket          *s    = &ts->socket;
-    struct evpl_bind            *bind = evpl_private2bind(ts);
-    struct iovec                 iov[2];
-    ssize_t                      res, total, remain;
+    struct evpl_bind            *bind = private_data;
+    struct evpl_tcp_rdma_socket *ts   = evpl_bind_private(bind);
+    struct evpl_iovec           *iov;
     struct tcp_rdma_header       hdr;
-    uint32_t                     msg_len;
+    uint64_t                     msg_len;
 
-
-    if (unlikely(s->fd < 0)) {
+    if (notify->notify_type == EVPL_NOTIFY_DISCONNECTED) {
+        ts->wire = NULL;
+        evpl_bind_operation_end(bind);
+        evpl_close(evpl, bind);
         return;
     }
-
-    evpl_tcp_rdma_check_conn(evpl, bind, ts);
-
-    /* Allocate receive buffers if needed */
-    if (s->recv1.length == 0) {
-        if (s->recv2.length) {
-            evpl_iovec_move(&s->recv1, &s->recv2);
-            s->recv2.length = 0;
-        } else {
-            evpl_iovec_alloc_whole(evpl, &s->recv1);
-        }
+    if (bind->flags & (EVPL_BIND_PENDING_CLOSED | EVPL_BIND_CLOSE_DEFERRED)) {
+        return;
     }
-
-    if (s->recv2.length == 0) {
-        evpl_iovec_alloc_whole(evpl, &s->recv2);
-    }
-
-    iov[0].iov_base = s->recv1.data;
-    iov[0].iov_len  = s->recv1.length;
-    iov[1].iov_base = s->recv2.data;
-    iov[1].iov_len  = s->recv2.length;
-
-    total = iov[0].iov_len + iov[1].iov_len;
-
-    res = readv(s->fd, iov, 2);
-
-    if (res < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            evpl_close(evpl, bind);
-        }
-        goto out;
-    } else if (res == 0) {
-        evpl_close(evpl, bind);
-        goto out;
-    }
-
-    /* Append received data to iovec_recv ring */
-    if (s->recv1.length >= res) {
-        evpl_iovec_ring_append(evpl, &bind->iovec_recv, &s->recv1, res);
-    } else {
-        remain = res - s->recv1.length;
-        evpl_iovec_ring_append(evpl, &bind->iovec_recv, &s->recv1,
-                               s->recv1.length);
-        evpl_iovec_ring_append(evpl, &bind->iovec_recv, &s->recv2, remain);
-    }
-
+    switch (notify->notify_type) {
+        case EVPL_NOTIFY_CONNECTED:
+            if (bind->local) {
+                evpl_address_release(bind->local);
+            }
+            bind->local = wire->local;
+            if (bind->local) {
+                evpl_address_incref(bind->local);
+            }
+            bind->notify_callback(evpl, bind, notify, bind->private_data);
+            return;
+        case EVPL_NOTIFY_SENT:
+            if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
+                bind->notify_callback(evpl, bind, notify, bind->private_data);
+            }
+            return;
+        case EVPL_NOTIFY_RECV_DATA:
+            while ((iov = evpl_iovec_ring_tail(&wire->iovec_recv)) != NULL) {
+                evpl_iovec_ring_add(&bind->iovec_recv, iov);
+                evpl_iovec_ring_remove(&wire->iovec_recv);
+            }
+            break;
+        default:
+            return;
+    } /* switch */
     /* Process complete messages */
-    while (evpl_iovec_ring_bytes(&bind->iovec_recv) >= TCP_RDMA_HEADER_SIZE) {
+    while (!(bind->flags & (EVPL_BIND_PENDING_CLOSED | EVPL_BIND_CLOSE_DEFERRED)) && evpl_iovec_ring_bytes(&bind->
+                                                                                                           iovec_recv)
+           >= TCP_RDMA_HEADER_SIZE) {
         /* Peek at header */
         if (tcp_rdma_peek_bytes(&bind->iovec_recv, &hdr, 0,
                                 TCP_RDMA_HEADER_SIZE) < 0) {
@@ -863,13 +808,19 @@ evpl_tcp_rdma_read(
 
         /* Validate magic */
         if (hdr.magic != TCP_RDMA_MAGIC) {
-            evpl_socket_error("Invalid TCP_RDMA magic: 0x%08x", hdr.magic);
+            evpl_core_error("Invalid TCP_RDMA magic: 0x%08x", hdr.magic);
             evpl_close(evpl, bind);
-            goto out;
+            return;
         }
 
         /* Check if we have complete message */
-        msg_len = TCP_RDMA_HEADER_SIZE + hdr.length;
+        if (hdr.length > INT_MAX - TCP_RDMA_HEADER_SIZE ||
+            (hdr.opcode == TCP_RDMA_OP_READ_REQUEST && hdr.length != 4) ||
+            (hdr.opcode == TCP_RDMA_OP_WRITE_REPLY && hdr.length != 0)) {
+            evpl_close(evpl, bind);
+            return;
+        }
+        msg_len = TCP_RDMA_HEADER_SIZE + (hdr.opcode == TCP_RDMA_OP_ERROR ? 0 : hdr.length);
         if (evpl_iovec_ring_bytes(&bind->iovec_recv) < msg_len) {
             break; /* Wait for more data */
         }
@@ -895,213 +846,113 @@ evpl_tcp_rdma_read(
                 tcp_rdma_handle_error(evpl, bind, ts, &hdr);
                 break;
             default:
-                evpl_socket_error("Unknown TCP_RDMA opcode: %u", hdr.opcode);
+                evpl_core_error("Unknown TCP_RDMA opcode: %u", hdr.opcode);
                 evpl_close(evpl, bind);
-                goto out;
+                return;
         } /* switch */
     }
 
- out:
-    if (res < total) {
-        evpl_event_mark_unreadable(evpl, event);
-    }
-} /* evpl_tcp_rdma_read */
+} /* evpl_tcp_rdma_wire_notify */
 
-/*
- * Write handler - same as TCP
- */
-static void
-evpl_tcp_rdma_write(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+static struct evpl_bind *
+evpl_tcp_rdma_wire(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
 {
-    struct evpl_tcp_rdma_socket *ts   = evpl_event_tcp_rdma_socket(event);
-    struct evpl_socket          *s    = &ts->socket;
-    struct evpl_bind            *bind = evpl_private2bind(ts);
-    struct evpl_notify           notify;
-    struct iovec                *iov;
-    int                          maxiov = evpl_shared->config->max_num_iovec;
-    int                          niov;
-    ssize_t                      res, total;
+    struct evpl_tcp_rdma_socket *ts = evpl_bind_private(bind);
 
-
-    if (unlikely(s->fd < 0)) {
-        return;
+    tcp_rdma_pending_ring_init(&ts->pending_ring);
+    if (bind->local) {
+        evpl_address_incref(bind->local);
     }
-
-    iov = alloca(sizeof(struct iovec) * maxiov);
-
-    evpl_tcp_rdma_check_conn(evpl, bind, ts);
-
-    /*
-     * If dgram_send has pending entries, the flush hasn't processed them yet.
-     * The iovecs in iovec_send are raw data from evpl_sendtov that need
-     * headers added by the flush. Trigger the flush now and it will re-enable
-     * write interest when done.
-     */
-    if (!evpl_dgram_ring_is_empty(&bind->dgram_send) ||
-        !evpl_dgram_ring_is_empty(&bind->dgram_read)) {
-        evpl_tcp_rdma_flush(evpl, bind);
+    if (bind->remote) {
+        evpl_address_incref(bind->remote);
     }
+    ts->wire                  = evpl_bind_prepare(evpl, &evpl_socket_tcp, bind->local, bind->remote);
+    ts->wire->notify_callback = evpl_tcp_rdma_wire_notify;
+    ts->wire->private_data    = bind;
+    ts->wire->flags          |= EVPL_BIND_SENT_NOTIFY;
+    evpl_bind_operation_begin(bind);
+    return ts->wire;
+} /* evpl_tcp_rdma_wire */
 
-    niov = evpl_iovec_ring_iov(&total, iov, maxiov, &bind->iovec_send_framed);
-
-    if (!niov) {
-        res = 0;
-        goto out;
-    }
-
-    res = writev(s->fd, iov, niov);
-
-    if (res < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            evpl_close(evpl, bind);
-        }
-        goto out;
-    } else if (res == 0) {
-        evpl_close(evpl, bind);
-        goto out;
-    }
-
-    evpl_iovec_ring_consume(evpl, &bind->iovec_send_framed, res);
-
-    if (res != total) {
-        evpl_event_mark_unwritable(evpl, event);
-    }
-
-    if (res && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
-        notify.notify_type   = EVPL_NOTIFY_SENT;
-        notify.notify_status = 0;
-        notify.sent.bytes    = res;
-        notify.sent.msgs     = 0;
-        bind->notify_callback(evpl, bind, &notify, bind->private_data);
-    }
-
- out:
-    if (evpl_iovec_ring_is_empty(&bind->iovec_send_framed)) {
-        evpl_event_write_disinterest(evpl, event);
-
-        if (bind->flags & EVPL_BIND_FINISH) {
-            evpl_close(evpl, bind);
-        }
-    }
-
-    if (res != total) {
-        evpl_event_mark_unwritable(evpl, event);
-    }
-} /* evpl_tcp_rdma_write */
-
-/*
- * Error handler
- */
 static void
-evpl_tcp_rdma_error(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+evpl_tcp_rdma_connect(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
 {
-    struct evpl_tcp_rdma_socket *ts   = evpl_event_tcp_rdma_socket(event);
-    struct evpl_bind            *bind = evpl_private2bind(ts);
+    evpl_socket_tcp.connect(evpl, evpl_tcp_rdma_wire(evpl, bind));
+} /* evpl_tcp_rdma_connect */
 
-    if (unlikely(ts->socket.fd < 0)) {
-        return;
-    }
-
-    evpl_close(evpl, bind);
-} /* evpl_tcp_rdma_error */
-
-/*
- * Attach handler - custom version that registers tcp_rdma callbacks
- */
-void
+static void
 evpl_tcp_rdma_attach(
     struct evpl      *evpl,
     struct evpl_bind *bind,
     void             *accepted)
 {
-    struct evpl_tcp_rdma_socket *ts              = evpl_bind_private(bind);
-    struct evpl_accepted_socket *accepted_socket = accepted;
-    struct evpl_notify           notify;
-    int                          fd = accepted_socket->fd;
-    int                          rc, yes = 1;
-    struct sockaddr_storage      ss;
-    socklen_t                    sslen = sizeof(ss);
-
-    evpl_free(accepted_socket);
-
-    /* Initialize socket */
-    evpl_socket_init(evpl, &ts->socket, fd, 1);
-
-    /* Initialize TCP_RDMA specific state */
-    tcp_rdma_pending_ring_init(&ts->pending_ring);
-
-    rc = getsockname(fd, (struct sockaddr *) &ss, &sslen);
-    evpl_socket_abort_if(rc < 0, "getsockname failed: %s", strerror(errno));
-
-    bind->local          = evpl_address_alloc();
-    bind->local->addrlen = sslen;
-    memcpy(bind->local->addr, &ss, sslen);
-
-    rc = setsockopt(ts->socket.fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-    evpl_socket_abort_if(rc, "Failed to set TCP_NODELAY on socket");
-
-    /* Register tcp_rdma-specific callbacks */
-    evpl_add_event(evpl, &ts->socket.event, fd,
-                   evpl_tcp_rdma_read,
-                   evpl_tcp_rdma_write,
-                   evpl_tcp_rdma_error);
-
-    evpl_event_read_interest(evpl, &ts->socket.event);
-
-    notify.notify_type   = EVPL_NOTIFY_CONNECTED;
-    notify.notify_status = 0;
-    bind->notify_callback(evpl, bind, &notify, bind->private_data);
+    evpl_socket_tcp.attach(evpl, evpl_tcp_rdma_wire(evpl, bind), accepted);
 } /* evpl_tcp_rdma_attach */
 
-/*
- * Connect handler - custom version that registers tcp_rdma callbacks
- */
-void
-evpl_tcp_rdma_connect(
+static void
+evpl_tcp_rdma_discard(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    evpl_socket_tcp.discard_accepted(evpl, accepted);
+} /* evpl_tcp_rdma_discard */
+
+static void
+evpl_tcp_rdma_accept(
+    struct evpl         *evpl,
+    struct evpl_bind    *wire,
+    struct evpl_address *remote,
+    void                *accepted,
+    void                *private_data)
+{
+    struct evpl_bind *bind = private_data;
+
+    (void) wire;
+    bind->accept_callback(evpl, bind, remote, accepted, bind->private_data);
+} /* evpl_tcp_rdma_accept */
+
+static int
+evpl_tcp_rdma_listen(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    struct evpl_tcp_rdma_socket *ts   = evpl_bind_private(bind);
+    struct evpl_bind            *wire = evpl_tcp_rdma_wire(evpl, bind);
+
+    wire->accept_callback = evpl_tcp_rdma_accept;
+    if (evpl_socket_tcp.listen(evpl, wire)) {
+        evpl_bind_abort(evpl, wire);
+        ts->wire = NULL;
+        evpl_bind_operation_end(bind);
+        tcp_rdma_pending_ring_free(&ts->pending_ring);
+        return -1;
+    }
+    return 0;
+} /* evpl_tcp_rdma_listen */
+
+static void
+evpl_tcp_rdma_pending_close(
     struct evpl      *evpl,
     struct evpl_bind *bind)
 {
     struct evpl_tcp_rdma_socket *ts = evpl_bind_private(bind);
-    int                          rc, yes = 1;
-    struct sockaddr_storage      ss;
-    socklen_t                    sslen = sizeof(ss);
 
-    ts->socket.fd = socket(bind->remote->addr->sa_family, SOCK_STREAM, 0);
-    evpl_socket_abort_if(ts->socket.fd < 0, "Failed to create tcp socket: %s",
-                         strerror(errno));
+    if (ts->wire) {
+        evpl_close(evpl, ts->wire);
+    }
+} /* evpl_tcp_rdma_pending_close */
 
-    rc = connect(ts->socket.fd, bind->remote->addr, bind->remote->addrlen);
-    evpl_socket_abort_if(rc < 0 && errno != EINPROGRESS,
-                         "Failed to connect tcp socket: %s", strerror(errno));
-
-    rc = getsockname(ts->socket.fd, (struct sockaddr *) &ss, &sslen);
-    evpl_socket_abort_if(rc < 0, "Failed to getsockname on socket: %s",
-                         strerror(errno));
-
-    bind->local          = evpl_address_alloc();
-    bind->local->addrlen = sslen;
-    memcpy(bind->local->addr, &ss, sslen);
-
-    evpl_socket_init(evpl, &ts->socket, ts->socket.fd, 0);
-
-    /* Initialize TCP_RDMA specific state */
-    tcp_rdma_pending_ring_init(&ts->pending_ring);
-
-    rc = setsockopt(ts->socket.fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-    evpl_socket_abort_if(rc, "Failed to set TCP_NODELAY on socket");
-
-    evpl_add_event(evpl, &ts->socket.event, ts->socket.fd,
-                   evpl_tcp_rdma_read,
-                   evpl_tcp_rdma_write,
-                   evpl_tcp_rdma_error);
-
-    evpl_event_read_interest(evpl, &ts->socket.event);
-    evpl_event_write_interest(evpl, &ts->socket.event);
-} /* evpl_tcp_rdma_connect */
+static void
+evpl_tcp_rdma_finish(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    evpl_defer(evpl, &bind->flush_deferral);
+} /* evpl_tcp_rdma_finish */
 
 /*
  * Flush handler - process dgram rings and create headers
@@ -1127,7 +978,7 @@ evpl_tcp_rdma_flush(
             for (i = 0; i < dgram->niov; i++) {
                 struct evpl_iovec *src = evpl_iovec_ring_tail(&bind->iovec_rdma_read);
 
-                evpl_socket_abort_if(!src, "src is NULL");
+                evpl_core_abort_if(!src, "src is NULL");
 
                 evpl_iovec_move(&iov[i], src);
                 evpl_iovec_ring_remove(&bind->iovec_rdma_read);
@@ -1159,7 +1010,7 @@ evpl_tcp_rdma_flush(
         for (i = 0; i < dgram->niov; i++) {
             struct evpl_iovec *src = evpl_iovec_ring_tail(&bind->iovec_send);
 
-            evpl_socket_abort_if(!src, "src is NULL");
+            evpl_core_abort_if(!src, "src is NULL");
 
             evpl_iovec_move(&iov[i], src);
             evpl_iovec_ring_remove(&bind->iovec_send);
@@ -1197,8 +1048,17 @@ evpl_tcp_rdma_flush(
         evpl_dgram_ring_remove(&bind->dgram_send);
     }
 
-    /* Enable write interest to send queued data */
-    evpl_event_write_interest(evpl, &ts->socket.event);
+    /* Transfer framed buffers to the child. It keeps them until the native
+     * send completes, including an overlapped send cancelled during close. */
+    if (ts->wire && !(bind->flags & (EVPL_BIND_PENDING_CLOSED | EVPL_BIND_CLOSE_DEFERRED))) {
+        while ((iov = evpl_iovec_ring_tail(&bind->iovec_send_framed)) != NULL) {
+            evpl_sendv(evpl, ts->wire, iov, 1, iov->length, EVPL_SEND_FLAG_TAKE_REF);
+            evpl_iovec_ring_remove(&bind->iovec_send_framed);
+        }
+        if (bind->flags & EVPL_BIND_FINISH) {
+            evpl_finish(evpl, ts->wire);
+        }
+    }
 } /* evpl_tcp_rdma_flush */
 
 /*
@@ -1217,8 +1077,7 @@ evpl_tcp_rdma_close(
     /* Free the pending ring */
     tcp_rdma_pending_ring_free(&ts->pending_ring);
 
-    /* Call base socket close */
-    evpl_socket_close(evpl, bind);
+    evpl_core_assert(!ts->wire && !bind->outstanding);
 } /* evpl_tcp_rdma_close */
 
 /*
@@ -1330,10 +1189,11 @@ struct evpl_protocol  evpl_tcp_rdma_datagram = {
     .name             = "DATAGRAM_TCP_RDMA",
     .framework        = &evpl_framework_tcp_rdma,
     .connect          = evpl_tcp_rdma_connect,
-    .listen           = evpl_socket_tcp_listen,
-    .discard_accepted = evpl_socket_discard_accepted,
+    .listen           = evpl_tcp_rdma_listen,
+    .discard_accepted = evpl_tcp_rdma_discard,
     .attach           = evpl_tcp_rdma_attach,
-    .pending_close    = evpl_socket_pending_close,
+    .pending_close    = evpl_tcp_rdma_pending_close,
     .close            = evpl_tcp_rdma_close,
     .flush            = evpl_tcp_rdma_flush,
+    .finish           = evpl_tcp_rdma_finish,
 };

@@ -49,11 +49,13 @@ if(EVPL_HAVE_IOCP)
 endif()
 set(BACKEND_LIBDEPS)
 
+set(CORE_SRC ${CORE_SRC} socket/tcp_rdma.c socket/tcp_rdma.h)
+
 if(WIN32)
     list(APPEND CORE_SRC winsock/winsock.c)
     add_subdirectory(winsock)
 elseif(NOT EVPL_BOOTSTRAP_NATIVE)
-set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/tcp_rdma.c socket/tcp_rdma.h socket/unix_stream.c socket/unix_stream.h)
+set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/unix_stream.c socket/unix_stream.h)
 add_subdirectory(socket)
 endif()
 
