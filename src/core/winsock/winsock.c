@@ -3,6 +3,7 @@
 
 #include "core/os.h"
 #include <mswsock.h>
+#include <mstcpip.h>
 #include "core/bind.h"
 #include "core/iocp.h"
 #include "core/endpoint.h"
@@ -197,6 +198,7 @@ evpl_win_complete(
         goto out;
     }
     if (error) {
+        evpl_core_error("Winsock %s operation %d failed: %lu", bind->protocol->name, request->operation, error);
         evpl_close(evpl, bind); goto out;
     }
     switch (request->operation) {
@@ -493,6 +495,17 @@ evpl_win_bind(
         bind(s->socket, bindp->local->addr, bindp->local->addrlen) ||
         evpl_iocp_associate(evpl, (HANDLE) s->socket)) {
         evpl_close(evpl, bindp); return;
+    }
+    /* An ICMP port-unreachable refers to a previous datagram, not to the
+     * lifetime of this unconnected socket. Match BSD UDP semantics. */
+    {
+        BOOL report_reset = FALSE;
+        DWORD bytes;
+        if (WSAIoctl(s->socket, SIO_UDP_CONNRESET, &report_reset, sizeof(report_reset),
+                     NULL, 0, &bytes, NULL, NULL)) {
+            evpl_close(evpl, bindp);
+            return;
+        }
     }
     evpl_win_receive(evpl, bindp);
 } /* evpl_win_bind */
