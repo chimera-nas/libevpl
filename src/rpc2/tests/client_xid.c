@@ -163,7 +163,7 @@ main(
     state.prog           = &prog;
 
     server   = evpl_rpc2_server_init(programs, 1);
-    endpoint = evpl_endpoint_create(test_address(proto, "0.0.0.0", argv[0]), port);
+    endpoint = evpl_endpoint_create(test_address(proto, "127.0.0.1", argv[0]), port);
     evpl_rpc2_server_start(server, proto, endpoint);
 
     thread = evpl_rpc2_thread_init(evpl, programs, 1, NULL, NULL);

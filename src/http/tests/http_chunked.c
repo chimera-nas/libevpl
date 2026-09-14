@@ -104,7 +104,7 @@ server_function(void *ptr)
 
     agent = evpl_http_init(evpl);
 
-    endpoint = evpl_endpoint_create("0.0.0.0", 80);
+    endpoint = evpl_endpoint_create("127.0.0.1", 8088);
 
     listener = evpl_listener_create();
 
@@ -213,7 +213,7 @@ main(
         return 1;
     }
 
-    curl_easy_setopt(curl, CURLOPT_URL, "http://localhost:80");
+    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:8088");
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
