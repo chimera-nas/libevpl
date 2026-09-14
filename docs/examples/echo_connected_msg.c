@@ -5,8 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
-#include <unistd.h>
+#include <evpl/evpl_platform.h>
 #include <evpl/evpl.h>
 
 /* This example implements a echo server that uses datagram semantics.
@@ -24,10 +23,10 @@ struct client_state {
 };
 
 struct server_state {
-    int             ready;
-    int             run;
-    pthread_mutex_t mutex;
-    pthread_cond_t  cond;
+    int          ready;
+    int          run;
+    evpl_mutex_t mutex;
+    evpl_cond_t  cond;
 };
 
 int
@@ -128,10 +127,10 @@ server_thread(void *arg)
     printf("[Server] Listening on port 8000\n");
 
     /* Notify main thread we are ready so client thread can be started */
-    pthread_mutex_lock(&state->mutex);
+    evpl_mutex_lock(&state->mutex);
     state->ready = 1;
-    pthread_cond_signal(&state->cond);
-    pthread_mutex_unlock(&state->mutex);
+    evpl_cond_signal(&state->cond);
+    evpl_mutex_unlock(&state->mutex);
 
     /* Run event loop until stopped by the main thread */
     while (state->run) {
@@ -251,39 +250,39 @@ main(
     int   argc,
     char *argv[])
 {
-    struct server_state server_state = { .run = 1, .ready = 0 };
-    struct client_state client_state = { 0 };
-    pthread_t           server_tid;
-    pthread_t           client_tid;
+    struct server_state  server_state = { .run = 1, .ready = 0 };
+    struct client_state  client_state = { 0 };
+    evpl_native_thread_t server_tid;
+    evpl_native_thread_t client_tid;
 
-    pthread_mutex_init(&server_state.mutex, NULL);
-    pthread_cond_init(&server_state.cond, NULL);
+    evpl_mutex_init(&server_state.mutex, NULL);
+    evpl_cond_init(&server_state.cond, NULL);
 
     /* Initialize libevpl */
     evpl_init(NULL);
 
     /* Start server thread */
     printf("Starting server thread\n");
-    pthread_create(&server_tid, NULL, server_thread, &server_state);
+    evpl_native_thread_create(&server_tid, NULL, server_thread, &server_state);
 
 
-    pthread_mutex_lock(&server_state.mutex);
+    evpl_mutex_lock(&server_state.mutex);
     while (!server_state.ready) {
-        pthread_cond_wait(&server_state.cond, &server_state.mutex);
+        evpl_cond_wait(&server_state.cond, &server_state.mutex);
     }
-    pthread_mutex_unlock(&server_state.mutex);
+    evpl_mutex_unlock(&server_state.mutex);
 
     /* Start client thread */
     printf("Starting client thread\n");
-    pthread_create(&client_tid, NULL, client_thread, &client_state);
+    evpl_native_thread_create(&client_tid, NULL, client_thread, &client_state);
 
     /* Wait for client to finish */
-    pthread_join(client_tid, NULL);
+    evpl_native_thread_join(client_tid, NULL);
 
     /* Stop server */
     server_state.run = 0;
 
-    pthread_join(server_tid, NULL);
+    evpl_native_thread_join(server_tid, NULL);
 
     return 0;
 } /* main */

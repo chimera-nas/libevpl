@@ -246,8 +246,10 @@ evpl_shared_init(struct evpl_global_config *config)
 
 #endif /* if !defined(EVPL_BOOTSTRAP_NATIVE) || defined(_WIN32) */
 #ifndef EVPL_BOOTSTRAP_NATIVE
+#ifndef _WIN32
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_UNIX,
                        &evpl_socket_unix_stream);
+#endif /* ifndef _WIN32 */
 
 #ifdef HAVE_TLS
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TLS,
@@ -257,11 +259,13 @@ evpl_shared_init(struct evpl_global_config *config)
                        &evpl_socket_tls);
 #endif /* ifdef HAVE_TLS */
 
+#ifndef _WIN32
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TCP_RDMA,
                         &evpl_framework_tcp_rdma);
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
                        &evpl_tcp_rdma_datagram);
+#endif /* ifndef _WIN32 */
 
 #endif /* ifndef EVPL_BOOTSTRAP_NATIVE */
 
@@ -672,7 +676,8 @@ evpl_continue(struct evpl *evpl)
         /* A completion callback can retire another bind after its place in
          * this dispatch's close sweep. Do not block before the next sweep;
          * binds still waiting on kernel operations do not force a busy loop. */
-        DL_FOREACH(evpl->pending_close_binds, bind) {
+        DL_FOREACH(evpl->pending_close_binds, bind)
+        {
             if (!bind->outstanding && !(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
                 msecs = 0;
                 break;

@@ -58,6 +58,7 @@ endif()
 # own callback.  Touches no network.  A regression that keeps a drained event
 # active shows up as a spin, one that strands it shows up as a hang; the
 # bounded timeout catches both.
+if(NOT WIN32)
 unit_test_all_mechs(core fd_event_pipe fd_event_pipe.c)
 
 foreach(mech ${EVPL_MECHANISMS})
@@ -67,6 +68,7 @@ endforeach()
 
 # Local (AF_UNIX) endpoints: addressed by socket name, so no namespace needed.
 unit_test_local(core endpoint_local endpoint_local.c)
+endif()
 
 # In-process endpoints: named through a registry private to the process, so
 # nothing outside it is shared and no namespace is needed either.
