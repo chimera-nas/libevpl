@@ -193,12 +193,12 @@ endmacro()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-if (NOT DISABLE_TESTS AND NOT EVPL_CORE_ONLY)
+if (NOT DISABLE_TESTS)
     add_subdirectory(tests)
 endif()
 
 add_subdirectory(core)
-if(EVPL_CORE_ONLY)
+if(EVPL_BOOTSTRAP_NATIVE)
     return()
 endif()
 add_subdirectory(http)

@@ -11,11 +11,11 @@ set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES
 option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 project(libevpl LANGUAGES C)
-option(EVPL_CORE_ONLY "Build only event-loop infrastructure and in-process transport" OFF)
+option(EVPL_BOOTSTRAP_NATIVE "Development profile for bootstrapping native Windows backends" OFF)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-if(EVPL_CORE_ONLY)
-    add_compile_definitions(EVPL_CORE_ONLY)
+if(EVPL_BOOTSTRAP_NATIVE)
+    add_compile_definitions(EVPL_BOOTSTRAP_NATIVE)
 endif()
 if(MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
@@ -260,7 +260,7 @@ endif()
 # linkable stubs in the SDK, so this resolves to a Homebrew openssl@3 (found
 # via the prefixes added above) -- find_package is used rather than a bare
 # -lssl because that formula is keg-only and lives outside the default paths.
-if(NOT EVPL_CORE_ONLY)
+if(NOT EVPL_BOOTSTRAP_NATIVE)
 find_package(OpenSSL REQUIRED)
 
 message(STATUS "OpenSSL ${OPENSSL_VERSION}: ${OPENSSL_SSL_LIBRARY}")
@@ -360,7 +360,7 @@ include_directories(ext/prometheus-c/ext/stopwatch)
 
 add_subdirectory(ext)
 add_subdirectory(src)
-if(NOT EVPL_CORE_ONLY)
+if(NOT EVPL_BOOTSTRAP_NATIVE)
     add_subdirectory(docs)
 endif()
 add_subdirectory(include)
