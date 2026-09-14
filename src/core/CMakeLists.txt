@@ -73,7 +73,12 @@ endif()
 # kTLS zero-copy path is Linux-only; on other platforms BIO_get_ktls_*() simply
 # reports unavailable and the normal SSL_read/SSL_write path is used.
 if (HAVE_TLS)
-    set(CORE_SRC ${CORE_SRC} tls/tls.c tls/tls.h)
+    set(CORE_SRC ${CORE_SRC} tls/openssl.c tls/openssl.h tls/tls.h)
+    if(EVPL_TLS_MEMORY_BIO)
+        list(APPEND CORE_SRC tls/stream_tls.c)
+    else()
+        list(APPEND CORE_SRC tls/tls.c)
+    endif()
     add_subdirectory(tls)
 endif()
 
