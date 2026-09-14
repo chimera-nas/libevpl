@@ -95,7 +95,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
              COMMAND ${HTTP_QUINT_SRC_DIR}/check_models.sh
                      ${QUINT_EXECUTABLE} ${HTTP_QUINT_SRC_DIR})
     set_tests_properties(libevpl/http/quint_model PROPERTIES
-                         LABELS "quint" TIMEOUT 120)
+                         LABELS "quint" TIMEOUT 360)
 
     message(STATUS "HTTP conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()

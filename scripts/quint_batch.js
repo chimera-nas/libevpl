@@ -72,7 +72,7 @@ const argsFor = o => ({
   nTraces: 1,
   nThreads: os.cpus().length,
   seed: undefined,
-  backend: spec.backend ?? 'rust',
+  backend: spec.backend ?? 'typescript',
   mbt: false,
   verbosity: 0,
   quiet: true,
