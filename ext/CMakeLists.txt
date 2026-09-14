@@ -3,9 +3,6 @@
 # SPDX-License-Identifier: LGPL-2.1-only
 
 add_subdirectory(prometheus-c)
-if(EVPL_BOOTSTRAP_NATIVE)
-    return()
-endif()
 add_subdirectory(xdrzcc)
 
 set(XDRZCC ${XDRZCC} PARENT_SCOPE)

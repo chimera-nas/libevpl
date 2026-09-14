@@ -13,13 +13,9 @@ set_property(CACHE LIBFABRIC_ENABLED PROPERTY STRINGS AUTO ON OFF)
 option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 project(libevpl LANGUAGES C)
-option(EVPL_BOOTSTRAP_NATIVE "Development profile for bootstrapping native Windows backends" OFF)
 option(EVPL_TLS_MEMORY_BIO "Run TLS over the portable byte-stream backend" ${WIN32})
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-if(EVPL_BOOTSTRAP_NATIVE)
-    add_compile_definitions(EVPL_BOOTSTRAP_NATIVE)
-endif()
 if(MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
@@ -310,14 +306,12 @@ endif()
 # linkable stubs in the SDK, so this resolves to a Homebrew openssl@3 (found
 # via the prefixes added above) -- find_package is used rather than a bare
 # -lssl because that formula is keg-only and lives outside the default paths.
-if(NOT EVPL_BOOTSTRAP_NATIVE)
 find_package(OpenSSL REQUIRED)
 
 message(STATUS "OpenSSL ${OPENSSL_VERSION}: ${OPENSSL_SSL_LIBRARY}")
 
 set(HAVE_TLS 1)
 add_definitions(-DHAVE_TLS)
-endif()
 
 find_library(NGHTTP2_LIB NAMES nghttp2)
 find_path(NGHTTP2_INCLUDE_DIR NAMES nghttp2/nghttp2.h)
@@ -413,9 +407,7 @@ include_directories(ext/prometheus-c/ext/stopwatch)
 
 add_subdirectory(ext)
 add_subdirectory(src)
-if(NOT EVPL_BOOTSTRAP_NATIVE)
     add_subdirectory(docs)
-endif()
 add_subdirectory(include)
 
 if(NOT WIN32)

@@ -54,7 +54,7 @@ set(CORE_SRC ${CORE_SRC} socket/tcp_rdma.c socket/tcp_rdma.h)
 if(WIN32)
     list(APPEND CORE_SRC winsock/winsock.c)
     add_subdirectory(winsock)
-elseif(NOT EVPL_BOOTSTRAP_NATIVE)
+else()
 set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/unix_stream.c socket/unix_stream.h)
 add_subdirectory(socket)
 endif()
@@ -66,10 +66,8 @@ add_subdirectory(inproc)
 # Block I/O over plain pread()/pwrite() on a per-device service thread.  Needs
 # no kernel async facility either, so it is the block backend that exists
 # everywhere -- notably macOS, which has nothing io_uring/libaio-shaped.
-if(NOT EVPL_BOOTSTRAP_NATIVE OR WIN32)
 set(CORE_SRC ${CORE_SRC} pread/pread_block.c pread/pread.h)
 add_subdirectory(pread)
-endif()
 
 # TLS is available wherever OpenSSL is (HAVE_TLS is set at the top level).  Its
 # kTLS zero-copy path is Linux-only; on other platforms BIO_get_ktls_*() simply
