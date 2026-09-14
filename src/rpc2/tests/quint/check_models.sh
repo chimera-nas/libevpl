@@ -28,11 +28,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # load/parse/typecheck once, then every check against the same typechecked
 # model.  These already ran sequentially, so no parallelism is lost.
 #
-# --backend=rust, quint's default and the fast one.  TypeScript would let
-# ubuntu 22.04 and rocky 9 run these too -- it needs no Rust evaluator -- but it
-# is 2.4x slower on these models and generates a different corpus from the same
-# seed, so those two images would compile a different case table from every
-# other platform.  They keep skipping these suites instead.
+# --backend=typescript, everywhere.  Rust is quint's default and is 2.4x faster
+# on these models, but its evaluator is published only against glibc 2.39 and
+# will not run on ubuntu 22.04 or rocky 9, so those two images used to skip
+# these suites entirely.  That was affordable while chimera replayed a prebuilt
+# trace bundle; it stopped being affordable once every consumer generates its
+# own corpus at build time, because "no working backend" became "no model-based
+# tests at all on the merge queue's oldest glibc".
+#
+# The objection to TypeScript was never that it is wrong -- it is that a
+# platform using it would compile a DIFFERENT case table from the same seed, so
+# a mixed fleet would not be comparing like with like.  Pinning every platform
+# to it removes that objection: the case table is different from the one the
+# rust backend produced, and identical across the fleet, which is the property
+# that actually matters.
 
 # Two models, so two elaborations rather than one; each still serves both of
 # its own checks instead of one apiece.
@@ -44,7 +53,7 @@ for m in values:wellFormed defects:safety; do
     "${NODE}" "${SCRIPT_DIR}/../../../../scripts/quint_batch.js" "${QUINT}" <<SPEC
 {
   "model": "${SRC_DIR}/${m%%:*}.qnt",
-  "backend": "rust",
+  "backend": "typescript",
   "tests": [ {} ],
   "runs": [
     { "invariant": "${m##*:}", "maxSamples": 500, "maxSteps": 50 }

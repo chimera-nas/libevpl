@@ -413,7 +413,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
              COMMAND ${QUINT_SRC_DIR}/check_models.sh
                      ${QUINT_EXECUTABLE} ${QUINT_SRC_DIR})
     set_tests_properties(libevpl/rpc2/quint_model PROPERTIES
-                         LABELS "quint" TIMEOUT 120)
+                         LABELS "quint" TIMEOUT 360)
 
     # The client model checks itself the same way.  Registered directly rather
     # than through check_models.sh so that the server-side script stays the
@@ -421,13 +421,13 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     add_test(NAME libevpl/rpc2/quint_client_model
              COMMAND ${QUINT_EXECUTABLE} test ${QUINT_SRC_DIR}/client.qnt)
     set_tests_properties(libevpl/rpc2/quint_client_model PROPERTIES
-                         LABELS "quint" TIMEOUT 120)
+                         LABELS "quint" TIMEOUT 360)
 
     add_test(NAME libevpl/rpc2/quint_client_invariants
              COMMAND ${QUINT_EXECUTABLE} run ${QUINT_SRC_DIR}/client.qnt
                      --invariant=safety --max-samples=500 --max-steps=50)
     set_tests_properties(libevpl/rpc2/quint_client_invariants PROPERTIES
-                         LABELS "quint" TIMEOUT 120)
+                         LABELS "quint" TIMEOUT 360)
 
     message(STATUS "RPC2 conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()

@@ -42,7 +42,7 @@ mkdir -p "${WORK_DIR}"
 CLIENT_TRACES=6
 CLIENT_SEED=0xc1
 
-"${QUINT}" run "${SRC_DIR}/client.qnt" --max-steps=400 \
+"${QUINT}" run --backend=typescript "${SRC_DIR}/client.qnt" --max-steps=400 \
     --max-samples="${CLIENT_TRACES}" --n-traces="${CLIENT_TRACES}" \
     --seed="${CLIENT_SEED}" \
     --out-itf="${WORK_DIR}/client-{seq}.itf.json" > /dev/null

@@ -47,13 +47,13 @@ DEFECT_TRACES=4
 VALUE_SEED=0xa1
 DEFECT_SEED=0xb1
 
-"${QUINT}" run "${SRC_DIR}/values.qnt" --max-steps=200 \
+"${QUINT}" run --backend=typescript "${SRC_DIR}/values.qnt" --max-steps=200 \
     --max-samples="${VALUE_TRACES}" --n-traces="${VALUE_TRACES}" \
     --seed="${VALUE_SEED}" \
     --out-itf="${WORK_DIR}/values-{seq}.itf.json" > /dev/null &
 values_pid=$!
 
-"${QUINT}" run "${SRC_DIR}/defects.qnt" --max-steps=400 \
+"${QUINT}" run --backend=typescript "${SRC_DIR}/defects.qnt" --max-steps=400 \
     --max-samples="${DEFECT_TRACES}" --n-traces="${DEFECT_TRACES}" \
     --seed="${DEFECT_SEED}" \
     --out-itf="${WORK_DIR}/defects-{seq}.itf.json" > /dev/null &

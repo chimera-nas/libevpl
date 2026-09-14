@@ -56,7 +56,7 @@ TRACES=()
 PIDS=()
 
 for s in "${SEEDS[@]}"; do
-    "${QUINT}" run "${SRC_DIR}/core.qnt" \
+    "${QUINT}" run --backend=typescript "${SRC_DIR}/core.qnt" \
         --seed="$s" --max-steps="${STEPS}" \
         --max-samples="${TRACES_PER_SEED}" --n-traces="${TRACES_PER_SEED}" \
         --out-itf="${WORK_DIR}/core-${s}-{seq}.itf.json" > /dev/null &

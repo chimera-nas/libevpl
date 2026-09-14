@@ -42,7 +42,7 @@ MODEL="${SRC_DIR}/http1x.qnt"
 "${NODE}" "${SCRIPT_DIR}/../../../../scripts/quint_batch.js" "${QUINT}" <<SPEC
 {
   "model": "${MODEL}",
-  "backend": "rust",
+  "backend": "typescript",
   "tests": [
     { "main": "http1x_requests" },
     { "main": "http1x_defects" },
