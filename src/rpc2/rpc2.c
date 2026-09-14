@@ -4133,7 +4133,7 @@ evpl_rpc2_event(
             evpl_rpc2_reasm_reset(evpl, rpc2_conn);
             /* Tear down any RPCSEC_GSS contexts established on this conn. */
             evpl_rpc2_gss_conn_cleanup(rpc2_conn->thread, rpc2_conn);
-            free(rpc2_conn);
+            evpl_free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:
 

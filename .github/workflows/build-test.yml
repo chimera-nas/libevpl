@@ -572,6 +572,7 @@ jobs:
         with:
           path: ~/AppData/Local/vcpkg/archives
           key: vcpkg-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.arch }}-
       - uses: actions/download-artifact@v6
         with:
           name: native-conformance-corpus
