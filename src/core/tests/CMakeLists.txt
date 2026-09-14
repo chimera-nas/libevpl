@@ -47,7 +47,7 @@ endforeach()
 # than through a protocol, since the waist is only advanced by the RDMA CM one.
 unit_test(core iovec_ring_resize iovec_ring_resize.c)
 
-if(EVPL_CORE_ONLY)
+if(EVPL_BOOTSTRAP_NATIVE)
     unit_test_local(core endpoint_inproc endpoint_inproc.c)
     return()
 endif()

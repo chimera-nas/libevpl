@@ -12,6 +12,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <direct.h>
+#include "test_options.h"
+#endif // ifdef _WIN32
 
 #include "evpl/evpl.h"
 
@@ -138,6 +142,14 @@ test_address(
     base  = argv0 ? argv0 : "evpl";
     slash = strrchr(base, '/');
 
+#ifdef _WIN32
+    {
+        const char *backslash = strrchr(base, '\\');
+        if (backslash && (!slash || backslash > slash)) {
+            slash = backslash;
+        }
+    }
+#endif // ifdef _WIN32
     if (slash) {
         base = slash + 1;
     }
@@ -169,7 +181,11 @@ test_address(
     /* Created here rather than relied upon from the build: ctest points this
      * at the build tree, which a clean removes, and the directory is only
      * ever needed at run time. */
+#ifdef _WIN32
+    if (_mkdir(dir) && errno != EEXIST) {
+#else // ifdef _WIN32
     if (mkdir(dir, 0700) && errno != EEXIST) {
+#endif // ifdef _WIN32
         dir = "/tmp";
     }
 

@@ -49,21 +49,22 @@ if(EVPL_HAVE_IOCP)
 endif()
 set(BACKEND_LIBDEPS)
 
-if(NOT EVPL_CORE_ONLY)
+if(WIN32)
+    list(APPEND CORE_SRC winsock/winsock.c)
+    add_subdirectory(winsock)
+elseif(NOT EVPL_BOOTSTRAP_NATIVE)
 set(CORE_SRC ${CORE_SRC} socket/tcp.c socket/tcp.h socket/common.h socket/udp.c socket/udp.h socket/tcp_rdma.c socket/tcp_rdma.h socket/unix_stream.c socket/unix_stream.h)
 add_subdirectory(socket)
 endif()
 
 # Thread-to-thread transport.  No kernel facility, so unconditional.
 set(CORE_SRC ${CORE_SRC} inproc/inproc.c inproc/inproc.h)
-if(NOT EVPL_CORE_ONLY)
-    add_subdirectory(inproc)
-endif()
+add_subdirectory(inproc)
 
 # Block I/O over plain pread()/pwrite() on a per-device service thread.  Needs
 # no kernel async facility either, so it is the block backend that exists
 # everywhere -- notably macOS, which has nothing io_uring/libaio-shaped.
-if(NOT EVPL_CORE_ONLY)
+if(NOT EVPL_BOOTSTRAP_NATIVE)
 set(CORE_SRC ${CORE_SRC} pread/pread_block.c pread/pread.h)
 add_subdirectory(pread)
 endif()

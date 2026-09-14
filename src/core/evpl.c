@@ -241,13 +241,15 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_shared->allocator = evpl_allocator_create();
 
-#ifndef EVPL_CORE_ONLY
+#if !defined(EVPL_BOOTSTRAP_NATIVE) || defined(_WIN32)
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_SOCKET_UDP,
                        &evpl_socket_udp);
 
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TCP,
                        &evpl_socket_tcp);
 
+#endif /* if !defined(EVPL_BOOTSTRAP_NATIVE) || defined(_WIN32) */
+#ifndef EVPL_BOOTSTRAP_NATIVE
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_UNIX,
                        &evpl_socket_unix_stream);
 
@@ -265,7 +267,7 @@ evpl_shared_init(struct evpl_global_config *config)
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
                        &evpl_tcp_rdma_datagram);
 
-#endif /* ifndef EVPL_CORE_ONLY */
+#endif /* ifndef EVPL_BOOTSTRAP_NATIVE */
 
     /* Needs no kernel facility of any kind, so like the socket protocols it is
      * always present rather than gated on a build option. */
@@ -282,13 +284,13 @@ evpl_shared_init(struct evpl_global_config *config)
      * no kernel async facility, so like the socket protocols it is always
      * present rather than gated on a build option -- it is the only block
      * backend on platforms without io_uring or libaio. */
-#ifndef EVPL_CORE_ONLY
+#ifndef EVPL_BOOTSTRAP_NATIVE
     if (config->pread_enabled) {
         evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_PREAD,
                                  &evpl_block_protocol_pread);
     }
 
-#endif /* ifndef EVPL_CORE_ONLY */
+#endif /* ifndef EVPL_BOOTSTRAP_NATIVE */
 
 #ifdef HAVE_IO_URING
     if (config->io_uring_enabled) {

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: LGPL-2.1-only
 
 add_subdirectory(prometheus-c)
-if(EVPL_CORE_ONLY)
+if(EVPL_BOOTSTRAP_NATIVE)
     return()
 endif()
 add_subdirectory(xdrzcc)

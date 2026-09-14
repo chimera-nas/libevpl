@@ -527,12 +527,12 @@ jobs:
           foreach ($header in @('uthash.h', 'utlist.h')) {
             Invoke-WebRequest "https://raw.githubusercontent.com/troydhanson/uthash/e493aa90a2833b4655927598f169c31cfcdf7861/src/$header" -OutFile "$headers/$header"
           }
-      - name: Configure native core
+      - name: Configure native bootstrap
         shell: pwsh
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} -DEVPL_CORE_ONLY=ON "-DUTHASH_INCLUDE_DIR=$env:RUNNER_TEMP/uthash"
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} -DEVPL_BOOTSTRAP_NATIVE=ON "-DUTHASH_INCLUDE_DIR=$env:RUNNER_TEMP/uthash"
       - name: Build
         run: cmake --build build --config ${{ matrix.config }} --parallel 4
-      - name: Test native core
+      - name: Test native backends
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error --timeout 60 --output-junit results.xml
       - name: Upload test results
         if: always()
