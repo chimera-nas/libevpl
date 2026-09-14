@@ -11,6 +11,7 @@ static inline int test_socket_error(
 #ifdef _WIN32
 typedef SOCKET test_socket_t;
 #define TEST_INVALID_SOCKET INVALID_SOCKET
+#define SHUT_WR             SD_SEND
 #define test_socket_close   closesocket
 #else // ifdef _WIN32
 typedef int test_socket_t;

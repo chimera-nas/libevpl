@@ -61,7 +61,9 @@
 #include <signal.h>
 
 #include <time.h>
+#ifndef _WIN32
 #include <sched.h>
+#endif /* ifndef _WIN32 */
 
 
 
@@ -1787,7 +1789,11 @@ run_client_case(
     /* Publish the case before the client can connect, so the accept the
      * hostile server is about to take is unambiguously this one's. */
     while (!g_raw.ready) {
+#ifdef _WIN32
+        SwitchToThread();
+#else  /* ifdef _WIN32 */
         sched_yield();
+#endif /* ifdef _WIN32 */
     }
 
     g_raw.case_index = (int) index;
@@ -1929,7 +1935,11 @@ run_api_cases(
      * ordinary way a connection is retired, rather than a connect that never
      * succeeded. */
     while (!g_raw.ready) {
+#ifdef _WIN32
+        SwitchToThread();
+#else  /* ifdef _WIN32 */
         sched_yield();
+#endif /* ifdef _WIN32 */
     }
 
     g_raw.case_index = (int) HTTP_NUM_CLIENT_CASES;

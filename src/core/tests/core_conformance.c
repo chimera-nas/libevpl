@@ -1139,7 +1139,7 @@ await_expectations(
             }
         }
 
-        nanosleep(&nap, NULL);
+        evpl_sleep_us(nap.tv_sec * 1000000 + nap.tv_nsec / 1000);
     }
 
     if (started) {
@@ -2312,12 +2312,12 @@ check_static_facts(void)
                        evpl_protocol_is_inproc(EVPL_STREAM_SOCKET_TCP),
                        "in-process misreported");
 
-    evpl_test_abort_if(evpl_protocol_is_local(EVPL_STREAM_INPROC)
+    evpl_test_abort_if(evpl_protocol_is_local(EVPL_STREAM_INPROC),
+                       "inproc incorrectly reports a local socket path");
 #ifndef _WIN32
-                       || !evpl_protocol_is_local(EVPL_STREAM_SOCKET_UNIX)
+    evpl_test_abort_if(!evpl_protocol_is_local(EVPL_STREAM_SOCKET_UNIX),
+                       "AF_UNIX does not report a local socket path");
 #endif /* ifndef _WIN32 */
-                       ,
-                       "local misreported: an inproc name is not a socket path");
 
     evpl_test_abort_if(evpl_protocol_lookup(&proto, "STREAM_INPROC") ||
                        proto != EVPL_STREAM_INPROC,
