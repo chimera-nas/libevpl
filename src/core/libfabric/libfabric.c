@@ -162,18 +162,30 @@ struct evpl_libfabric_thread_device {
     int                           num_ep;
 };
 
+/* Logical transfers remain stable when the application grows either ring.
+ * Lists follow submission order, so completed successors retain their buffers
+ * until the prefix can retire.  A transfer is complete only after all chunks
+ * have been submitted and every submitted chunk has returned. */
+struct evpl_libfabric_transfer {
+    unsigned int                    pending;
+    int                             submitted;
+    int                             status;
+    struct evpl_libfabric_transfer *prev;
+    struct evpl_libfabric_transfer *next;
+};
+
 /* Per-op context, pooled per thread.  The provider scratch area
  * (fi_context2) MUST be the first member: FI_CONTEXT/FI_CONTEXT2 mode
  * providers treat the op context pointer as their own storage. */
 struct evpl_libfabric_ctx {
-    struct fi_context2           fi_ctx;
-    uint8_t                      op;
-    uint8_t                      last; /* TX: completion retires the tail dgram */
-    struct evpl_libfabric_ep    *lfep;
-    struct evpl_libfabric_recvq *rq;
-    struct evpl_iovec            iovec; /* RECV buffer / coalesced TX staging */
-    struct evpl_libfabric_ctx   *prev;
-    struct evpl_libfabric_ctx   *next;
+    struct fi_context2              fi_ctx;
+    uint8_t                         op;
+    struct evpl_libfabric_transfer *transfer;
+    struct evpl_libfabric_ep       *lfep;
+    struct evpl_libfabric_recvq    *rq;
+    struct evpl_iovec               iovec; /* RECV buffer / coalesced TX staging */
+    struct evpl_libfabric_ctx      *prev;
+    struct evpl_libfabric_ctx      *next;
 };
 
 /* Per-thread framework state */
@@ -189,6 +201,7 @@ struct evpl_libfabric {
     struct evpl_timer                     tick;
     int                                   tick_armed;
     struct evpl_libfabric_ctx            *free_ctx;
+    struct evpl_libfabric_transfer       *free_transfer;
 };
 
 /* Per-bind protocol state, lives in evpl_bind_private() */
@@ -211,6 +224,10 @@ struct evpl_libfabric_ep {
                                                        * dgram already posted */
     uint64_t                             read_offset; /* likewise, dgram_read */
     struct evpl_libfabric_ctx           *posted_sends;
+    struct evpl_libfabric_transfer      *send_transfers;
+    struct evpl_libfabric_transfer      *read_transfers;
+    struct evpl_libfabric_transfer      *send_transfer;
+    struct evpl_libfabric_transfer      *read_transfer;
 };
 
 /* FI_CONNREQ handoff from the listener thread to a worker's attach() */
@@ -741,7 +758,7 @@ evpl_libfabric_ctx_alloc(struct evpl_libfabric *lf)
         ctx = evpl_zalloc(sizeof(*ctx));
     }
 
-    ctx->last       = 0;
+    ctx->transfer   = NULL;
     ctx->iovec.data = NULL;
     ctx->iovec.ref  = NULL;
 
@@ -755,6 +772,30 @@ evpl_libfabric_ctx_free(
 {
     DL_PREPEND(lf->free_ctx, ctx);
 } /* evpl_libfabric_ctx_free */
+
+static struct evpl_libfabric_transfer *
+evpl_libfabric_transfer_alloc(struct evpl_libfabric *lf)
+{
+    struct evpl_libfabric_transfer *transfer = lf->free_transfer;
+
+    if (transfer) {
+        DL_DELETE(lf->free_transfer, transfer);
+    } else {
+        transfer = evpl_zalloc(sizeof(*transfer));
+    }
+    transfer->pending   = 0;
+    transfer->submitted = 0;
+    transfer->status    = 0;
+    return transfer;
+} /* evpl_libfabric_transfer_alloc */
+
+static void
+evpl_libfabric_transfer_free(
+    struct evpl_libfabric          *lf,
+    struct evpl_libfabric_transfer *transfer)
+{
+    DL_PREPEND(lf->free_transfer, transfer);
+} /* evpl_libfabric_transfer_free */
 
 /*
  * Address helpers
@@ -984,45 +1025,23 @@ evpl_libfabric_handle_recv(
 } /* evpl_libfabric_handle_recv */
 
 static void
-evpl_libfabric_handle_send(
-    struct evpl               *evpl,
-    struct evpl_libfabric_ctx *ctx,
-    int                        status)
+evpl_libfabric_retire_send(
+    struct evpl              *evpl,
+    struct evpl_libfabric_ep *lfep,
+    int                       status)
 {
-    struct evpl_libfabric_ep *lfep = ctx->lfep;
-    struct evpl_libfabric    *lf   = lfep->lf;
-    struct evpl_bind         *bind;
-    struct evpl_dgram        *dgram;
-    struct evpl_iovec        *iovec;
-    struct evpl_notify        notify;
-    uint64_t                  length;
-    uint8_t                   dgram_type;
+    struct evpl_bind  *bind;
+    struct evpl_dgram *dgram;
+    struct evpl_iovec *iovec;
+    struct evpl_notify notify;
+    uint64_t           length;
+    uint8_t            dgram_type;
 
-    void                      (*callback)(
+    void               (*callback)(
         int   cb_status,
         void *cb_private_data);
-    void                     *private_data;
-    int                       i, niov;
-
-    DL_DELETE(lfep->posted_sends, ctx);
-    lfep->cur_sends--;
-
-    if (ctx->iovec.ref) {
-        /* coalesced staging buffer */
-        evpl_iovec_release_internal(evpl, &ctx->iovec);
-    }
-
-    if (unlikely(lfep->closed)) {
-        evpl_libfabric_ctx_free(lf, ctx);
-        return;
-    }
-
-    if (!ctx->last) {
-        evpl_libfabric_ctx_free(lf, ctx);
-        return;
-    }
-
-    evpl_libfabric_ctx_free(lf, ctx);
+    void              *private_data;
+    int                i, niov;
 
     bind = evpl_private2bind(lfep);
 
@@ -1064,46 +1083,23 @@ evpl_libfabric_handle_send(
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
-    if (unlikely(lfep->cur_sends == 0 &&
-                 evpl_iovec_ring_is_empty(&bind->iovec_send))) {
-        if (bind->flags & EVPL_BIND_FINISH) {
-            evpl_close(evpl, bind);
-            return;
-        }
-    }
-
-    if (!evpl_dgram_ring_is_empty(&bind->dgram_send)) {
-        evpl_defer(evpl, &bind->flush_deferral);
-    }
-} /* evpl_libfabric_handle_send */
+} /* evpl_libfabric_retire_send */
 
 static void
-evpl_libfabric_handle_read(
-    struct evpl               *evpl,
-    struct evpl_libfabric_ctx *ctx,
-    int                        status)
+evpl_libfabric_retire_read(
+    struct evpl              *evpl,
+    struct evpl_libfabric_ep *lfep,
+    int                       status)
 {
-    struct evpl_libfabric_ep *lfep = ctx->lfep;
-    struct evpl_libfabric    *lf   = lfep->lf;
-    struct evpl_bind         *bind;
-    struct evpl_dgram        *dgram;
-    struct evpl_iovec        *iovec;
+    struct evpl_bind  *bind;
+    struct evpl_dgram *dgram;
+    struct evpl_iovec *iovec;
 
-    void                      (*callback)(
+    void               (*callback)(
         int   cb_status,
         void *cb_private_data);
-    void                     *private_data;
-    int                       i, niov;
-
-    DL_DELETE(lfep->posted_sends, ctx);
-    lfep->cur_rdma_reads--;
-
-    if (unlikely(lfep->closed) || !ctx->last) {
-        evpl_libfabric_ctx_free(lf, ctx);
-        return;
-    }
-
-    evpl_libfabric_ctx_free(lf, ctx);
+    void              *private_data;
+    int                i, niov;
 
     bind = evpl_private2bind(lfep);
 
@@ -1127,10 +1123,71 @@ evpl_libfabric_handle_read(
         callback(status, private_data);
     }
 
-    if (!evpl_dgram_ring_is_empty(&bind->dgram_read)) {
+} /* evpl_libfabric_retire_read */
+
+/* Every completion returns capacity, even when the transfer still has
+ * unposted chunks.  Retirement is independent of completion order. */
+static void
+evpl_libfabric_complete(
+    struct evpl               *evpl,
+    struct evpl_libfabric_ctx *ctx,
+    int                        status)
+{
+    struct evpl_libfabric_ep        *lfep     = ctx->lfep;
+    struct evpl_libfabric           *lf       = lfep->lf;
+    struct evpl_bind                *bind     = evpl_private2bind(lfep);
+    struct evpl_libfabric_transfer  *transfer = ctx->transfer;
+    struct evpl_libfabric_transfer **transfers;
+    int                              read = ctx->op == EVPL_LIBFABRIC_OP_READ;
+
+    DL_DELETE(lfep->posted_sends, ctx);
+    if (read) {
+        lfep->cur_rdma_reads--;
+        transfers = &lfep->read_transfers;
+    } else {
+        lfep->cur_sends--;
+        transfers = &lfep->send_transfers;
+    }
+    if (ctx->iovec.ref) {
+        evpl_iovec_release_internal(evpl, &ctx->iovec);
+    }
+    evpl_libfabric_abort_if(!transfer || !transfer->pending,
+                            "completion without an outstanding transfer");
+    transfer->pending--;
+    if (status && !transfer->status) {
+        transfer->status = status;
+    }
+    evpl_libfabric_ctx_free(lf, ctx);
+
+    if (unlikely(lfep->closed)) {
+        return;
+    }
+
+    while ((transfer = *transfers) && transfer->submitted && !transfer->pending) {
+        status = transfer->status;
+        DL_DELETE(*transfers, transfer);
+        evpl_libfabric_transfer_free(lf, transfer);
+        if (read) {
+            evpl_libfabric_retire_read(evpl, lfep, status);
+        } else {
+            evpl_libfabric_retire_send(evpl, lfep, status);
+        }
+    }
+
+    if (bind->flags & EVPL_BIND_PENDING_CLOSED) {
+        return;
+    }
+    if (!read && !lfep->cur_sends &&
+        evpl_iovec_ring_is_empty(&bind->iovec_send) &&
+        (bind->flags & EVPL_BIND_FINISH)) {
+        evpl_close(evpl, bind);
+        return;
+    }
+    if (bind->dgram_send.waist != bind->dgram_send.head ||
+        bind->dgram_read.waist != bind->dgram_read.head) {
         evpl_defer(evpl, &bind->flush_deferral);
     }
-} /* evpl_libfabric_handle_read */
+} /* evpl_libfabric_complete */
 
 static void
 evpl_libfabric_handle_cq_error(
@@ -1167,10 +1224,10 @@ evpl_libfabric_handle_cq_error(
             evpl_libfabric_ctx_free(lfep->lf, ctx);
             break;
         case EVPL_LIBFABRIC_OP_SEND:
-            evpl_libfabric_handle_send(evpl, ctx, EIO);
+            evpl_libfabric_complete(evpl, ctx, EIO);
             break;
         case EVPL_LIBFABRIC_OP_READ:
-            evpl_libfabric_handle_read(evpl, ctx, EIO);
+            evpl_libfabric_complete(evpl, ctx, EIO);
             break;
         default:
             evpl_libfabric_abort("cq error for unknown op %u", ctx->op);
@@ -1230,10 +1287,10 @@ evpl_libfabric_poll_cq(
                                            cq->tdev->dev->ep_type == FI_EP_RDM ? src[i] : FI_ADDR_NOTAVAIL);
                 break;
             case EVPL_LIBFABRIC_OP_SEND:
-                evpl_libfabric_handle_send(evpl, ctx, 0);
+                evpl_libfabric_complete(evpl, ctx, 0);
                 break;
             case EVPL_LIBFABRIC_OP_READ:
-                evpl_libfabric_handle_read(evpl, ctx, 0);
+                evpl_libfabric_complete(evpl, ctx, 0);
                 break;
             default:
                 evpl_libfabric_abort("unknown completion op %u", ctx->op);
@@ -1961,6 +2018,12 @@ evpl_libfabric_destroy(
         evpl_free(ctx);
     }
 
+    while (lf->free_transfer) {
+        struct evpl_libfabric_transfer *transfer = lf->free_transfer;
+        DL_DELETE(lf->free_transfer, transfer);
+        evpl_free(transfer);
+    }
+
     evpl_free(lf->active_devices);
     evpl_free(lf->devices);
     evpl_free(lf);
@@ -2225,6 +2288,11 @@ evpl_libfabric_flush_rdma_reads(
 
         dgram = evpl_dgram_ring_waist(&bind->dgram_read);
 
+        if (!lfep->read_transfer) {
+            lfep->read_transfer = evpl_libfabric_transfer_alloc(lf);
+            DL_APPEND(lfep->read_transfers, lfep->read_transfer);
+        }
+
         len = evpl_libfabric_gather(&bind->iovec_rdma_read, dgram,
                                     lfep->read_offset, dev->iov_limit,
                                     (size_t) -1, iov, desc, dev->mr_local,
@@ -2232,9 +2300,9 @@ evpl_libfabric_flush_rdma_reads(
 
         ctx = evpl_libfabric_ctx_alloc(lf);
 
-        ctx->op   = EVPL_LIBFABRIC_OP_READ;
-        ctx->lfep = lfep;
-        ctx->last = (lfep->read_offset + len == dgram->length);
+        ctx->op       = EVPL_LIBFABRIC_OP_READ;
+        ctx->lfep     = lfep;
+        ctx->transfer = lfep->read_transfer;
 
         rma_iov.addr = dgram->remote_address + lfep->read_offset;
         rma_iov.len  = len;
@@ -2262,6 +2330,7 @@ evpl_libfabric_flush_rdma_reads(
 
         DL_APPEND(lfep->posted_sends, ctx);
         lfep->cur_rdma_reads++;
+        ctx->transfer->pending++;
 
         lfep->read_offset += len;
 
@@ -2274,7 +2343,9 @@ evpl_libfabric_flush_rdma_reads(
             bind->dgram_read.waist =
                 (bind->dgram_read.waist + 1) & bind->dgram_read.mask;
 
-            lfep->read_offset = 0;
+            lfep->read_transfer->submitted = 1;
+            lfep->read_transfer            = NULL;
+            lfep->read_offset              = 0;
         }
     }
 } /* evpl_libfabric_flush_rdma_reads */
@@ -2316,6 +2387,11 @@ evpl_libfabric_flush(
 
         dgram = evpl_dgram_ring_waist(&bind->dgram_send);
 
+        if (!lfep->send_transfer) {
+            lfep->send_transfer = evpl_libfabric_transfer_alloc(lf);
+            DL_APPEND(lfep->send_transfers, lfep->send_transfer);
+        }
+
         if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_WRITE) {
 
             len = evpl_libfabric_gather(&bind->iovec_send, dgram,
@@ -2325,9 +2401,9 @@ evpl_libfabric_flush(
 
             ctx = evpl_libfabric_ctx_alloc(lf);
 
-            ctx->op   = EVPL_LIBFABRIC_OP_SEND;
-            ctx->lfep = lfep;
-            ctx->last = (lfep->send_offset + len == dgram->length);
+            ctx->op       = EVPL_LIBFABRIC_OP_SEND;
+            ctx->lfep     = lfep;
+            ctx->transfer = lfep->send_transfer;
 
             rma_iov.addr = dgram->remote_address + lfep->send_offset;
             rma_iov.len  = len;
@@ -2354,6 +2430,7 @@ evpl_libfabric_flush(
 
             DL_APPEND(lfep->posted_sends, ctx);
             lfep->cur_sends++;
+            ctx->transfer->pending++;
 
             lfep->send_offset += len;
 
@@ -2366,7 +2443,9 @@ evpl_libfabric_flush(
                 bind->dgram_send.waist =
                     (bind->dgram_send.waist + 1) & bind->dgram_send.mask;
 
-                lfep->send_offset = 0;
+                lfep->send_transfer->submitted = 1;
+                lfep->send_transfer            = NULL;
+                lfep->send_offset              = 0;
             }
 
             continue;
@@ -2395,9 +2474,9 @@ evpl_libfabric_flush(
 
             ctx = evpl_libfabric_ctx_alloc(lf);
 
-            ctx->op   = EVPL_LIBFABRIC_OP_SEND;
-            ctx->lfep = lfep;
-            ctx->last = (lfep->send_offset + len == dgram->length);
+            ctx->op       = EVPL_LIBFABRIC_OP_SEND;
+            ctx->lfep     = lfep;
+            ctx->transfer = lfep->send_transfer;
 
             memset(&msg, 0, sizeof(msg));
             msg.msg_iov   = iov;
@@ -2417,9 +2496,9 @@ evpl_libfabric_flush(
 
             ctx = evpl_libfabric_ctx_alloc(lf);
 
-            ctx->op   = EVPL_LIBFABRIC_OP_SEND;
-            ctx->lfep = lfep;
-            ctx->last = 1;
+            ctx->op       = EVPL_LIBFABRIC_OP_SEND;
+            ctx->lfep     = lfep;
+            ctx->transfer = lfep->send_transfer;
 
             evpl_iovec_alloc_datagram(evpl, &ctx->iovec, dgram->length);
 
@@ -2478,6 +2557,7 @@ evpl_libfabric_flush(
 
         DL_APPEND(lfep->posted_sends, ctx);
         lfep->cur_sends++;
+        ctx->transfer->pending++;
 
         lfep->send_offset += len;
 
@@ -2490,7 +2570,9 @@ evpl_libfabric_flush(
             bind->dgram_send.waist =
                 (bind->dgram_send.waist + 1) & bind->dgram_send.mask;
 
-            lfep->send_offset = 0;
+            lfep->send_transfer->submitted = 1;
+            lfep->send_transfer            = NULL;
+            lfep->send_offset              = 0;
         }
     }
 } /* evpl_libfabric_flush */
@@ -2916,12 +2998,29 @@ evpl_libfabric_close(
         while (lfep->posted_sends) {
             ctx = lfep->posted_sends;
             DL_DELETE(lfep->posted_sends, ctx);
-            lfep->cur_sends--;
+            if (ctx->op == EVPL_LIBFABRIC_OP_READ) {
+                lfep->cur_rdma_reads--;
+            } else {
+                lfep->cur_sends--;
+            }
             if (ctx->iovec.ref) {
                 evpl_iovec_release_internal(evpl, &ctx->iovec);
             }
             evpl_libfabric_ctx_free(lf, ctx);
         }
+
+        while (lfep->send_transfers) {
+            struct evpl_libfabric_transfer *transfer = lfep->send_transfers;
+            DL_DELETE(lfep->send_transfers, transfer);
+            evpl_libfabric_transfer_free(lf, transfer);
+        }
+        while (lfep->read_transfers) {
+            struct evpl_libfabric_transfer *transfer = lfep->read_transfers;
+            DL_DELETE(lfep->read_transfers, transfer);
+            evpl_libfabric_transfer_free(lf, transfer);
+        }
+        lfep->send_transfer = NULL;
+        lfep->read_transfer = NULL;
 
         if (lfep->rdm) {
             /* unretired datagrams still hold their endpoint-resolution

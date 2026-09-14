@@ -46,3 +46,18 @@ foreach(mode disabled unsupported eagain)
                      APPEND PROPERTY ENVIRONMENT EVPL_TEST_SRQ_MODE=${mode})
     endforeach()
 endforeach()
+
+# Real transfers with a one-entry window, reordered completions, and an
+# injected error on a non-final RMA chunk.  Exercise each event mechanism.
+unit_test_all_mechs(libfabric transmit_completion transmit_completion.c)
+target_include_directories(libfabric_transmit_completion PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
+target_link_libraries(libfabric_transmit_completion fabric)
+foreach(mode reorder error)
+    foreach(mech ${EVPL_MECHANISMS})
+        add_test(NAME libevpl/libfabric/transmit_completion_${mode}_${mech}
+                 COMMAND $<TARGET_FILE:libfabric_transmit_completion>)
+        set_tests_properties(libevpl/libfabric/transmit_completion_${mode}_${mech}
+            PROPERTIES RESOURCE_LOCK evpl_net TIMEOUT 30
+            ENVIRONMENT "EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_TX_MODE=${mode}")
+    endforeach()
+endforeach()
