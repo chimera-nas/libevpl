@@ -72,6 +72,8 @@ endmacro()
 # the same I/O coverage.  The mechanism is handed to the test through
 # EVPL_TEST_CORE_MECH and applied by test_evpl_config() in
 # src/tests/test_common.h, so no test source needs to know about it.
+set(EVPL_TEST_PORT 8000 CACHE STRING "Port for shared transport tests; override for concurrent checkouts")
+
 macro(unit_test_bin_all_mechs module test_name binary_name)
     foreach(mech ${EVPL_MECHANISMS})
         set(_test libevpl/${module}/${test_name}_${mech})
@@ -79,12 +81,12 @@ macro(unit_test_bin_all_mechs module test_name binary_name)
         get_target_property(test_file ${binary_name} TEST_FILE)
 
         if(LIBEVPL_NETNS_TESTING)
-            add_test(NAME ${_test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh $<TARGET_FILE:${binary_name}> ${ARGN})
+            add_test(NAME ${_test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh $<TARGET_FILE:${binary_name}> ${ARGN} -p ${EVPL_TEST_PORT})
 
             set_tests_properties(${_test} PROPERTIES
                 ENVIRONMENT "TEST_FILE=${test_file};EVPL_TEST_CORE_MECH=${mech}")
         else()
-            add_test(NAME ${_test} COMMAND $<TARGET_FILE:${binary_name}> ${ARGN})
+            add_test(NAME ${_test} COMMAND $<TARGET_FILE:${binary_name}> ${ARGN} -p ${EVPL_TEST_PORT})
 
             set_tests_properties(${_test} PROPERTIES
                 RESOURCE_LOCK evpl_net

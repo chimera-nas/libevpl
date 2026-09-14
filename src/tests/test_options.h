@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ben Jarvis
 // SPDX-License-Identifier: LGPL-2.1-only
 #pragma once
-/* The transport test executables accept only -a, -p and -r, each with one
- * argument. Keep command-line parsing private to the tests on Windows. */
+/* Short-option parsing for test executables. Kept private to the Windows
+ * test harness; the library itself does not need getopt. */
 static char *optarg;
 static int
 evpl_test_getopt(
@@ -22,8 +22,11 @@ evpl_test_getopt(
     }
     option = argv[index][1];
     spec   = option ? strchr(options, option) : NULL;
-    if (!spec || spec[1] != ':') {
+    if (!spec) {
         index++; return '?';
+    }
+    if (spec[1] != ':') {
+        index++; return option;
     }
     if (argv[index][2]) {
         optarg = argv[index++] + 2;
