@@ -38,12 +38,13 @@ set_source_files_properties(
 )
 
 add_library(evpl_rpc2 SHARED rpc2.c ${RPC2_XDR_C} ${RPC2_XDR_H} ${RPCRDMA1_XDR_C} ${RPCRDMA1_XDR_H} custom_dump.c)
+target_compile_definitions(evpl_rpc2 PRIVATE EVPL_RPC2_BUILD)
 
 add_dependencies(evpl_rpc2 xdrzcc)
 
 target_link_libraries(evpl_rpc2 evpl prometheus-c)
 
-install(TARGETS evpl_rpc2 DESTINATION lib)
+install(TARGETS evpl_rpc2 RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 
 if (NOT DISABLE_TESTS)
     add_subdirectory(tests)

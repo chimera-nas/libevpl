@@ -33,7 +33,7 @@ macro(unit_test_rpc2 test_name xdr_file)
 
     # Set the first source for TEST_FILE environment variable
     list(GET sources 0 first_source)
-    set(RPC2_TEST_EXE_${test_name} ${CMAKE_CURRENT_BINARY_DIR}/evpl_rpc2_${test_name})
+    set(RPC2_TEST_EXE_${test_name} $<TARGET_FILE:evpl_rpc2_${test_name}>)
     set(RPC2_TEST_SRC_${test_name} ${CMAKE_CURRENT_SOURCE_DIR}/${first_source})
 endmacro()
 
@@ -195,17 +195,29 @@ if(KRB5_GSSAPI_FOUND)
 endif()
 
 # Add test instances for DATAGRAM_TCP_RDMA
+if(NOT WIN32)
 unit_test_rpc2_instance(hello_world DATAGRAM_TCP_RDMA 8200)
+endif()
+if(NOT WIN32)
 unit_test_rpc2_instance(builtin_bool DATAGRAM_TCP_RDMA 8201)
+endif()
+if(NOT WIN32)
 unit_test_rpc2_instance(rdma_ddp DATAGRAM_TCP_RDMA 8202)
+endif()
 
 # AF_UNIX.  rpc2 is transport-agnostic above the bind, so these mirror the
 # STREAM_SOCKET_TCP set exactly; rdma_ddp is included for the same reason it is
 # registered for TCP, to cover the path where the transport reports no RDMA and
 # the chunks fall back to being carried inline.
+if(NOT WIN32)
 unit_test_rpc2_instance_named(hello_world STREAM_SOCKET_UNIX)
+endif()
+if(NOT WIN32)
 unit_test_rpc2_instance_named(builtin_bool STREAM_SOCKET_UNIX)
+endif()
+if(NOT WIN32)
 unit_test_rpc2_instance_named(rdma_ddp STREAM_SOCKET_UNIX)
+endif()
 
 # In-process transport.  DATAGRAM_INPROC is the point of the exercise: it puts
 # rpc2's RDMA/DDP path under test with no RDMA hardware, and without
@@ -315,7 +327,9 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # does carry the RPC-over-RDMA framing, so it reaches the chunk-negotiation
     # and rdma_msg paths in rpc2.c that the stream transport never touches.  The
     # raw-socket defect phase self-skips there (record marking is stream-only).
+if(NOT WIN32)
     unit_test_rpc2_instance(conformance DATAGRAM_TCP_RDMA 8205)
+endif()
 
     # The same models over the name-addressed transports.  Neither contends for
     # a port, so neither needs a network namespace or the shared lock: the
@@ -325,7 +339,9 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # AF_UNIX is a stream transport with a descriptor of its own, so it runs
     # the raw-socket defect phase too -- record marking is a property of the
     # framing, not of the address family, so the whole defect matrix applies.
+if(NOT WIN32)
     unit_test_rpc2_instance_named(conformance STREAM_SOCKET_UNIX)
+endif()
 
     # Inproc, both ways round: DATAGRAM_INPROC reports RDMA and so exercises
     # the chunk and rdma_msg paths with no hardware and none of TCP_RDMA's

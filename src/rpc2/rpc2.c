@@ -48,7 +48,7 @@ static const char *evpl_rpc2_role_names[EVPL_RPC2_NUM_ROLES] = {
 
 /* Monotonic id stamped onto each rpc2 thread to label its gauge series.
  * Bumped atomically since threads initialize on their own cores. */
-static int         evpl_rpc2_next_thread_id = 0;
+static atomic_int  evpl_rpc2_next_thread_id = 0;
 
 /*
  * evpl_rpc2_msg represents a single received RPC message (either a CALL or REPLY).
@@ -4210,8 +4210,8 @@ evpl_rpc2_thread_init(
     thread->private_data    = private_data;
     thread->client_dbuf     = xdr_dbuf_alloc(128 * 1024);
 
-    thread->id = __atomic_fetch_add(&evpl_rpc2_next_thread_id, 1,
-                                    __ATOMIC_RELAXED);
+    thread->id = atomic_fetch_add_explicit(&evpl_rpc2_next_thread_id, 1,
+                                           memory_order_relaxed);
 
     /* One in-flight gauge instance per role, labelled with role and thread
      * id.  The I/O path mutates the instance on this thread only. */
