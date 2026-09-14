@@ -13,6 +13,12 @@ on:
     branches: ["main"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platforms to exercise during development
+        type: choice
+        options: [all, windows]
+        default: all
 
 # One phase, not two.  Each cell builds the container image it needs and loads
 # it into that runner's docker daemon, then compiles and tests inside it:
@@ -63,6 +69,7 @@ jobs:
   # which would otherwise turn a broken runner into a green run.
   # ---------------------------------------------------------------------------
   test:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
     name: Test ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -249,6 +256,7 @@ jobs:
   # here catches that at source instead of in a downstream bump.
   # ---------------------------------------------------------------------------
   static-analysis:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
     name: Analyze ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -324,6 +332,7 @@ jobs:
   # above it -- which is exactly the part nothing else in this matrix exercises.
   # ---------------------------------------------------------------------------
   macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
     name: Test macOS ${{ matrix.build_type }}
     runs-on: macos-14
     permissions:
@@ -476,7 +485,7 @@ jobs:
   ci-complete:
     name: CI complete
     if: always()
-    needs: [test, static-analysis, macos]
+    needs: [test, static-analysis, macos, native]
     runs-on: ubuntu-24.04
     # It reads `needs` and nothing else -- no checkout, no API call -- so the
     # token it runs with can be empty.
@@ -487,6 +496,9 @@ jobs:
           results='${{ join(needs.*.result, ' ') }}'
           echo "dependency results: ${results}"
           for r in ${results}; do
+            if [ "$r" = "skipped" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.platform }}" = "windows" ]; then
+              continue
+            fi
             if [ "$r" != "success" ]; then
               echo "a required job did not succeed"
               exit 1
