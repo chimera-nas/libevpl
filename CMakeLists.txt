@@ -133,6 +133,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Coverage")
     add_link_options(-fprofile-instr-generate -fcoverage-mapping)
 endif()
 
+if(EVPL_IOVEC_PROFILE AND WIN32)
+    message(FATAL_ERROR "Retained-iovec stack profiling is not yet supported on Windows")
+endif()
 if(EVPL_IOVEC_PROFILE)
     message(STATUS "Enabling retained-iovec stack profiling")
     add_definitions(-DEVPL_IOVEC_PROFILE=1)
@@ -365,7 +368,9 @@ endif()
 message(STATUS "Event core mechanisms: ${EVPL_MECHANISMS} (default: ${EVPL_MECH})")
 
 if(MSVC)
-    add_compile_options(/W3 /WX)
+    # Match the existing Unix warning policy: it does not enable conversion
+    # or sign-compare diagnostics. Keep pointer-width and ABI warnings enabled.
+    add_compile_options(/W3 /WX /wd4244 /wd4267 /wd4018)
 else()
     add_definitions(-g -Wall -Werror -Wno-unused-function)
     add_definitions(-fvisibility=hidden)

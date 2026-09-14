@@ -12,27 +12,19 @@
 #define EVPL_LOG_ERROR 3
 #define EVPL_LOG_FATAL 4
 
-void evpl_debug(
+EVPL_API void evpl_debug(
     const char *mod,
     const char *srcfile,
     int         lineno,
     const char *fmt,
     ...);
-void evpl_info(
+EVPL_API void evpl_info(
     const char *mod,
     const char *srcfile,
     int         lineno,
     const char *fmt,
     ...);
-void evpl_error(
-    const char *mod,
-    const char *srcfile,
-    int         lineno,
-    const char *fmt,
-    ...);
-
-EVPL_NORETURN
-void evpl_fatal(
+EVPL_API void evpl_error(
     const char *mod,
     const char *srcfile,
     int         lineno,
@@ -40,7 +32,15 @@ void evpl_fatal(
     ...);
 
 EVPL_NORETURN
-void evpl_abort(
+EVPL_API void evpl_fatal(
+    const char *mod,
+    const char *srcfile,
+    int         lineno,
+    const char *fmt,
+    ...);
+
+EVPL_NORETURN
+EVPL_API void evpl_abort(
     const char *mod,
     const char *srcfile,
     int         lineno,
