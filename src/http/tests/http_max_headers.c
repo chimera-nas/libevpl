@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#include "core/os.h"
+#include "tests/test_socket.h"
 /*
  * Exercises the configurable HTTP header block limit (http_max_header_size,
  * default 8192) in all four places it is enforced:
@@ -323,11 +323,12 @@ test_inbound_server_limit(void)
     struct sockaddr_in addr;
     char               buf[65536];
     char               reply[256];
-    int                fd, off = 0, n, got = 0;
+    test_socket_t      fd;
+    int                off = 0, n, got = 0;
     int                i;
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
+    if (fd == TEST_INVALID_SOCKET) {
         perror("inbound-server: socket");
         return 1;
     }
@@ -351,14 +352,14 @@ test_inbound_server_limit(void)
                         "X-Big-%d: %s\r\n", i, big_value);
     }
 
-    if (write(fd, buf, off) != off) {
+    if (test_socket_send(fd, buf, off, 0) != off) {
         perror("inbound-server: write");
-        close(fd);
+        test_socket_close(fd);
         return 1;
     }
 
     while (got < (int) sizeof(reply) - 1) {
-        n = read(fd, reply + got, sizeof(reply) - 1 - got);
+        n = test_socket_recv(fd, reply + got, sizeof(reply) - 1 - got, 0);
         if (n <= 0) {
             break;
         }
@@ -366,7 +367,7 @@ test_inbound_server_limit(void)
     }
     reply[got] = '\0';
 
-    close(fd);
+    test_socket_close(fd);
 
     if (strncmp(reply, "HTTP/1.1 400 ", 13) != 0) {
         fprintf(stderr, "inbound-server: expected 400, got '%.40s'\n", reply);
@@ -389,15 +390,16 @@ raw_server_function(void *ptr)
 {
     struct sockaddr_in addr;
     char               buf[65536];
-    int                lfd, cfd, off = 0, i, one = 1;
+    test_socket_t      lfd, cfd;
+    int                off = 0, i, one = 1;
     ssize_t            n;
 
     lfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (lfd < 0) {
+    if (lfd == TEST_INVALID_SOCKET) {
         perror("raw-server: socket");
         exit(2);
     }
-    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    test_socket_option(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -411,12 +413,12 @@ raw_server_function(void *ptr)
     }
 
     cfd = accept(lfd, NULL, NULL);
-    if (cfd < 0) {
+    if (cfd == TEST_INVALID_SOCKET) {
         perror("raw-server: accept");
         exit(2);
     }
 
-    n = read(cfd, buf, sizeof(buf));
+    n = test_socket_recv(cfd, buf, sizeof(buf), 0);
     (void) n;
 
     off += snprintf(buf + off, sizeof(buf) - off, "HTTP/1.1 200 OK\r\n");
@@ -427,12 +429,12 @@ raw_server_function(void *ptr)
     }
 
     /* the client is expected to hang up mid-block; ignore the short write */
-    n = write(cfd, buf, off);
+    n = test_socket_send(cfd, buf, off, 0);
     (void) n;
 
     evpl_sleep_us(200000);
-    close(cfd);
-    close(lfd);
+    test_socket_close(cfd);
+    test_socket_close(lfd);
 
     return NULL;
 } /* raw_server_function */
@@ -515,7 +517,9 @@ main(
     int                        rc = 0;
 
     /* the raw peers close mid-conversation; a late write must not kill us */
+#ifdef SIGPIPE
     signal(SIGPIPE, SIG_IGN);
+#endif /* ifdef SIGPIPE */
 
     memset(big_value, 'A', BIG_HEADER_VALUE_LEN);
     big_value[BIG_HEADER_VALUE_LEN] = '\0';

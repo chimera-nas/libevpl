@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#include "core/os.h"
+#include "tests/test_socket.h"
 /*
  * Multi-fragment ONC RPC TCP record-mark reassembly test.
  *
@@ -17,7 +17,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include "tests/test_options.h"
+#else  /* ifdef _WIN32 */
 #include <getopt.h>
+#endif /* ifdef _WIN32 */
 #include "evpl/evpl_platform.h"
 
 
@@ -164,8 +168,8 @@ build_greet_call(
  */
 static void
 recv_and_validate_reply(
-    int      sock,
-    uint32_t expect_xid)
+    test_socket_t sock,
+    uint32_t      expect_xid)
 {
     unsigned char buf[256] = { 0 };
     uint32_t      mark;
@@ -174,7 +178,7 @@ recv_and_validate_reply(
     size_t        off;
     uint32_t     *r;
 
-    got = recv(sock, &mark, 4, MSG_WAITALL);
+    got = test_socket_recv(sock, &mark, 4, MSG_WAITALL);
     evpl_test_abort_if(got != 4, "short mark read: %zd", got);
     mark     = ntohl(mark);
     frag_len = mark & 0x7FFFFFFFu;
@@ -184,7 +188,7 @@ recv_and_validate_reply(
 
     off = 0;
     while (off < frag_len) {
-        got = recv(sock, buf + off, frag_len - off, 0);
+        got = test_socket_recv(sock, buf + off, frag_len - off, 0);
         evpl_test_abort_if(got <= 0, "recv body: %zd", got);
         off += (size_t) got;
     }
@@ -198,16 +202,16 @@ recv_and_validate_reply(
     evpl_test_abort_if(ntohl(r[6]) != 100, "result id != 100: %u", ntohl(r[6]));
 } /* recv_and_validate_reply */
 
-static int
+static test_socket_t
 connect_client(void)
 {
-    int                sock;
+    test_socket_t      sock;
     int                one = 1;
     struct sockaddr_in sa;
 
     sock = socket(AF_INET, SOCK_STREAM, 0);
-    evpl_test_abort_if(sock < 0, "socket: %m");
-    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    evpl_test_abort_if(sock == TEST_INVALID_SOCKET, "socket: %m");
+    test_socket_option(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
     memset(&sa, 0, sizeof(sa));
     sa.sin_family      = AF_INET;
@@ -221,14 +225,14 @@ connect_client(void)
 
 static void
 send_all(
-    int         sock,
-    const void *buf,
-    size_t      len)
+    test_socket_t sock,
+    const void   *buf,
+    size_t        len)
 {
     const unsigned char *p = buf;
 
     while (len) {
-        ssize_t w = send(sock, p, len, 0);
+        ssize_t w = test_socket_send(sock, p, len, 0);
         evpl_test_abort_if(w <= 0, "send: %zd %m", w);
         p   += w;
         len -= (size_t) w;
@@ -246,7 +250,7 @@ test_fragmented_call(
 {
     unsigned char call[128];
     int           call_len = build_greet_call(call, xid);
-    int           sock     = connect_client();
+    test_socket_t sock     = connect_client();
     int           i;
     int           sent = 0;
 
@@ -271,7 +275,7 @@ test_fragmented_call(
     evpl_test_abort_if(sent != call_len, "send accounting %d != %d", sent, call_len);
 
     recv_and_validate_reply(sock, xid);
-    close(sock);
+    test_socket_close(sock);
 } /* test_fragmented_call */
 
 /*
@@ -286,7 +290,7 @@ test_abandoned_fragment(uint32_t xid)
 {
     unsigned char call[128];
     int           call_len = build_greet_call(call, xid);
-    int           sock     = connect_client();
+    test_socket_t sock     = connect_client();
     int           half     = call_len / 2;
     uint32_t      mark     = htonl((uint32_t) half);  /* L=0 */
 
@@ -294,7 +298,7 @@ test_abandoned_fragment(uint32_t xid)
 
     send_all(sock, &mark, 4);
     send_all(sock, call, (size_t) half);
-    close(sock);  /* peer never sends the terminal fragment */
+    test_socket_close(sock);  /* peer never sends the terminal fragment */
 } /* test_abandoned_fragment */
 
 static void

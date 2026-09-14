@@ -339,6 +339,9 @@ endif()
 # flag present and still fail the moment anything else warns, which is what
 # happened on macOS.  Offer it only where it exists.
 set(EVPL_XDR_WARNING_FLAGS)
+if(MSVC)
+    set(EVPL_XDR_WARNING_FLAGS "/wd4101")
+endif()
 if(NOT MSVC)
     set(EVPL_XDR_WARNING_FLAGS "-Wno-unused")
 endif()

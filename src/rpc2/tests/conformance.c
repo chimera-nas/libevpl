@@ -35,7 +35,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include "tests/test_options.h"
+#else  /* ifdef _WIN32 */
 #include <getopt.h>
+#endif /* ifdef _WIN32 */
 #include <math.h>
 #include <errno.h>
 #include <fcntl.h>

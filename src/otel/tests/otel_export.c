@@ -58,34 +58,30 @@ server_wake(
             }                                                          \
 } while (0)
 
-struct grpc_hdr {
-    uint8_t  compressed;
-    uint32_t length;
-} __attribute__((packed));
+#define GRPC_HEADER_SIZE 5
 
 static void
 server_verify_body(void)
 {
     struct test_server *s = g_server;
-    struct grpc_hdr    *hdr;
     uint32_t            plen;
 
-    SCHECK(s->body_len > sizeof(struct grpc_hdr));
-    if (s->body_len <= sizeof(struct grpc_hdr)) {
+    SCHECK(s->body_len > GRPC_HEADER_SIZE);
+    if (s->body_len <= GRPC_HEADER_SIZE) {
         return;
     }
 
-    hdr  = (struct grpc_hdr *) s->body;
-    plen = ntohl(hdr->length);
-    SCHECK(hdr->compressed == 0);
-    SCHECK(plen == s->body_len - sizeof(*hdr));
-    if (plen != s->body_len - sizeof(*hdr)) {
+    memcpy(&plen, s->body + 1, sizeof(plen));
+    plen = ntohl(plen);
+    SCHECK(s->body[0] == 0);
+    SCHECK(plen == s->body_len - GRPC_HEADER_SIZE);
+    if (plen != s->body_len - GRPC_HEADER_SIZE) {
         return;
     }
 
     Opentelemetry__Proto__Collector__Trace__V1__ExportTraceServiceRequest *req =
         opentelemetry__proto__collector__trace__v1__export_trace_service_request__unpack(
-            NULL, plen, s->body + sizeof(*hdr));
+            NULL, plen, s->body + GRPC_HEADER_SIZE);
     SCHECK(req != NULL);
 
     if (req) {
