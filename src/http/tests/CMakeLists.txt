@@ -41,11 +41,15 @@ target_link_libraries(http_trailers evpl_http)
 find_program(QUINT_EXECUTABLE quint)
 find_program(PYTHON3_EXECUTABLE NAMES python3 python)
 
-if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
+if(EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     set(HTTP_QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
     set(HTTP_QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
+    if(EVPL_CONFORMANCE_CASES_DIR)
+        set(HTTP_QUINT_WORK_DIR ${EVPL_CONFORMANCE_CASES_DIR})
+    endif()
     set(HTTP_CASES ${HTTP_QUINT_WORK_DIR}/http_cases.h)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     add_custom_command(
         OUTPUT ${HTTP_CASES}
         COMMAND ${HTTP_QUINT_SRC_DIR}/generate_cases.sh
@@ -56,6 +60,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                 ${HTTP_QUINT_SRC_DIR}/generate_cases.sh
         COMMENT "Generating HTTP/1.x conformance cases from the Quint model"
         VERBATIM)
+    endif()
 
     add_custom_target(http_conformance_cases DEPENDS ${HTTP_CASES})
 
@@ -90,6 +95,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # deadline to prove no callback arrives.
     set_tests_properties(libevpl/http/conformance_client PROPERTIES TIMEOUT 180)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     # The model checking itself: scenario tests plus a random-simulation pass
     # against its invariants.  Separate from generation so that a broken
     # specification is a failing test rather than a failing build.
@@ -99,6 +105,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     set_tests_properties(libevpl/http/quint_model PROPERTIES
                          LABELS "quint" TIMEOUT 120)
 
+    endif()
     message(STATUS "HTTP conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Ben Jarvis
 // SPDX-License-Identifier: LGPL-2.1-only
 #pragma once
+#include <string.h>
 /* Short-option parsing for test executables. Kept private to the Windows
  * test harness; the library itself does not need getopt. */
 static char *optarg;

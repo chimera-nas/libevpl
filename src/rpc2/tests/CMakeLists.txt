@@ -244,11 +244,15 @@ unit_test_rpc2_instance_named(rdma_ddp STREAM_INPROC)
 find_program(QUINT_EXECUTABLE quint)
 find_program(PYTHON3_EXECUTABLE NAMES python3 python)
 
-if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
+if(EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     set(QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
     set(QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
+    if(EVPL_CONFORMANCE_CASES_DIR)
+        set(QUINT_WORK_DIR ${EVPL_CONFORMANCE_CASES_DIR})
+    endif()
     set(CONFORMANCE_CASES ${QUINT_WORK_DIR}/conformance_cases.h)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     add_custom_command(
         OUTPUT ${CONFORMANCE_CASES}
         COMMAND ${QUINT_SRC_DIR}/generate_cases.sh
@@ -260,6 +264,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                 ${QUINT_SRC_DIR}/generate_cases.sh
         COMMENT "Generating RPC2 conformance cases from the Quint models"
         VERBATIM)
+    endif()
 
     add_custom_target(conformance_cases DEPENDS ${CONFORMANCE_CASES})
 
@@ -271,7 +276,9 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                        krb5_local_none.c)
     endif()
 
-    target_link_libraries(evpl_rpc2_conformance m)
+    if(NOT WIN32)
+        target_link_libraries(evpl_rpc2_conformance m)
+    endif()
 
     if(KRB5_GSSAPI_FOUND)
         target_include_directories(evpl_rpc2_conformance PRIVATE
@@ -321,9 +328,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # does carry the RPC-over-RDMA framing, so it reaches the chunk-negotiation
     # and rdma_msg paths in rpc2.c that the stream transport never touches.  The
     # raw-socket defect phase self-skips there (record marking is stream-only).
-if(NOT WIN32)
     unit_test_rpc2_instance(conformance DATAGRAM_TCP_RDMA 8205)
-endif()
 
     # The same models over the name-addressed transports.  Neither contends for
     # a port, so neither needs a network namespace or the shared lock: the
@@ -351,8 +356,10 @@ endif()
     foreach(proto STREAM_SOCKET_TCP DATAGRAM_TCP_RDMA STREAM_SOCKET_UNIX
             DATAGRAM_INPROC STREAM_INPROC)
         foreach(mech ${EVPL_MECHANISMS})
-            set_tests_properties(libevpl/rpc2/conformance_${proto}_${mech}
-                                 PROPERTIES TIMEOUT 120)
+            if(TEST libevpl/rpc2/conformance_${proto}_${mech})
+                set_tests_properties(libevpl/rpc2/conformance_${proto}_${mech}
+                                     PROPERTIES TIMEOUT 120)
+            endif()
         endforeach()
     endforeach()
 
@@ -372,6 +379,7 @@ endif()
 
     set(CLIENT_CASES ${QUINT_WORK_DIR}/client_cases.h)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     add_custom_command(
         OUTPUT ${CLIENT_CASES}
         COMMAND ${QUINT_SRC_DIR}/generate_client_cases.sh
@@ -382,6 +390,7 @@ endif()
                 ${QUINT_SRC_DIR}/generate_client_cases.sh
         COMMENT "Generating RPC2 client reply cases from the Quint model"
         VERBATIM)
+    endif()
 
     add_custom_target(client_cases DEPENDS ${CLIENT_CASES})
 
@@ -416,6 +425,7 @@ endif()
             PROPERTIES TIMEOUT 120)
     endforeach()
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     # The models checking themselves: scenario tests plus a random-simulation
     # pass against their invariants.  Separate from generation so that a broken
     # specification is a failing test rather than a failing build.
@@ -439,6 +449,7 @@ endif()
     set_tests_properties(libevpl/rpc2/quint_client_invariants PROPERTIES
                          LABELS "quint" TIMEOUT 120)
 
+    endif()
     message(STATUS "RPC2 conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS

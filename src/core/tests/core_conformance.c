@@ -1,4 +1,4 @@
-#include "core/os.h"
+#include "tests/test_file.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -1662,12 +1662,12 @@ block_device_open(
     snprintf(ps->device_path, sizeof(ps->device_path),
              "core_conf_block-%d-%d.img", (int) evpl_process_id(), prog);
 
-    fd = open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    fd = evpl_test_open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
 
     evpl_test_abort_if(fd < 0, "could not create %s", ps->device_path);
-    evpl_test_abort_if(ftruncate(fd, DEVICE_BYTES) < 0,
+    evpl_test_abort_if(evpl_test_truncate(fd, DEVICE_BYTES) != 0,
                        "could not size %s", ps->device_path);
-    close(fd);
+    evpl_test_close(fd);
 
     ps->bdev = evpl_block_open_device(block_protocol(), ps->device_path);
 
@@ -1707,7 +1707,7 @@ block_device_close(struct prog_state *ps)
     }
 
     if (ps->device_path[0]) {
-        unlink(ps->device_path);
+        evpl_test_unlink(ps->device_path);
         ps->device_path[0] = 0;
     }
 } /* block_device_close */
@@ -2181,6 +2181,12 @@ run_program(
     struct prog_state         *ps;
     int                        i, s, failures = 0;
 
+#ifdef _WIN32
+    if (core_steps[p->first_step].transport == CTR_TSTREAMUNIX) {
+        fprintf(stderr, "SKIP program %d: AF_UNIX transport unavailable on Windows\n", prog);
+        return 0;
+    }
+#endif /* ifdef _WIN32 */
     ps = calloc(1, sizeof(*ps));
     evpl_test_abort_if(!ps, "out of memory");
 
@@ -2306,8 +2312,11 @@ check_static_facts(void)
                        evpl_protocol_is_inproc(EVPL_STREAM_SOCKET_TCP),
                        "in-process misreported");
 
-    evpl_test_abort_if(evpl_protocol_is_local(EVPL_STREAM_INPROC) ||
-                       !evpl_protocol_is_local(EVPL_STREAM_SOCKET_UNIX),
+    evpl_test_abort_if(evpl_protocol_is_local(EVPL_STREAM_INPROC)
+#ifndef _WIN32
+                       || !evpl_protocol_is_local(EVPL_STREAM_SOCKET_UNIX)
+#endif /* ifndef _WIN32 */
+                       ,
                        "local misreported: an inproc name is not a socket path");
 
     evpl_test_abort_if(evpl_protocol_lookup(&proto, "STREAM_INPROC") ||

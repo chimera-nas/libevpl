@@ -1,4 +1,4 @@
-#include "core/os.h"
+#include "tests/test_socket.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -65,23 +65,13 @@
 
 /* Non-blocking, and no SIGPIPE when the peer goes away. */
 static int
-raw_socket_prepare(int fd)
+raw_socket_prepare(test_socket_t fd)
 {
-    int flags;
-
 #ifdef SO_NOSIGPIPE
     int one = 1;
-
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+    test_socket_option(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif /* ifdef SO_NOSIGPIPE */
-
-    flags = fcntl(fd, F_GETFL, 0);
-
-    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        return -1;
-    }
-
-    return 0;
+    return test_socket_nonblocking(fd);
 } /* raw_socket_prepare */
 
 #include "evpl/evpl.h"
@@ -700,26 +690,27 @@ build_reply(
 * The hostile server: a raw TCP listener
 * ------------------------------------------------------------------ */
 
-static int g_listen_fd = -1;
-static int g_peer_fd   = -1;
+static test_socket_t g_listen_fd = -1;
+static test_socket_t g_peer_fd   = -1;
 
-static int
+static test_socket_t
 listen_raw(int listen_port)
 {
     struct sockaddr_in addr;
-    int                fd, flag = 1;
+    test_socket_t      fd;
+    int                flag = 1;
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
+    if (fd == TEST_INVALID_SOCKET) {
         return -1;
     }
 
     if (raw_socket_prepare(fd) < 0) {
-        close(fd);
+        test_socket_close(fd);
         return -1;
     }
 
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+    test_socket_option(fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -728,7 +719,7 @@ listen_raw(int listen_port)
 
     if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) < 0 ||
         listen(fd, 8) < 0) {
-        close(fd);
+        test_socket_close(fd);
         return -1;
     }
 
@@ -740,17 +731,18 @@ listen_raw(int listen_port)
  * never block on the socket: the peer that owes it bytes is running on this
  * same thread and only runs while evpl_continue is being pumped.
  */
-static int
+static test_socket_t
 accept_peer(struct evpl *evpl)
 {
-    uint64_t deadline = now_ms() + ACCEPT_TIMEOUT_MS;
-    int      fd, flag = 1;
+    uint64_t      deadline = now_ms() + ACCEPT_TIMEOUT_MS;
+    test_socket_t fd;
+    int           flag = 1;
 
     for (;;) {
-        fd = accept(g_listen_fd, NULL, NULL);
-        if (fd >= 0) {
-            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+        fd = test_socket_accept(g_listen_fd, NULL, NULL);
+        if (fd != TEST_INVALID_SOCKET) {
+            test_socket_nonblocking(fd);
+            test_socket_option(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
             return fd;
         }
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -774,7 +766,7 @@ send_all(
     ssize_t        n;
 
     while (len) {
-        n = send(g_peer_fd, p, len, MSG_NOSIGNAL);
+        n = test_socket_send(g_peer_fd, p, len, MSG_NOSIGNAL);
         if (n > 0) {
             p   += n;
             len -= n;
@@ -807,7 +799,7 @@ read_exact(
     ssize_t  n;
 
     while (off < want) {
-        n = recv(g_peer_fd, buf + off, want - off, 0);
+        n = test_socket_recv(g_peer_fd, buf + off, want - off, 0);
         if (n == 0) {
             return READ_EOF;
         }
@@ -1052,8 +1044,8 @@ ensure_conn(struct evpl *evpl)
         return 0;
     }
 
-    if (g_peer_fd >= 0) {
-        close(g_peer_fd);
+    if (g_peer_fd != TEST_INVALID_SOCKET) {
+        test_socket_close(g_peer_fd);
         g_peer_fd = -1;
     }
 
@@ -1065,7 +1057,7 @@ ensure_conn(struct evpl *evpl)
     g_conn_alive = 1;
 
     g_peer_fd = accept_peer(evpl);
-    if (g_peer_fd < 0) {
+    if (g_peer_fd == TEST_INVALID_SOCKET) {
         return -1;
     }
 
@@ -1101,7 +1093,7 @@ probe_connection(struct evpl *evpl)
 
     struct client_case one = { 0, CDLV_ONEWRITE, 0, 0, -1 };
 
-    if (!g_conn_alive || g_peer_fd < 0) {
+    if (!g_conn_alive || g_peer_fd == TEST_INVALID_SOCKET) {
         return 0;
     }
 
@@ -1817,7 +1809,7 @@ run_case(
     build_reply(&msg, c, xid);
 
     if (c->defect == CDEF_PEERCLOSESWITHOUTREPLY) {
-        close(g_peer_fd);
+        test_socket_close(g_peer_fd);
         g_peer_fd = -1;
     } else if (c->defect == CDEF_REPLYSPLITACROSSFRAGMENTS) {
         rc = deliver_fragmented(evpl, &msg, (uint32_t) c->param);
@@ -1975,7 +1967,7 @@ main(
     programs[0] = &g_prog.rpc2;
 
     g_listen_fd = listen_raw(port);
-    evpl_test_abort_if(g_listen_fd < 0, "failed to listen on port %d", port);
+    evpl_test_abort_if(g_listen_fd == TEST_INVALID_SOCKET, "failed to listen on port %d", port);
 
     g_thread = evpl_rpc2_thread_init(evpl, programs, 1, client_notify_cb,
                                      NULL);
@@ -2018,10 +2010,10 @@ main(
         g_kl = NULL;
     }
 
-    if (g_peer_fd >= 0) {
-        close(g_peer_fd);
+    if (g_peer_fd != TEST_INVALID_SOCKET) {
+        test_socket_close(g_peer_fd);
     }
-    close(g_listen_fd);
+    test_socket_close(g_listen_fd);
 
     /* Let the loop retire the connections the run left in every state the
      * client knows how to reach before tearing it down. */
