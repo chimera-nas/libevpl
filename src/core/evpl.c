@@ -669,6 +669,16 @@ evpl_continue(struct evpl *evpl)
             msecs = 0;
         }
 
+        /* A completion callback can retire another bind after its place in
+         * this dispatch's close sweep. Do not block before the next sweep;
+         * binds still waiting on kernel operations do not force a busy loop. */
+        DL_FOREACH(evpl->pending_close_binds, bind) {
+            if (!bind->outstanding && !(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
+                msecs = 0;
+                break;
+            }
+        }
+
         /* On the virtual clock, nothing but the application moves time, so a
          * wait for a deadline would be a wait for something that cannot
          * happen while we are in it.  Poll instead and let the caller decide
@@ -890,7 +900,7 @@ evpl_destroy_close_bind(struct evpl *evpl)
     }
 
     /* Pump events until we have no pending close binds */
-    while (evpl->binds) {
+    while (evpl->binds || evpl->pending_close_binds) {
         evpl_continue(evpl);
     }
 

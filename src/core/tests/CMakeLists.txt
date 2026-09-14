@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: LGPL-2.1-only
 
 unit_test(core init_no_config init_no_config.c)
+unit_test_all_mechs(core destroy_pending destroy_pending.c)
 
 # Builds the binary and registers the platform-default case; the loop below
 # then runs the same binary once per mechanism compiled into this build.
