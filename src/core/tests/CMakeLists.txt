@@ -90,11 +90,15 @@ unit_test_local(core endpoint_inproc endpoint_inproc.c)
 find_program(QUINT_EXECUTABLE quint)
 find_program(PYTHON3_EXECUTABLE NAMES python3 python)
 
-if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
+if(EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     set(CORE_QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
     set(CORE_QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
+    if(EVPL_CONFORMANCE_CASES_DIR)
+        set(CORE_QUINT_WORK_DIR ${EVPL_CONFORMANCE_CASES_DIR})
+    endif()
     set(CORE_CASES ${CORE_QUINT_WORK_DIR}/core_cases.h)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     add_custom_command(
         OUTPUT ${CORE_CASES}
         COMMAND ${CORE_QUINT_SRC_DIR}/generate_core_cases.sh
@@ -105,6 +109,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                 ${CORE_QUINT_SRC_DIR}/generate_core_cases.sh
         COMMENT "Generating core conformance programs from the Quint model"
         VERBATIM)
+    endif()
 
     add_custom_target(core_cases DEPENDS ${CORE_CASES})
 
@@ -132,6 +137,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                              PROPERTIES TIMEOUT 60)
     endforeach()
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     # The model checking itself: scenario tests plus a random-simulation pass
     # against its invariants.  Separate from generation so that a broken
     # specification is a failing test rather than a failing build.
@@ -148,6 +154,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                          # exactly 120s on the switch.
                          LABELS "quint" TIMEOUT 360)
 
+    endif()
     message(STATUS "Core conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS

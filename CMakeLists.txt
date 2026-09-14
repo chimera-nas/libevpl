@@ -22,6 +22,14 @@ if(MSVC)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
 
+set(EVPL_CONFORMANCE_CASES_DIR "" CACHE PATH "Directory containing pre-generated core, HTTP and RPC conformance case headers")
+if(EVPL_CONFORMANCE_CASES_DIR)
+    foreach(header core_cases.h http_cases.h conformance_cases.h client_cases.h)
+        if(NOT EXISTS "${EVPL_CONFORMANCE_CASES_DIR}/${header}")
+            message(FATAL_ERROR "Missing conformance case table: ${header}")
+        endif()
+    endforeach()
+endif()
 enable_testing()
 
 # Network namespace testing detection.

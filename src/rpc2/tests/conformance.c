@@ -1,4 +1,4 @@
-#include "core/os.h"
+#include "tests/test_socket.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -775,7 +775,7 @@ conformance_program_init(struct server_ctx *ctx)
 
 /*
  * Deadline helper for the raw-socket phase, which cannot block: the server
- * shares this thread's event loop, so waiting on recv() would deadlock.
+ * shares this thread's event loop, so waiting on test_socket_recv() would deadlock.
  */
 static uint64_t
 now_ms(void)
@@ -2104,33 +2104,24 @@ defect_applies(
 /* Non-blocking, and no SIGPIPE when the peer goes away.  See the MSG_NOSIGNAL
  * note at the top for why this is not just SOCK_NONBLOCK. */
 static int
-raw_socket_prepare(int fd)
+raw_socket_prepare(test_socket_t fd)
 {
-    int flags;
-
 #ifdef SO_NOSIGPIPE
     int one = 1;
-
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+    test_socket_option(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif /* ifdef SO_NOSIGPIPE */
-
-    flags = fcntl(fd, F_GETFL, 0);
-
-    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        return -1;
-    }
-
-    return 0;
+    return test_socket_nonblocking(fd);
 } /* raw_socket_prepare */
 
-static int
+static test_socket_t
 connect_raw(void)
 {
     struct sockaddr_storage ss;
     struct sockaddr_in     *in;
     struct sockaddr_un     *un;
     socklen_t               len;
-    int                     fd, flag = 1, family;
+    test_socket_t           fd;
+    int                     flag = 1, family;
 
     memset(&ss, 0, sizeof(ss));
 
@@ -2165,26 +2156,26 @@ connect_raw(void)
     }
 
     fd = socket(family, SOCK_STREAM, 0);
-    if (fd < 0) {
+    if (fd == TEST_INVALID_SOCKET) {
         return -1;
     }
 
     if (raw_socket_prepare(fd) < 0) {
-        close(fd);
+        test_socket_close(fd);
         return -1;
     }
 
     /* Loopback connect completes into the listen backlog without the server
      * having accepted yet, so EINPROGRESS here is success as far as writing
      * the request goes. */
-    if (connect(fd, (struct sockaddr *) &ss, len) < 0 &&
+    if (test_socket_connect(fd, (struct sockaddr *) &ss, len) < 0 &&
         errno != EINPROGRESS) {
-        close(fd);
+        test_socket_close(fd);
         return -1;
     }
 
     if (family == AF_INET) {
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+        test_socket_option(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     }
 
     g_connections_opened++;
@@ -2194,26 +2185,26 @@ connect_raw(void)
 
 static int
 send_all(
-    struct evpl *evpl,
-    int          fd,
-    const void  *buf,
-    size_t       len)
+    struct evpl  *evpl,
+    test_socket_t fd,
+    const void   *buf,
+    size_t        len)
 {
     const uint8_t *p        = buf;
     uint64_t       deadline = now_ms() + REPLY_TIMEOUT_MS;
     ssize_t        n;
 
     while (len) {
-        n = send(fd, p, len, MSG_NOSIGNAL);
+        n = test_socket_send(fd, p, len, MSG_NOSIGNAL);
         if (n > 0) {
             p   += n;
             len -= n;
             continue;
         }
         /* ENOTCONN is "the connect has not finished yet", not a failure.  The
-         * socket is O_NONBLOCK (raw_socket_prepare), so connect() returns
+         * socket is O_NONBLOCK (raw_socket_prepare), so test_socket_connect() returns
          * EINPROGRESS and the handshake completes asynchronously.  Linux
-         * finishes a loopback connect inside connect() itself, so the send
+         * finishes a loopback connect inside test_socket_connect() itself, so the send
          * that follows always has a connected socket and this never fires;
          * Darwin does not, and returned ENOTCONN to the first send of every
          * defect case -- 298 of them -- which this loop treated as fatal.
@@ -2243,11 +2234,11 @@ send_all(
  */
 static int
 send_fragment(
-    struct evpl *evpl,
-    int          fd,
-    const void  *data,
-    uint32_t     len,
-    int          last)
+    struct evpl  *evpl,
+    test_socket_t fd,
+    const void   *data,
+    uint32_t      len,
+    int           last)
 {
     uint8_t  hdr[4];
     uint32_t m = (last ? 0x80000000u : 0u) | len;
@@ -2269,12 +2260,12 @@ send_fragment(
  */
 static int
 read_outcome_full(
-    struct evpl *evpl,
-    int          fd,
-    uint32_t    *out_lo,
-    uint32_t    *out_hi,
-    uint8_t     *results,
-    uint32_t    *results_len)
+    struct evpl  *evpl,
+    test_socket_t fd,
+    uint32_t     *out_lo,
+    uint32_t     *out_hi,
+    uint8_t      *results,
+    uint32_t     *results_len)
 {
     uint8_t  buf[4096];
     uint32_t mark, want, off = 0;
@@ -2287,7 +2278,7 @@ read_outcome_full(
     /* Record mark.  evpl_continue drives the server, which shares this
      * thread, so the reply can only arrive while we are pumping. */
     while (off < 4) {
-        n = recv(fd, buf + off, 4 - off, 0);
+        n = test_socket_recv(fd, buf + off, 4 - off, 0);
         if (n == 0) {
             return EXP_CLOSED;
         }
@@ -2315,7 +2306,7 @@ read_outcome_full(
 
     off = 0;
     while (off < want) {
-        n = recv(fd, buf + off, want - off, 0);
+        n = test_socket_recv(fd, buf + off, want - off, 0);
         if (n == 0) {
             return EXP_CLOSED;
         }
@@ -2410,20 +2401,20 @@ read_outcome_full(
 
 static int
 read_outcome(
-    struct evpl *evpl,
-    int          fd,
-    uint32_t    *out_lo,
-    uint32_t    *out_hi)
+    struct evpl  *evpl,
+    test_socket_t fd,
+    uint32_t     *out_lo,
+    uint32_t     *out_hi)
 {
     return read_outcome_full(evpl, fd, out_lo, out_hi, NULL, NULL);
 } /* read_outcome */
 
 static int
 read_outcome_body(
-    struct evpl *evpl,
-    int          fd,
-    uint8_t     *results,
-    uint32_t    *results_len)
+    struct evpl  *evpl,
+    test_socket_t fd,
+    uint8_t      *results,
+    uint32_t     *results_len)
 {
     uint32_t lo, hi;
 
@@ -2533,7 +2524,7 @@ put_gss_cred(
 static int
 gss_exchange(
     struct evpl    *evpl,
-    int             fd,
+    test_socket_t   fd,
     struct wirebuf *msg,
     uint8_t        *results,
     uint32_t       *results_len)
@@ -2565,7 +2556,7 @@ gss_exchange(
 static int
 gss_exchange_split(
     struct evpl    *evpl,
-    int             fd,
+    test_socket_t   fd,
     struct wirebuf *msg,
     uint32_t        split_at,
     uint8_t        *results,
@@ -2828,10 +2819,10 @@ build_gss_init_call(
  */
 static int
 gss_establish(
-    struct evpl *evpl,
-    int          fd,
-    uint32_t    *out_handle,
-    int          legs)
+    struct evpl  *evpl,
+    test_socket_t fd,
+    uint32_t     *out_handle,
+    int           legs)
 {
     struct wirebuf msg;
     uint8_t        results[512];
@@ -3536,11 +3527,11 @@ defect_case_first_time(
  */
 static int
 gss_classify_silence(
-    struct evpl *evpl,
-    int          fd,
-    int          outcome,
-    uint32_t     handle,
-    uint32_t     next_seq)
+    struct evpl  *evpl,
+    test_socket_t fd,
+    int           outcome,
+    uint32_t      handle,
+    uint32_t      next_seq)
 {
     struct wirebuf msg;
 
@@ -3567,7 +3558,7 @@ static int
 run_gss_case(
     struct evpl                   *evpl,
     const struct conf_defect_case *c,
-    int                            fd)
+    test_socket_t                  fd)
 {
     struct wirebuf msg;
     uint32_t       handle = 0;
@@ -3982,7 +3973,8 @@ run_defect_case(
     uint32_t       cred_flavor = 0, cred_len = 0;
     uint32_t       lo = 0, hi = 0;
     uint32_t       mark_override = 0;
-    int            fd, actual, use_mark_override = 0, fragments = 1;
+    test_socket_t  fd;
+    int            actual, use_mark_override = 0, fragments = 1;
     int            truncate_by = 0, trailing = 0, reasm_flood = 0;
 
     if (!defect_applies(c->defect, c->target)) {
@@ -4018,14 +4010,14 @@ run_defect_case(
         }
 
         fd = connect_raw();
-        if (fd < 0) {
+        if (fd == TEST_INVALID_SOCKET) {
             evpl_test_error("defect case %s: connect failed", defect_name(c->defect));
             g_results.defect_unknown++;
             return;
         }
         g_results.defect_run++;
         actual = run_gss_case(evpl, c, fd);
-        close(fd);
+        test_socket_close(fd);
         record_outcome(c, actual, 0, 0);
         return;
     }
@@ -4163,7 +4155,7 @@ run_defect_case(
     }
 
     fd = connect_raw();
-    if (fd < 0) {
+    if (fd == TEST_INVALID_SOCKET) {
         evpl_test_error("defect case %s: connect failed", defect_name(c->defect));
         g_results.defect_unknown++;
         return;
@@ -4236,7 +4228,7 @@ run_defect_case(
     }
 
     actual = read_outcome(evpl, fd, &lo, &hi);
-    close(fd);
+    test_socket_close(fd);
 
     record_outcome(c, actual, lo, hi);
 } /* run_defect_case */

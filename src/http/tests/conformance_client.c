@@ -1,4 +1,4 @@
-#include "core/os.h"
+#include "tests/test_socket.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -51,11 +51,15 @@
 #include <string.h>
 
 
+#ifdef _WIN32
+#include "tests/test_options.h"
+#else  /* ifdef _WIN32 */
 #include <getopt.h>
+#endif /* ifdef _WIN32 */
 #include <errno.h>
 #include "evpl/evpl_platform.h"
 #include <signal.h>
-#include <poll.h>
+
 #include <time.h>
 #include <sched.h>
 
@@ -858,9 +862,9 @@ build_response(
 
 struct raw_server {
     evpl_native_thread_t thread;
-    int                  listen_fd;
+    test_socket_t        listen_fd;
     volatile int         case_index; /* set by the driver before the client connects */
-    volatile int         ready; /* the thread is in accept(), waiting for one    */
+    volatile int         ready; /* the thread is in test_socket_accept(), waiting for one    */
     volatile int         case_done; /* set by the driver when it has finished a case */
 };
 
@@ -868,15 +872,15 @@ static struct raw_server g_raw;
 
 static int
 write_all(
-    int         fd,
-    const char *buf,
-    size_t      len)
+    test_socket_t fd,
+    const char   *buf,
+    size_t        len)
 {
     ssize_t n;
     size_t  off = 0;
 
     while (off < len) {
-        n = send(fd, buf + off, len - off, MSG_NOSIGNAL);
+        n = test_socket_send(fd, buf + off, len - off, MSG_NOSIGNAL);
 
         if (n <= 0) {
             /* The client hung up mid-response, which is an outcome in itself
@@ -892,7 +896,7 @@ write_all(
 
 static void
 deliver(
-    int             fd,
+    test_socket_t   fd,
     struct wirebuf *wb,
     int             delivery)
 {
@@ -1159,9 +1163,9 @@ parse_request(
  */
 static void
 drain_requests(
-    int fd,
-    int expect_body,
-    int count)
+    test_socket_t fd,
+    int           expect_body,
+    int           count)
 {
     struct pollfd      pfd;
     struct raw_request ri;
@@ -1217,11 +1221,11 @@ drain_requests(
         pfd.events  = POLLIN;
         pfd.revents = 0;
 
-        if (poll(&pfd, 1, n) <= 0) {
+        if (test_socket_poll(&pfd, 1, n) <= 0) {
             break;
         }
 
-        n = read(fd, buf + len, (int) sizeof(buf) - len);
+        n = test_socket_recv(fd, buf + len, (int) sizeof(buf) - len, 0);
 
         if (n <= 0) {
             break;
@@ -1243,7 +1247,8 @@ raw_server_function(void *ptr)
     struct raw_server *raw = ptr;
     struct wirebuf     wb;
     unsigned int       i;
-    int                fd, close_after;
+    test_socket_t      fd;
+    int                close_after;
 
     /* One more accept than there are cases: the last is the API checks', and
      * it is answered by dropping the connection.  See run_api_cases. */
@@ -1252,14 +1257,14 @@ raw_server_function(void *ptr)
         raw->ready = 1;
         atomic_thread_fence(memory_order_seq_cst);
 
-        fd = accept(raw->listen_fd, NULL, NULL);
+        fd = test_socket_accept(raw->listen_fd, NULL, NULL);
 
         raw->ready = 0;
 
-        if (fd >= 0 && raw->case_index == (int) HTTP_NUM_CLIENT_CASES) {
-            close(fd);
+        if (fd != TEST_INVALID_SOCKET && raw->case_index == (int) HTTP_NUM_CLIENT_CASES) {
+            test_socket_close(fd);
             fd = -1;
-        } else if (fd >= 0) {
+        } else if (fd != TEST_INVALID_SOCKET) {
             const struct http_client_case *c =
                 &http_client_cases[raw->case_index];
 
@@ -1274,7 +1279,7 @@ raw_server_function(void *ptr)
             wb_free(&wb);
 
             if (close_after) {
-                close(fd);
+                test_socket_close(fd);
                 fd = -1;
             }
         }
@@ -1288,8 +1293,8 @@ raw_server_function(void *ptr)
             evpl_sleep_us(500);
         }
 
-        if (fd >= 0) {
-            close(fd);
+        if (fd != TEST_INVALID_SOCKET) {
+            test_socket_close(fd);
         }
     }
 
@@ -2049,7 +2054,9 @@ main(
 
     /* The hostile server hangs up mid-conversation on purpose; a late write
      * must not take the harness down with it. */
+#ifdef SIGPIPE
     signal(SIGPIPE, SIG_IGN);
+#endif /* ifdef SIGPIPE */
 
     fill_request_body();
 
@@ -2066,12 +2073,12 @@ main(
 
     g_raw.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (g_raw.listen_fd < 0) {
+    if (g_raw.listen_fd == TEST_INVALID_SOCKET) {
         perror("socket");
         return 1;
     }
 
-    setsockopt(g_raw.listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    test_socket_option(g_raw.listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -2108,7 +2115,7 @@ main(
     run_api_cases(evpl, agent, endpoint);
 
     evpl_native_thread_join(g_raw.thread, NULL);
-    close(g_raw.listen_fd);
+    test_socket_close(g_raw.listen_fd);
 
     evpl_http_destroy(agent);
     evpl_destroy(evpl);

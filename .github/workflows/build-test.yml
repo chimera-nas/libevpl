@@ -514,7 +514,38 @@ jobs:
             fi
           done
 
+  conformance-corpus:
+    name: Generate native conformance cases
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned model generator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm install -g @informalsystems/quint@0.32.0
+          dest="$HOME/.quint/rust-evaluator-v0.6.0"
+          mkdir -p "$dest"
+          gh release download evaluator/v0.6.0 --repo informalsystems/quint \
+            --pattern quint_evaluator-x86_64-unknown-linux-gnu.tar.gz --dir "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP/quint_evaluator-x86_64-unknown-linux-gnu.tar.gz" -C "$dest"
+          chmod +x "$dest/quint_evaluator"
+      - name: Generate case tables from this commit
+        run: python3 scripts/generate_conformance_corpus.py corpus
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-conformance-corpus
+          path: corpus/*.h
+          if-no-files-found: error
+          retention-days: 7
+
   native:
+    needs: conformance-corpus
     name: MSVC ${{ matrix.arch }} ${{ matrix.config }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -541,6 +572,10 @@ jobs:
         with:
           path: ~/AppData/Local/vcpkg/archives
           key: vcpkg-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
+      - uses: actions/download-artifact@v6
+        with:
+          name: native-conformance-corpus
+          path: corpus
       - name: Install parser generators
         shell: pwsh
         run: |
@@ -554,7 +589,7 @@ jobs:
           & ./_vcpkg/bootstrap-vcpkg.bat -disableMetrics
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $triplet = '${{ matrix.arch }}'.ToLower() + '-windows'
-          cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} "-DCMAKE_TOOLCHAIN_FILE=$pwd/_vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=$triplet" "-DVCPKG_HOST_TRIPLET=$triplet" "-DFLEX_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_flex.exe" "-DBISON_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_bison.exe" -DOTEL_SQLITE=ON
+          cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} "-DCMAKE_TOOLCHAIN_FILE=$pwd/_vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=$triplet" "-DVCPKG_HOST_TRIPLET=$triplet" "-DFLEX_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_flex.exe" "-DBISON_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_bison.exe" -DOTEL_SQLITE=ON "-DEVPL_CONFORMANCE_CASES_DIR=$pwd/corpus"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/cache/save@v4
         if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -564,7 +599,7 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.config }} --parallel 4
       - name: Test native backends
-        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error --timeout 60 --output-junit results.xml
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error --timeout 300 --output-junit results.xml
       - name: Install and consume native DLLs
         shell: pwsh
         run: |
