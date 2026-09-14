@@ -195,15 +195,9 @@ if(KRB5_GSSAPI_FOUND)
 endif()
 
 # Add test instances for DATAGRAM_TCP_RDMA
-if(NOT WIN32)
 unit_test_rpc2_instance(hello_world DATAGRAM_TCP_RDMA 8200)
-endif()
-if(NOT WIN32)
 unit_test_rpc2_instance(builtin_bool DATAGRAM_TCP_RDMA 8201)
-endif()
-if(NOT WIN32)
 unit_test_rpc2_instance(rdma_ddp DATAGRAM_TCP_RDMA 8202)
-endif()
 
 # AF_UNIX.  rpc2 is transport-agnostic above the bind, so these mirror the
 # STREAM_SOCKET_TCP set exactly; rdma_ddp is included for the same reason it is

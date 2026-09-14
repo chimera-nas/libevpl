@@ -263,13 +263,11 @@ evpl_shared_init(struct evpl_global_config *config)
                        &evpl_socket_tls);
 #endif /* ifdef HAVE_TLS */
 
-#ifndef _WIN32
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TCP_RDMA,
                         &evpl_framework_tcp_rdma);
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
                        &evpl_tcp_rdma_datagram);
-#endif /* ifndef _WIN32 */
 
 #endif /* ifndef EVPL_BOOTSTRAP_NATIVE */
 
