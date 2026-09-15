@@ -10,4 +10,6 @@ target_include_directories(consumer PRIVATE ${EVPL_INCLUDE_DIR})
 target_link_libraries(consumer PRIVATE ${EVPL_LIBRARY} ${EVPL_HTTP_LIBRARY})
 if(MSVC)
     target_compile_options(consumer PRIVATE /experimental:c11atomics /W3 /WX)
+    # Manual import-library consumers must match the library's inline iovec ABI.
+    target_compile_definitions(consumer PRIVATE $<$<CONFIG:Debug>:EVPL_IOVEC_TRACE=1>)
 endif()
