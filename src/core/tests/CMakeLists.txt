@@ -90,7 +90,7 @@ unit_test_local(core endpoint_inproc endpoint_inproc.c)
 find_program(QUINT_EXECUTABLE quint)
 find_program(PYTHON3_EXECUTABLE NAMES python3 python)
 
-if(EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
+if(EVPL_CONFORMANCE_CASES_DIR OR (NOT WIN32 AND QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     set(CORE_QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
     set(CORE_QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
     if(EVPL_CONFORMANCE_CASES_DIR)
@@ -158,7 +158,7 @@ if(EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     message(STATUS "Core conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS
-        "Core conformance test disabled (needs quint and python3 on PATH)")
+        "Core conformance test disabled (supply EVPL_CONFORMANCE_CASES_DIR, or quint and python3 on a Unix host)")
 endif()
 
 # Reply using the borrowed source address after the receive callback returns.
