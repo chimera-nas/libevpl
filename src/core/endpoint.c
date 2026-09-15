@@ -324,7 +324,9 @@ evpl_endpoint_resolve_inet(struct evpl_endpoint *endpoint)
     snprintf(port_str, sizeof(port_str), "%d", endpoint->port);
 
     memset(&hints, 0, sizeof hints);
-    hints.ai_family   = AF_INET;
+    /* Preserve the existing IPv4 hostname policy, but honor an explicitly
+     * supplied IPv6 literal (including a scoped address). */
+    hints.ai_family   = strchr(endpoint->address, ':') ? AF_INET6 : AF_INET;
     hints.ai_socktype = 0; // SOCK_DGRAM;
     hints.ai_flags    = 0;
 
