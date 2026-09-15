@@ -1,3 +1,4 @@
+#include "tests/test_socket.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -40,18 +41,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <unistd.h>
+
+
+#ifdef _WIN32
+#include "tests/test_options.h"
+#else  /* ifdef _WIN32 */
 #include <getopt.h>
+#endif /* ifdef _WIN32 */
 #include <errno.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <signal.h>
-#include <poll.h>
+
 #include <time.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
+
+
+
+
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"
@@ -485,7 +490,7 @@ record(
 * ------------------------------------------------------------------ */
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     volatile int         run;
     struct evpl_doorbell doorbell;
 };
@@ -841,9 +846,12 @@ server_function(void *ptr)
 
     server = evpl_http_attach(agent, listener, server_dispatch, NULL);
 
-    evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
+    if (evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint)) {
+        fprintf(stderr, "HTTP conformance listener failed on port %d\n", port);
+        exit(1);
+    }
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     ctx->run = 1;
 
@@ -912,7 +920,7 @@ wb_append(
         wb->data = grown;
     }
 
-    memcpy(wb->data + wb->len, bytes, len);
+    memcpy((char *) wb->data + wb->len, bytes, len);
     wb->len += len;
 } /* wb_append */
 
@@ -1222,27 +1230,28 @@ build_request(
 * The raw client
 * ------------------------------------------------------------------ */
 
-static int
+static test_socket_t
 connect_raw(void)
 {
     struct sockaddr_in addr;
-    int                fd, one = 1;
+    test_socket_t      fd;
+    int                one = 1;
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (fd < 0) {
+    if (fd == TEST_INVALID_SOCKET) {
         return -1;
     }
 
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    test_socket_option(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port        = htons(port);
 
-    if (connect(fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-        close(fd);
+    if (test_socket_connect(fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+        test_socket_close(fd);
         return -1;
     }
 
@@ -1251,15 +1260,15 @@ connect_raw(void)
 
 static int
 write_all(
-    int         fd,
-    const char *buf,
-    size_t      len)
+    test_socket_t fd,
+    const char   *buf,
+    size_t        len)
 {
     ssize_t n;
     size_t  off = 0;
 
     while (off < len) {
-        n = send(fd, buf + off, len - off, MSG_NOSIGNAL);
+        n = test_socket_send(fd, buf + off, len - off, MSG_NOSIGNAL);
 
         if (n <= 0) {
             /* The server hung up mid-request.  That is an outcome in itself
@@ -1274,69 +1283,7 @@ write_all(
     return 0;
 } /* write_all */
 
-/*
- * Put the request on the wire the way the case says to.  The delivery mode is
- * a dimension of the model rather than an implementation detail: a parser
- * defect that is only detected because the whole request arrived in one read
- * is not really detected.
- *
- * Pipelined is the one that is a protocol claim rather than a fragmentation
- * choice -- the same request twice in a single write, which RFC 9112 section
- * 9.3.2 permits and requires the server to answer in order.
- */
-static void
-deliver(
-    int             fd,
-    struct wirebuf *wb,
-    int             delivery)
-{
-    size_t half, i, dribble;
 
-    switch (delivery) {
-        case HDLV_ONEWRITE:
-            write_all(fd, wb->data, wb->len);
-            break;
-        case HDLV_TWOWRITES:
-            half = wb->len / 2;
-
-            if (write_all(fd, wb->data, half) == 0) {
-                usleep(SPLIT_DELAY_US);
-                write_all(fd, wb->data + half, wb->len - half);
-            }
-            break;
-        case HDLV_DRIBBLE:
-            dribble = wb->len < DRIBBLE_MAX_BYTES ? wb->len : DRIBBLE_MAX_BYTES;
-
-            for (i = 0; i < dribble; i++) {
-                if (write_all(fd, wb->data + i, 1) < 0) {
-                    return;
-                }
-                usleep(DRIBBLE_DELAY_US);
-            }
-
-            if (dribble < wb->len) {
-                write_all(fd, wb->data + dribble, wb->len - dribble);
-            }
-            break;
-        case HDLV_PIPELINED:
-            /* Both requests in one write, so that when the server's first
-             * read returns, the second request is already buffered and no
-             * further read event is coming to announce it. */
-        {
-            struct wirebuf both;
-
-            wb_init(&both);
-            wb_append(&both, wb->data, wb->len);
-            wb_append(&both, wb->data, wb->len);
-            write_all(fd, both.data, both.len);
-            wb_free(&both);
-        }
-        break;
-        default:
-            write_all(fd, wb->data, wb->len);
-            break;
-    } /* switch */
-} /* deliver */
 
 /* ------------------------------------------------------------------ *
 * The response reader
@@ -1355,11 +1302,11 @@ deliver(
 #define MAX_RSP_BODY  (BODY_LARGE_LEN + 4096)
 
 struct reader {
-    int  fd;
-    int  len;        /* bytes read from the socket so far   */
-    int  pos;        /* where the next unparsed message starts */
-    int  eof;
-    char buf[MAX_RESPONSE];
+    test_socket_t fd;
+    int           len; /* bytes read from the socket so far   */
+    int           pos; /* where the next unparsed message starts */
+    int           eof;
+    char          buf[MAX_RESPONSE];
 };
 
 struct rawrsp {
@@ -1676,7 +1623,7 @@ now_ms(void)
 {
     struct timespec ts;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
 
     return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 } /* now_ms */
@@ -1705,7 +1652,7 @@ rd_fill(
         timeout = 0;
     }
 
-    n = poll(&pfd, 1, timeout);
+    n = test_socket_poll(&pfd, 1, timeout);
 
     if (n < 0) {
         return errno == EINTR ? 0 : -1;
@@ -1715,7 +1662,7 @@ rd_fill(
         return 0;
     }
 
-    n = read(rd->fd, rd->buf + rd->len, MAX_RESPONSE - rd->len);
+    n = test_socket_recv(rd->fd, rd->buf + rd->len, MAX_RESPONSE - rd->len, 0);
 
     if (n < 0) {
         if (errno == EINTR) {
@@ -1728,7 +1675,7 @@ rd_fill(
          * server held the connection when it did the opposite, and would make
          * the same defect classify differently depending only on how the
          * request was delivered. */
-        if (errno == ECONNRESET) {
+        if (errno == ECONNRESET || errno == ENOTCONN || errno == ECONNABORTED) {
             rd->eof = 1;
         }
 
@@ -1744,6 +1691,92 @@ rd_fill(
 
     return 1;
 } /* rd_fill */
+
+/* Read responses while sending fragmented requests. A refusal can arrive
+ * before the request is complete; continuing to write after the peer closes
+ * can reset the connection and discard unread response bytes on Winsock. */
+static int
+write_piece(
+    struct reader *rd,
+    const char    *data,
+    size_t         length)
+{
+    int rc;
+
+    while (rd_fill(rd, 0) > 0) {
+    }
+    if (rd->eof) {
+        return -1;
+    }
+    rc = write_all(rd->fd, data, length);
+    while (rd_fill(rd, 0) > 0) {
+    }
+    return rc;
+} /* write_piece */
+
+/*
+ * Put the request on the wire the way the case says to.  The delivery mode is
+ * a dimension of the model rather than an implementation detail: a parser
+ * defect that is only detected because the whole request arrived in one read
+ * is not really detected.
+ *
+ * Pipelined is the one that is a protocol claim rather than a fragmentation
+ * choice -- the same request twice in a single write, which RFC 9112 section
+ * 9.3.2 permits and requires the server to answer in order.
+ */
+static void
+deliver(
+    struct reader  *rd,
+    struct wirebuf *wb,
+    int             delivery)
+{
+    size_t half, i, dribble;
+
+    switch (delivery) {
+        case HDLV_ONEWRITE:
+            write_piece(rd, wb->data, wb->len);
+            break;
+        case HDLV_TWOWRITES:
+            half = wb->len / 2;
+
+            if (write_piece(rd, wb->data, half) == 0) {
+                evpl_sleep_us(SPLIT_DELAY_US);
+                write_piece(rd, (char *) wb->data + half, wb->len - half);
+            }
+            break;
+        case HDLV_DRIBBLE:
+            dribble = wb->len < DRIBBLE_MAX_BYTES ? wb->len : DRIBBLE_MAX_BYTES;
+
+            for (i = 0; i < dribble; i++) {
+                if (write_piece(rd, (char *) wb->data + i, 1) < 0) {
+                    return;
+                }
+                evpl_sleep_us(DRIBBLE_DELAY_US);
+            }
+
+            if (dribble < wb->len) {
+                write_piece(rd, (char *) wb->data + dribble, wb->len - dribble);
+            }
+            break;
+        case HDLV_PIPELINED:
+            /* Both requests in one write, so that when the server's first
+             * read returns, the second request is already buffered and no
+             * further read event is coming to announce it. */
+        {
+            struct wirebuf both;
+
+            wb_init(&both);
+            wb_append(&both, wb->data, wb->len);
+            wb_append(&both, wb->data, wb->len);
+            write_piece(rd, both.data, both.len);
+            wb_free(&both);
+        }
+        break;
+        default:
+            write_piece(rd, wb->data, wb->len);
+            break;
+    } /* switch */
+} /* deliver */
 
 /*
  * Read the next response off the connection.
@@ -2190,7 +2223,7 @@ check_reuse(
         return;
     }
 
-    deliver(rd->fd, wb, HDLV_ONEWRITE);
+    deliver(rd, wb, HDLV_ONEWRITE);
 
     read_response(rd, &r, c->expect_body == HBODY_BODYABSENT, 1);
 
@@ -2229,7 +2262,7 @@ run_request_case(const struct http_request_case *c)
 
     rd->fd = connect_raw();
 
-    if (rd->fd < 0) {
+    if (rd->fd == TEST_INVALID_SOCKET) {
         fprintf(stderr, "request case: connect failed: %s\n", strerror(errno));
         g_results.unexpected++;
         free(rd);
@@ -2250,7 +2283,7 @@ run_request_case(const struct http_request_case *c)
         want_persist                     = 1;
     }
 
-    deliver(rd->fd, &wb, c->delivery);
+    deliver(rd, &wb, c->delivery);
 
     read_response(rd, &r, c->expect_body == HBODY_BODYABSENT, 1);
 
@@ -2334,7 +2367,7 @@ run_request_case(const struct http_request_case *c)
 
  out:
     wb_free(&wb);
-    close(rd->fd);
+    test_socket_close(rd->fd);
     free(rd);
 } /* run_request_case */
 
@@ -2344,6 +2377,9 @@ run_request_phase(void)
     unsigned int i;
 
     for (i = 0; i < HTTP_NUM_REQUEST_CASES; i++) {
+        if (i % 32 == 0) {
+            fprintf(stderr, "HTTP request case %u/%u\n", i, (unsigned int) HTTP_NUM_REQUEST_CASES);
+        }
         run_request_case(&http_request_cases[i]);
     }
 } /* run_request_phase */
@@ -2745,7 +2781,7 @@ run_defect_case(const struct http_defect_case *c)
 
     rd->fd = connect_raw();
 
-    if (rd->fd < 0) {
+    if (rd->fd == TEST_INVALID_SOCKET) {
         fprintf(stderr, "defect case %s: connect failed: %s\n",
                 http_defect_name(c->defect), strerror(errno));
         g_results.unexpected++;
@@ -2758,7 +2794,7 @@ run_defect_case(const struct http_defect_case *c)
     wb_init(&wb);
     build_defect(&wb, c->defect, c->ver, &half_close);
 
-    deliver(rd->fd, &wb, c->delivery);
+    deliver(rd, &wb, c->delivery);
 
     if (half_close) {
         shutdown(rd->fd, SHUT_WR);
@@ -2796,7 +2832,7 @@ run_defect_case(const struct http_defect_case *c)
     }
 
     wb_free(&wb);
-    close(rd->fd);
+    test_socket_close(rd->fd);
     free(rd);
 } /* run_defect_case */
 
@@ -2806,6 +2842,9 @@ run_defect_phase(void)
     unsigned int i;
 
     for (i = 0; i < HTTP_NUM_DEFECT_CASES; i++) {
+        if (i % 32 == 0) {
+            fprintf(stderr, "HTTP defect case %u/%u\n", i, (unsigned int) HTTP_NUM_DEFECT_CASES);
+        }
         run_defect_case(&http_defect_cases[i]);
     }
 } /* run_defect_phase */
@@ -2948,7 +2987,7 @@ run_status_case(
 
     rd->fd = connect_raw();
 
-    if (rd->fd < 0) {
+    if (rd->fd == TEST_INVALID_SOCKET) {
         fprintf(stderr, "status case %d: connect failed: %s\n", status,
                 strerror(errno));
         g_results.unexpected++;
@@ -2995,7 +3034,7 @@ run_status_case(
         wb_str(&wb, STATUS_BODY);
     }
 
-    deliver(rd->fd, &wb, HDLV_ONEWRITE);
+    deliver(rd, &wb, HDLV_ONEWRITE);
 
     /* Interim responses are NOT skipped here.  Everywhere else a 1xx is a note
      * that the answer is still coming; here the application asked for one as
@@ -3032,7 +3071,7 @@ run_status_case(
     }
 
     wb_free(&wb);
-    close(rd->fd);
+    test_socket_close(rd->fd);
     free(rd);
 } /* run_status_case */
 
@@ -3072,7 +3111,7 @@ run_injection_case(void)
 
     rd->fd = connect_raw();
 
-    if (rd->fd < 0) {
+    if (rd->fd == TEST_INVALID_SOCKET) {
         fprintf(stderr, "injection case: connect failed: %s\n",
                 strerror(errno));
         g_results.unexpected++;
@@ -3092,7 +3131,7 @@ run_injection_case(void)
     wb_str(&wb, "\r\nConnection: close\r\n" INJECT_ASK ": 1\r\n"
            RESPOND_DATE ": 1\r\n\r\n");
 
-    deliver(rd->fd, &wb, HDLV_ONEWRITE);
+    deliver(rd, &wb, HDLV_ONEWRITE);
 
     read_response(rd, &r, 0, 1);
 
@@ -3114,7 +3153,7 @@ run_injection_case(void)
            ok ? VACT_OK : VACT_BAD, ok, ok ? NULL : detail);
 
     wb_free(&wb);
-    close(rd->fd);
+    test_socket_close(rd->fd);
     free(rd);
 } /* run_injection_case */
 
@@ -3198,7 +3237,9 @@ main(
 
     /* Several cases leave the peer to hang up mid-conversation; a late write
      * must not take the harness down with it. */
+#ifdef SIGPIPE
     signal(SIGPIPE, SIG_IGN);
+#endif /* ifdef SIGPIPE */
 
     while ((opt = getopt(argc, argv, "p:")) != -1) {
         switch (opt) {
@@ -3223,10 +3264,13 @@ main(
 
     server.run = 0;
 
-    pthread_create(&server.thread, NULL, server_function, &server);
+    if (evpl_native_thread_create(&server.thread, NULL, server_function, &server)) {
+        fprintf(stderr, "HTTP conformance server thread creation failed\n");
+        return 1;
+    }
 
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     run_request_phase();
@@ -3234,9 +3278,9 @@ main(
     run_status_phase();
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     report();
 

@@ -2,13 +2,14 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
-#include <sys/time.h>
+
 #include <fcntl.h>
-#include <unistd.h>
+
 #include <errno.h>
 
 #include "core/select.h"

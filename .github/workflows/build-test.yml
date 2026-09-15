@@ -13,6 +13,12 @@ on:
     branches: ["main"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platforms to exercise during development
+        type: choice
+        options: [all, windows]
+        default: all
 
 # One phase, not two.  Each cell builds the container image it needs and loads
 # it into that runner's docker daemon, then compiles and tests inside it:
@@ -63,6 +69,7 @@ jobs:
   # which would otherwise turn a broken runner into a green run.
   # ---------------------------------------------------------------------------
   test:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
     name: Test ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -249,6 +256,7 @@ jobs:
   # here catches that at source instead of in a downstream bump.
   # ---------------------------------------------------------------------------
   static-analysis:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
     name: Analyze ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -324,6 +332,7 @@ jobs:
   # above it -- which is exactly the part nothing else in this matrix exercises.
   # ---------------------------------------------------------------------------
   macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
     name: Test macOS ${{ matrix.build_type }}
     runs-on: macos-14
     permissions:
@@ -368,44 +377,6 @@ jobs:
           # cannot be reused here.
           npm install -g "@informalsystems/quint@${QUINT_VERSION}"
           quint --version
-
-      # quint fetches its Rust evaluator on first use and ABORTS rather than
-      # falling back when that fetch fails, so an absent evaluator becomes a
-      # build failure in the middle of case generation, attributed to cmake.
-      # The Linux images ship it inside the image; here it has to come off the
-      # network, so install it in a step of its own.
-      #
-      # Fetched here rather than by quint itself because quint's fetch is
-      # ANONYMOUS -- its GitHub client sends only User-Agent and Accept, and
-      # honours no token -- so on hosted runners, whose egress IPs are shared
-      # and busy, it reliably draws "rate limit exceeded" from api.github.com.
-      # gh uses the job's own token and gets the authenticated limit instead.
-      #
-      # v0.6.0 is not a guess: QUINT_EVALUATOR_VERSION is a constant inside
-      # quint 0.32.0, and the path below is where quint looks before deciding
-      # it needs to download anything.  The evaluator version is as
-      # corpus-affecting as the quint version, so pinning both is the point.
-      - name: Install the quint Rust evaluator
-        env:
-          GH_TOKEN: ${{ github.token }}
-          QUINT_EVALUATOR_VERSION: v0.6.0
-        run: |
-          case "$(uname -m)" in
-            arm64|aarch64) asset=quint_evaluator-aarch64-apple-darwin.tar.gz ;;
-            x86_64)        asset=quint_evaluator-x86_64-apple-darwin.tar.gz ;;
-            *) echo "no quint evaluator for $(uname -m)" >&2; exit 1 ;;
-          esac
-          dest="${HOME}/.quint/rust-evaluator-${QUINT_EVALUATOR_VERSION}"
-          mkdir -p "${dest}"
-          gh release download "evaluator/${QUINT_EVALUATOR_VERSION}" \
-            --repo informalsystems/quint --pattern "${asset}" \
-            --output "${RUNNER_TEMP}/${asset}" --clobber
-          tar -xzf "${RUNNER_TEMP}/${asset}" -C "${dest}"
-          chmod +x "${dest}/quint_evaluator"
-          # Prove quint is satisfied by what we placed, before the build needs
-          # it: this runs the models and must not reach the network.
-          quint run --max-steps=1 --max-samples=1 \
-            src/rpc2/tests/quint/defects.qnt --main=rpc2_defects >/dev/null
 
       - name: Restore the ccache directory
         uses: actions/cache/restore@v4
@@ -476,7 +447,7 @@ jobs:
   ci-complete:
     name: CI complete
     if: always()
-    needs: [test, static-analysis, macos]
+    needs: [test, static-analysis, macos, native]
     runs-on: ubuntu-24.04
     # It reads `needs` and nothing else -- no checkout, no API call -- so the
     # token it runs with can be empty.
@@ -487,8 +458,116 @@ jobs:
           results='${{ join(needs.*.result, ' ') }}'
           echo "dependency results: ${results}"
           for r in ${results}; do
+            if [ "$r" = "skipped" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.platform }}" = "windows" ]; then
+              continue
+            fi
             if [ "$r" != "success" ]; then
               echo "a required job did not succeed"
               exit 1
             fi
           done
+
+  conformance-corpus:
+    name: Generate native conformance cases
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned model generator
+        run: npm install -g @informalsystems/quint@0.32.0
+      # The generators pin Quint's TypeScript backend, matching Linux/macOS.
+      - name: Generate case tables from this commit
+        run: python3 scripts/generate_conformance_corpus.py corpus
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-conformance-corpus
+          path: corpus/*.h
+          if-no-files-found: error
+          retention-days: 7
+
+  native:
+    needs: conformance-corpus
+    name: MSVC ${{ matrix.arch }} ${{ matrix.config }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-2022, arch: x64, config: Debug}
+          - {runner: windows-2022, arch: x64, config: Release}
+          - {runner: windows-11-arm, arch: ARM64, config: Debug}
+          - {runner: windows-11-arm, arch: ARM64, config: Release}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: a1cae005c39be7b18ba319fced856b68d7276271
+          path: _vcpkg
+      - uses: actions/cache/restore@v4
+        id: vcpkg-cache
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: vcpkg-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.arch }}-
+      - uses: actions/download-artifact@v6
+        with:
+          name: native-conformance-corpus
+          path: corpus
+      - name: Install parser generators
+        shell: pwsh
+        run: |
+          $archive = "$env:RUNNER_TEMP/winflexbison.zip"
+          Invoke-WebRequest https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32b6ac135') { throw 'WinFlexBison checksum mismatch' }
+          Expand-Archive $archive "$env:RUNNER_TEMP/winflexbison"
+      - name: Configure native Windows with dependencies
+        shell: pwsh
+        run: |
+          & ./_vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $triplet = '${{ matrix.arch }}'.ToLower() + '-windows'
+          cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} "-DCMAKE_TOOLCHAIN_FILE=$pwd/_vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=$triplet" "-DVCPKG_HOST_TRIPLET=$triplet" "-DFLEX_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_flex.exe" "-DBISON_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_bison.exe" -DOTEL_SQLITE=ON "-DEVPL_CONFORMANCE_CASES_DIR=$pwd/corpus"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/cache/save@v4
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: vcpkg-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
+      - name: Test native backends
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error --timeout 300 --output-junit results.xml
+      - name: Install and consume native DLLs
+        shell: pwsh
+        run: |
+          $prefix = "$env:RUNNER_TEMP/evpl-install"
+          cmake --install build --config ${{ matrix.config }} --prefix $prefix
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake -S tests/installed -B consumer -G "Visual Studio 17 2022" -A ${{ matrix.arch }} "-DCMAKE_PREFIX_PATH=$prefix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build consumer --config ${{ matrix.config }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $triplet = '${{ matrix.arch }}'.ToLower() + '-windows'
+          $dependencies = "$pwd/build/vcpkg_installed/$triplet"
+          if ('${{ matrix.config }}' -eq 'Debug') { $dependencies += '/debug' }
+          $env:PATH = "$prefix/bin;$dependencies/bin;$env:PATH"
+          & ./consumer/${{ matrix.config }}/consumer.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-${{ matrix.arch }}-${{ matrix.config }}
+          path: |
+            build/results.xml
+            build/Testing/Temporary/
+          if-no-files-found: ignore

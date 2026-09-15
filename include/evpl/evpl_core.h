@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #include <time.h>
 #include <stdint.h>
@@ -52,7 +53,7 @@ struct evpl;
 struct evpl_global_config;
 struct evpl_thread_config;
 
-void evpl_init(
+EVPL_API void evpl_init(
     struct evpl_global_config *global_config);
 
 /* Serialize libevpl's own metrics into buffer in Prometheus text
@@ -60,14 +61,14 @@ void evpl_init(
  * written, or -1 if the buffer was too small.  Safe to call from any
  * thread; triggers evpl initialization if it has not happened yet.
  */
-int evpl_metrics_scrape(
+EVPL_API int evpl_metrics_scrape(
     char *buffer,
     int   buffer_size);
 
-struct evpl * evpl_create(
+EVPL_API struct evpl * evpl_create(
     struct evpl_thread_config *config);
 
-void
+EVPL_API void
 evpl_get_hf_monotonic_time(
     struct evpl     *evpl,
     struct timespec *ts);
@@ -83,21 +84,21 @@ evpl_get_hf_monotonic_time(
  * Advancing does not itself run anything: it makes deadlines due, and the
  * next evpl_continue() on a thread dispatches whatever became due on it.
  */
-void
+EVPL_API void
 evpl_virtual_clock_advance(
     uint64_t ns);
 
-uint64_t
+EVPL_API uint64_t
 evpl_virtual_clock_now(
     void);
 
-void evpl_destroy(
+EVPL_API void evpl_destroy(
     struct evpl *evpl);
 
-void evpl_continue(
+EVPL_API void evpl_continue(
     struct evpl *evpl);
 
-void evpl_run(
+EVPL_API void evpl_run(
     struct evpl *evpl);
 
 typedef void (*evpl_loop_callback_t)(
@@ -122,36 +123,36 @@ struct evpl_loop_hooks {
 };
 
 /* Install (replace, or clear with NULL) this thread's loop hooks. */
-void evpl_set_loop_hooks(
+EVPL_API void evpl_set_loop_hooks(
     struct evpl                  *evpl,
     const struct evpl_loop_hooks *hooks);
 
-void evpl_stop(
+EVPL_API void evpl_stop(
     struct evpl *evpl);
 
-int evpl_protocol_lookup(
+EVPL_API int evpl_protocol_lookup(
     enum evpl_protocol_id *id,
     const char            *name);
 
 /* 1 iff the protocol is registered and available in this build/config.  An
  * unavailable protocol reports 0 from every predicate below, so this is how a
  * caller distinguishes "not a stream" from "not built". */
-int evpl_protocol_available(
+EVPL_API int evpl_protocol_available(
     enum evpl_protocol_id protocol);
 
-int evpl_protocol_is_stream(
+EVPL_API int evpl_protocol_is_stream(
     enum evpl_protocol_id protocol);
 
 /* 1 iff the protocol names peers by a local socket path rather than by
  * network address and port, and therefore requires an endpoint created by
  * evpl_endpoint_create_local(). */
-int evpl_protocol_is_local(
+EVPL_API int evpl_protocol_is_local(
     enum evpl_protocol_id protocol);
 
 /* 1 iff the protocol reaches a peer thread inside this process rather than any
  * kernel transport, and therefore requires an endpoint created by
  * evpl_endpoint_create_inproc().  Such a name is private to the process: two
  * processes may use the same one without colliding. */
-int evpl_protocol_is_inproc(
+EVPL_API int evpl_protocol_is_inproc(
     enum evpl_protocol_id protocol);
 

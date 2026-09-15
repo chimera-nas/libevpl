@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#include <pthread.h>
-#include <unistd.h>
+#include "core/os.h"
+#include "evpl/evpl_platform.h"
+
 #include <errno.h>
 #include <string.h>
 
@@ -12,7 +13,6 @@
 #include "core/evpl_shared.h"
 #include "core/event_fn.h"
 #include "core/macros.h"
-#include "core/wakeup.h"
 #include "core/pthread_util.h"
 
 extern struct evpl_shared *evpl_shared;
@@ -35,18 +35,14 @@ extern struct evpl_shared *evpl_shared;
         evpl_abort_if(cond, "thread", __FILE__, __LINE__, __VA_ARGS__)
 
 struct evpl_thread {
-    pthread_t                       thread;
-    pthread_mutex_t                 lock;
-    pthread_cond_t                  cond;
+    evpl_native_thread_t            thread;
+    evpl_mutex_t                    lock;
+    evpl_cond_t                     cond;
     int                             ready;
-    /* Stop signal.  Owned by evpl_thread (this struct outlives the worker's
-     * evpl, since it is freed only after pthread_join), so evpl_thread_destroy
-     * can stop the worker by writing this fd without ever dereferencing the
-     * worker's evpl -- which the worker creates, runs, and destroys entirely on
-     * its own thread.  The event is registered on the worker's evpl and its
-     * handler clears running from the worker thread. */
-    struct evpl_wakeup              stop_wakeup;
-    struct evpl_event               stop_event;
+    /* The sender outlives the worker loop; a worker that has already stopped
+     * safely rejects subsequent stop requests. */
+    struct evpl_doorbell            stop_receiver;
+    struct evpl_doorbell_sender    *stop_sender;
     struct evpl_thread_config      *config;
     struct evpl                    *evpl;
     evpl_thread_init_callback_t     init_callback;
@@ -67,13 +63,10 @@ struct evpl_threadpool {
  */
 void
 evpl_thread_event(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell)
 {
-    if (evpl_wakeup_drain(event->fd) < 0) {
-        evpl_event_mark_unreadable(evpl, event);
-    }
-
+    (void) doorbell;
     evpl->running = 0;
 } /* evpl_thread_event */
 
@@ -87,13 +80,8 @@ evpl_thread_function(void *ptr)
 
     evpl_thread->evpl = evpl;
 
-    /* Register the stop fd (created by evpl_thread_create) on our own evpl, so
-     * a write from evpl_thread_destroy wakes us and clears running on this
-     * thread.  Done before signaling ready so the event is always live by the
-     * time a destroyer can run. */
-    evpl_add_event(evpl, &evpl_thread->stop_event, evpl_thread->stop_wakeup.rfd,
-                   evpl_thread_event, NULL, NULL);
-    evpl_event_read_interest(evpl, &evpl_thread->stop_event);
+    evpl_add_doorbell(evpl, &evpl_thread->stop_receiver, evpl_thread_event);
+    evpl_thread->stop_sender = evpl_doorbell_sender(&evpl_thread->stop_receiver);
 
     if (evpl_thread->init_callback) {
         evpl_thread->private_data = evpl_thread->init_callback(
@@ -101,14 +89,14 @@ evpl_thread_function(void *ptr)
             evpl_thread->private_data);
     }
 
-    pthread_mutex_lock(&evpl_thread->lock);
+    evpl_mutex_lock(&evpl_thread->lock);
     evpl_thread->ready = 1;
-    pthread_cond_signal(&evpl_thread->cond);
-    pthread_mutex_unlock(&evpl_thread->lock);
+    evpl_cond_signal(&evpl_thread->cond);
+    evpl_mutex_unlock(&evpl_thread->lock);
 
     evpl_run(evpl);
 
-    evpl_remove_event(evpl, &evpl_thread->stop_event);
+    evpl_remove_doorbell(evpl, &evpl_thread->stop_receiver);
 
     evpl_destroy_close_bind(evpl);
 
@@ -140,37 +128,34 @@ evpl_thread_create(
     evpl_thread->shutdown_callback = shutdown_function;
     evpl_thread->private_data      = private_data;
 
-    evpl_thread_abort_if(evpl_wakeup_open(&evpl_thread->stop_wakeup) < 0,
-                         "evpl_thread_create: wakeup open failed");
-
-    pthread_mutex_init(&evpl_thread->lock, NULL);
-    pthread_cond_init(&evpl_thread->cond, NULL);
+    evpl_mutex_init(&evpl_thread->lock, NULL);
+    evpl_cond_init(&evpl_thread->cond, NULL);
 
     /* Give worker threads an explicit 8MB stack: Linux (glibc) defaults
      * there, but macOS pthreads default to 512KB, which deep inline
      * completion chains (e.g. a synchronous backend walking a
      * near-SYMLOOP_MAX symlink chain under ASan) overflow. */
-    pthread_attr_t thread_attr;
-    pthread_attr_init(&thread_attr);
-    pthread_attr_setstacksize(&thread_attr, 8 * 1024 * 1024);
+    evpl_native_thread_attr_t thread_attr;
+    evpl_native_thread_attr_init(&thread_attr);
+    evpl_native_thread_attr_setstacksize(&thread_attr, 8 * 1024 * 1024);
 
     /* If the thread is never created, the ready-wait below would block
      * forever, so a creation failure must abort rather than fall through. */
     rc = evpl_pthread_create(&evpl_thread->thread, &thread_attr,
                              evpl_thread_function, evpl_thread);
 
-    pthread_attr_destroy(&thread_attr);
+    evpl_native_thread_attr_destroy(&thread_attr);
 
-    evpl_thread_abort_if(rc, "evpl_thread_create: pthread_create failed: %s",
+    evpl_thread_abort_if(rc, "evpl_thread_create: evpl_native_thread_create failed: %s",
                          strerror(rc));
 
-    pthread_mutex_lock(&evpl_thread->lock);
+    evpl_mutex_lock(&evpl_thread->lock);
 
     while (!evpl_thread->ready) {
-        pthread_cond_wait(&evpl_thread->cond, &evpl_thread->lock);
+        evpl_cond_wait(&evpl_thread->cond, &evpl_thread->lock);
     }
 
-    pthread_mutex_unlock(&evpl_thread->lock);
+    evpl_mutex_unlock(&evpl_thread->lock);
 
     return evpl_thread;
 } /* evpl_thread_create */
@@ -178,20 +163,13 @@ evpl_thread_create(
 SYMBOL_EXPORT void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
-    ssize_t len;
+    int rc = evpl_doorbell_signal(evpl_thread->stop_sender);
 
-    /* Signal stop via our own fd (never touch the worker's evpl, which the
-     * worker frees on its own thread); the worker's stop_event handler clears
-     * running.  Then join and only then close the fd. */
-    len = evpl_wakeup_signal(&evpl_thread->stop_wakeup);
-
-    evpl_thread_abort_if(len != sizeof(uint64_t),
-                         "evpl_thread_destroy: stop wakeup signal failed: "
-                         "len=%zd errno=%d (%s)", len, errno, strerror(errno));
-
-    pthread_join(evpl_thread->thread, NULL);
-
-    evpl_wakeup_close(&evpl_thread->stop_wakeup);
+    evpl_thread_abort_if(rc && rc != ECANCELED, "thread stop signal failed: %d", rc);
+    evpl_native_thread_join(evpl_thread->thread, NULL);
+    evpl_doorbell_sender_release(evpl_thread->stop_sender);
+    evpl_cond_destroy(&evpl_thread->cond);
+    evpl_mutex_destroy(&evpl_thread->lock);
 
     evpl_free(evpl_thread);
 } /* evpl_thread_destroy */

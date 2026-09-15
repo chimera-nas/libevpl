@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Block backend built on plain pread()/pwrite().
  *
@@ -38,13 +39,15 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <string.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
+#endif /* ifndef _WIN32 */
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/uio.h>
-#include <unistd.h>
+
+
 
 #ifdef __linux__
 #include <linux/fs.h>
@@ -96,16 +99,24 @@ struct evpl_pread_request {
     struct evpl_pread_request *next;
 };
 
-struct evpl_pread_device {
-    int                        fd;
+#ifdef _WIN32
+typedef HANDLE evpl_pread_fd;
+#define evpl_pread_close_fd CloseHandle
+#else  /* ifdef _WIN32 */
+typedef int evpl_pread_fd;
+#define evpl_pread_close_fd close
+#endif /* ifdef _WIN32 */
 
-    pthread_t                  thread;
+struct evpl_pread_device {
+    evpl_pread_fd              fd;
+
+    evpl_native_thread_t       thread;
     int                        thread_started;
 
     /* Submission queue, in FIFO order.  Written by any submitting thread,
      * drained by the device thread; both under lock. */
-    pthread_mutex_t            lock;
-    pthread_cond_t             cond;
+    evpl_mutex_t               lock;
+    evpl_cond_t                cond;
     struct evpl_pread_request *submitted;
     struct evpl_pread_request *submitted_tail;
     int                        shutdown;
@@ -114,27 +125,28 @@ struct evpl_pread_device {
 struct evpl_pread_queue {
     /* First member: the core hands back a struct evpl_block_queue *, and the
      * queue callbacks recover this from it. */
-    struct evpl_block_queue    base;
+    struct evpl_block_queue      base;
 
-    struct evpl_pread_device  *device;
-    struct evpl_doorbell       doorbell;
+    struct evpl_pread_device    *device;
+    struct evpl_doorbell         doorbell;
+    struct evpl_doorbell_sender *sender;
 
     /* Completion queue.  Appended by the device thread, drained by the
      * owning evpl thread out of the doorbell callback. */
-    pthread_mutex_t            lock;
-    struct evpl_pread_request *completed;
-    struct evpl_pread_request *completed_tail;
+    evpl_mutex_t                 lock;
+    struct evpl_pread_request   *completed;
+    struct evpl_pread_request   *completed_tail;
 
     /* Set while a doorbell ring is outstanding, so a run of completions
      * costs one wakeup rather than one per request.  Guarded by lock.
      */
-    int                        notified;
+    int                          notified;
 
     /* Owning-thread-only state: a freelist of retired requests, and the
      * number of requests that have been submitted but whose callbacks have
      * not yet run. */
-    struct evpl_pread_request *free_requests;
-    uint64_t                   outstanding;
+    struct evpl_pread_request   *free_requests;
+    uint64_t                     outstanding;
 };
 
 static inline struct evpl_pread_queue *
@@ -193,21 +205,48 @@ evpl_pread_request_free(
  */
 static int
 evpl_pread_transfer(
-    int                        fd,
+    evpl_pread_fd              fd,
     struct evpl_pread_request *req,
     int                        is_write)
 {
-    uint64_t offset = req->offset;
-    ssize_t  len;
-    char    *base;
-    size_t   left;
-    int      i;
+    uint64_t      offset = req->offset;
+    ssize_t       len;
+
+#ifdef _WIN32
+    LARGE_INTEGER position;
+    DWORD         transferred;
+    BOOL          success;
+    if (offset > INT64_MAX) {
+        return EINVAL;
+    }
+    position.QuadPart = (LONGLONG) offset;
+    /* Only the device service thread uses this synchronous handle, so its
+     * file position cannot race another queue. The evpl threads never block. */
+    if (!SetFilePointerEx(fd, position, NULL, FILE_BEGIN)) {
+        return evpl_windows_error(GetLastError());
+    }
+#endif /* ifdef _WIN32 */
+    char  *base;
+    size_t left;
+    int    i;
 
     for (i = 0; i < req->niov; i++) {
         base = req->iov[i].iov_base;
         left = req->iov[i].iov_len;
 
         while (left) {
+#ifdef _WIN32
+            DWORD amount = left > MAXDWORD ? MAXDWORD : (DWORD) left;
+            if (is_write) {
+                success = WriteFile(fd, base, amount, &transferred, NULL);
+            } else {
+                success = ReadFile(fd, base, amount, &transferred, NULL);
+            }
+            if (!success) {
+                return evpl_windows_error(GetLastError());
+            }
+            len = transferred;
+#else  /* ifdef _WIN32 */
             if (is_write) {
                 len = pwrite(fd, base, left, offset);
             } else {
@@ -220,6 +259,8 @@ evpl_pread_transfer(
                 }
                 return errno;
             }
+
+#endif /* ifdef _WIN32 */
 
             if (len == 0) {
                 /* End of device with bytes still owed. */
@@ -236,8 +277,11 @@ evpl_pread_transfer(
 } /* evpl_pread_transfer */
 
 static int
-evpl_pread_sync(int fd)
+evpl_pread_sync(evpl_pread_fd fd)
 {
+#ifdef _WIN32
+    return FlushFileBuffers(fd) ? 0 : evpl_windows_error(GetLastError());
+#else  /* ifdef _WIN32 */
     int rc;
 
     do {
@@ -258,6 +302,7 @@ evpl_pread_sync(int fd)
     } while (rc < 0 && errno == EINTR);
 
     return rc < 0 ? errno : 0;
+#endif /* ifdef _WIN32 */
 } /* evpl_pread_sync */
 
 /*
@@ -274,7 +319,7 @@ evpl_pread_post(struct evpl_pread_request *req)
     struct evpl_pread_queue *pq = req->queue;
     int                      ring;
 
-    pthread_mutex_lock(&pq->lock);
+    evpl_mutex_lock(&pq->lock);
 
     req->next = NULL;
 
@@ -290,10 +335,10 @@ evpl_pread_post(struct evpl_pread_request *req)
 
     pq->notified = 1;
 
-    pthread_mutex_unlock(&pq->lock);
+    evpl_mutex_unlock(&pq->lock);
 
     if (ring) {
-        evpl_ring_doorbell(&pq->doorbell);
+        (void) evpl_doorbell_signal(pq->sender);
     }
 } /* evpl_pread_post */
 
@@ -303,12 +348,12 @@ evpl_pread_device_thread(void *arg)
     struct evpl_pread_device  *dev = arg;
     struct evpl_pread_request *req;
 
-    pthread_mutex_lock(&dev->lock);
+    evpl_mutex_lock(&dev->lock);
 
     for ( ; ;) {
 
         while (!dev->submitted && !dev->shutdown) {
-            pthread_cond_wait(&dev->cond, &dev->lock);
+            evpl_cond_wait(&dev->cond, &dev->lock);
         }
 
         /* Shut down only once the queue is drained, so nothing submitted is
@@ -324,7 +369,7 @@ evpl_pread_device_thread(void *arg)
             dev->submitted_tail = NULL;
         }
 
-        pthread_mutex_unlock(&dev->lock);
+        evpl_mutex_unlock(&dev->lock);
 
         switch (req->opcode) {
             case EVPL_PREAD_READ:
@@ -344,10 +389,10 @@ evpl_pread_device_thread(void *arg)
 
         evpl_pread_post(req);
 
-        pthread_mutex_lock(&dev->lock);
+        evpl_mutex_lock(&dev->lock);
     }
 
-    pthread_mutex_unlock(&dev->lock);
+    evpl_mutex_unlock(&dev->lock);
 
     return NULL;
 } /* evpl_pread_device_thread */
@@ -361,7 +406,7 @@ evpl_pread_submit(
 
     pq->outstanding++;
 
-    pthread_mutex_lock(&dev->lock);
+    evpl_mutex_lock(&dev->lock);
 
     if (dev->submitted_tail) {
         dev->submitted_tail->next = req;
@@ -371,9 +416,9 @@ evpl_pread_submit(
 
     dev->submitted_tail = req;
 
-    pthread_cond_signal(&dev->cond);
+    evpl_cond_signal(&dev->cond);
 
-    pthread_mutex_unlock(&dev->lock);
+    evpl_mutex_unlock(&dev->lock);
 } /* evpl_pread_submit */
 
 /*
@@ -392,7 +437,7 @@ evpl_pread_doorbell(
     void                      *private_data;
     int                        status;
 
-    pthread_mutex_lock(&pq->lock);
+    evpl_mutex_lock(&pq->lock);
 
     req = pq->completed;
 
@@ -400,7 +445,7 @@ evpl_pread_doorbell(
     pq->completed_tail = NULL;
     pq->notified       = 0;
 
-    pthread_mutex_unlock(&pq->lock);
+    evpl_mutex_unlock(&pq->lock);
 
     while (req) {
         next = req->next;
@@ -425,13 +470,16 @@ evpl_pread_doorbell(
 
 static void
 evpl_pread_read(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    struct evpl_iovec *iov,
-    int niov,
-    uint64_t offset,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    struct evpl_iovec       *iov,
+    int                      niov,
+    uint64_t                 offset,
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_pread_queue   *pq = evpl_pread_queue(queue);
     struct evpl_pread_request *req;
@@ -455,14 +503,17 @@ evpl_pread_read(
 
 static void
 evpl_pread_write(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
     const struct evpl_iovec *iov,
-    int niov,
-    uint64_t offset,
-    int sync,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    int                      niov,
+    uint64_t                 offset,
+    int                      sync,
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_pread_queue   *pq = evpl_pread_queue(queue);
     struct evpl_pread_request *req;
@@ -486,10 +537,13 @@ evpl_pread_write(
 
 static void
 evpl_pread_flush(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_pread_queue   *pq = evpl_pread_queue(queue);
     struct evpl_pread_request *req;
@@ -522,13 +576,14 @@ evpl_pread_close_queue(
                         (unsigned long) pq->outstanding);
 
     evpl_remove_doorbell(evpl, &pq->doorbell);
+    evpl_doorbell_sender_release(pq->sender);
 
     while ((req = pq->free_requests)) {
         pq->free_requests = req->next;
         evpl_free(req);
     }
 
-    pthread_mutex_destroy(&pq->lock);
+    evpl_mutex_destroy(&pq->lock);
 
     evpl_free(pq);
 } /* evpl_pread_close_queue */
@@ -544,9 +599,10 @@ evpl_pread_open_queue(
 
     pq->device = bdev->private_data;
 
-    pthread_mutex_init(&pq->lock, NULL);
+    evpl_mutex_init(&pq->lock, NULL);
 
     evpl_add_doorbell(evpl, &pq->doorbell, evpl_pread_doorbell);
+    pq->sender = evpl_doorbell_sender(&pq->doorbell);
 
     pq->base.private_data = pq;
     pq->base.close_queue  = evpl_pread_close_queue;
@@ -563,18 +619,18 @@ evpl_pread_close_device(struct evpl_block_device *bdev)
     struct evpl_pread_device *dev = bdev->private_data;
 
     if (dev->thread_started) {
-        pthread_mutex_lock(&dev->lock);
+        evpl_mutex_lock(&dev->lock);
         dev->shutdown = 1;
-        pthread_cond_signal(&dev->cond);
-        pthread_mutex_unlock(&dev->lock);
+        evpl_cond_signal(&dev->cond);
+        evpl_mutex_unlock(&dev->lock);
 
-        pthread_join(dev->thread, NULL);
+        evpl_native_thread_join(dev->thread, NULL);
     }
 
-    pthread_cond_destroy(&dev->cond);
-    pthread_mutex_destroy(&dev->lock);
+    evpl_cond_destroy(&dev->cond);
+    evpl_mutex_destroy(&dev->lock);
 
-    close(dev->fd);
+    evpl_pread_close_fd(dev->fd);
 
     evpl_free(dev);
     evpl_free(bdev);
@@ -584,6 +640,7 @@ evpl_pread_close_device(struct evpl_block_device *bdev)
  * Size of the thing behind the fd.  A regular file is its own length; a raw
  * disk has to be asked, and the two platforms ask differently.
  */
+#ifndef _WIN32
 static int
 evpl_pread_device_size(
     int          fd,
@@ -628,6 +685,7 @@ evpl_pread_device_size(
 
     return -1;
 } /* evpl_pread_device_size */
+#endif /* ifndef _WIN32 */
 
 static struct evpl_block_device *
 evpl_pread_open_device(
@@ -636,12 +694,40 @@ evpl_pread_open_device(
 {
     struct evpl_block_device *bdev;
     struct evpl_pread_device *dev;
+
+#ifdef _WIN32
+    wchar_t                  *path;
+    int                       nchars;
+    LARGE_INTEGER             size;
+#else  /* ifdef _WIN32 */
     struct stat               st;
+#endif /* ifdef _WIN32 */
     int                       rc;
 
     bdev = evpl_zalloc(sizeof(*bdev));
     dev  = evpl_zalloc(sizeof(*dev));
 
+#ifdef _WIN32
+    nchars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, uri, -1, NULL, 0);
+    if (!nchars) {
+        evpl_free(dev); evpl_free(bdev); return NULL;
+    }
+    path = evpl_calloc(nchars, sizeof(*path));
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, uri, -1, path, nchars);
+    dev->fd = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                          NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    evpl_free(path);
+    if (dev->fd == INVALID_HANDLE_VALUE) {
+        evpl_pread_error("failed to open %s: Windows error %lu", uri, GetLastError());
+        evpl_free(dev); evpl_free(bdev); return NULL;
+    }
+    if (GetFileType(dev->fd) != FILE_TYPE_DISK || !GetFileSizeEx(dev->fd, &size) || size.QuadPart < 0) {
+        evpl_pread_error("failed to size %s: Windows error %lu", uri, GetLastError());
+        CloseHandle(dev->fd); evpl_free(dev); evpl_free(bdev); return NULL;
+    }
+    bdev->size = (uint64_t) size.QuadPart;
+#else  /* ifdef _WIN32 */
     dev->fd = open(uri, O_RDWR);
 
     if (dev->fd < 0) {
@@ -654,23 +740,25 @@ evpl_pread_open_device(
     if (fstat(dev->fd, &st) < 0 ||
         evpl_pread_device_size(dev->fd, &st, &bdev->size) < 0) {
         evpl_pread_error("failed to size %s: %s", uri, strerror(errno));
-        close(dev->fd);
+        evpl_pread_close_fd(dev->fd);
         evpl_free(dev);
         evpl_free(bdev);
         return NULL;
     }
 
-    pthread_mutex_init(&dev->lock, NULL);
-    pthread_cond_init(&dev->cond, NULL);
+#endif /* ifdef _WIN32 */
+
+    evpl_mutex_init(&dev->lock, NULL);
+    evpl_cond_init(&dev->cond, NULL);
 
     rc = evpl_pthread_create(&dev->thread, NULL, evpl_pread_device_thread, dev);
 
     if (rc) {
         evpl_pread_error("failed to start device thread for %s: %s",
                          uri, strerror(rc));
-        pthread_cond_destroy(&dev->cond);
-        pthread_mutex_destroy(&dev->lock);
-        close(dev->fd);
+        evpl_cond_destroy(&dev->cond);
+        evpl_mutex_destroy(&dev->lock);
+        evpl_pread_close_fd(dev->fd);
         evpl_free(dev);
         evpl_free(bdev);
         return NULL;

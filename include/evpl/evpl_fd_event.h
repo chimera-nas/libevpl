@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_fd_event.h directly, include evpl/evpl.h instead"
@@ -65,7 +66,7 @@ typedef void (*evpl_fd_event_callback_t)(
     struct evpl          *evpl,
     struct evpl_fd_event *event);
 
-void
+EVPL_API void
 evpl_add_fd_event(
     struct evpl             *evpl,
     struct evpl_fd_event    *event,
@@ -74,46 +75,46 @@ evpl_add_fd_event(
     evpl_fd_event_callback_t write_callback,
     evpl_fd_event_callback_t error_callback);
 
-void
+EVPL_API void
 evpl_remove_fd_event(
     struct evpl          *evpl,
     struct evpl_fd_event *event);
 
-int
+EVPL_API int
 evpl_fd_event_fd(
     struct evpl_fd_event *event);
 
-void
+EVPL_API void
 evpl_fd_event_read_interest(
     struct evpl          *evpl,
     struct evpl_fd_event *event);
 
-void
+EVPL_API void
 evpl_fd_event_read_disinterest(
     struct evpl          *evpl,
     struct evpl_fd_event *event);
 
-void
+EVPL_API void
 evpl_fd_event_write_interest(
     struct evpl          *evpl,
     struct evpl_fd_event *event);
 
-void
+EVPL_API void
 evpl_fd_event_write_disinterest(
     struct evpl          *evpl,
     struct evpl_fd_event *event);
 
-void
+EVPL_API void
 evpl_fd_event_mark_readable(
     struct evpl          *evpl,
     struct evpl_fd_event *event);
 
-void
+EVPL_API void
 evpl_fd_event_mark_unreadable(
     struct evpl          *evpl,
     struct evpl_fd_event *event);
 
-void
+EVPL_API void
 evpl_fd_event_mark_unwritable(
     struct evpl          *evpl,
     struct evpl_fd_event *event);

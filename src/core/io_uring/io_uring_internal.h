@@ -10,6 +10,7 @@
 #include "core/event_fn.h"
 #include "core/evpl.h"
 #include "core/protocol.h"
+#include "core/bind.h"
 
 #define EVPL_IO_URING_BUFGROUP_ID 1
 
@@ -36,6 +37,7 @@
 struct evpl_io_uring_socket;
 
 struct evpl_io_uring_request {
+    struct evpl_bind             *owner;
     uint16_t                      req_type;
     int                           res;
     int                           flags;
@@ -159,6 +161,7 @@ evpl_io_uring_request_alloc(
         req = evpl_zalloc(sizeof(*req));
     }
 
+    req->owner    = NULL;
     req->req_type = req_type;
 
     switch (req_type) {
@@ -179,5 +182,8 @@ evpl_io_uring_request_free(
     struct evpl_io_uring_context *ctx,
     struct evpl_io_uring_request *req)
 {
+    if (req->owner) {
+        evpl_bind_operation_end(req->owner); req->owner = NULL;
+    }
     LL_PREPEND(ctx->free_requests, req);
 } /* evpl_io_uring_request_free */

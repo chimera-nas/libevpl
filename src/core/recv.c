@@ -18,7 +18,7 @@ evpl_peek(
 {
     int                left = length, chunk;
     struct evpl_iovec *cur;
-    void              *ptr = buffer;
+    char              *ptr = buffer;
 
     if (unlikely(!evpl || !bind || !buffer || length <= 0)) {
         errno = EINVAL;
@@ -130,7 +130,7 @@ evpl_recv(
 {
     int                left = maxlength, chunk;
     struct evpl_iovec *cur;
-    void              *ptr = buffer;
+    char              *ptr = buffer;
     uint64_t           avail;
 
     if (unlikely(!evpl || !bind || !buffer || maxlength <= 0)) {

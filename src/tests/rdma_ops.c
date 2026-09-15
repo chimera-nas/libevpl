@@ -2,12 +2,13 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
-#include <sys/uio.h>
-#include <unistd.h>
+#include "evpl/evpl_platform.h"
+
+
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
@@ -173,6 +174,7 @@ client_callback(
     struct rdma_info_msg *rdma_info;
     struct simple_msg    *msg;
     struct simple_msg     reply;
+    struct evpl_iovec     read_iov[2];
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -200,11 +202,19 @@ client_callback(
 
                     /* Phase 1: RDMA READ from server */
                     evpl_test_info("Initiating RDMA READ");
+                    /* A non-aligned split catches codecs that restart the
+                     * source offset for each destination iovec. */
+                    evpl_iovec_clone(&read_iov[0], &state->local_buffer);
+                    evpl_iovec_clone(&read_iov[1], &state->local_buffer);
+                    read_iov[0].length  = 19;
+                    read_iov[1].data    = (char *) read_iov[1].data + 19;
+                    read_iov[1].length -= 19;
                     evpl_rdma_read(evpl, bind,
                                    state->remote_rkey,
                                    state->remote_raddr,
-                                   &state->local_buffer, 1,
+                                   read_iov, 2,
                                    rdma_read_callback, state);
+                    evpl_iovecs_release(evpl, read_iov, 2);
                 }
             } else if (notify->recv_msg.length >= sizeof(struct simple_msg)) {
                 msg = (struct simple_msg *) notify->recv_msg.iovec[0].data;
@@ -361,7 +371,7 @@ main(
     int   argc,
     char *argv[])
 {
-    pthread_t                     thr;
+    evpl_native_thread_t          thr;
     struct evpl                  *evpl;
     struct evpl_endpoint         *me;
     struct evpl_listener         *listener;
@@ -413,11 +423,11 @@ main(
     evpl_test_abort_if(evpl_listen(listener, proto, me),
                        "failed to listen");
 
-    pthread_create(&thr, NULL, client_thread, &client_state);
+    evpl_native_thread_create(&thr, NULL, client_thread, &client_state);
 
     evpl_run(evpl);
 
-    pthread_join(thr, NULL);
+    evpl_native_thread_join(thr, NULL);
 
     evpl_listener_detach(evpl, binding);
 

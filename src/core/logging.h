@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 
 #define EVPL_LOG_NONE  0
@@ -11,35 +12,35 @@
 #define EVPL_LOG_ERROR 3
 #define EVPL_LOG_FATAL 4
 
-void evpl_debug(
+EVPL_API void evpl_debug(
     const char *mod,
     const char *srcfile,
     int         lineno,
     const char *fmt,
     ...);
-void evpl_info(
+EVPL_API void evpl_info(
     const char *mod,
     const char *srcfile,
     int         lineno,
     const char *fmt,
     ...);
-void evpl_error(
-    const char *mod,
-    const char *srcfile,
-    int         lineno,
-    const char *fmt,
-    ...);
-
-__attribute__((noreturn))
-void evpl_fatal(
+EVPL_API void evpl_error(
     const char *mod,
     const char *srcfile,
     int         lineno,
     const char *fmt,
     ...);
 
-__attribute__((noreturn))
-void evpl_abort(
+EVPL_NORETURN
+EVPL_API void evpl_fatal(
+    const char *mod,
+    const char *srcfile,
+    int         lineno,
+    const char *fmt,
+    ...);
+
+EVPL_NORETURN
+EVPL_API void evpl_abort(
     const char *mod,
     const char *srcfile,
     int         lineno,

@@ -2,10 +2,13 @@
 title: Building
 layout: default
 nav_order: 5
+has_children: true
 permalink: /build
 ---
 
 # Building
+
+For native MSVC builds on x64 or ARM64, see [Windows support](windows.md).
 
 There are no packages for libevpl in upstream linux distributions yet. 
 

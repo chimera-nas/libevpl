@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <errno.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <time.h>
 #include <string.h>
 
@@ -252,13 +252,16 @@ evpl_block_close_queue(
 
 SYMBOL_EXPORT void
 evpl_block_read(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    struct evpl_iovec *iov,
-    int niov,
-    uint64_t offset,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    struct evpl_iovec       *iov,
+    int                      niov,
+    uint64_t                 offset,
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_block_op *op = evpl_block_op_get(queue);
 
@@ -276,14 +279,17 @@ evpl_block_read(
 
 SYMBOL_EXPORT void
 evpl_block_write(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
     const struct evpl_iovec *iov,
-    int niov,
-    uint64_t offset,
-    int sync,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    int                      niov,
+    uint64_t                 offset,
+    int                      sync,
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_block_op *op = evpl_block_op_get(queue);
 
@@ -301,10 +307,13 @@ evpl_block_write(
 
 SYMBOL_EXPORT void
 evpl_block_flush(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_block_op *op = evpl_block_op_get(queue);
 
@@ -322,12 +331,15 @@ evpl_block_flush(
 
 SYMBOL_EXPORT void
 evpl_block_discard(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    uint64_t offset,
-    uint64_t length,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    uint64_t                 offset,
+    uint64_t                 length,
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_block_op *op;
 
@@ -413,12 +425,15 @@ evpl_block_wz_emul_step(
 
 SYMBOL_EXPORT void
 evpl_block_write_zeroes(
-    struct evpl *evpl,
+    struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    uint64_t offset,
-    uint64_t length,
-    void ( *callback )(struct evpl *evpl, int status, void *private_data),
-    void *private_data)
+    uint64_t                 offset,
+    uint64_t                 length,
+    void                  ( *callback )(
+        struct evpl *evpl,
+        int          status,
+        void        *private_data),
+    void                    *private_data)
 {
     struct evpl_block_op      *op;
     struct evpl_block_wz_emul *e;

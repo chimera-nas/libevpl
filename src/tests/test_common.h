@@ -2,15 +2,20 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <direct.h>
+#include "test_options.h"
+#endif // ifdef _WIN32
 
 #include "evpl/evpl.h"
 
@@ -37,6 +42,8 @@ test_evpl_set_core_mech(struct evpl_global_config *config)
         evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_KQUEUE);
     } else if (strcmp(mech, "select") == 0) {
         evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_SELECT);
+    } else if (strcmp(mech, "iocp") == 0) {
+        evpl_global_config_set_core_mech(config, EVPL_CORE_MECH_IOCP);
     } else {
         fprintf(stderr, "EVPL_TEST_CORE_MECH: unknown mechanism '%s'\n", mech);
         exit(1);
@@ -135,13 +142,21 @@ test_address(
     base  = argv0 ? argv0 : "evpl";
     slash = strrchr(base, '/');
 
+#ifdef _WIN32
+    {
+        const char *backslash = strrchr(base, '\\');
+        if (backslash && (!slash || backslash > slash)) {
+            slash = backslash;
+        }
+    }
+#endif // ifdef _WIN32
     if (slash) {
         base = slash + 1;
     }
 
     if (evpl_protocol_is_inproc(proto)) {
         snprintf(test_path_buf, sizeof(test_path_buf),
-                 TEST_INPROC_PREFIX "%.32s-%d", base, (int) getpid());
+                 TEST_INPROC_PREFIX "%.32s-%d", base, (int) evpl_process_id());
         return test_path_buf;
     }
 
@@ -149,7 +164,7 @@ test_address(
      * outside the filesystem, so there is no directory to place them in. */
     if (address && address[0] == '@') {
         snprintf(test_path_buf, sizeof(test_path_buf), "@evpl-%.32s-%d",
-                 base, (int) getpid());
+                 base, (int) evpl_process_id());
         return test_path_buf;
     }
 
@@ -166,18 +181,22 @@ test_address(
     /* Created here rather than relied upon from the build: ctest points this
      * at the build tree, which a clean removes, and the directory is only
      * ever needed at run time. */
+#ifdef _WIN32
+    if (_mkdir(dir) && errno != EEXIST) {
+#else // ifdef _WIN32
     if (mkdir(dir, 0700) && errno != EEXIST) {
+#endif // ifdef _WIN32
         dir = "/tmp";
     }
 
     len = snprintf(test_path_buf, sizeof(test_path_buf),
-                   "%s/evpl-%.32s-%d.sock", dir, base, (int) getpid());
+                   "%s/evpl-%.32s-%d.sock", dir, base, (int) evpl_process_id());
 
     /* sun_path is only 108 bytes, so a deep build tree would truncate into a
      * nonsensical path; fall back to /tmp rather than guess. */
     if (len < 0 || (size_t) len >= sizeof(test_path_buf)) {
         snprintf(test_path_buf, sizeof(test_path_buf), "/tmp/evpl-%.32s-%d.sock",
-                 base, (int) getpid());
+                 base, (int) evpl_process_id());
     }
 
     return test_path_buf;

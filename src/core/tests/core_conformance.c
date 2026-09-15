@@ -1,3 +1,4 @@
+#include "tests/test_file.h"
 /*
  * SPDX-FileCopyrightText: 2026 Ben Jarvis
  *
@@ -46,7 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
+
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
@@ -1077,7 +1078,7 @@ monotonic_ns(void)
 {
     struct timespec ts;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &ts);
 
     return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
 } /* monotonic_ns */
@@ -1138,7 +1139,7 @@ await_expectations(
             }
         }
 
-        nanosleep(&nap, NULL);
+        evpl_sleep_us(nap.tv_sec * 1000000 + nap.tv_nsec / 1000);
     }
 
     if (started) {
@@ -1332,12 +1333,12 @@ do_listen(
 
     if (evpl_protocol_is_local(ps->proto)) {
         int len = snprintf(name, sizeof(name), "%s/cc-%d-%d-%d.sock",
-                           socket_dir(), (int) getpid(), prog,
+                           socket_dir(), (int) evpl_process_id(), prog,
                            ps->listen_seq++);
 
         if (len < 0 || (size_t) len >= sizeof(name)) {
             snprintf(name, sizeof(name), "/tmp/cc-%d-%d-%d.sock",
-                     (int) getpid(), prog, ps->listen_seq++);
+                     (int) evpl_process_id(), prog, ps->listen_seq++);
         }
 
         ps->endpoint = evpl_endpoint_create_local(name);
@@ -1347,7 +1348,7 @@ do_listen(
          * but the program and sequence numbers are, because a name is only
          * released when its listener is destroyed and a program may listen
          * more than once. */
-        snprintf(name, sizeof(name), "core-conf-%d-%d-%d", (int) getpid(),
+        snprintf(name, sizeof(name), "core-conf-%d-%d-%d", (int) evpl_process_id(),
                  prog, ps->listen_seq++);
 
         ps->endpoint = evpl_endpoint_create_inproc(name);
@@ -1659,14 +1660,14 @@ block_device_open(
     int fd;
 
     snprintf(ps->device_path, sizeof(ps->device_path),
-             "core_conf_block-%d-%d.img", (int) getpid(), prog);
+             "core_conf_block-%d-%d.img", (int) evpl_process_id(), prog);
 
-    fd = open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    fd = evpl_test_open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
 
     evpl_test_abort_if(fd < 0, "could not create %s", ps->device_path);
-    evpl_test_abort_if(ftruncate(fd, DEVICE_BYTES) < 0,
+    evpl_test_abort_if(evpl_test_truncate(fd, DEVICE_BYTES) != 0,
                        "could not size %s", ps->device_path);
-    close(fd);
+    evpl_test_close(fd);
 
     ps->bdev = evpl_block_open_device(block_protocol(), ps->device_path);
 
@@ -1706,7 +1707,7 @@ block_device_close(struct prog_state *ps)
     }
 
     if (ps->device_path[0]) {
-        unlink(ps->device_path);
+        evpl_test_unlink(ps->device_path);
         ps->device_path[0] = 0;
     }
 } /* block_device_close */
@@ -1926,10 +1927,15 @@ run_step(
             bs          = &ps->doorbells[step->slot];
             bs->present = 1;
             evpl_add_doorbell(ps->evpl, &bs->doorbell, doorbell_cb);
+#ifdef _WIN32
+            evpl_test_abort_if(evpl_doorbell_fd(&bs->doorbell) != -1 || errno != ENOTSUP,
+                               "IOCP doorbells must report no POSIX descriptor");
+#else  /* ifdef _WIN32 */
             evpl_test_abort_if(evpl_doorbell_fd(&bs->doorbell) < 0,
                                "program %d step %d: doorbell %d has no "
                                "descriptor after being added",
                                prog, stepno, step->slot);
+#endif /* ifdef _WIN32 */
             break;
 
         case COP_OPRINGDOORBELL:
@@ -2180,6 +2186,12 @@ run_program(
     struct prog_state         *ps;
     int                        i, s, failures = 0;
 
+#ifdef _WIN32
+    if (core_steps[p->first_step].transport == CTR_TSTREAMUNIX) {
+        fprintf(stderr, "SKIP program %d: AF_UNIX transport unavailable on Windows\n", prog);
+        return 0;
+    }
+#endif /* ifdef _WIN32 */
     ps = calloc(1, sizeof(*ps));
     evpl_test_abort_if(!ps, "out of memory");
 
@@ -2305,9 +2317,12 @@ check_static_facts(void)
                        evpl_protocol_is_inproc(EVPL_STREAM_SOCKET_TCP),
                        "in-process misreported");
 
-    evpl_test_abort_if(evpl_protocol_is_local(EVPL_STREAM_INPROC) ||
-                       !evpl_protocol_is_local(EVPL_STREAM_SOCKET_UNIX),
-                       "local misreported: an inproc name is not a socket path");
+    evpl_test_abort_if(evpl_protocol_is_local(EVPL_STREAM_INPROC),
+                       "inproc incorrectly reports a local socket path");
+#ifndef _WIN32
+    evpl_test_abort_if(!evpl_protocol_is_local(EVPL_STREAM_SOCKET_UNIX),
+                       "AF_UNIX does not report a local socket path");
+#endif /* ifndef _WIN32 */
 
     evpl_test_abort_if(evpl_protocol_lookup(&proto, "STREAM_INPROC") ||
                        proto != EVPL_STREAM_INPROC,

@@ -5,12 +5,11 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #define EVPL_INTERNAL 1
 #include "event.h"
 #include "doorbell.h"
-#include "wakeup.h"
 #include "evpl/evpl.h"
 
 
@@ -44,7 +43,7 @@ struct evpl_thread_config {
  * than public API: the value is set through
  * evpl_global_config_set_rpc2_max_message_size() like every other knob.
  */
-unsigned int
+EVPL_API unsigned int
 evpl_config_rpc2_max_message_size(
     void);
 
@@ -117,7 +116,7 @@ struct evpl_global_config {
 /* Read the configured HTTP header block limit from the live global config.
  * Exported so the http module (a separate library that cannot see the
  * hidden evpl_shared symbol) can fetch it at agent init. */
-unsigned int
+EVPL_API unsigned int
 evpl_global_config_get_http_max_header_size(
     void);
 
@@ -143,11 +142,10 @@ struct evpl {
     int                           num_poll;
     int                           max_poll;
 
-    struct evpl_wakeup            run_wakeup;
-    int                           running;
-    struct evpl_event             run_event;
+    struct evpl_doorbell          run_doorbell;
+    atomic_int                    running;
 
-    pthread_mutex_t               lock;
+    evpl_mutex_t                  lock;
     struct evpl_connect_request  *connect_requests;
 
     struct evpl_event           **active_events;
@@ -159,7 +157,7 @@ struct evpl {
     int                           force_poll_mode;
     int                           poll_pin_count;
 
-    struct evpl_doorbell         *doorbells;
+    struct evpl_doorbell_sender  *doorbells;
 
 
     struct evpl_timer           **timers;
@@ -195,8 +193,8 @@ struct evpl {
 
 struct evpl_listen_request {
     enum evpl_protocol_id protocol_id;
-    pthread_mutex_t             lock;
-    pthread_cond_t              cond;
+    evpl_mutex_t                lock;
+    evpl_cond_t                 cond;
     int                         complete;
     /* Result of the protocol's listen callback, carried back to the thread
      * blocked in evpl_listen().  The bind happens on the listener thread, so
@@ -213,19 +211,19 @@ struct evpl_listener_binding {
     evpl_attach_callback_t        attach_callback;
     void                         *private_data;
     int                           enabled;
+    atomic_uint                   refs;
     struct evpl_listener_binding *prev;
     struct evpl_listener_binding *next;
 };
 
 struct evpl_connect_request {
-    struct evpl_address         *local_address;
-    struct evpl_address         *remote_address;
-    struct evpl_protocol        *protocol;
-    evpl_attach_callback_t       attach_callback;
-    void                        *accepted;
-    void                        *private_data;
-    struct evpl_connect_request *prev;
-    struct evpl_connect_request *next;
+    struct evpl_address          *local_address;
+    struct evpl_address          *remote_address;
+    struct evpl_protocol         *protocol;
+    struct evpl_listener_binding *binding;
+    void                         *accepted;
+    struct evpl_connect_request  *prev;
+    struct evpl_connect_request  *next;
 };
 
 struct evpl_listener {
@@ -242,20 +240,22 @@ struct evpl_listener {
     int                            rotor;
 };
 
-void * evpl_malloc(
+EVPL_API void * evpl_malloc(
     unsigned int size);
-void * evpl_zalloc(
+EVPL_API void * evpl_zalloc(
     unsigned int size);
-void * evpl_calloc(
+EVPL_API void * evpl_calloc(
     unsigned int n,
     unsigned int size);
-void * evpl_realloc(
+EVPL_API void * evpl_realloc(
     void        *p,
     unsigned int size);
-void * evpl_valloc(
+EVPL_API void * evpl_valloc(
     unsigned int size,
     unsigned int alignment);
-void evpl_free(
+EVPL_API char * evpl_strdup(
+    const char *str);
+EVPL_API void evpl_free(
     void *p);
 
 void
@@ -270,15 +270,24 @@ evpl_destroy_close_bind(
 
 /* Exported (defined in poll.c); also declared in the public evpl/evpl_poll.h so
  * out-of-tree consumers can use them.  See evpl_poll.h for semantics. */
-void
+EVPL_API void
 evpl_activity(
     struct evpl *evpl);
 
-void
+EVPL_API void
 evpl_poll_pin(
     struct evpl *evpl);
 
-void
+EVPL_API void
 evpl_poll_unpin(
     struct evpl *evpl);
 
+
+/* Internal accepted-connection ownership helpers. */
+void evpl_listener_binding_release(
+    struct evpl_listener_binding *binding);
+void evpl_listener_discard(
+    struct evpl          *evpl,
+    struct evpl_protocol *protocol,
+    struct evpl_address  *remote,
+    void                 *accepted);

@@ -2,12 +2,13 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#include <unistd.h>
+#include "core/os.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 
 #include "core/evpl.h"
 #include "core/evpl_shared.h"
@@ -52,7 +53,7 @@ evpl_global_config_init(void)
      * that no longer exists. */
     config->rpc2_max_message_size = 0;
 
-    config->page_size = sysconf(_SC_PAGESIZE);
+    config->page_size = evpl_page_size();
 
     if (config->page_size == -1) {
         config->page_size = 4096;
@@ -193,7 +194,7 @@ evpl_global_config_release(struct evpl_global_config *config)
         return;
     }
 
-    pthread_mutex_lock(&evpl_shared->lock);
+    evpl_mutex_lock(&evpl_shared->lock);
 
     evpl_core_abort_if(config->refcnt == 0,
                        "config refcnt %d", config->refcnt);
@@ -204,7 +205,7 @@ evpl_global_config_release(struct evpl_global_config *config)
         evpl_global_config_free(config);
     }
 
-    pthread_mutex_unlock(&evpl_shared->lock);
+    evpl_mutex_unlock(&evpl_shared->lock);
 } /* evpl_release_config */
 
 SYMBOL_EXPORT void
@@ -244,7 +245,9 @@ evpl_global_config_set_huge_page_size(
     struct evpl_global_config *config,
     uint64_t                   size)
 {
+#ifdef __linux__
     char path[64];
+#endif /* ifdef __linux__ */
 
     /* A hugetlb page size is always a power of two strictly larger than the
      * base page.  Bound it sanely (the largest real page on any arch today is
@@ -265,6 +268,7 @@ evpl_global_config_set_huge_page_size(
     /* Warn (but accept) if the running kernel exposes no hugetlb pool of this
      * size: the slab mmap will simply fall back to base pages.  This is a soft
      * check so a sandboxed /sys does not block a legitimate size. */
+#ifdef __linux__
     snprintf(path, sizeof(path), "/sys/kernel/mm/hugepages/hugepages-%llukB",
              (unsigned long long) (size / 1024));
     if (access(path, F_OK) != 0) {
@@ -273,6 +277,8 @@ evpl_global_config_set_huge_page_size(
             "fall back to base pages unless one is reserved",
             (unsigned long long) (size / 1024), path);
     }
+
+#endif /* ifdef __linux__ */
 
     config->huge_page_size = size;
 } /* evpl_global_config_set_huge_page_size */
@@ -318,7 +324,7 @@ evpl_global_config_set_tls_cert(
         evpl_free(config->tls_cert_file);
     }
 
-    config->tls_cert_file = strdup(cert_file);
+    config->tls_cert_file = evpl_strdup(cert_file);
 } /* evpl_global_config_set_tls_cert */
 
 SYMBOL_EXPORT void
@@ -330,7 +336,7 @@ evpl_global_config_set_tls_key(
         evpl_free(config->tls_key_file);
     }
 
-    config->tls_key_file = strdup(key_file);
+    config->tls_key_file = evpl_strdup(key_file);
 } /* evpl_global_config_set_tls_key */
 
 SYMBOL_EXPORT void
@@ -338,7 +344,8 @@ evpl_global_config_set_tls_ca(
     struct evpl_global_config *config,
     const char                *ca_file)
 {
-    config->tls_ca_file = strdup(ca_file);
+    evpl_free(config->tls_ca_file);
+    config->tls_ca_file = ca_file ? evpl_strdup(ca_file) : NULL;
 } /* evpl_global_config_set_tls_ca */
 
 SYMBOL_EXPORT void
@@ -350,7 +357,7 @@ evpl_global_config_set_tls_cipher_list(
         evpl_free(config->tls_cipher_list);
     }
 
-    config->tls_cipher_list = cipher_list ? strdup(cipher_list) : NULL;
+    config->tls_cipher_list = cipher_list ? evpl_strdup(cipher_list) : NULL;
 } /* evpl_global_config_set_tls_cipher_list */
 
 SYMBOL_EXPORT void

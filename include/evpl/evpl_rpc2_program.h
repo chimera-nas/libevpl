@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #include <stddef.h>
 #include <uthash.h>
@@ -51,7 +52,6 @@
  */
 #define EVPL_RPC2_REPLY_RDMA_ERROR   (-4)
 
-#include <pthread.h>
 struct prometheus_histogram_instance;
 
 #ifndef container_of
@@ -211,7 +211,7 @@ struct evpl_rpc2_program {
  * the reply declines it and answers inline.  Only honored over RDMA; the
  * buffer is libevpl's and is released with the request.
  */
-int
+EVPL_RPC2_API int
 evpl_rpc2_call(
     struct evpl                 *evpl,
     struct evpl_rpc2_program    *program,

@@ -11,7 +11,23 @@ set(LIBAIO_ENABLED "" CACHE STRING "Enable libaio support (empty=autodetect, YES
 option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 project(libevpl LANGUAGES C)
+option(EVPL_TLS_MEMORY_BIO "Run TLS over the portable byte-stream backend" ${WIN32})
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+endif()
 
+set(EVPL_CONFORMANCE_CASES_DIR "" CACHE PATH "Directory containing pre-generated core, HTTP and RPC conformance case headers")
+if(EVPL_CONFORMANCE_CASES_DIR)
+    foreach(header core_cases.h http_cases.h conformance_cases.h client_cases.h)
+        if(NOT EXISTS "${EVPL_CONFORMANCE_CASES_DIR}/${header}")
+            message(FATAL_ERROR "Missing conformance case table: ${header}")
+        endif()
+    endforeach()
+endif()
 enable_testing()
 
 # Network namespace testing detection.
@@ -55,12 +71,17 @@ message(STATUS "Building ${CMAKE_BUILD_TYPE} for ${CMAKE_SYSTEM_NAME}")
 # Keep frame pointers in every build type so that perf and other
 # frame-pointer-based profilers can unwind call stacks (the cost at -O3 is
 # negligible and the unwind reliability is worth it for production profiling).
-add_compile_options(-fno-omit-frame-pointer)
+if(NOT MSVC)
+    add_compile_options(-fno-omit-frame-pointer)
+endif()
 
 set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};/opt/nvidia")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(EVPL_MECH epoll)
+elseif(WIN32)
+    set(EVPL_MECH iocp)
+    set(EVPL_HAVE_IOCP ON)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(EVPL_MECH kqueue)
 
@@ -84,7 +105,7 @@ else()
     message(FATAL_ERROR "Unsupported build platform ${CMAKE_SYSTEM_NAME}")
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT MSVC)
     message(STATUS "Enabling AddressSanitizer")
     add_definitions(-fsanitize=address -fno-omit-frame-pointer
                     -fno-optimize-sibling-calls -fstack-protector-all)
@@ -94,7 +115,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions(-DEVPL_IOVEC_TRACE=1)
 endif()    
 
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
     add_definitions(-O3)
 endif()
 
@@ -115,6 +136,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Coverage")
     add_link_options(-fprofile-instr-generate -fcoverage-mapping)
 endif()
 
+if(EVPL_IOVEC_PROFILE AND WIN32)
+    message(FATAL_ERROR "Retained-iovec stack profiling is not yet supported on Windows")
+endif()
 if(EVPL_IOVEC_PROFILE)
     message(STATUS "Enabling retained-iovec stack profiling")
     add_definitions(-DEVPL_IOVEC_PROFILE=1)
@@ -271,6 +295,10 @@ check_include_file("sys/event.h"  EVPL_HAVE_KQUEUE)
 check_include_file("sys/select.h" EVPL_HAVE_SELECT)
 
 set(EVPL_MECHANISMS)
+if(EVPL_HAVE_IOCP)
+    add_compile_definitions(EVPL_HAVE_IOCP)
+    list(APPEND EVPL_MECHANISMS iocp)
+endif()
 
 if(EVPL_HAVE_EPOLL)
     add_definitions(-DEVPL_HAVE_EPOLL)
@@ -293,8 +321,14 @@ endif()
 
 message(STATUS "Event core mechanisms: ${EVPL_MECHANISMS} (default: ${EVPL_MECH})")
 
-add_definitions(-g -Wall -Werror -Wno-unused-function)
-add_definitions(-fvisibility=hidden)
+if(MSVC)
+    # Match the existing Unix warning policy: it does not enable conversion
+    # or sign-compare diagnostics. Keep pointer-width and ABI warnings enabled.
+    add_compile_options(/W3 /WX /wd4244 /wd4267 /wd4018)
+else()
+    add_definitions(-g -Wall -Werror -Wno-unused-function)
+    add_definitions(-fvisibility=hidden)
+endif()
 
 # Warnings to waive on xdrzcc-generated sources, which are held to the same
 # -Werror as hand-written code: the emitted code carries helpers a given .x
@@ -306,7 +340,13 @@ add_definitions(-fvisibility=hidden)
 # only raises it if some other diagnostic fires -- so a build can pass with the
 # flag present and still fail the moment anything else warns, which is what
 # happened on macOS.  Offer it only where it exists.
-set(EVPL_XDR_WARNING_FLAGS "-Wno-unused")
+set(EVPL_XDR_WARNING_FLAGS)
+if(MSVC)
+    set(EVPL_XDR_WARNING_FLAGS "/wd4101")
+endif()
+if(NOT MSVC)
+    set(EVPL_XDR_WARNING_FLAGS "-Wno-unused")
+endif()
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     list(APPEND EVPL_XDR_WARNING_FLAGS "-Wno-format-truncation")
@@ -314,6 +354,8 @@ endif()
 
 set(LIBEVPL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
+find_path(UTHASH_INCLUDE_DIR uthash.h REQUIRED)
+include_directories(SYSTEM ${UTHASH_INCLUDE_DIR})
 include_directories(3rdparty)
 include_directories(include)
 
@@ -324,10 +366,12 @@ include_directories(ext/prometheus-c/ext/stopwatch)
 
 add_subdirectory(ext)
 add_subdirectory(src)
-add_subdirectory(docs)
+    add_subdirectory(docs)
 add_subdirectory(include)
 
-execute_process(COMMAND ln -sf ${CMAKE_BINARY_DIR}/compile_commands.json ${CMAKE_SOURCE_DIR}/compile_commands.json)
+if(NOT WIN32)
+    execute_process(COMMAND ln -sf ${CMAKE_BINARY_DIR}/compile_commands.json ${CMAKE_SOURCE_DIR}/compile_commands.json)
+endif()
 
 if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(XDRZCC ${XDRZCC} PARENT_SCOPE)

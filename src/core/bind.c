@@ -227,14 +227,16 @@ evpl_bind_prepare(
 
     DL_APPEND(evpl->binds, bind);
 
+    bind->accept_callback  = NULL;
     bind->notify_callback  = NULL;
     bind->segment_callback = NULL;
     bind->private_data     = NULL;
     bind->flags            = 0;
 
-    bind->protocol = protocol;
-    bind->local    = local;
-    bind->remote   = remote;
+    bind->outstanding = 0;
+    bind->protocol    = protocol;
+    bind->local       = local;
+    bind->remote      = remote;
 
     memset(bind + 1, 0, EVPL_MAX_PRIVATE);
 
@@ -263,6 +265,10 @@ evpl_finish(
 {
 
     bind->flags |= EVPL_BIND_FINISH;
+    if (bind->protocol->finish) {
+        bind->protocol->finish(evpl, bind);
+        return;
+    }
 
     /* Close once nothing is left to send.  Transports that frame their output
      * (TCP_RDMA) hold ready-to-write bytes in iovec_send_framed, so it must be

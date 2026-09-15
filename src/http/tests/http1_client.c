@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Exercises the libevpl HTTP client against the libevpl HTTP server over plain
  * HTTP/1.1: GET (no body), POST (fixed Content-Length), and a chunked request
@@ -15,8 +16,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <pthread.h>
+
+#include "evpl/evpl_platform.h"
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"
@@ -36,7 +37,7 @@ static const char response_body[] = "hello world";
 /* ------------------------------------------------------------------ server */
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     volatile int         run;
     struct evpl_doorbell doorbell;
 };
@@ -141,7 +142,7 @@ server_function(void *ptr)
         exit(1);
     }
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     server_ctx->run = 1;
 
@@ -330,10 +331,10 @@ main(
 
     server.run = 0;
 
-    pthread_create(&server.thread, NULL, server_function, &server);
+    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
 
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     evpl = evpl_create(NULL);
@@ -355,9 +356,9 @@ main(
     evpl_destroy(evpl);
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     if (rc == 0) {
         fprintf(stderr, "all requests ok\n");

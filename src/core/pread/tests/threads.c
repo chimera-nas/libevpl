@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
+#include "tests/test_file.h"
 /*
  * One device, several evpl threads.
  *
@@ -17,7 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <fcntl.h>
 
 #include "core/test_log.h"
@@ -33,8 +35,8 @@
 
 struct shared_state {
     struct evpl_block_device *bdev;
-    int                       next_index;
-    int                       finished;
+    atomic_int                next_index;
+    atomic_int                finished;
 };
 
 struct worker {
@@ -95,7 +97,7 @@ worker_callback(
     w->reading = 0;
 
     if (w->round == NUM_ROUNDS) {
-        __atomic_add_fetch(&w->shared->finished, 1, __ATOMIC_RELEASE);
+        atomic_fetch_add_explicit(&w->shared->finished, 1, memory_order_release);
         return;
     }
 
@@ -125,7 +127,7 @@ worker_init(
     w = calloc(1, sizeof(*w));
 
     w->shared = shared;
-    w->index  = __atomic_fetch_add(&shared->next_index, 1, __ATOMIC_RELAXED);
+    w->index  = atomic_fetch_add_explicit(&shared->next_index, 1, memory_order_relaxed);
     w->base   = (uint64_t) w->index * REGION;
     w->queue  = evpl_block_open_queue(evpl, shared->bdev);
 
@@ -167,15 +169,15 @@ main(
 
     test_evpl_config();
 
-    fd = open(DEVICE_PATH, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    fd = evpl_test_open(DEVICE_PATH, O_RDWR | O_CREAT | O_TRUNC, 0644);
 
     evpl_test_abort_if(fd < 0, "failed to create " DEVICE_PATH);
 
-    rc = ftruncate(fd, DEVICE_SIZE);
+    rc = evpl_test_truncate(fd, DEVICE_SIZE);
 
     evpl_test_abort_if(rc < 0, "failed to size " DEVICE_PATH);
 
-    close(fd);
+    evpl_test_close(fd);
 
     memset(&shared, 0, sizeof(shared));
 
@@ -190,15 +192,15 @@ main(
     /* The workers drive themselves from their own completions; wait for the
      * last one rather than for any particular amount of time.  A worker that
      * never completes hangs here and is caught by the ctest timeout. */
-    while (__atomic_load_n(&shared.finished, __ATOMIC_ACQUIRE) < NUM_WORKERS) {
-        usleep(1000);
+    while (atomic_load_explicit(&shared.finished, memory_order_acquire) < NUM_WORKERS) {
+        evpl_sleep_us(1000);
     }
 
     evpl_threadpool_destroy(pool);
 
     evpl_block_close_device(shared.bdev);
 
-    unlink(DEVICE_PATH);
+    evpl_test_unlink(DEVICE_PATH);
 
     return 0;
 } /* main */

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_thread.h directly, include evpl/evpl.h instead"
@@ -21,17 +22,17 @@ typedef void (*evpl_thread_shutdown_callback_t)(
     void        *private_data);
 
 
-struct evpl_thread *
+EVPL_API struct evpl_thread *
 evpl_thread_create(
     struct evpl_thread_config      *config,
     evpl_thread_init_callback_t     init_function,
     evpl_thread_shutdown_callback_t shutdown_function,
     void                           *private_data);
 
-void evpl_thread_destroy(
+EVPL_API void evpl_thread_destroy(
     struct evpl_thread *thread);
 
-struct evpl_threadpool *
+EVPL_API struct evpl_threadpool *
 evpl_threadpool_create(
     struct evpl_thread_config      *config,
     int                             nthreads,
@@ -39,5 +40,5 @@ evpl_threadpool_create(
     evpl_thread_shutdown_callback_t shutdown_function,
     void                           *private_data);
 
-void evpl_threadpool_destroy(
+EVPL_API void evpl_threadpool_destroy(
     struct evpl_threadpool *threadpool);

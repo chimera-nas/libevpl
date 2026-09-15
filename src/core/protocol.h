@@ -156,6 +156,12 @@ struct evpl_protocol {
         struct evpl_bind *bind);
 
 
+    /* Optional graceful finish hook for layered protocols. Called with
+     * EVPL_BIND_FINISH set; the protocol drains records before closing. */
+    void                    (*finish)(
+        struct evpl      *evpl,
+        struct evpl_bind *bind);
+
     /*
      * Callbacks for connection-oriented protocols
      */
@@ -175,6 +181,12 @@ struct evpl_protocol {
     int                     (*listen)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
+
+    /* Dispose an accepted object that was never attached. The caller owns
+     * and releases the separate remote address. */
+    void                    (*discard_accepted)(
+        struct evpl *evpl,
+        void        *accepted);
 
     /* Called to attach an accepted connection to an evpl context */
     void                    (*attach)(

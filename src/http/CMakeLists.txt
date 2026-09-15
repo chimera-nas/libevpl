@@ -9,6 +9,7 @@ if (HAVE_NGHTTP2)
 endif()
 
 add_library(evpl_http SHARED ${HTTP_SRC})
+target_compile_definitions(evpl_http PRIVATE EVPL_HTTP_BUILD)
 
 target_link_libraries(evpl_http evpl)
 
@@ -16,7 +17,7 @@ if (HAVE_NGHTTP2)
     target_link_libraries(evpl_http ${NGHTTP2_LIB})
 endif()
 
-install(TARGETS evpl_http DESTINATION lib)
+install(TARGETS evpl_http RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 
 if (NOT DISABLE_TESTS)
     add_subdirectory(tests)

@@ -71,6 +71,8 @@ libevpl is actively developed as the foundational I/O layer for **Chimera**, a h
 
 Contributions, feedback, and real-world usage reports are welcome and help guide the project's evolution.
 
+Native Windows/MSVC build instructions are available in [Windows support](docs/windows.md).
+
 ## Getting Started
 
 Ready to explore libevpl? Here's your path forward:
