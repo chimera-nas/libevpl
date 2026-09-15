@@ -54,7 +54,10 @@ directories when changing architecture. Put the installed `bin` directory and
 the matching vcpkg runtime DLL directory on `PATH` when running a consumer.
 Keep Debug and Release dependency DLLs separate. `tests/installed` demonstrates
 compiling and linking a separate application against the installed headers and
-import libraries.
+import libraries. When linking manually to a Debug libevpl, define
+`EVPL_IOVEC_TRACE=1` in the consumer as well: it changes inline iovec reference
+handling. CMake consumers linking the in-tree `evpl` target inherit that flag.
+Use the matching MSVC DLL runtime (`/MDd` for Debug, `/MD` for Release).
 
 The commands above run the ordinary unit and integration tests. For the
 model-generated core, HTTP, and RPC conformance suites, download the

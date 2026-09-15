@@ -6,6 +6,12 @@ int main(void)
 {
     struct evpl *loop = evpl_create(NULL);
     struct evpl_http_agent *http = evpl_http_init(loop);
+    struct evpl_iovec iov[2];
+    int niov = evpl_iovec_alloc(loop, 4096, 64, 2, 0, iov);
+    if (niov <= 0) {
+        return 1;
+    }
+    evpl_iovecs_release(loop, iov, niov);
     evpl_http_destroy(http);
     evpl_destroy(loop);
     return 0;
