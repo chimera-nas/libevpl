@@ -174,6 +174,7 @@ client_callback(
     struct rdma_info_msg *rdma_info;
     struct simple_msg    *msg;
     struct simple_msg     reply;
+    struct evpl_iovec     read_iov[2];
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -201,11 +202,19 @@ client_callback(
 
                     /* Phase 1: RDMA READ from server */
                     evpl_test_info("Initiating RDMA READ");
+                    /* A non-aligned split catches codecs that restart the
+                     * source offset for each destination iovec. */
+                    evpl_iovec_clone(&read_iov[0], &state->local_buffer);
+                    evpl_iovec_clone(&read_iov[1], &state->local_buffer);
+                    read_iov[0].length  = 19;
+                    read_iov[1].data    = (char *) read_iov[1].data + 19;
+                    read_iov[1].length -= 19;
                     evpl_rdma_read(evpl, bind,
                                    state->remote_rkey,
                                    state->remote_raddr,
-                                   &state->local_buffer, 1,
+                                   read_iov, 2,
                                    rdma_read_callback, state);
+                    evpl_iovecs_release(evpl, read_iov, 2);
                 }
             } else if (notify->recv_msg.length >= sizeof(struct simple_msg)) {
                 msg = (struct simple_msg *) notify->recv_msg.iovec[0].data;

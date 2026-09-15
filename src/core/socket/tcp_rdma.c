@@ -340,60 +340,6 @@ tcp_rdma_copy_payload_to_buffer(
 } /* tcp_rdma_copy_payload_to_buffer */
 
 /*
- * Helper to copy payload from ring to iovec array
- */
-static void
-tcp_rdma_copy_payload_to_iovec(
-    struct evpl            *evpl,
-    struct evpl_iovec_ring *ring,
-    int                     offset,
-    struct evpl_iovec      *iov,
-    int                     niov)
-{
-    struct evpl_iovec *src;
-    int                pos, skip, i;
-    int                chunk, remaining;
-    char              *dst;
-
-    pos = ring->tail;
-
-    /* Skip to offset */
-    skip = offset;
-    while (skip > 0 && pos != ring->head) {
-        src = &ring->iovec[pos];
-        if ((int) src->length <= skip) {
-            skip -= src->length;
-            pos   = (pos + 1) & ring->mask;
-        } else {
-            break;
-        }
-    }
-
-    /* Copy to each destination iovec */
-    for (i = 0; i < niov; i++) {
-        dst       = iov[i].data;
-        remaining = iov[i].length;
-
-        while (remaining > 0 && pos != ring->head) {
-            src   = &ring->iovec[pos];
-            chunk = src->length - skip;
-            if (chunk > remaining) {
-                chunk = remaining;
-            }
-            memcpy(dst, (char *) src->data + skip, chunk);
-            dst       += chunk;
-            remaining -= chunk;
-            skip       = 0;
-            if (chunk == (int) src->length) {
-                pos = (pos + 1) & ring->mask;
-            } else {
-                skip = chunk;
-            }
-        }
-    }
-} /* tcp_rdma_copy_payload_to_iovec */
-
-/*
  * Queue a header + optional payload for sending
  */
 static void
@@ -574,31 +520,19 @@ tcp_rdma_handle_read_reply(
     /* Skip header */
     evpl_iovec_ring_consume(evpl, &bind->iovec_recv, TCP_RDMA_HEADER_SIZE);
 
-    /* Copy payload to pending operation's iovecs */
+    if (hdr->length != (uint32_t) op->length) {
+        evpl_close(evpl, bind);
+        return;
+    }
+    /* Keep a single source offset across all destination buffers. */
     remaining = hdr->length;
     for (i = 0; i < op->niov && remaining > 0; i++) {
         chunk = op->iov[i].length;
         if (chunk > remaining) {
             chunk = remaining;
         }
-
-        /* Read from ring directly into iovec */
-        struct evpl_iovec *src_iov;
-        int                copied = 0;
-        int                pos    = bind->iovec_recv.tail;
-
-        while (copied < chunk && pos != bind->iovec_recv.head) {
-            src_iov = &bind->iovec_recv.iovec[pos];
-            int copy_len = src_iov->length;
-
-            if (copy_len > chunk - copied) {
-                copy_len = chunk - copied;
-            }
-            memcpy((char *) op->iov[i].data + copied, src_iov->data, copy_len);
-            copied += copy_len;
-            pos     = (pos + 1) & bind->iovec_recv.mask;
-        }
-
+        tcp_rdma_peek_bytes(&bind->iovec_recv, op->iov[i].data,
+                            hdr->length - remaining, chunk);
         remaining -= chunk;
     }
 
