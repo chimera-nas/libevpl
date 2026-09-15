@@ -66,7 +66,35 @@ evpl_clock_gettime(
     }
     return 0;
 } // evpl_clock_gettime
-static inline void evpl_sleep_us(uint64_t us) { Sleep((DWORD) ((us + 999) / 1000)); }
+/* Sleep rounds short waits to the scheduler tick (often about 15 ms).
+ * Use a high-resolution relative timer for sub-millisecond waits. */
+static inline void
+evpl_sleep_us(uint64_t us)
+{
+    HANDLE        timer;
+    LARGE_INTEGER due;
+
+    if (!us) {
+        SwitchToThread();
+        return;
+    }
+    if (us >= 10000) {
+        Sleep((DWORD) ((us + 999) / 1000));
+        return;
+    }
+    timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                   TIMER_MODIFY_STATE | SYNCHRONIZE);
+    if (timer) {
+        due.QuadPart = -(LONGLONG) us * 10;
+        if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(timer, INFINITE);
+            CloseHandle(timer);
+            return;
+        }
+        CloseHandle(timer);
+    }
+    Sleep((DWORD) ((us + 999) / 1000));
+} /* evpl_sleep_us */
 static inline void evpl_sleep(unsigned int seconds) { Sleep(seconds * 1000); }
 static inline unsigned int evpl_process_id(void) { return GetCurrentProcessId(); }
 static inline unsigned int evpl_page_size(void) { SYSTEM_INFO s; GetSystemInfo(&s); return s.dwPageSize; }
