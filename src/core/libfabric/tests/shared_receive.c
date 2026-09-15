@@ -13,7 +13,7 @@
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_errno.h>
 #include "core/test_log.h"
-#include "evpl/evpl.h"
+#include "core/evpl.h"
 #include "evpl/evpl_libfabric.h"
 #include "test_common.h"
 
@@ -53,6 +53,8 @@ static struct fi_ops_msg     msg_ops;
 static struct fi_ops_msg    *real_msg_ops;
 static struct fi_ops         fid_ops;
 static struct fi_ops        *real_fid_ops;
+
+#include "wait_test.h"
 
 static ssize_t
 tracked_recvmsg(
@@ -255,6 +257,7 @@ main(void)
     evpl_test_abort_if(rc, "fi_fabric: %s", fi_strerror(-rc));
     rc = fi_domain(external_fabric, external_info, &external_domain, NULL);
     evpl_test_abort_if(rc, "fi_domain: %s", fi_strerror(-rc));
+    wait_test_setup();
     real_domain_ops      = external_domain->ops;
     domain_ops           = *real_domain_ops;
     domain_ops.srx_ctx   = tracked_srx;
@@ -270,7 +273,8 @@ main(void)
     evpl_global_config_set_libfabric_rq_size(config, RQ_SIZE);
     evpl_global_config_set_libfabric_rq_batch(config, 4);
     evpl_init(config);
-    evpl     = evpl_create(NULL);
+    evpl = evpl_create(NULL);
+    wait_test_loop(evpl);
     endpoint = evpl_endpoint_create("127.0.0.1", 8000);
     listener = evpl_listener_create();
     binding  = evpl_listener_attach(evpl, listener, accept_callback, NULL);
@@ -296,6 +300,7 @@ main(void)
                                RQ_SIZE, 2 * PEERS, receive_posts - initial_posts);
         }
 
+        wait_test_checkpoint(evpl);
         for (round = 0; round < ROUNDS; round++) {
             expected_replies = replies + PEERS;
             for (i = 0; i < PEERS; i++) {
@@ -338,6 +343,7 @@ main(void)
     evpl_listener_destroy(listener);
     evpl_endpoint_close(endpoint);
     evpl_destroy(evpl);
+    wait_test_finish();
     evpl_test_info("SRQ integration passed: %u opens, %u closes, %u receive posts",
                    srx_opens, srx_closes, receive_posts);
     return 0;
