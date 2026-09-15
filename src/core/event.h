@@ -22,15 +22,16 @@ typedef void (*evpl_event_error_callback_t)(
     struct evpl       *evpl,
     struct evpl_event *event);
 
-#define EVPL_READABLE       0x01
-#define EVPL_WRITABLE       0x02
-#define EVPL_ERROR          0x04
-#define EVPL_ACTIVE         0x08
-#define EVPL_READ_INTEREST  0x10
-#define EVPL_WRITE_INTEREST 0x20
+#define EVPL_READABLE        0x01
+#define EVPL_WRITABLE        0x02
+#define EVPL_ERROR           0x04
+#define EVPL_ACTIVE          0x08
+#define EVPL_READ_INTEREST   0x10
+#define EVPL_WRITE_INTEREST  0x20
+#define EVPL_LEVEL_TRIGGERED 0x40
 
-#define EVPL_READ_READY     (EVPL_READABLE | EVPL_READ_INTEREST)
-#define EVPL_WRITE_READY    (EVPL_WRITABLE | EVPL_WRITE_INTEREST)
+#define EVPL_READ_READY      (EVPL_READABLE | EVPL_READ_INTEREST)
+#define EVPL_WRITE_READY     (EVPL_WRITABLE | EVPL_WRITE_INTEREST)
 
 struct evpl_event {
     struct evpl                *owner;
@@ -46,6 +47,16 @@ void evpl_accept(
     struct evpl_bind *bind,
     struct evpl_bind *new_bind);
 
+
+void
+evpl_add_event_flags(
+    struct evpl                *evpl,
+    struct evpl_event          *event,
+    int                         fd,
+    unsigned int                flags,
+    evpl_event_read_callback_t  read_callback,
+    evpl_event_write_callback_t write_callback,
+    evpl_event_error_callback_t error_callback);
 
 void
 evpl_add_event(

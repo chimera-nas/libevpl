@@ -153,3 +153,11 @@ unit_test_all_mechs(core udp_reply_address udp_reply_address.c)
 foreach(mech ${EVPL_MECHANISMS})
     set_tests_properties(libevpl/core/udp_reply_address_${mech} PROPERTIES TIMEOUT 10)
 endforeach()
+
+# Native wakeup preparation must run before every sleep, independently of
+# busy-poll transitions, without replacing application loop hooks.
+unit_test_all_mechs(core poll_prepare poll_prepare.c)
+target_include_directories(core_poll_prepare PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
+
+unit_test_all_mechs(core close_ready close_ready.c)
+target_include_directories(core_close_ready PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)

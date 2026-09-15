@@ -30,6 +30,17 @@ evpl_add_poll(
     evpl_poll_callback_t       callback,
     void                      *private_data);
 
+/* Called before each core wait (including zero-timeout waits), even with busy polling
+ * disabled.  Return nonzero if work remains and the loop must not sleep.
+ * The callback may make bounded progress; it must not block. */
+typedef int (*evpl_poll_prepare_callback_t)(
+    struct evpl *evpl,
+    void        *private_data);
+
+void evpl_poll_set_prepare_callback(
+    struct evpl_poll            *poll,
+    evpl_poll_prepare_callback_t callback);
+
 void
 evpl_remove_poll(
     struct evpl      *evpl,

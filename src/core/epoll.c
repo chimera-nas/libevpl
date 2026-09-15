@@ -55,7 +55,16 @@ evpl_core_epoll_add(
         abort();
     }
 
-    ev.events   = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLET | EPOLLRDHUP;
+    ev.events = EPOLLERR | EPOLLRDHUP;
+    if (event->read_callback) {
+        ev.events |= EPOLLIN;
+    }
+    if (event->write_callback) {
+        ev.events |= EPOLLOUT;
+    }
+    if (!(event->flags & EVPL_LEVEL_TRIGGERED)) {
+        ev.events |= EPOLLET;
+    }
     ev.data.ptr = event;
 
     rc = epoll_ctl(e->fd, EPOLL_CTL_ADD, event->fd, &ev);
@@ -77,7 +86,10 @@ evpl_core_epoll_remove(
 
     rc = epoll_ctl(e->fd, EPOLL_CTL_DEL, event->fd, NULL);
 
-    evpl_core_abort_if(rc, "Failed to remove file descriptor from epoll");
+    /* Borrowed descriptors may have been closed by their owner before the
+     * watcher learns of removal.  Linux already removed those registrations. */
+    evpl_core_abort_if(rc && errno != ENOENT && errno != EBADF,
+                       "Failed to remove file descriptor from epoll");
 } /* evpl_core_epoll_remove */
 
 static int
