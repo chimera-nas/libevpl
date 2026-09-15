@@ -582,6 +582,28 @@ evpl_rpc2_reasm_reset(
  *   0  -> intermediate fragment consumed; caller must return.
  *  -1  -> cap exceeded; caller must close the bind.
  */
+/* TCP record marks may cross receive-buffer boundaries. Completion-based
+ * backends naturally deliver each receive in a separate buffer. */
+static uint32_t
+evpl_rpc2_record_mark(
+    const struct evpl_iovec *iov,
+    int                      niov)
+{
+    uint32_t     mark;
+    unsigned int copied = 0;
+
+    for (int i = 0; i < niov && copied < sizeof(mark); i++) {
+        unsigned int length = iov[i].length;
+        if (length > sizeof(mark) - copied) {
+            length = sizeof(mark) - copied;
+        }
+        memcpy((char *) &mark + copied, iov[i].data, length);
+        copied += length;
+    }
+    evpl_rpc2_abort_if(copied != sizeof(mark), "incomplete RPC record mark");
+    return rpc2_ntoh32(mark);
+} /* evpl_rpc2_record_mark */
+
 static int
 evpl_rpc2_reassemble(
     struct evpl           *evpl,
@@ -598,7 +620,7 @@ evpl_rpc2_reassemble(
     int                last;
     int                added;
 
-    mark     = rpc2_ntoh32(*(uint32_t *) iovec->data);
+    mark     = evpl_rpc2_record_mark(iovec, niov);
     last     = (mark & 0x80000000) != 0;
     frag_len = mark & 0x7FFFFFFF;
 
@@ -3571,8 +3593,7 @@ evpl_rpc2_recv_msg(
 
         if (offset == 4) {
             /* Fast path: validate the 4-byte record mark. */
-            hdr = *(uint32_t *) iovec->data;
-            hdr = rpc2_ntoh32(hdr);
+            hdr = evpl_rpc2_record_mark(iovec, niov);
 
             evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != length
                                ,
