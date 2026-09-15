@@ -41,5 +41,31 @@ jobs:
           -DLIBFABRIC_ENABLED=ON
       - name: Build
         run: cmake --build build --parallel 4
-      - name: Test tcp MSG and RDM transports
-        run: ctest --test-dir build -R '/libfabric/' --output-on-failure --timeout 60
+      - name: Test libfabric, core, and sockets with epoll and select
+        run: ctest --test-dir build -R '/(libfabric|core|socket)/' --output-on-failure --timeout 60
+
+  macos:
+    name: Libfabric macOS ${{ matrix.build_type }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    env:
+      FI_PROVIDER: tcp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: brew install cmake ninja bison openssl@3 uthash libfabric
+      - name: Configure with native libfabric required
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison"
+          -DLIBFABRIC_ENABLED=ON
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test libfabric, core, and sockets with kqueue and select
+        run: ctest --test-dir build -R '/(libfabric|core|socket)/' --output-on-failure --timeout 60

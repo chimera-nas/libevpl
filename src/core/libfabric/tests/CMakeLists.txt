@@ -61,3 +61,15 @@ foreach(mode reorder error)
             ENVIRONMENT "EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_TX_MODE=${mode}")
     endforeach()
 endforeach()
+
+# Force provider wait negotiation, with busy polling disabled.  The pollfd
+# case also varies a shared set of 80 borrowed descriptors during real traffic.
+foreach(mode fd pollfd none)
+    foreach(mech ${EVPL_MECHANISMS})
+        add_test(NAME libevpl/libfabric/wait_${mode}_${mech}
+                 COMMAND $<TARGET_FILE:libfabric_shared_receive>)
+        set_tests_properties(libevpl/libfabric/wait_${mode}_${mech}
+            PROPERTIES RESOURCE_LOCK evpl_net TIMEOUT 30
+            ENVIRONMENT "EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_WAIT_MODE=${mode}")
+    endforeach()
+endforeach()
