@@ -1536,9 +1536,31 @@ module evpl_core {
         val pollActive = pollPresent and (pollSpinning or pollEnters)
         val pollExits = pollActive and pollPins == 0
 
+        /* Whether a poll pass is GUARANTEED inside this window, which is a
+         * narrower thing than being in poll mode for it.  The loop alternates
+         * `poll_iterations` pure-polling passes with one full pass, and only
+         * a full pass makes the exit decision.  Entering resets that budget,
+         * so a window that enters always polls before anything else happens;
+         * so does one that stays in poll mode throughout, since the budget
+         * cycles many times over a window.
+         *
+         * The exception is a window that arrives ALREADY spinning and leaves:
+         * the pin was dropped between windows, so the exit is not driven by
+         * time, and it lands on the first full pass of the window -- which is
+         * the very first pass if the window before it happened to stop on a
+         * polling one, leaving the budget exhausted.  Whether a poll falls in
+         * between is then decided by where the previous window stopped
+         * calling the loop, which is parity and not behaviour.  So the claim
+         * is left open there: MAtLeast 0 still marks the callback as armed,
+         * so an arrival is not reported as unexpected, without demanding one.
+         */
+        val pollCertain = pollEnters or (pollActive and not(pollExits))
+
         val pollExpects =
             (if (pollEnters) Set({ kind: EvPollEnter, slot: 0, mult: MExactly, count: 1 }) else Set())
-                .union(if (pollActive) Set({ kind: EvPoll, slot: 0, mult: MExactly, count: 1 }) else Set())
+                .union(if (pollCertain) Set({ kind: EvPoll, slot: 0, mult: MExactly, count: 1 })
+                       else if (pollActive) Set({ kind: EvPoll, slot: 0, mult: MAtLeast, count: 0 })
+                       else Set())
                 .union(if (pollExits) Set({ kind: EvPollExit, slot: 0, mult: MExactly, count: 1 }) else Set())
 
         val exp =
@@ -1899,8 +1921,16 @@ module evpl_core {
     /// A closed claim of zero callbacks is not a claim -- rule 2 already
     /// requires that anything unexpected fails -- and would let a bug through
     /// as a satisfied expectation.
+    ///
+    /// `MAtLeast 0` is the one admissible zero, and it is not the same thing.
+    /// It says the callback is PERMITTED in this window, which IS a claim the
+    /// driver needs: without it rule 2 fails an arrival the API is entitled
+    /// to make.  It costs the unexpected-arrival check for that one (kind,
+    /// slot), so it is only ever right where the API commits to neither
+    /// answer rather than where the model has not worked out which -- see
+    /// `pollCertain`, the only use.
     val expectationsAreSubstantive =
-        expects.forall(e => e.count >= 1)
+        expects.forall(e => e.count >= 1 or e.mult == MAtLeast)
 
     /// An order pair may only mention events the same quiesce expects;
     /// otherwise the driver would be asked to order something that never
@@ -2191,6 +2221,10 @@ module evpl_core {
     /// and releasing it lets the spin window expire.  This is the property
     /// the pin exists for: a completion that can only be reaped by polling is
     /// lost if the loop falls back while it is outstanding.
+    ///
+    /// The leaving window is the one place the poll callback is not owed --
+    /// see `pollCertain`.  What this test pins down there is the exit, not
+    /// the last poll.
     run pinnedPollKeepsSpinningTest =
         init
             .then(addPoll)
@@ -2205,7 +2239,7 @@ module evpl_core {
             .then(pollUnpin)
             .then(quiesce(QShort))
             .expect(expects == Set(
-                { kind: EvPoll, slot: 0, mult: MExactly, count: 1 },
+                { kind: EvPoll, slot: 0, mult: MAtLeast, count: 0 },
                 { kind: EvPollExit, slot: 0, mult: MExactly, count: 1 }))
 
     /// Nothing is notified about a send until an end asks; once it has, every

@@ -53,7 +53,7 @@ CLIENT_SEED=0x61
 
 # gen MAIN STEPS NTRACES SEED PREFIX
 gen() {
-    "${QUINT}" run "${SRC_DIR}/http1x.qnt" --main="$1" \
+    "${QUINT}" run --backend=typescript "${SRC_DIR}/http1x.qnt" --main="$1" \
         --max-steps="$2" --max-samples="$3" --n-traces="$3" --seed="$4" \
         --out-itf="${WORK_DIR}/$5-{seq}.itf.json" > /dev/null
 }

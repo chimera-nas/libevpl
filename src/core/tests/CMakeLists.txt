@@ -146,7 +146,14 @@ if(EVPL_CONFORMANCE_CASES_DIR OR (NOT WIN32 AND QUINT_EXECUTABLE AND PYTHON3_EXE
              COMMAND ${CORE_QUINT_SRC_DIR}/check_core_models.sh
                      ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR})
     set_tests_properties(libevpl/core/quint_core_model PROPERTIES
-                         LABELS "quint" TIMEOUT 120)
+                         # 360s, not the 120s these budgets were first set to:
+                         # generation and model-checking now run quint's
+                         # TYPESCRIPT backend everywhere (see
+                         # quint/check_core_models.sh), which is ~2.4x slower
+                         # than the rust evaluator but is the only one that runs
+                         # on ubuntu 22.04 / rocky 9.  Both models timed out at
+                         # exactly 120s on the switch.
+                         LABELS "quint" TIMEOUT 360)
 
     endif()
     message(STATUS "Core conformance test enabled (quint: ${QUINT_EXECUTABLE})")
