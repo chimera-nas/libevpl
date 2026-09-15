@@ -846,7 +846,10 @@ server_function(void *ptr)
 
     server = evpl_http_attach(agent, listener, server_dispatch, NULL);
 
-    evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
+    if (evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint)) {
+        fprintf(stderr, "HTTP conformance listener failed on port %d\n", port);
+        exit(1);
+    }
 
     atomic_thread_fence(memory_order_seq_cst);
 
@@ -2350,6 +2353,9 @@ run_request_phase(void)
     unsigned int i;
 
     for (i = 0; i < HTTP_NUM_REQUEST_CASES; i++) {
+        if (i % 32 == 0) {
+            fprintf(stderr, "HTTP request case %u/%u\n", i, (unsigned int) HTTP_NUM_REQUEST_CASES);
+        }
         run_request_case(&http_request_cases[i]);
     }
 } /* run_request_phase */
@@ -2812,6 +2818,9 @@ run_defect_phase(void)
     unsigned int i;
 
     for (i = 0; i < HTTP_NUM_DEFECT_CASES; i++) {
+        if (i % 32 == 0) {
+            fprintf(stderr, "HTTP defect case %u/%u\n", i, (unsigned int) HTTP_NUM_DEFECT_CASES);
+        }
         run_defect_case(&http_defect_cases[i]);
     }
 } /* run_defect_phase */
@@ -3231,7 +3240,10 @@ main(
 
     server.run = 0;
 
-    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
+    if (evpl_native_thread_create(&server.thread, NULL, server_function, &server)) {
+        fprintf(stderr, "HTTP conformance server thread creation failed\n");
+        return 1;
+    }
 
     while (!server.run) {
         atomic_thread_fence(memory_order_seq_cst);
