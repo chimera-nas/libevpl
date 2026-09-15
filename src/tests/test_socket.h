@@ -54,11 +54,12 @@ test_socket_error(int result)
 #ifdef _WIN32
     if (result == SOCKET_ERROR) {
         switch (WSAGetLastError()) {
-            case WSAEWOULDBLOCK: errno = EAGAIN; break;
-            case WSAEINTR: errno       = EINTR; break;
-            case WSAECONNRESET: errno  = ECONNRESET; break;
-            case WSAENOTCONN: errno    = ENOTCONN; break;
-            default: errno             = EIO; break;
+            case WSAEWOULDBLOCK: errno  = EAGAIN; break;
+            case WSAEINTR: errno        = EINTR; break;
+            case WSAECONNRESET: errno   = ECONNRESET; break;
+            case WSAECONNABORTED: errno = ECONNABORTED; break;
+            case WSAENOTCONN: errno     = ENOTCONN; break;
+            default: errno              = EIO; break;
         } // switch
     }
 #endif // ifdef _WIN32
