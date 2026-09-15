@@ -562,7 +562,7 @@ evpl_continue(struct evpl *evpl)
     struct evpl_deferral *deferral;
     struct evpl_poll     *poll;
     struct evpl_timer    *timer;
-    int                   i, n;
+    int                   i;
     int                   msecs = evpl->config.wait_ms;
     uint64_t              elapsed;
     int64_t               remain;
@@ -677,32 +677,29 @@ evpl_continue(struct evpl *evpl)
             msecs = 0;
         }
 
+        /* Arm framework wakeups before every kernel wait, including zero
+         * timeout waits that consume a previous wakeup.  Run every callback
+         * even if an earlier one vetoes sleep, before application wait hooks. */
+        for (i = 0; i < evpl->num_poll; ++i) {
+            poll = &evpl->poll[i];
+            if (poll->prepare_callback &&
+                poll->prepare_callback(evpl, poll->private_data)) {
+                msecs = 0;
+            }
+        }
+        if (evpl->num_active_events || evpl->num_active_deferrals ||
+            evpl->pending_close_binds) {
+            msecs = 0;
+        }
+
         if (evpl->loop_hooks.pre_wait) {
             evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
         }
 
-        n = evpl_core_wait(&evpl->core, msecs);
+        evpl_core_wait(&evpl->core, msecs);
 
         if (evpl->loop_hooks.post_wait) {
             evpl->loop_hooks.post_wait(evpl, evpl->loop_hooks.private_data);
-        }
-
-        if (evpl->pending_close_binds && n == 0) {
-            struct evpl_bind *next;
-
-            bind = evpl->pending_close_binds;
-            while (bind) {
-                next = bind->next;
-                /* A protocol with an asynchronous teardown (RDMA) keeps the
-                 * bind parked here until its disconnect event arrives; do not
-                 * finalize it yet or its private state would be freed while
-                 * the protocol still references it. */
-                if (!(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
-                    bind->protocol->close(evpl, bind);
-                    evpl_bind_destroy(evpl, bind);
-                }
-                bind = next;
-            }
         }
 
         evpl->poll_iterations = 0;
@@ -769,6 +766,28 @@ evpl_continue(struct evpl *evpl)
             --evpl->num_active_events;
         } else {
             i++;
+        }
+    }
+
+    /* Dispatch the previous batch before recycling closed binds.  Waiting
+     * for a quiet kernel wait starves teardown when an unrelated descriptor
+     * remains ready.  Run before deferrals so newly queued closes get their
+     * final event-dispatch pass on the next iteration. */
+    if (evpl->pending_close_binds) {
+        struct evpl_bind *next;
+
+        bind = evpl->pending_close_binds;
+        while (bind) {
+            next = bind->next;
+            /* A protocol with an asynchronous teardown (RDMA) keeps the
+             * bind parked here until its disconnect event arrives; do not
+             * finalize it yet or its private state would be freed while
+             * the protocol still references it. */
+            if (!(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
+                bind->protocol->close(evpl, bind);
+                evpl_bind_destroy(evpl, bind);
+            }
+            bind = next;
         }
     }
 
@@ -1010,6 +1029,28 @@ evpl_framework_private(
 } /* evpl_framework_private */
 
 void
+evpl_add_event_flags(
+    struct evpl                *evpl,
+    struct evpl_event          *event,
+    int                         fd,
+    unsigned int                flags,
+    evpl_event_read_callback_t  read_callback,
+    evpl_event_write_callback_t write_callback,
+    evpl_event_error_callback_t error_callback)
+{
+    event->owner          = evpl;
+    event->fd             = fd;
+    event->flags          = flags;
+    event->read_callback  = read_callback;
+    event->write_callback = write_callback;
+    event->error_callback = error_callback;
+
+    evpl_core_add(&evpl->core, event);
+
+    evpl->num_events++;
+} /* evpl_add_event_flags */
+
+void
 evpl_add_event(
     struct evpl                *evpl,
     struct evpl_event          *event,
@@ -1018,16 +1059,7 @@ evpl_add_event(
     evpl_event_write_callback_t write_callback,
     evpl_event_error_callback_t error_callback)
 {
-    event->owner          = evpl;
-    event->fd             = fd;
-    event->flags          = 0;
-    event->read_callback  = read_callback;
-    event->write_callback = write_callback;
-    event->error_callback = error_callback;
-
-    evpl_core_add(&evpl->core, event);
-
-    evpl->num_events++;
+    evpl_add_event_flags(evpl, event, fd, 0, read_callback, write_callback, error_callback);
 } /* evpl_add_event */
 
 void
@@ -1038,9 +1070,18 @@ evpl_event_update_callbacks(
     evpl_event_write_callback_t write_callback,
     evpl_event_error_callback_t error_callback)
 {
+    int changed = !!event->read_callback != !!read_callback ||
+        !!event->write_callback != !!write_callback;
+
+    if (changed) {
+        evpl_core_remove(&evpl->core, event);
+    }
     event->read_callback  = read_callback;
     event->write_callback = write_callback;
     event->error_callback = error_callback;
+    if (changed) {
+        evpl_core_add(&evpl->core, event);
+    }
 } /* evpl_event_update_callbacks */
 void
 evpl_remove_event(
