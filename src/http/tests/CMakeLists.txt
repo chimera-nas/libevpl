@@ -41,7 +41,7 @@ target_link_libraries(http_trailers evpl_http)
 find_program(QUINT_EXECUTABLE quint)
 find_program(PYTHON3_EXECUTABLE NAMES python3 python)
 
-if(EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
+if(EVPL_CONFORMANCE_CASES_DIR OR (NOT WIN32 AND QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     set(HTTP_QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
     set(HTTP_QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
     if(EVPL_CONFORMANCE_CASES_DIR)
@@ -109,7 +109,7 @@ if(EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     message(STATUS "HTTP conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS
-        "HTTP conformance test disabled (needs quint and python3 on PATH)")
+        "HTTP conformance test disabled (supply EVPL_CONFORMANCE_CASES_DIR, or quint and python3 on a Unix host)")
 endif()
 
 if (HAVE_NGHTTP2)

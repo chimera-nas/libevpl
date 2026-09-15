@@ -29,7 +29,9 @@ evpl_add_doorbell(
 
 /*
  * Retire a doorbell.  Must be called on the thread that added it, and before
- * that thread's evpl is destroyed.
+ * that thread's evpl is destroyed if the receiver storage is being freed.
+ * Loop destruction also retires doorbells; their storage must survive until
+ * removal or loop destruction returns.
  *
  * Once this returns the library holds no further reference to the doorbell, so
  * the caller may free the storage it lives in -- including from inside the
@@ -40,6 +42,7 @@ evpl_remove_doorbell(
     struct evpl          *evpl,
     struct evpl_doorbell *doorbell);
 
+/* POSIX readiness descriptor. IOCP doorbells return -1 with errno=ENOTSUP. */
 EVPL_API int
 evpl_doorbell_fd(
     struct evpl_doorbell *doorbell);
