@@ -2081,6 +2081,8 @@ main(
         } /* switch */
     }
 
+    evpl_init(NULL);
+
     g_raw.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (g_raw.listen_fd == TEST_INVALID_SOCKET) {
@@ -2105,7 +2107,7 @@ main(
         return 1;
     }
 
-    evpl_init(NULL);
+
 
     evpl_native_thread_create(&g_raw.thread, NULL, raw_server_function, &g_raw);
 

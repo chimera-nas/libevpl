@@ -1927,10 +1927,15 @@ run_step(
             bs          = &ps->doorbells[step->slot];
             bs->present = 1;
             evpl_add_doorbell(ps->evpl, &bs->doorbell, doorbell_cb);
+#ifdef _WIN32
+            evpl_test_abort_if(evpl_doorbell_fd(&bs->doorbell) != -1 || errno != ENOTSUP,
+                               "IOCP doorbells must report no POSIX descriptor");
+#else  /* ifdef _WIN32 */
             evpl_test_abort_if(evpl_doorbell_fd(&bs->doorbell) < 0,
                                "program %d step %d: doorbell %d has no "
                                "descriptor after being added",
                                prog, stepno, step->slot);
+#endif /* ifdef _WIN32 */
             break;
 
         case COP_OPRINGDOORBELL:

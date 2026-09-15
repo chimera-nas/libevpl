@@ -211,7 +211,7 @@ main(
     int   argc,
     char *argv[])
 {
-    struct test_server         server;
+    static struct test_server  server;
     struct evpl               *evpl;
     struct evpl_global_config *config;
     struct evpl_otel_exporter *exporter;
