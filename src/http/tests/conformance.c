@@ -1283,69 +1283,7 @@ write_all(
     return 0;
 } /* write_all */
 
-/*
- * Put the request on the wire the way the case says to.  The delivery mode is
- * a dimension of the model rather than an implementation detail: a parser
- * defect that is only detected because the whole request arrived in one read
- * is not really detected.
- *
- * Pipelined is the one that is a protocol claim rather than a fragmentation
- * choice -- the same request twice in a single write, which RFC 9112 section
- * 9.3.2 permits and requires the server to answer in order.
- */
-static void
-deliver(
-    test_socket_t   fd,
-    struct wirebuf *wb,
-    int             delivery)
-{
-    size_t half, i, dribble;
 
-    switch (delivery) {
-        case HDLV_ONEWRITE:
-            write_all(fd, wb->data, wb->len);
-            break;
-        case HDLV_TWOWRITES:
-            half = wb->len / 2;
-
-            if (write_all(fd, wb->data, half) == 0) {
-                evpl_sleep_us(SPLIT_DELAY_US);
-                write_all(fd, (char *) wb->data + half, wb->len - half);
-            }
-            break;
-        case HDLV_DRIBBLE:
-            dribble = wb->len < DRIBBLE_MAX_BYTES ? wb->len : DRIBBLE_MAX_BYTES;
-
-            for (i = 0; i < dribble; i++) {
-                if (write_all(fd, (char *) wb->data + i, 1) < 0) {
-                    return;
-                }
-                evpl_sleep_us(DRIBBLE_DELAY_US);
-            }
-
-            if (dribble < wb->len) {
-                write_all(fd, (char *) wb->data + dribble, wb->len - dribble);
-            }
-            break;
-        case HDLV_PIPELINED:
-            /* Both requests in one write, so that when the server's first
-             * read returns, the second request is already buffered and no
-             * further read event is coming to announce it. */
-        {
-            struct wirebuf both;
-
-            wb_init(&both);
-            wb_append(&both, wb->data, wb->len);
-            wb_append(&both, wb->data, wb->len);
-            write_all(fd, both.data, both.len);
-            wb_free(&both);
-        }
-        break;
-        default:
-            write_all(fd, wb->data, wb->len);
-            break;
-    } /* switch */
-} /* deliver */
 
 /* ------------------------------------------------------------------ *
 * The response reader
@@ -1737,7 +1675,7 @@ rd_fill(
          * server held the connection when it did the opposite, and would make
          * the same defect classify differently depending only on how the
          * request was delivered. */
-        if (errno == ECONNRESET) {
+        if (errno == ECONNRESET || errno == ENOTCONN || errno == ECONNABORTED) {
             rd->eof = 1;
         }
 
@@ -1753,6 +1691,92 @@ rd_fill(
 
     return 1;
 } /* rd_fill */
+
+/* Read responses while sending fragmented requests. A refusal can arrive
+ * before the request is complete; continuing to write after the peer closes
+ * can reset the connection and discard unread response bytes on Winsock. */
+static int
+write_piece(
+    struct reader *rd,
+    const char    *data,
+    size_t         length)
+{
+    int rc;
+
+    while (rd_fill(rd, 0) > 0) {
+    }
+    if (rd->eof) {
+        return -1;
+    }
+    rc = write_all(rd->fd, data, length);
+    while (rd_fill(rd, 0) > 0) {
+    }
+    return rc;
+} /* write_piece */
+
+/*
+ * Put the request on the wire the way the case says to.  The delivery mode is
+ * a dimension of the model rather than an implementation detail: a parser
+ * defect that is only detected because the whole request arrived in one read
+ * is not really detected.
+ *
+ * Pipelined is the one that is a protocol claim rather than a fragmentation
+ * choice -- the same request twice in a single write, which RFC 9112 section
+ * 9.3.2 permits and requires the server to answer in order.
+ */
+static void
+deliver(
+    struct reader  *rd,
+    struct wirebuf *wb,
+    int             delivery)
+{
+    size_t half, i, dribble;
+
+    switch (delivery) {
+        case HDLV_ONEWRITE:
+            write_piece(rd, wb->data, wb->len);
+            break;
+        case HDLV_TWOWRITES:
+            half = wb->len / 2;
+
+            if (write_piece(rd, wb->data, half) == 0) {
+                evpl_sleep_us(SPLIT_DELAY_US);
+                write_piece(rd, (char *) wb->data + half, wb->len - half);
+            }
+            break;
+        case HDLV_DRIBBLE:
+            dribble = wb->len < DRIBBLE_MAX_BYTES ? wb->len : DRIBBLE_MAX_BYTES;
+
+            for (i = 0; i < dribble; i++) {
+                if (write_piece(rd, (char *) wb->data + i, 1) < 0) {
+                    return;
+                }
+                evpl_sleep_us(DRIBBLE_DELAY_US);
+            }
+
+            if (dribble < wb->len) {
+                write_piece(rd, (char *) wb->data + dribble, wb->len - dribble);
+            }
+            break;
+        case HDLV_PIPELINED:
+            /* Both requests in one write, so that when the server's first
+             * read returns, the second request is already buffered and no
+             * further read event is coming to announce it. */
+        {
+            struct wirebuf both;
+
+            wb_init(&both);
+            wb_append(&both, wb->data, wb->len);
+            wb_append(&both, wb->data, wb->len);
+            write_piece(rd, both.data, both.len);
+            wb_free(&both);
+        }
+        break;
+        default:
+            write_piece(rd, wb->data, wb->len);
+            break;
+    } /* switch */
+} /* deliver */
 
 /*
  * Read the next response off the connection.
@@ -2199,7 +2223,7 @@ check_reuse(
         return;
     }
 
-    deliver(rd->fd, wb, HDLV_ONEWRITE);
+    deliver(rd, wb, HDLV_ONEWRITE);
 
     read_response(rd, &r, c->expect_body == HBODY_BODYABSENT, 1);
 
@@ -2259,7 +2283,7 @@ run_request_case(const struct http_request_case *c)
         want_persist                     = 1;
     }
 
-    deliver(rd->fd, &wb, c->delivery);
+    deliver(rd, &wb, c->delivery);
 
     read_response(rd, &r, c->expect_body == HBODY_BODYABSENT, 1);
 
@@ -2770,7 +2794,7 @@ run_defect_case(const struct http_defect_case *c)
     wb_init(&wb);
     build_defect(&wb, c->defect, c->ver, &half_close);
 
-    deliver(rd->fd, &wb, c->delivery);
+    deliver(rd, &wb, c->delivery);
 
     if (half_close) {
         shutdown(rd->fd, SHUT_WR);
@@ -3010,7 +3034,7 @@ run_status_case(
         wb_str(&wb, STATUS_BODY);
     }
 
-    deliver(rd->fd, &wb, HDLV_ONEWRITE);
+    deliver(rd, &wb, HDLV_ONEWRITE);
 
     /* Interim responses are NOT skipped here.  Everywhere else a 1xx is a note
      * that the answer is still coming; here the application asked for one as
@@ -3107,7 +3131,7 @@ run_injection_case(void)
     wb_str(&wb, "\r\nConnection: close\r\n" INJECT_ASK ": 1\r\n"
            RESPOND_DATE ": 1\r\n\r\n");
 
-    deliver(rd->fd, &wb, HDLV_ONEWRITE);
+    deliver(rd, &wb, HDLV_ONEWRITE);
 
     read_response(rd, &r, 0, 1);
 
