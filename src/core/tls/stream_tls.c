@@ -94,8 +94,13 @@ evpl_stream_tls_deliver(
         if (!frame_length || evpl_iovec_ring_bytes(&bind->iovec_recv) < (uint64_t) frame_length) {
             break;
         }
-        notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
-        notify.recv_msg.niov   = evpl_iovec_ring_copyv(evpl, iov, &bind->iovec_recv, frame_length);
+        notify.notify_type   = EVPL_NOTIFY_RECV_MSG;
+        notify.recv_msg.niov = evpl_iovec_ring_copyv_bounded(evpl, iov, evpl_shared->config->max_num_iovec, &bind->
+                                                             iovec_recv, frame_length);
+        if (notify.recv_msg.niov < 0) {
+            evpl_close(evpl, bind);
+            break;
+        }
         notify.recv_msg.iovec  = iov;
         notify.recv_msg.length = frame_length;
         notify.recv_msg.addr   = bind->remote;

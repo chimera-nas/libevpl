@@ -435,8 +435,12 @@ tcp_rdma_handle_send(
     evpl_iovec_ring_consume(evpl, &bind->iovec_recv, TCP_RDMA_HEADER_SIZE);
 
     iovec = alloca(sizeof(struct evpl_iovec) * evpl_shared->config->max_num_iovec);
-    niov  = evpl_iovec_ring_copyv(evpl, iovec, &bind->iovec_recv, length);
+    niov  = evpl_iovec_ring_copyv_bounded(evpl, iovec, evpl_shared->config->max_num_iovec, &bind->iovec_recv, length);
 
+    if (niov < 0) {
+        evpl_close(evpl, bind);
+        return;
+    }
     notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
     notify.recv_msg.iovec  = iovec;
     notify.recv_msg.niov   = niov;
@@ -728,7 +732,7 @@ evpl_tcp_rdma_wire_notify(
            >= TCP_RDMA_HEADER_SIZE) {
         /* Peek at header */
         if (tcp_rdma_peek_bytes(&bind->iovec_recv, &hdr, 0,
-                                TCP_RDMA_HEADER_SIZE) < 0) {
+                                TCP_RDMA_HEADER_SIZE) != TCP_RDMA_HEADER_SIZE) {
             break;
         }
 
