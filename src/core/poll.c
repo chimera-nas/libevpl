@@ -42,23 +42,33 @@ evpl_add_poll(
         poll = &evpl->poll[evpl->num_poll++];
     }
 
-    poll->enter_callback = enter_callback;
-    poll->exit_callback  = exit_callback;
-    poll->callback       = callback;
-    poll->private_data   = private_data;
+    poll->prepare_callback = NULL;
+    poll->enter_callback   = enter_callback;
+    poll->exit_callback    = exit_callback;
+    poll->callback         = callback;
+    poll->private_data     = private_data;
 
     return poll;
 } /* evpl_add_poll */
+
+SYMBOL_EXPORT void
+evpl_poll_set_prepare_callback(
+    struct evpl_poll            *poll,
+    evpl_poll_prepare_callback_t callback)
+{
+    poll->prepare_callback = callback;
+} /* evpl_poll_set_prepare_callback */
 
 SYMBOL_EXPORT void
 evpl_remove_poll(
     struct evpl      *evpl,
     struct evpl_poll *poll)
 {
-    poll->enter_callback = NULL;
-    poll->exit_callback  = NULL;
-    poll->callback       = NULL;
-    poll->private_data   = NULL;
+    poll->prepare_callback = NULL;
+    poll->enter_callback   = NULL;
+    poll->exit_callback    = NULL;
+    poll->callback         = NULL;
+    poll->private_data     = NULL;
 
     /* Reclaim trailing tombstones so num_poll -- which also answers "does this
      * thread poll at all?" -- returns to zero once the last poller leaves. */
