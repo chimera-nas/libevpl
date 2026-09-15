@@ -152,7 +152,11 @@ evpl_win_deliver_stream(
         if (!length || evpl_iovec_ring_bytes(&bind->iovec_recv) < (uint64_t) length) {
             break;
         }
-        niov                   = evpl_iovec_ring_copyv(evpl, iov, &bind->iovec_recv, length);
+        niov = evpl_iovec_ring_copyv_bounded(evpl, iov, evpl_shared->config->max_num_iovec, &bind->iovec_recv, length);
+        if (niov < 0) {
+            evpl_close(evpl, bind);
+            break;
+        }
         notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
         notify.recv_msg.iovec  = iov;
         notify.recv_msg.niov   = niov;

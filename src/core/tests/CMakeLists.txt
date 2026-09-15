@@ -48,6 +48,7 @@ endforeach()
 # Growing an iovec ring with a wrapped waist.  Drives the ring directly rather
 # than through a protocol, since the waist is only advanced by the RDMA CM one.
 unit_test(core iovec_ring_resize iovec_ring_resize.c)
+unit_test(core iovec_ring_gather iovec_ring_gather.c)
 
 
 # The public fd-event API against a pipe: latched readiness, quiescence after

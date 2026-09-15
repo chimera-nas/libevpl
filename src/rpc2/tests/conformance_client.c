@@ -1998,6 +1998,9 @@ main(
                    (unsigned int) CLIENT_NUM_CASES);
 
     for (i = 0; i < CLIENT_NUM_CASES; i++) {
+        evpl_test_info("client reply case %u: %s/%s", i,
+                       defect_name(client_cases[i].defect),
+                       delivery_name(client_cases[i].delivery));
         run_case(evpl, &client_cases[i]);
     }
 

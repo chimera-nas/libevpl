@@ -418,6 +418,55 @@ evpl_iovec_ring_copyv(
     return niov;
 } /* evpl_iovec_ring_copyv */
 
+/* A completion backend can receive one byte per buffer. Bound the output
+ * array even when a complete frame occupies arbitrarily many ring entries.
+ * Preserve zero-copy delivery normally and gather only fragmented frames. */
+static inline int
+evpl_iovec_ring_copyv_bounded(
+    struct evpl            *evpl,
+    struct evpl_iovec      *out,
+    int                     capacity,
+    struct evpl_iovec_ring *ring,
+    int                     length)
+{
+    struct evpl_iovec *src;
+    int                pos = ring->tail, count = 0, left = length;
+    int                niov, i;
+    unsigned int       chunk, offset;
+
+    if (length < 0 || (uint64_t) length > ring->length) {
+        return -1;
+    }
+    while (left > 0 && pos != ring->head && count <= capacity) {
+        src   = &ring->iovec[pos];
+        left -= src->length < (unsigned int) left ? src->length : left;
+        count++;
+        pos = (pos + 1) & ring->mask;
+    }
+    if (count <= capacity && !left) {
+        return evpl_iovec_ring_copyv(evpl, out, ring, length);
+    }
+    niov = evpl_iovec_alloc(evpl, length, 0, capacity, 0, out);
+    if (niov <= 0) {
+        return -1;
+    }
+    for (i = 0; i < niov; i++) {
+        offset = 0;
+        while (offset < out[i].length) {
+            src   = evpl_iovec_ring_tail(ring);
+            chunk = out[i].length - offset;
+            if (chunk > src->length) {
+                chunk = src->length;
+            }
+            memcpy((char *) out[i].data + offset, src->data, chunk);
+            evpl_iovec_ring_consume(evpl, ring, chunk);
+            offset += chunk;
+        }
+    }
+    return niov;
+} /* evpl_iovec_ring_copyv_bounded */
+
+
 static inline void
 evpl_iovec_ring_consumev(
     struct evpl            *evpl,
