@@ -329,4 +329,3 @@ struct evpl_framework evpl_framework_tls = {
     .create  = evpl_tls_framework_create,
     .destroy = evpl_tls_framework_destroy,
 };
-
