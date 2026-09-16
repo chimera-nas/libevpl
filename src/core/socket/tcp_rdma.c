@@ -173,7 +173,7 @@ tcp_rdma_pending_add(
     struct evpl_iovec           *iov,
     int                          niov,
     int                          length,
-    void                      ( *callback )(
+    void (                      *callback )(
         int   status,
         void *private_data),
     void                        *private_data)

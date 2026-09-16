@@ -25,7 +25,7 @@ static inline int
 evpl_pthread_create(
     evpl_native_thread_t            *thread,
     const evpl_native_thread_attr_t *attr,
-    void *                         (*start_routine )(
+    void *(*start_routine )(
         void *),
     void                            *arg)
 {

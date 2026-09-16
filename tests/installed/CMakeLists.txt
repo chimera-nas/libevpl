@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ben Jarvis
+# SPDX-License-Identifier: LGPL-2.1-only
+
 cmake_minimum_required(VERSION 3.22)
 project(evpl_installed_consumer C)
 set(CMAKE_C_STANDARD 11)

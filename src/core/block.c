@@ -257,7 +257,7 @@ evpl_block_read(
     struct evpl_iovec       *iov,
     int                      niov,
     uint64_t                 offset,
-    void                  ( *callback )(
+    void (                  *callback )(
         struct evpl *evpl,
         int          status,
         void        *private_data),
@@ -285,7 +285,7 @@ evpl_block_write(
     int                      niov,
     uint64_t                 offset,
     int                      sync,
-    void                  ( *callback )(
+    void (                  *callback )(
         struct evpl *evpl,
         int          status,
         void        *private_data),
@@ -309,7 +309,7 @@ SYMBOL_EXPORT void
 evpl_block_flush(
     struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    void                  ( *callback )(
+    void (                  *callback )(
         struct evpl *evpl,
         int          status,
         void        *private_data),
@@ -335,7 +335,7 @@ evpl_block_discard(
     struct evpl_block_queue *queue,
     uint64_t                 offset,
     uint64_t                 length,
-    void                  ( *callback )(
+    void (                  *callback )(
         struct evpl *evpl,
         int          status,
         void        *private_data),
@@ -429,7 +429,7 @@ evpl_block_write_zeroes(
     struct evpl_block_queue *queue,
     uint64_t                 offset,
     uint64_t                 length,
-    void                  ( *callback )(
+    void (                  *callback )(
         struct evpl *evpl,
         int          status,
         void        *private_data),

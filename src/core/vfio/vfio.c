@@ -1606,7 +1606,7 @@ evpl_vfio_close_queue(
 static int
 evpl_vfio_wait_csts(
     struct evpl_vfio_device *dev,
-    int                   ( *predicate )(
+    int (                   *predicate )(
         union nvme_controller_status status),
     const char              *what)
 {

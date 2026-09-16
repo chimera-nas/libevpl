@@ -45,7 +45,7 @@ evpl_io_uring_read(
     struct evpl_iovec       *iov,
     int                      niov,
     uint64_t                 offset,
-    void                  ( *callback )(
+    void (                  *callback )(
         struct evpl *evpl,
         int          status,
         void        *private_data),
@@ -104,7 +104,7 @@ evpl_io_uring_write(
     int                      niov,
     uint64_t                 offset,
     int                      sync,
-    void                  ( *callback )(
+    void (                  *callback )(
         struct evpl *evpl,
         int          status,
         void        *private_data),
@@ -170,7 +170,7 @@ static void
 evpl_io_uring_flush(
     struct evpl             *evpl,
     struct evpl_block_queue *queue,
-    void                  ( *callback )(
+    void (                  *callback )(
         struct evpl *evpl,
         int          status,
         void        *private_data),
