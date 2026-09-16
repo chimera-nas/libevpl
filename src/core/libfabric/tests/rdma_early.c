@@ -48,6 +48,7 @@ main(
             }
             evpl_test_abort("reading child diagnostics failed");
         }
+        fwrite(buffer + used, 1, count, stderr);
         used        += count;
         buffer[used] = 0;
         if (strstr(buffer, "evpl_rdma_get_address requires EVPL_NOTIFY_CONNECTED")) {
@@ -61,6 +62,7 @@ main(
     close(fd[0]);
     evpl_test_abort_if(waitpid(child, &status, 0) != child, "waitpid failed");
     evpl_test_abort_if(!found || !WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT,
-                       "premature key export did not fail at the connected-state guard");
+                       "premature key export did not fail at the connected-state guard (found=%d, wait status=%d)",
+                       found, status);
     return 0;
 } /* main */

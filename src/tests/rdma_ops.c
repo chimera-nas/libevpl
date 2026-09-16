@@ -234,6 +234,8 @@ client_thread(void *arg)
     struct evpl_bind     *bind;
     struct client_state  *state = arg;
 
+    const char           *early = getenv("EVPL_TEST_EARLY_RDMA");
+
     evpl        = evpl_create(NULL);
     state->evpl = evpl;
 
@@ -243,8 +245,7 @@ client_thread(void *arg)
                         test_segment_callback, state);
 
     state->bind = bind;
-    if (getenv("EVPL_TEST_EARLY_RDMA") &&
-        !strcmp(getenv("EVPL_TEST_EARLY_RDMA"), "connect")) {
+    if (early && !strcmp(early, "connect")) {
         uint32_t rkey;
         uint64_t raddr;
         evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->local_buffer);
@@ -361,12 +362,13 @@ accept_callback(
     uint32_t             rkey;
     uint64_t             raddr;
 
+    const char          *early = getenv("EVPL_TEST_EARLY_RDMA");
+
     evpl_test_info("Server accepted connection");
 
     state->bind = bind;
 
-    if (getenv("EVPL_TEST_EARLY_RDMA") &&
-        !strcmp(getenv("EVPL_TEST_EARLY_RDMA"), "accept")) {
+    if (early && !strcmp(early, "accept")) {
         evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->rdma_buffer);
         evpl_rdma_get_address(evpl, bind, &state->rdma_buffer, &rkey, &raddr);
     }
