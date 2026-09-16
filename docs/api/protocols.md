@@ -21,6 +21,7 @@ Stream protocols provide reliable, ordered byte streams:
 | `EVPL_STREAM_SOCKET_TCP` | Standard TCP sockets via the kernel |
 | `EVPL_STREAM_SOCKET_TLS` | TLS-encrypted TCP connections |
 | `EVPL_STREAM_IO_URING_TCP` | TCP using io_uring for improved performance |
+| `EVPL_STREAM_LIBFABRIC_MSG` | Connected stream over a libfabric MSG provider |
 | `EVPL_STREAM_RDMACM_RC` | RDMA Reliable Connection (RC) via RDMACM |
 
 ### Datagram Protocols
@@ -29,6 +30,8 @@ Datagram protocols provide message-oriented communication:
 
 | Protocol ID | Description |
 |-------------|-------------|
+| `EVPL_DATAGRAM_LIBFABRIC_MSG` | Connected messages over libfabric MSG |
+| `EVPL_DATAGRAM_LIBFABRIC_RDM` | Reliable datagrams over libfabric RDM |
 | `EVPL_DATAGRAM_SOCKET_UDP` | Standard UDP datagrams |
 | `EVPL_DATAGRAM_RDMACM_UD` | RDMA Unreliable Datagram (UD) |
 | `EVPL_DATAGRAM_TCP_RDMA` | RDMA emulation over TCP (see below) |
@@ -78,6 +81,34 @@ Common protocol name strings:
 - `"DATAGRAM_SOCKET_UDP"` - UDP
 - `"STREAM_RDMACM_RC"` - RDMA RC
 - `"DATAGRAM_TCP_RDMA"` - TCP-RDMA emulation
+
+## Libfabric RDM addressing and wire format
+
+MSG and RDM providers are discovered independently. For example,
+`FI_PROVIDER='tcp;ofi_rxm'` can supply RDM without supplying MSG.
+The backend currently uses IPv4 addresses. Bind to the local interface you
+intend to use; a wildcard bind selects one provider domain and does not span
+all interfaces or HCAs. Port zero obtains an ephemeral listening port.
+
+RDM callbacks supply a borrowed `notify.recv_msg.addr`. Pass it to
+`evpl_sendto` or `evpl_sendtov` to reply; those calls retain the reference
+needed by queued sends after the callback returns. This is a peer-advertised
+reply endpoint, not an authenticated source identity.
+
+Libevpl RDM messages have a 12-byte source-address envelope followed by the
+application payload. This works with providers such as TCP and RxM that
+cannot recover an unknown source through `FI_SOURCE_ERR`. The envelope has
+four fields, all in network byte order: a 32-bit version marker `0x45565001`,
+a 32-bit IPv4 listening address, a 16-bit listening port, and 16 reserved bits
+set to zero. It contains no native `sockaddr` layout, so Linux and macOS use
+the same wire representation. Malformed or unsupported envelopes are dropped.
+
+Both peers must use this wire format; it is incompatible with the earlier
+unframed implementation in this draft PR and with raw libfabric messages.
+The application payload limit is unchanged. Receive buffers include the
+additional 12 bytes. Sends normally prepend one registered iovec without
+copying the payload; when that would exceed the provider's iovec limit, the
+header and payload are coalesced into one registered buffer.
 
 ## See Also
 

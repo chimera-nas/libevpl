@@ -71,16 +71,29 @@ extern struct evpl_shared *evpl_shared;
  * the effective limit is min of this and the provider's iov_limit */
 #define EVPL_LIBFABRIC_MAX_IOV     16
 
-/* Bounded rearm attempts in the poll-exit trywait loop */
+/* Bound retries while obtaining a changing provider descriptor snapshot. */
 #define EVPL_LIBFABRIC_TRYWAIT_MAX 8
 
-/* Manual-progress backstop tick while any endpoint exists */
+/* Manual-progress backstop for active queues without native wait objects. */
 #define EVPL_LIBFABRIC_TICK_US     1000
 
 #define EVPL_LIBFABRIC_OP_RECV     0
 #define EVPL_LIBFABRIC_OP_SEND     1
 #define EVPL_LIBFABRIC_OP_READ     2
 #define EVPL_LIBFABRIC_OP_WRITE    3
+
+/* RDM has no portable way to recover an unknown sender on providers without
+ * FI_SOURCE_ERR (including tcp and rxm).  Carry the listening address in a
+ * versioned, OS-independent envelope.  All fields are in network byte order;
+ * the current backend negotiates FI_SOCKADDR_IN only. */
+#define EVPL_LIBFABRIC_RDM_MAGIC   0x45565001u
+struct evpl_libfabric_rdm_header {
+    uint32_t magic;
+    uint32_t address;
+    uint16_t port;
+    uint16_t reserved;
+};
+_Static_assert(sizeof(struct evpl_libfabric_rdm_header) == 12, "RDM wire header size");
 
 /* One (fabric, domain) pair; for the tcp provider this corresponds to a
  * network interface, for verbs to an HCA port.  Shared by all threads,
@@ -225,6 +238,7 @@ struct evpl_libfabric {
     struct evpl_libfabric_thread_device **active_devices;
     int                                   num_active_devices;
     int                                   num_eps;
+    struct evpl_libfabric_ep             *retry_eps;
     struct evpl_poll                     *poll;
     struct evpl_timer                     tick;
     int                                   tick_armed;
@@ -251,6 +265,9 @@ struct evpl_libfabric_ep {
     struct evpl_libfabric_cq             recv_cq;
     struct evpl_libfabric_recvq          private_rq;
     struct evpl_libfabric_recvq         *rq;
+    struct evpl_iovec                    rdm_header;
+    int                                  retry_pending;
+    struct evpl_libfabric_ep            *retry_prev, *retry_next;
     uint64_t                             send_offset; /* bytes of the waist
                                                        * dgram already posted */
     uint64_t                             read_offset; /* likewise, dgram_read */
@@ -462,7 +479,7 @@ static void *
 evpl_libfabric_init(void)
 {
     struct evpl_libfabric_devices *devices;
-    struct fi_info                *hints, *msg_info, *rdm_info, *fi;
+    struct fi_info                *hints, *msg_info = NULL, *rdm_info = NULL, *fi;
     int                            rc, n;
 
     if (evpl_shared->config->libfabric_external_domain) {
@@ -477,13 +494,12 @@ evpl_libfabric_init(void)
     fi_freeinfo(hints);
 
     if (rc) {
-        evpl_libfabric_info(
-            "no usable libfabric provider (%s); libfabric protocols unavailable",
-            fi_strerror(-rc));
-        return NULL;
+        evpl_libfabric_info("no MSG provider: %s; trying RDM independently",
+                            fi_strerror(-rc));
+        msg_info = NULL;
     }
 
-    hints = evpl_libfabric_hints_type(FI_EP_RDM, FI_MSG | FI_SOURCE);
+    hints = evpl_libfabric_hints_type(FI_EP_RDM, FI_MSG);
 
     rc = fi_getinfo(EVPL_LIBFABRIC_API_VERSION, NULL, NULL, 0, hints,
                     &rdm_info);
@@ -492,6 +508,11 @@ evpl_libfabric_init(void)
 
     if (rc) {
         rdm_info = NULL;
+    }
+
+    if (!msg_info && !rdm_info) {
+        evpl_libfabric_info("no usable MSG or RDM provider; libfabric protocols unavailable");
+        return NULL;
     }
 
     devices = evpl_zalloc(sizeof(*devices));
@@ -641,39 +662,17 @@ evpl_libfabric_get_rdma_address(
     uint32_t          *r_key,
     uint64_t          *r_address)
 {
-    struct evpl_libfabric_ep      *lfep = evpl_bind_private(bind);
-    struct evpl_libfabric_devices *devices;
-    struct evpl_libfabric_device  *dev;
-    struct evpl_libfabric_mr      *mrset;
+    struct evpl_libfabric_ep     *lfep = evpl_bind_private(bind);
+    struct evpl_libfabric_device *dev;
+    struct evpl_libfabric_mr     *mrset;
 
-    if (lfep->tdev) {
-        dev = lfep->tdev->dev;
-    } else {
-        /* An accepted bind's attach callback runs before the protocol
-         * attach, so the bind may not be tied to a device yet; keys are
-         * per device, so this is only unambiguous with a single device */
-        devices = evpl_shared->framework_private[EVPL_FRAMEWORK_LIBFABRIC];
-
-        evpl_libfabric_abort_if(!devices,
-                                "rdma address requested with no libfabric devices");
-
-        dev = NULL;
-
-        for (int i = 0; i < devices->num_devices; ++i) {
-            if (devices->devices[i].ep_type == FI_EP_MSG) {
-                if (dev) {
-                    evpl_libfabric_debug(
-                        "rdma address requested before bind attached to a "
-                        "device; assuming the first MSG device");
-                    break;
-                }
-                dev = &devices->devices[i];
-            }
-        }
-
-        evpl_libfabric_abort_if(!dev,
-                                "rdma address requested with no MSG-capable device");
-    }
+    /* Keys are domain-specific.  An accept callback runs before attach,
+     * and even an attached endpoint must not advertise keys before the
+     * connection is established. */
+    evpl_libfabric_abort_if(!lfep->tdev || !lfep->connected,
+                            "evpl_rdma_get_address requires EVPL_NOTIFY_CONNECTED "
+                            "before advertising a libfabric rkey");
+    dev = lfep->tdev->dev;
 
     mrset = evpl_memory_framework_private(iov, EVPL_FRAMEWORK_LIBFABRIC);
 
@@ -986,17 +985,15 @@ evpl_libfabric_handle_recv(
     struct evpl               *evpl,
     struct evpl_libfabric_ctx *ctx,
     struct evpl_libfabric_ep  *lfep,
-    size_t                     len,
-    fi_addr_t                  src)
+    size_t                     len)
 {
-    struct evpl_libfabric_recvq *rq = ctx->rq;
-    struct evpl_libfabric       *lf = rq->tdev->lf;
-    struct evpl_bind            *bind;
-    struct evpl_address         *addr;
-    struct evpl_notify           notify;
-    struct sockaddr_storage      ss;
-    size_t                       sslen;
-    int                          rc;
+    struct evpl_libfabric_recvq     *rq = ctx->rq;
+    struct evpl_libfabric           *lf = rq->tdev->lf;
+    struct evpl_bind                *bind;
+    struct evpl_address             *addr;
+    struct evpl_notify               notify;
+    struct evpl_libfabric_rdm_header header;
+    struct sockaddr_in               source;
 
     DL_DELETE(rq->posted_recvs, ctx);
     rq->posted--;
@@ -1024,16 +1021,26 @@ evpl_libfabric_handle_recv(
 
         addr = NULL;
 
-        if (lfep->rdm && src != FI_ADDR_NOTAVAIL) {
-
-            sslen = sizeof(ss);
-
-            rc = fi_av_lookup(lfep->tdev->dev->av, src,
-                              &ss, &sslen);
-
-            if (rc == 0) {
-                addr = evpl_address_init((struct sockaddr *) &ss, sslen);
+        if (lfep->rdm) {
+            if (len < sizeof(header)) {
+                goto malformed;
             }
+            memcpy(&header, ctx->iovec.data, sizeof(header));
+            if (ntohl(header.magic) != EVPL_LIBFABRIC_RDM_MAGIC ||
+                header.reserved || !header.port || !header.address) {
+                goto malformed;
+            }
+            memset(&source, 0, sizeof(source));
+#ifdef __APPLE__
+            source.sin_len = sizeof(source);
+#endif /* ifdef __APPLE__ */
+            source.sin_family      = AF_INET;
+            source.sin_addr.s_addr = header.address;
+            source.sin_port        = header.port;
+            addr                   = evpl_address_init((struct sockaddr *) &source, sizeof(source));
+            len                   -= sizeof(header);
+            ctx->iovec.data        = (char *) ctx->iovec.data + sizeof(header);
+            ctx->iovec.length      = len;
         }
 
         /* the iovec reference is donated to the callback, matching the
@@ -1052,6 +1059,12 @@ evpl_libfabric_handle_recv(
         }
     }
 
+    evpl_libfabric_ctx_free(lf, ctx);
+    return;
+
+ malformed:
+    /* A malformed or older unframed datagram is not an application message. */
+    evpl_iovec_release_internal(evpl, &ctx->iovec);
     evpl_libfabric_ctx_free(lf, ctx);
 } /* evpl_libfabric_handle_recv */
 
@@ -1272,7 +1285,6 @@ evpl_libfabric_poll_cq(
     int                       drain)
 {
     struct fi_cq_msg_entry     comps[64];
-    fi_addr_t                  src[64];
     struct evpl_libfabric_ctx *ctx;
     ssize_t                    n;
     int                        i, total = 0;
@@ -1283,12 +1295,8 @@ evpl_libfabric_poll_cq(
 
  again:
 
-    /* MSG does not need source addresses; verbs does not implement readfrom. */
-    if (cq->tdev->dev->ep_type == FI_EP_RDM) {
-        n = fi_cq_readfrom(cq->cq, comps, 64, src);
-    } else {
-        n = fi_cq_read(cq->cq, comps, 64);
-    }
+    /* RDM carries a portable source address in its wire envelope. */
+    n = fi_cq_read(cq->cq, comps, 64);
 
     if (n == -FI_EAGAIN) {
         if (cq->recv_ep && !cq->recv_ep->closed) {
@@ -1314,8 +1322,7 @@ evpl_libfabric_poll_cq(
         switch (ctx->op) {
             case EVPL_LIBFABRIC_OP_RECV:
                 evpl_libfabric_handle_recv(evpl, ctx,
-                                           cq->recv_ep ? cq->recv_ep : ctx->lfep, comps[i].len,
-                                           cq->tdev->dev->ep_type == FI_EP_RDM ? src[i] : FI_ADDR_NOTAVAIL);
+                                           cq->recv_ep ? cq->recv_ep : ctx->lfep, comps[i].len);
                 break;
             case EVPL_LIBFABRIC_OP_SEND:
                 evpl_libfabric_complete(evpl, ctx, 0);
@@ -1543,6 +1550,10 @@ evpl_libfabric_fd_interest(struct evpl_libfabric_fd *watch)
     struct evpl_libfabric_wait_member *member;
     short                              events = 0;
 
+    if (!watch->registered) {
+        return;
+    }
+
     if (!watch->lf->polling) {
         DL_FOREACH2(watch->members, member, fd_next)
         {
@@ -1714,7 +1725,6 @@ evpl_libfabric_wire_wait(
     } else {
         evpl_libfabric_wait_sync(wait);
     }
-    evpl_libfabric_fds_commit(wait->lf);
     evpl_libfabric_update_tick(wait->lf);
 } /* evpl_libfabric_wire_wait */
 
@@ -1726,7 +1736,9 @@ evpl_libfabric_unwire_wait(struct evpl_libfabric_wait *wait)
     }
     evpl_libfabric_wait_detach(wait);
     DL_DELETE(wait->lf->waits, wait);
-    evpl_libfabric_fds_commit(wait->lf);
+    /* Other queues may still list a descriptor that endpoint close just
+     * retired.  Commit only after prepare_wait has refreshed every snapshot,
+     * rather than re-registering a stale shared descriptor here. */
     evpl_free(wait->fds);
     wait->fds = NULL;
     wait->fid = NULL;
@@ -1751,17 +1763,17 @@ evpl_libfabric_cq_open(
         evpl_shared->config->libfabric_cq_size;
     cq_attr.format = FI_CQ_FORMAT_MSG;
 
-    cq_attr.wait_obj = FI_WAIT_FD;
+    cq_attr.wait_obj = FI_WAIT_POLLFD;
     rc               = fi_cq_open(dev->domain, &cq_attr, &cq->cq, tdev);
 
     if (rc == 0) {
-        cq->wait.mode = FI_WAIT_FD;
+        cq->wait.mode = FI_WAIT_POLLFD;
     } else {
-        cq_attr.wait_obj = FI_WAIT_POLLFD;
+        cq_attr.wait_obj = FI_WAIT_FD;
         rc               = fi_cq_open(dev->domain, &cq_attr, &cq->cq, tdev);
 
         if (rc == 0) {
-            cq->wait.mode = FI_WAIT_POLLFD;
+            cq->wait.mode = FI_WAIT_FD;
         } else {
             cq_attr.wait_obj = FI_WAIT_NONE;
             rc               = fi_cq_open(dev->domain, &cq_attr, &cq->cq,
@@ -1820,17 +1832,17 @@ evpl_libfabric_tdev_open(
 
     memset(&eq_attr, 0, sizeof(eq_attr));
 
-    eq_attr.wait_obj = FI_WAIT_FD;
+    eq_attr.wait_obj = FI_WAIT_POLLFD;
     rc               = fi_eq_open(dev->fabric, &eq_attr, &tdev->eq, tdev);
 
     if (rc == 0) {
-        tdev->eq_wait.mode = FI_WAIT_FD;
+        tdev->eq_wait.mode = FI_WAIT_POLLFD;
     } else {
-        eq_attr.wait_obj = FI_WAIT_POLLFD;
+        eq_attr.wait_obj = FI_WAIT_FD;
         rc               = fi_eq_open(dev->fabric, &eq_attr, &tdev->eq, tdev);
 
         if (rc == 0) {
-            tdev->eq_wait.mode = FI_WAIT_POLLFD;
+            tdev->eq_wait.mode = FI_WAIT_FD;
         } else {
             eq_attr.wait_obj = FI_WAIT_UNSPEC;
             rc               = fi_eq_open(dev->fabric, &eq_attr, &tdev->eq,
@@ -1884,6 +1896,34 @@ evpl_libfabric_poll_exit(
     }
 } /* evpl_libfabric_poll_exit */
 
+static void evpl_libfabric_poll(
+    struct evpl *evpl,
+    void        *arg);
+
+/* A flush deferral must not re-arm itself on EAGAIN: deferrals run until
+* empty, so that prevents CQ progress needed by connection handshakes. */
+static void
+evpl_libfabric_retry(struct evpl_libfabric_ep *lfep)
+{
+    if (!lfep->retry_pending) {
+        lfep->retry_pending = 1;
+        DL_APPEND2(lfep->lf->retry_eps, lfep, retry_prev, retry_next);
+    }
+} /* evpl_libfabric_retry */
+
+static void
+evpl_libfabric_retry_flush(struct evpl_libfabric *lf)
+{
+    struct evpl_libfabric_ep *lfep;
+
+    while (lf->retry_eps) {
+        lfep = lf->retry_eps;
+        DL_DELETE2(lf->retry_eps, lfep, retry_prev, retry_next);
+        lfep->retry_pending = 0;
+        evpl_defer(lf->evpl, &evpl_private2bind(lfep)->flush_deferral);
+    }
+} /* evpl_libfabric_retry_flush */
+
 static int
 evpl_libfabric_prepare_wait(
     struct evpl *evpl,
@@ -1892,6 +1932,11 @@ evpl_libfabric_prepare_wait(
     struct evpl_libfabric      *lf = arg;
     struct evpl_libfabric_wait *wait;
     int                         rc, busy = 0;
+
+    if (lf->retry_eps) {
+        evpl_libfabric_poll(evpl, lf);
+        busy = 1;
+    }
 
     DL_FOREACH(lf->waits, wait)
     {
@@ -1935,6 +1980,7 @@ evpl_libfabric_poll(
         }
         evpl_libfabric_drain_eq(evpl, lf->active_devices[i], NULL);
     }
+    evpl_libfabric_retry_flush(lf);
 } /* evpl_libfabric_poll */
 
 /* Queues without native wait objects still need periodic manual progress. */
@@ -2082,6 +2128,10 @@ evpl_libfabric_destroy(
 
     }
 
+    /* All subscriptions are gone; retire the borrowed-fd watchers before
+     * freeing the framework that owns their callbacks. */
+    evpl_libfabric_fds_commit(lf);
+
     if (lf->tick_armed) {
         evpl_remove_timer(evpl, &lf->tick);
     }
@@ -2153,7 +2203,13 @@ evpl_libfabric_fill_rq(
         ctx->lfep = rq->owner;
         ctx->rq   = rq;
 
-        evpl_iovec_alloc_datagram(evpl, &ctx->iovec, size);
+        if (rq->owner && rq->owner->rdm) {
+            rc = evpl_iovec_alloc(evpl, size + sizeof(struct evpl_libfabric_rdm_header),
+                                  8, 1, 0, &ctx->iovec);
+            evpl_libfabric_abort_if(rc != 1, "RDM receive buffer including header exceeds buffer size");
+        } else {
+            evpl_iovec_alloc_datagram(evpl, &ctx->iovec, size);
+        }
 
         desc = NULL;
 
@@ -2400,7 +2456,7 @@ evpl_libfabric_flush_rdma_reads(
         if (rc == -FI_EAGAIN) {
             evpl_libfabric_ctx_free(lf, ctx);
             /* nothing may be in flight to re-trigger us from the CQ */
-            evpl_defer(evpl, &bind->flush_deferral);
+            evpl_libfabric_retry(lfep);
             break;
         }
 
@@ -2446,7 +2502,7 @@ evpl_libfabric_flush(
     struct fi_msg_rma             rma_msg;
     uint64_t                      flags;
     fi_addr_t                     dest;
-    size_t                        niov, len, cap;
+    size_t                        niov, len, cap, header_size;
     ssize_t                       rc;
     int                           k, tx_limit;
 
@@ -2454,9 +2510,10 @@ evpl_libfabric_flush(
         return;
     }
 
-    dev      = lfep->tdev->dev;
-    tx_limit = evpl_shared->config->libfabric_tx_size;
-    cap      = evpl_libfabric_recv_capacity();
+    dev         = lfep->tdev->dev;
+    tx_limit    = evpl_shared->config->libfabric_tx_size;
+    cap         = evpl_libfabric_recv_capacity();
+    header_size = lfep->rdm ? sizeof(struct evpl_libfabric_rdm_header) : 0;
 
     evpl_libfabric_flush_rdma_reads(evpl, bind);
 
@@ -2500,7 +2557,7 @@ evpl_libfabric_flush(
 
             if (rc == -FI_EAGAIN) {
                 evpl_libfabric_ctx_free(lf, ctx);
-                evpl_defer(evpl, &bind->flush_deferral);
+                evpl_libfabric_retry(lfep);
                 break;
             }
 
@@ -2535,13 +2592,16 @@ evpl_libfabric_flush(
             dest = evpl_libfabric_peer_resolve(lf, dev, dgram->addr);
         }
 
-        if (lfep->stream || dgram->niov <= (int) dev->iov_limit) {
+        evpl_libfabric_abort_if(!lfep->stream && dgram->length > cap,
+                                "datagram exceeds receive capacity");
+
+        if (lfep->stream || dgram->niov + !!header_size <= dev->iov_limit) {
 
             len = evpl_libfabric_gather(&bind->iovec_send, dgram,
                                         lfep->send_offset,
-                                        dev->iov_limit,
+                                        dev->iov_limit - !!header_size,
                                         lfep->stream ? cap : (size_t) -1,
-                                        iov, desc, dev->mr_local,
+                                        iov + !!header_size, desc + !!header_size, dev->mr_local,
                                         dev->index, &niov);
 
             evpl_libfabric_abort_if(!lfep->stream &&
@@ -2556,6 +2616,15 @@ evpl_libfabric_flush(
             ctx->lfep     = lfep;
             ctx->transfer = lfep->send_transfer;
 
+            if (header_size) {
+                struct evpl_libfabric_mr *mrset =
+                    evpl_memory_framework_private(&lfep->rdm_header, EVPL_FRAMEWORK_LIBFABRIC);
+                iov[0].iov_base = lfep->rdm_header.data;
+                iov[0].iov_len  = header_size;
+                desc[0]         = dev->mr_local ? fi_mr_desc(mrset[dev->index].mr) : NULL;
+                niov++;
+            }
+
             memset(&msg, 0, sizeof(msg));
             msg.msg_iov   = iov;
             msg.desc      = desc;
@@ -2565,8 +2634,8 @@ evpl_libfabric_flush(
 
         } else {
 
-            /* connected-datagram send with more iovecs than the provider
-             * accepts: the message boundary must hold, so coalesce */
+            /* Datagrams exceeding the provider iovec limit (including the
+             * RDM envelope) must retain their boundary, so coalesce. */
             evpl_libfabric_abort_if(dgram->length > cap,
                                     "datagram of %u bytes cannot be sent whole "
                                     "(receive capacity %zu)",
@@ -2578,7 +2647,13 @@ evpl_libfabric_flush(
             ctx->lfep     = lfep;
             ctx->transfer = lfep->send_transfer;
 
-            evpl_iovec_alloc_datagram(evpl, &ctx->iovec, dgram->length);
+            if (header_size) {
+                rc = evpl_iovec_alloc(evpl, dgram->length + header_size, 8, 1, 0, &ctx->iovec);
+                evpl_libfabric_abort_if(rc != 1, "RDM send buffer including header exceeds buffer size");
+                memcpy(ctx->iovec.data, lfep->rdm_header.data, header_size);
+            } else {
+                evpl_iovec_alloc_datagram(evpl, &ctx->iovec, dgram->length);
+            }
 
             len = 0;
 
@@ -2586,12 +2661,12 @@ evpl_libfabric_flush(
                 cur = &bind->iovec_send.iovec[
                     (bind->iovec_send.waist + k) & bind->iovec_send.mask];
 
-                memcpy((char *) ctx->iovec.data + len, cur->data, cur->length);
+                memcpy((char *) ctx->iovec.data + header_size + len, cur->data, cur->length);
                 len += cur->length;
             }
 
             iov[0].iov_base = ctx->iovec.data;
-            iov[0].iov_len  = len;
+            iov[0].iov_len  = len + header_size;
 
             if (dev->mr_local) {
                 struct evpl_libfabric_mr *mrset =
@@ -2614,9 +2689,9 @@ evpl_libfabric_flush(
 
         flags = FI_COMPLETION;
 
-        if (len <= dev->inject_size &&
+        if (len + header_size <= dev->inject_size &&
             (evpl_shared->config->libfabric_inject_max == 0 ||
-             len <= evpl_shared->config->libfabric_inject_max)) {
+             len + header_size <= evpl_shared->config->libfabric_inject_max)) {
             flags |= FI_INJECT;
         }
 
@@ -2627,7 +2702,7 @@ evpl_libfabric_flush(
                 evpl_iovec_release_internal(evpl, &ctx->iovec);
             }
             evpl_libfabric_ctx_free(lf, ctx);
-            evpl_defer(evpl, &bind->flush_deferral);
+            evpl_libfabric_retry(lfep);
             break;
         }
 
@@ -2929,6 +3004,9 @@ evpl_libfabric_bind(
     struct fi_info                      *hints, *info, *fi;
     char                                 node[INET6_ADDRSTRLEN];
     char                                 service[16];
+    struct sockaddr_in                   local;
+    size_t                               local_size = sizeof(local);
+    struct evpl_libfabric_rdm_header     header;
     int                                  rc, devindex = -1;
 
     memset(lfep, 0, sizeof(*lfep));
@@ -2939,7 +3017,7 @@ evpl_libfabric_bind(
     evpl_libfabric_addr_strings(bind->local, node, sizeof(node),
                                 service, sizeof(service));
 
-    hints = evpl_libfabric_hints_type(FI_EP_RDM, FI_MSG | FI_SOURCE);
+    hints = evpl_libfabric_hints_type(FI_EP_RDM, FI_MSG);
 
     rc = fi_getinfo(EVPL_LIBFABRIC_API_VERSION, node, service, FI_SOURCE,
                     hints, &info);
@@ -2996,6 +3074,28 @@ evpl_libfabric_bind(
 
     evpl_libfabric_abort_if(rc, "fi_enable(rdm): %s", fi_strerror(-rc));
 
+    memset(&local, 0, sizeof(local));
+    rc = fi_getname(&lfep->ep->fid, &local, &local_size);
+    evpl_libfabric_abort_if(rc || local_size != sizeof(local) || local.sin_family != AF_INET,
+                            "RDM endpoint did not return an IPv4 listening address");
+    if (local.sin_addr.s_addr == htonl(INADDR_ANY)) {
+        evpl_libfabric_abort_if(!dev->info->src_addr ||
+                                dev->info->src_addrlen < sizeof(local) ||
+                                ((struct sockaddr_in *) dev->info->src_addr)->sin_family != AF_INET,
+                                "wildcard RDM endpoint has no IPv4 domain address");
+        local.sin_addr = ((struct sockaddr_in *) dev->info->src_addr)->sin_addr;
+    }
+    evpl_libfabric_abort_if(!local.sin_addr.s_addr || !local.sin_port,
+                            "RDM endpoint has no advertisable listening address");
+    header = (struct evpl_libfabric_rdm_header) {
+        htonl(EVPL_LIBFABRIC_RDM_MAGIC), local.sin_addr.s_addr, local.sin_port, 0
+    };
+    rc = evpl_iovec_alloc(evpl, sizeof(header), 8, 1, 0, &lfep->rdm_header);
+    evpl_libfabric_abort_if(rc != 1, "RDM header allocation failed");
+    memcpy(lfep->rdm_header.data, &header, sizeof(header));
+    evpl_address_release(bind->local);
+    bind->local = evpl_address_init((struct sockaddr *) &local, sizeof(local));
+
     evpl_libfabric_fill_rq(evpl, lfep->rq);
 
     /* connectionless: ready to transmit immediately */
@@ -3030,6 +3130,11 @@ evpl_libfabric_close(
     struct evpl_libfabric_ctx           *ctx;
     struct fid                          *closed_fid = NULL;
     int                                  rc;
+
+    if (lfep->retry_pending) {
+        DL_DELETE2(lf->retry_eps, lfep, retry_prev, retry_next);
+        lfep->retry_pending = 0;
+    }
 
     lfep->closed    = 1;
     lfep->connected = 0;
@@ -3116,6 +3221,10 @@ evpl_libfabric_close(
         }
 
         evpl_libfabric_ep_removed(evpl, lf, tdev);
+    }
+
+    if (lfep->rdm_header.ref) {
+        evpl_iovec_release_internal(evpl, &lfep->rdm_header);
     }
 
     if (lfep->info) {

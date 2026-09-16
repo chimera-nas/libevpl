@@ -73,3 +73,22 @@ foreach(mode fd pollfd none)
             ENVIRONMENT "EVPL_TEST_CORE_MECH=${mech};EVPL_TEST_WAIT_MODE=${mode}")
     endforeach()
 endforeach()
+
+unit_test_all_mechs(libfabric rdm_reply rdm_reply.c)
+target_include_directories(libfabric_rdm_reply PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
+target_link_libraries(libfabric_rdm_reply fabric)
+add_executable(libfabric_rdma_early rdma_early.c)
+target_link_libraries(libfabric_rdma_early evpl)
+foreach(mech ${EVPL_MECHANISMS})
+    add_test(NAME libevpl/libfabric/rdm_only_${mech}
+             COMMAND ${CMAKE_COMMAND} -E env "FI_PROVIDER=tcp;ofi_rxm" EVPL_TEST_RDM_ONLY=1
+                     $<TARGET_FILE:libfabric_rdm_reply>)
+    set_tests_properties(libevpl/libfabric/rdm_only_${mech} PROPERTIES
+        RESOURCE_LOCK evpl_net TIMEOUT 30 ENVIRONMENT "EVPL_TEST_CORE_MECH=${mech}")
+    foreach(mode accept connect)
+        add_test(NAME libevpl/libfabric/rdma_early_${mode}_${mech}
+                 COMMAND $<TARGET_FILE:libfabric_rdma_early> $<TARGET_FILE:rdma_ops> ${mode})
+        set_tests_properties(libevpl/libfabric/rdma_early_${mode}_${mech} PROPERTIES
+            RESOURCE_LOCK evpl_net TIMEOUT 30 ENVIRONMENT "EVPL_TEST_CORE_MECH=${mech}")
+    endforeach()
+endforeach()
