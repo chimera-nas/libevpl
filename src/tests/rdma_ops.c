@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
 #include <pthread.h>
 #include <sys/uio.h>
@@ -249,6 +250,9 @@ client_thread(void *arg)
         uint32_t rkey;
         uint64_t raddr;
         evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->local_buffer);
+        /* Provider dependencies may install abort handlers that run process
+         * cleanup with live threads.  This death test requires plain SIGABRT. */
+        signal(SIGABRT, SIG_DFL);
         evpl_rdma_get_address(evpl, bind, &state->local_buffer, &rkey, &raddr);
     }
 
@@ -370,6 +374,8 @@ accept_callback(
 
     if (early && !strcmp(early, "accept")) {
         evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->rdma_buffer);
+        /* Restore the default after provider initialization, as above. */
+        signal(SIGABRT, SIG_DFL);
         evpl_rdma_get_address(evpl, bind, &state->rdma_buffer, &rkey, &raddr);
     }
 
