@@ -18,7 +18,7 @@ RUN dnf -y update && \
     cmake ninja-build ccache git flex bison pkgconfig \
     uncrustify ca-certificates curl iproute \
     openssl-devel openssl \
-    liburing-devel libaio-devel rdma-core-devel numactl-devel libunwind-devel \
+    liburing-devel libaio-devel rdma-core-devel libfabric-devel numactl-devel libunwind-devel \
     libnghttp2-devel libcurl-devel protobuf-c-devel protobuf-c-compiler \
     uthash-devel libuuid-devel sqlite-devel && \
     dnf clean all

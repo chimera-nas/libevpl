@@ -9,7 +9,7 @@ RUN dnf -y update && \
     dnf config-manager --set-enabled crb && \
     dnf config-manager --set-enabled devel && \
     dnf -y install gcc cmake ninja-build libuuid-devel jansson-devel llvm iproute wget \
-    xxhash-devel rdma-core-devel liburing-devel libunwind-devel flex bison libcurl-devel openssl-devel openssl numactl-devel && \
+    xxhash-devel rdma-core-devel libfabric-devel liburing-devel libunwind-devel flex bison libcurl-devel openssl-devel openssl numactl-devel && \
     wget -O /tmp/uthash.tar.gz https://github.com/troydhanson/uthash/archive/v2.3.0.tar.gz && \
     tar -xzf /tmp/uthash.tar.gz -C /tmp && \
     cp /tmp/uthash-2.3.0/src/*.h /usr/local/include/ && \

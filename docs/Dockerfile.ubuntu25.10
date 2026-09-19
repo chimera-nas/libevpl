@@ -11,6 +11,6 @@ ENV LANG=C.UTF-8
 RUN apt-get -y update && \
     apt-get -y --no-install-recommends upgrade && \
     apt-get -y --no-install-recommends install build-essential cmake ninja-build uuid-dev libjansson-dev llvm iproute2 \
-    libxxhash-dev librdmacm-dev liburing-dev libunwind-dev flex bison libcurl4-openssl-dev libssl-dev openssl uthash-dev libnuma-dev
+    libxxhash-dev librdmacm-dev libfabric-dev libfabric-bin liburing-dev libunwind-dev flex bison libcurl4-openssl-dev libssl-dev openssl uthash-dev libnuma-dev
 
 CMD ["/bin/bash"]

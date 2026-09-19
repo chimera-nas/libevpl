@@ -52,6 +52,9 @@ env:
   # per push to main, so the ceiling below is what keeps them comfortably
   # inside the free budget.
   CCACHE_MAXSIZE: 1G
+  # Software provider: CI needs no RDMA hardware. The RDM-only regression
+  # overrides this with tcp;ofi_rxm for its child process.
+  FI_PROVIDER: tcp
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -71,25 +74,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Require libfabric wherever the distro provides >= 1.17. Ubuntu
+          # 22.04 has 1.11 and retains coverage with the backend disabled.
+          # Devcontainer uses Clang; distro images use their default GCC.
           # docs/, not .devcontainer/, for the devcontainer context: the
           # Dockerfile ADDs the Gemfile that the docs build needs, and that
           # lives under docs/.  devcontainer.json says the same thing with
           # "context": "../docs".
-          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
-          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
-          - { image_name: ubuntu26, context: ".", dockerfile: Dockerfile.ubuntu26.04, cache: libevpl-ubuntu26, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
-          - { image_name: ubuntu26, context: ".", dockerfile: Dockerfile.ubuntu26.04, cache: libevpl-ubuntu26, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
-          - { image_name: ubuntu24, context: ".", dockerfile: Dockerfile.ubuntu24.04, cache: libevpl-ubuntu24, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
-          - { image_name: ubuntu24, context: ".", dockerfile: Dockerfile.ubuntu24.04, cache: libevpl-ubuntu24, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
-          - { image_name: ubuntu22, context: ".", dockerfile: Dockerfile.ubuntu22.04, cache: libevpl-ubuntu22, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DIO_URING_ENABLED=OFF" }
-          - { image_name: ubuntu22, context: ".", dockerfile: Dockerfile.ubuntu22.04, cache: libevpl-ubuntu22, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DIO_URING_ENABLED=OFF" }
-          - { image_name: rocky9, context: ".", dockerfile: Dockerfile.rocky9, cache: libevpl-rocky9, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
-          - { image_name: rocky9, context: ".", dockerfile: Dockerfile.rocky9, cache: libevpl-rocky9, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
-          - { image_name: rocky10, context: ".", dockerfile: Dockerfile.rocky10, cache: libevpl-rocky10, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "" }
-          - { image_name: rocky10, context: ".", dockerfile: Dockerfile.rocky10, cache: libevpl-rocky10, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
+          - { image_name: ubuntu26, context: ".", dockerfile: Dockerfile.ubuntu26.04, cache: libevpl-ubuntu26, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
+          - { image_name: ubuntu26, context: ".", dockerfile: Dockerfile.ubuntu26.04, cache: libevpl-ubuntu26, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
+          - { image_name: ubuntu24, context: ".", dockerfile: Dockerfile.ubuntu24.04, cache: libevpl-ubuntu24, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
+          - { image_name: ubuntu24, context: ".", dockerfile: Dockerfile.ubuntu24.04, cache: libevpl-ubuntu24, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
+          - { image_name: ubuntu22, context: ".", dockerfile: Dockerfile.ubuntu22.04, cache: libevpl-ubuntu22, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DIO_URING_ENABLED=OFF -DLIBFABRIC_ENABLED=OFF" }
+          - { image_name: ubuntu22, context: ".", dockerfile: Dockerfile.ubuntu22.04, cache: libevpl-ubuntu22, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DIO_URING_ENABLED=OFF -DLIBFABRIC_ENABLED=OFF" }
+          - { image_name: rocky9, context: ".", dockerfile: Dockerfile.rocky9, cache: libevpl-rocky9, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
+          - { image_name: rocky9, context: ".", dockerfile: Dockerfile.rocky9, cache: libevpl-rocky9, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
+          - { image_name: rocky10, context: ".", dockerfile: Dockerfile.rocky10, cache: libevpl-rocky10, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
+          - { image_name: rocky10, context: ".", dockerfile: Dockerfile.rocky10, cache: libevpl-rocky10, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
           # The devcontainer is the one image tested on both architectures.
-          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Release, cmake_extra: "" }
-          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Debug, cmake_extra: "" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -152,6 +158,7 @@ jobs:
           docker run --rm --privileged \
             -e CCACHE_DIR=/ccache \
             -e CCACHE_MAXSIZE \
+            -e FI_PROVIDER \
             -v "${{ runner.temp }}/ccache:/ccache" \
             -v "${{ github.workspace }}:/workspace" \
             -v /build \
@@ -302,7 +309,7 @@ jobs:
             devcontainer:${{ github.sha }}-${{ matrix.arch }} \
             bash -euxc '\
               scan-build --status-bugs -o /scan-report \
-              sh -c "cmake -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} -D IO_URING_NVME_ENABLED=OFF -B /build -S /workspace -G Ninja && ninja -C /build"' \
+              sh -c "cmake -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} -D IO_URING_NVME_ENABLED=OFF -D LIBFABRIC_ENABLED=ON -B /build -S /workspace -G Ninja && ninja -C /build"' \
             2>&1 | tee "${{ github.workspace }}/scan-report/scan-build-output.txt"
 
       - name: Upload static analysis report
@@ -358,7 +365,7 @@ jobs:
           brew update
           # openssl@3 and nghttp2 are keg-only; CMakeLists.txt already adds the
           # Homebrew prefixes for them.  uthash is headers only.
-          brew install cmake ninja openssl@3 nghttp2 uthash protobuf-c sqlite oras
+          brew install cmake ninja bison openssl@3 nghttp2 uthash protobuf-c sqlite oras libfabric
           oras pull "${CCACHE_REF}" --output "${RUNNER_TEMP}"
           install -m 0755 "${RUNNER_TEMP}/ccache-darwin" /usr/local/bin/ccache
           ccache --version | head -1
@@ -424,6 +431,8 @@ jobs:
           ccache -z > /dev/null
           cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
                 -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DLIBFABRIC_ENABLED=ON \
+                -DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison" \
                 -S "${{ github.workspace }}" -B "${{ runner.temp }}/build"
           # Require SQLite coverage here as well as in the Linux images.
           ninja -C "${{ runner.temp }}/build" all otel_sqlite_test otel-trace
