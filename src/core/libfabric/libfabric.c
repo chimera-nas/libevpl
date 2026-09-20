@@ -1595,6 +1595,10 @@ evpl_libfabric_fds_commit(struct evpl_libfabric *lf)
         if (!watch->members) {
             HASH_DEL(lf->wait_fds, watch);
             evpl_free(watch);
+            /* No cached successor remains after removing the last entry. */
+            if (!lf->wait_fds) {
+                break;
+            }
             continue;
         }
         events = 0;
