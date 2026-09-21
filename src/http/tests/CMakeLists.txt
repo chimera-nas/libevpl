@@ -131,3 +131,11 @@ if (HAVE_NGHTTP2)
     unit_test(http h2_tls http2_tls.c)
     target_link_libraries(http_h2_tls evpl_http CURL::libcurl)
 endif()
+
+# C trace replays, distinct from the Quint specification checks (label quint).
+get_property(_mbt_tests DIRECTORY PROPERTY TESTS)
+foreach(_test ${_mbt_tests})
+    if(_test MATCHES "^libevpl/http/conformance")
+        set_property(TEST ${_test} APPEND PROPERTY LABELS mbt)
+    endif()
+endforeach()
