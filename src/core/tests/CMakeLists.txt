@@ -182,3 +182,11 @@ if(NOT WIN32)
     unit_test_all_mechs(core close_ready close_ready.c)
     target_include_directories(core_close_ready PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
 endif()
+
+# C trace replays, distinct from the Quint specification checks (label quint).
+get_property(_mbt_tests DIRECTORY PROPERTY TESTS)
+foreach(_test ${_mbt_tests})
+    if(_test MATCHES "^libevpl/core/core_conformance_")
+        set_property(TEST ${_test} APPEND PROPERTY LABELS mbt)
+    endif()
+endforeach()

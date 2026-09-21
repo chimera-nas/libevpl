@@ -487,3 +487,11 @@ macro(unit_test_rpc2_instance_spdk test_name protocol port)
     endif()
 endmacro()
 unit_test_rpc2_instance_spdk(multifrag STREAM_SOCKET_TCP 8103)
+
+# C trace replays, distinct from the Quint specification checks (label quint).
+get_property(_mbt_tests DIRECTORY PROPERTY TESTS)
+foreach(_test ${_mbt_tests})
+    if(_test MATCHES "^libevpl/rpc2/conformance")
+        set_property(TEST ${_test} APPEND PROPERTY LABELS mbt)
+    endif()
+endforeach()

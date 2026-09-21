@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 Ben Jarvis
+# SPDX-License-Identifier: Unlicense
+name: PR coverage comment
+
+# This relay must first land on the default branch. It never checks out or
+# executes PR code; the downloaded report is only treated as comment text.
+on:
+  workflow_run:
+    workflows: ["Build and Test"]
+    types: [completed]
+permissions:
+  actions: read
+  pull-requests: write
+concurrency:
+  group: mbt-comment-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v6
+        id: report
+        continue-on-error: true
+        with:
+          name: mbt-coverage
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: coverage
+      - uses: actions/github-script@v7
+        if: steps.report.outcome == 'success'
+        with:
+          script: |
+            const fs = require('fs');
+            const run = context.payload.workflow_run;
+            if (!fs.existsSync('coverage/pr-number.txt') ||
+                !fs.existsSync('coverage/coverage-report.md')) {
+              core.notice('No completed coverage report');
+              return;
+            }
+            const number = fs.readFileSync('coverage/pr-number.txt', 'utf8').trim();
+            if (!/^[1-9][0-9]*$/.test(number)) throw new Error('Invalid PR number');
+            const issue_number = Number(number);
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: issue_number});
+            // Reject stale reports and artifacts aimed at another branch.
+            if (pr.state !== 'open' || pr.head.sha !== run.head_sha || pr.head.ref !== run.head_branch) {
+              core.notice('Report no longer matches an open PR head');
+              return;
+            }
+            const associated = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {...context.repo, commit_sha: run.head_sha, per_page: 100});
+            if (!associated.some(p => p.number === issue_number)) throw new Error('PR not associated with run commit');
+            const marker = '<!-- mbt-coverage-report -->';
+            let body = fs.readFileSync('coverage/coverage-report.md', 'utf8');
+            if (!body.startsWith(marker)) throw new Error('Invalid report marker');
+            // Stay under GitHub's comment size limit even for very large diffs.
+            if (body.length > 60000) body = body.slice(0, 60000) + '\n\nReport truncated; see the run artifact.';
+            const stamp = `<!-- mbt-run:${run.id}:${run.run_attempt} -->`;
+            body += `\n\n${stamp}\n[Coverage run](${run.html_url}) · head \`${run.head_sha}\``;
+            const comments = await github.paginate(github.rest.issues.listComments,
+              {...context.repo, issue_number, per_page: 100});
+            const previous = comments.find(c => c.user.login === 'github-actions[bot]' && c.body.startsWith(marker));
+            if (previous) {
+              const old = previous.body.match(/<!-- mbt-run:(\d+):(\d+) -->/);
+              if (old && (Number(old[1]) > run.id ||
+                  (Number(old[1]) === run.id && Number(old[2]) > run.run_attempt))) return;
+              await github.rest.issues.updateComment({...context.repo, comment_id: previous.id, body});
+            } else {
+              await github.rest.issues.createComment({...context.repo, issue_number, body});
+            }
