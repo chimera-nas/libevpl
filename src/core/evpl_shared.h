@@ -18,6 +18,7 @@ struct evpl_allocator;
 
 struct evpl_shared {
     evpl_mutex_t                 lock;
+    atomic_uint                  contexts;
     struct evpl_global_config   *config;
     struct evpl_numa_config     *numa_config;
     struct evpl_endpoint        *endpoints;

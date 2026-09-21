@@ -22,7 +22,8 @@ enum evpl_framework_id {
     EVPL_FRAMEWORK_LIBAIO    = 6,
     EVPL_FRAMEWORK_INPROC    = 7,
     EVPL_FRAMEWORK_LIBFABRIC = 8,
-    EVPL_NUM_FRAMEWORK       = 9
+    EVPL_FRAMEWORK_SPDK      = 9,
+    EVPL_NUM_FRAMEWORK       = 10
 };
 
 enum evpl_protocol_id {
@@ -41,7 +42,8 @@ enum evpl_protocol_id {
     EVPL_STREAM_LIBFABRIC_MSG   = 12,
     EVPL_DATAGRAM_LIBFABRIC_MSG = 13,
     EVPL_DATAGRAM_LIBFABRIC_RDM = 14,
-    EVPL_NUM_PROTO              = 15
+    EVPL_STREAM_SPDK_TCP        = 15,
+    EVPL_NUM_PROTO              = 16
 };
 
 enum evpl_block_protocol_id {
@@ -50,12 +52,31 @@ enum evpl_block_protocol_id {
     EVPL_BLOCK_PROTOCOL_LIBAIO        = 2,
     EVPL_BLOCK_PROTOCOL_IO_URING_NVME = 3,
     EVPL_BLOCK_PROTOCOL_PREAD         = 4,
-    EVPL_NUM_BLOCK_PROTOCOL           = 5
+    EVPL_BLOCK_PROTOCOL_SPDK_BDEV     = 5,
+    EVPL_NUM_BLOCK_PROTOCOL           = 6
 };
 
 struct evpl;
 struct evpl_global_config;
 struct evpl_thread_config;
+
+/* Final process cleanup, after all contexts and application-held buffers
+ * have been released and before host SPDK environment teardown. Idempotent;
+ * do not use libevpl again afterward. Host must serialize this with all users. */
+EVPL_API void evpl_cleanup(
+    void);
+
+typedef void (*evpl_completion_t)(
+    void *private_data);
+
+/* Destroy on the owner thread. SPDK teardown yields to the host until I/O
+ * and deferrals drain; callback runs after guest resources are gone, without
+ * exiting a borrowed SPDK thread. Native destruction completes synchronously.
+ * After requesting destruction, only already-outstanding cleanup may use evpl. */
+EVPL_API void evpl_destroy_async(
+    struct evpl      *evpl,
+    evpl_completion_t callback,
+    void             *private_data);
 
 EVPL_API void evpl_init(
     struct evpl_global_config *global_config);
@@ -99,10 +120,27 @@ evpl_virtual_clock_now(
 EVPL_API void evpl_destroy(
     struct evpl *evpl);
 
-EVPL_API void evpl_continue(
+/*
+ * Run exactly one iteration of the event loop.  Returns an approximate count
+ * of work items handled this pass (timers fired, events dispatched, deferrals
+ * run, poll-callback activity); 0 means the pass was idle.  External loops
+ * embedding evpl (e.g. an SPDK reactor poller) use the return value to report
+ * busy/idle to their own scheduler.
+ */
+EVPL_API int evpl_continue(
     struct evpl *evpl);
 
 EVPL_API void evpl_run(
+    struct evpl *evpl);
+
+/*
+ * Wake this evpl so its next pump re-evaluates pending work.  Required when
+ * code sharing the thread outside of an evpl callback (e.g. another SPDK
+ * poller on the same spdk_thread) mutates evpl state such as queuing a send;
+ * without it an external host loop may sleep without knowing the evpl has
+ * work.  Safe from any thread; idempotent.
+ */
+EVPL_API void evpl_kick(
     struct evpl *evpl);
 
 typedef void (*evpl_loop_callback_t)(

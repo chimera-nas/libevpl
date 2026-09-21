@@ -98,6 +98,7 @@ evpl_timer_insert(
     i = evpl->num_timers++;
 
     evpl_timer_heap_up(evpl, i);
+    evpl_external_wake(evpl);
 } /* evpl_timer_insert */
 
 

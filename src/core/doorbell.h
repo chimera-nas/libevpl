@@ -18,6 +18,7 @@ struct evpl_doorbell {
 struct evpl_doorbell_sender {
     atomic_uint                  refs;
     evpl_mutex_t                 lock;
+    int                          awaiting_owner;
     struct evpl                 *owner;
     struct evpl_doorbell        *receiver;
     evpl_doorbell_callback_t     callback;
@@ -33,3 +34,12 @@ struct evpl_doorbell_sender {
 
 void evpl_doorbell_destroy_all(
     struct evpl *evpl);
+
+#ifdef HAVE_SPDK
+void evpl_doorbell_open(
+    struct evpl_doorbell *receiver);
+void evpl_add_doorbell_opened(
+    struct evpl             *evpl,
+    struct evpl_doorbell    *receiver,
+    evpl_doorbell_callback_t callback);
+#endif // ifdef HAVE_SPDK

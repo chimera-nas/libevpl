@@ -88,8 +88,8 @@ jobs:
           # Dockerfile ADDs the Gemfile that the docs build needs, and that
           # lives under docs/.  devcontainer.json says the same thing with
           # "context": "../docs".
-          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
-          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
           - { image_name: ubuntu26, context: ".", dockerfile: Dockerfile.ubuntu26.04, cache: libevpl-ubuntu26, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
           - { image_name: ubuntu26, context: ".", dockerfile: Dockerfile.ubuntu26.04, cache: libevpl-ubuntu26, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
           - { image_name: ubuntu24, context: ".", dockerfile: Dockerfile.ubuntu24.04, cache: libevpl-ubuntu24, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
@@ -101,8 +101,8 @@ jobs:
           - { image_name: rocky10, context: ".", dockerfile: Dockerfile.rocky10, cache: libevpl-rocky10, arch: amd64, runner: ubuntu-24.04, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
           - { image_name: rocky10, context: ".", dockerfile: Dockerfile.rocky10, cache: libevpl-rocky10, arch: amd64, runner: ubuntu-24.04, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON" }
           # The devcontainer is the one image tested on both architectures.
-          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
-          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Release, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
+          - { image_name: devcontainer, context: docs, dockerfile: .devcontainer/Dockerfile, cache: libevpl-dev, arch: arm64, runner: ubuntu-24.04-arm, build_type: Debug, cmake_extra: "-DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON -DCMAKE_C_COMPILER=clang" }
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -317,7 +317,7 @@ jobs:
             devcontainer:${{ github.sha }}-${{ matrix.arch }} \
             bash -euxc '\
               scan-build --status-bugs -o /scan-report \
-              sh -c "cmake -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} -D IO_URING_NVME_ENABLED=OFF -D LIBFABRIC_ENABLED=ON -B /build -S /workspace -G Ninja && ninja -C /build"' \
+              sh -c "cmake -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} -D IO_URING_NVME_ENABLED=OFF -D LIBFABRIC_ENABLED=ON -D SPDK_ENABLED=ON -B /build -S /workspace -G Ninja && ninja -C /build"' \
             2>&1 | tee "${{ github.workspace }}/scan-report/scan-build-output.txt"
 
       - name: Upload static analysis report

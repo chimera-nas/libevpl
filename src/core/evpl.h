@@ -16,11 +16,13 @@
 #include "core/core.h"
 
 struct evpl_thread_config {
+    unsigned int core_mech;
     int          poll_mode;
     int          poll_iterations;
     unsigned int spin_ns;
     int          wait_ms;
-
+    char         name[32];
+    char         spdk_cpumask[40];
 };
 
 /*
@@ -112,6 +114,14 @@ struct evpl_global_config {
     unsigned int              libaio_max_pending;
 
     unsigned int              pread_enabled;
+    unsigned int              spdk_enabled;
+
+    /* spdk_sock implementation name for STREAM_SPDK_TCP ("posix", "uring",
+     * ...); NULL selects SPDK's default implementation. */
+    char                     *spdk_sock_impl;
+
+    /* Native page alignment also satisfies supported SPDK releases. */
+    unsigned int              slab_alignment;
 
     unsigned int              preallocate_slabs;
     unsigned int              preallocate_threads;
@@ -201,16 +211,23 @@ struct evpl {
     struct evpl_thread_config     config;
 
     struct evpl_loop_hooks        loop_hooks;
+    uint64_t                      block_pending;
+    unsigned int                  destroying;
+
 
     void                         *protocol_private[EVPL_NUM_PROTO];
     void                         *framework_private[EVPL_NUM_FRAMEWORK];
 };
 
 struct evpl_listen_request {
-    enum evpl_protocol_id protocol_id;
+    enum evpl_protocol_id       protocol_id;
     evpl_mutex_t                lock;
     evpl_cond_t                 cond;
     int                         complete;
+    void                        (*callback)(
+        int   status,
+        void *private_data);
+    void                       *private_data;
     /* Result of the protocol's listen callback, carried back to the thread
      * blocked in evpl_listen().  The bind happens on the listener thread, so
      * this is the only channel a backend failure has. */
@@ -243,7 +260,6 @@ struct evpl_connect_request {
 
 struct evpl_listener {
     struct evpl_thread            *thread;
-    int                            running;
     struct evpl_doorbell           doorbell;
     struct evpl_bind             **binds;
     int                            num_binds;
@@ -253,6 +269,9 @@ struct evpl_listener {
     int                            num_attached;
     int                            max_attached;
     int                            rotor;
+    int                            closing;
+    evpl_completion_t              completion;
+    void                          *completion_private;
 };
 
 EVPL_API void * evpl_malloc(
@@ -283,6 +302,16 @@ void
 evpl_destroy_close_bind(
     struct evpl *evpl);
 
+/* Push every open bind into pending-close state without pumping the loop. */
+void
+evpl_close_all_binds(
+    struct evpl *evpl);
+
+/* True while any bind is still open or draining its close. */
+int
+evpl_has_pending_binds(
+    struct evpl *evpl);
+
 /* Exported (defined in poll.c); also declared in the public evpl/evpl_poll.h so
  * out-of-tree consumers can use them.  See evpl_poll.h for semantics. */
 EVPL_API void
@@ -297,6 +326,9 @@ EVPL_API void
 evpl_poll_unpin(
     struct evpl *evpl);
 
+
+void evpl_external_wake(
+    struct evpl *evpl);
 
 /* Internal accepted-connection ownership helpers. */
 void evpl_listener_binding_release(

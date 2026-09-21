@@ -169,3 +169,11 @@ concatenation remains a valid single page).
 - [Binds & Connections API]({{ '/api/binds' | relative_url }}) - Creating and managing connections
 - [Threading API]({{ '/api/threading' | relative_url }}) - Thread pools and thread management
 - [Architecture Guide]({{ '/architecture' | relative_url }}) - Understanding event loops and protocols
+
+### Externally driven contexts
+
+Use `evpl_destroy_async(evpl, callback, arg)` to detach a live SPDK context while
+allowing its host to drain completions. A borrowed SPDK thread remains alive.
+Call `evpl_cleanup()` after every context and application-held buffer is released,
+before the host finalizes SPDK. Cleanup is final and idempotent. See
+[SPDK embedding](/api/spdk) for the ownership and completion contracts.

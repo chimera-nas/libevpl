@@ -14,6 +14,7 @@
 #include "core/event_fn.h"
 #include "core/macros.h"
 #include "core/pthread_util.h"
+#include "core/thread/thread_internal.h"
 
 extern struct evpl_shared *evpl_shared;
 
@@ -33,27 +34,6 @@ extern struct evpl_shared *evpl_shared;
 
 #define evpl_thread_abort_if(cond, ...) \
         evpl_abort_if(cond, "thread", __FILE__, __LINE__, __VA_ARGS__)
-
-struct evpl_thread {
-    evpl_native_thread_t            thread;
-    evpl_mutex_t                    lock;
-    evpl_cond_t                     cond;
-    int                             ready;
-    /* The sender outlives the worker loop; a worker that has already stopped
-     * safely rejects subsequent stop requests. */
-    struct evpl_doorbell            stop_receiver;
-    struct evpl_doorbell_sender    *stop_sender;
-    struct evpl_thread_config      *config;
-    struct evpl                    *evpl;
-    evpl_thread_init_callback_t     init_callback;
-    evpl_thread_shutdown_callback_t shutdown_callback;
-    void                           *private_data;
-};
-
-struct evpl_threadpool {
-    struct evpl_thread **threads;
-    int                  nthreads;
-};
 
 /*
  * Read handler for a thread's stop wakeup, registered on the worker's own evpl.
@@ -76,7 +56,8 @@ evpl_thread_function(void *ptr)
     struct evpl_thread *evpl_thread = ptr;
     struct evpl        *evpl;
 
-    evpl = evpl_create(evpl_thread->config);
+    evpl                = evpl_create(evpl_thread->config);
+    evpl_thread->config = NULL;
 
     evpl_thread->evpl = evpl;
 
@@ -109,17 +90,26 @@ evpl_thread_function(void *ptr)
     return NULL;
 } /* evpl_thread_function */
 
-SYMBOL_EXPORT struct evpl_thread *
-evpl_thread_create(
+static struct evpl_thread *
+evpl_thread_create_internal(
     struct evpl_thread_config      *config,
     evpl_thread_init_callback_t     init_function,
     evpl_thread_shutdown_callback_t shutdown_function,
-    void                           *private_data)
+    void                           *private_data,
+    int                             wait_ready)
 {
     struct evpl_thread *evpl_thread;
     int                 rc;
 
     __evpl_init();
+
+#ifdef HAVE_SPDK
+    if ((config && config->core_mech != EVPL_CORE_MECH_INHERIT ?
+         config->core_mech : evpl_shared->config->core_mech) == EVPL_CORE_MECH_SPDK) {
+        return evpl_thread_create_spdk(config, init_function,
+                                       shutdown_function, private_data, wait_ready);
+    }
+#endif /* ifdef HAVE_SPDK */
 
     evpl_thread = evpl_zalloc(sizeof(*evpl_thread));
 
@@ -151,7 +141,7 @@ evpl_thread_create(
 
     evpl_mutex_lock(&evpl_thread->lock);
 
-    while (!evpl_thread->ready) {
+    while (wait_ready && !evpl_thread->ready) {
         evpl_cond_wait(&evpl_thread->cond, &evpl_thread->lock);
     }
 
@@ -160,9 +150,42 @@ evpl_thread_create(
     return evpl_thread;
 } /* evpl_thread_create */
 
+SYMBOL_EXPORT struct evpl_thread *
+evpl_thread_create(
+    struct evpl_thread_config      *config,
+    evpl_thread_init_callback_t     init_function,
+    evpl_thread_shutdown_callback_t shutdown_function,
+    void                           *private_data)
+{
+    return evpl_thread_create_internal(config, init_function, shutdown_function,
+                                       private_data, evpl_current_spdk_thread() == NULL);
+} /* evpl_thread_create */
+
+SYMBOL_EXPORT struct evpl_thread *
+evpl_thread_create_async(
+    struct evpl_thread_config      *config,
+    evpl_thread_init_callback_t     init_function,
+    evpl_thread_shutdown_callback_t shutdown_function,
+    void                           *private_data)
+{
+    return evpl_thread_create_internal(config, init_function, shutdown_function,
+                                       private_data, 0);
+} /* evpl_thread_create_async */
+
 SYMBOL_EXPORT void
 evpl_thread_destroy(struct evpl_thread *evpl_thread)
 {
+#ifdef HAVE_SPDK
+    if (evpl_thread->spdk_mode) {
+        evpl_thread_destroy_spdk(evpl_thread);
+        return;
+    }
+#endif /* ifdef HAVE_SPDK */
+    evpl_mutex_lock(&evpl_thread->lock);
+    while (!evpl_thread->ready) {
+        evpl_cond_wait(&evpl_thread->cond, &evpl_thread->lock);
+    }
+    evpl_mutex_unlock(&evpl_thread->lock);
     int rc = evpl_doorbell_signal(evpl_thread->stop_sender);
 
     evpl_thread_abort_if(rc && rc != ECANCELED, "thread stop signal failed: %d", rc);
@@ -191,12 +214,20 @@ evpl_threadpool_create(
     threadpool->nthreads = nthreads;
 
     for (i = 0; i < nthreads; ++i) {
-        threadpool->threads[i] = evpl_thread_create(config,
+        struct evpl_thread_config *worker_config = NULL;
+        if (config) {
+            worker_config = evpl_zalloc(sizeof(*worker_config));
+            *worker_config = *config;
+        }
+        threadpool->threads[i] = evpl_thread_create(worker_config,
                                                     init_function,
                                                     shutdown_function,
                                                     private_data);
     }
 
+    if (config) {
+        evpl_thread_config_release(config);
+    }
     return threadpool;
 } /* evpl_threadpool_create */
 
@@ -212,3 +243,87 @@ evpl_threadpool_destroy(struct evpl_threadpool *threadpool)
     evpl_free(threadpool->threads);
     evpl_free(threadpool);
 } /* evpl_threadpool_destroy */
+
+struct evpl_thread_join_request {
+    struct evpl_thread *thread;
+    evpl_completion_t   callback;
+    void               *private_data;
+};
+
+static void *
+evpl_thread_join_async(void *arg)
+{
+    struct evpl_thread_join_request *request = arg;
+
+    evpl_thread_destroy(request->thread);
+    if (request->callback) {
+        request->callback(request->private_data);
+    }
+    evpl_free(request);
+    return NULL;
+} /* evpl_thread_join_async */
+
+SYMBOL_EXPORT void
+evpl_thread_destroy_async(
+    struct evpl_thread *thread,
+    evpl_completion_t   callback,
+    void               *private_data)
+{
+#ifdef HAVE_SPDK
+    if (thread->spdk_mode) {
+        evpl_thread_destroy_async_spdk(thread, callback, private_data);
+        return;
+    }
+#endif /* ifdef HAVE_SPDK */
+    /* Native join must not block an SPDK caller sharing this process. */
+    struct evpl_thread_join_request *request = evpl_zalloc(sizeof(*request));
+    evpl_native_thread_t             joiner;
+    int                              rc;
+    request->thread       = thread;
+    request->callback     = callback;
+    request->private_data = private_data;
+    rc                    = evpl_pthread_create(&joiner, NULL, evpl_thread_join_async, request);
+    evpl_thread_abort_if(rc, "async join thread creation failed: %d", rc);
+    evpl_native_thread_detach(joiner);
+} /* evpl_thread_destroy_async */
+
+struct evpl_pool_stop {
+    atomic_uint       remaining;
+    evpl_completion_t callback;
+    void             *private_data;
+};
+
+static void
+evpl_pool_stopped(void *arg)
+{
+    struct evpl_pool_stop *stop = arg;
+
+    if (atomic_fetch_sub(&stop->remaining, 1) == 1) {
+        evpl_completion_t callback     = stop->callback;
+        void             *private_data = stop->private_data;
+        evpl_free(stop);
+        if (callback) {
+            callback(private_data);
+        }
+    }
+} /* evpl_pool_stopped */
+
+SYMBOL_EXPORT void
+evpl_threadpool_destroy_async(
+    struct evpl_threadpool *pool,
+    evpl_completion_t       callback,
+    void                   *private_data)
+{
+    struct evpl_pool_stop *stop = evpl_zalloc(sizeof(*stop));
+
+    /* Extra reference prevents an early completion freeing the coordinator. */
+    atomic_init(&stop->remaining, pool->nthreads + 1);
+    stop->callback     = callback;
+    stop->private_data = private_data;
+    for (int i = 0; i < pool->nthreads; i++) {
+        evpl_thread_destroy_async(pool->threads[i], evpl_pool_stopped, stop);
+    }
+    evpl_free(pool->threads);
+    evpl_free(pool);
+    evpl_pool_stopped(stop);
+} /* evpl_threadpool_destroy_async */

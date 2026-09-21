@@ -66,7 +66,10 @@ All application code is meant to run inside event handlers directly or indirectl
 void evpl_thread_destroy(struct evpl_thread *thread);
 ```
 
-Stop a worker thread and wait for it to exit.   Can be called from any thread.
+Native callers outside reactor callbacks can stop a worker and wait for exit.
+An SPDK-thread caller cannot block and this function requests detached shutdown;
+use `evpl_thread_destroy_async()` when completion matters. Reactor callbacks
+without a current SPDK thread must also use the explicit async API.
 
 **Parameters:**
 - `thread` - Thread to destroy
@@ -105,7 +108,16 @@ Create a pool of worker threads, each behaving the same as the single example ab
 void evpl_threadpool_destroy(struct evpl_threadpool *threadpool);
 ```
 
-Stop all threads in a pool and wait for them to exit.
+Stop all threads in a pool. Native callers wait; SPDK callers must use
+`evpl_threadpool_destroy_async()` to observe completed guest cleanup.
 
 **Parameters:**
 - `threadpool` - Thread pool to destroy
+### SPDK and mixed execution
+
+See [SPDK embedding](/api/spdk) for per-context backend selection, borrowed host
+threads, nonblocking listener/worker lifecycle, and explicit global cleanup.
+`evpl_thread_create_async()` never waits; the init callback signals readiness.
+Thread and pool configurations are consumed by creation, matching `evpl_create()`.
+Async completion callbacks run on the completing SPDK worker or a native join
+helper. They do not promise that the host scheduler has reaped the SPDK thread.

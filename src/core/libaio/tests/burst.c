@@ -25,6 +25,7 @@
 #include <fcntl.h>
 
 #include "evpl/evpl.h"
+#include "tests/test_block.h"
 #include "evpl/evpl_config.h"
 
 #define BURST_RING   32     /* aio ring depth (io_setup nr_events) */
@@ -89,7 +90,7 @@ main(
 
     evpl = evpl_create(NULL);
 
-    bdev = evpl_block_open_device(EVPL_BLOCK_PROTOCOL_LIBAIO, "burst.img");
+    bdev = test_block_open(evpl, EVPL_BLOCK_PROTOCOL_LIBAIO, "burst.img");
 
     if (!bdev) {
         fprintf(stderr, "failed to open burst.img\n");
@@ -116,7 +117,7 @@ main(
 
     evpl_block_close_queue(evpl, bqueue);
 
-    evpl_block_close_device(bdev);
+    test_block_close(evpl, bdev);
 
     evpl_destroy(evpl);
 

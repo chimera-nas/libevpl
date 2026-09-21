@@ -5,6 +5,7 @@
 #include "core/test_log.h"
 #include "evpl/evpl.h"
 #include "tests/test_common.h"
+#include "tests/test_block.h"
 
 static void
 done(
@@ -48,7 +49,7 @@ main(void)
     CloseHandle(file);
 
     evpl   = evpl_create(NULL);
-    device = evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD, utf8);
+    device = test_block_open(evpl, EVPL_BLOCK_PROTOCOL_PREAD, utf8);
     evpl_test_abort_if(!device || evpl_block_size(device) != offset + 4096,
                        "Unicode path or 64-bit file size failed");
     queue = evpl_block_open_queue(evpl, device);
@@ -70,7 +71,7 @@ main(void)
     evpl_iovec_release(evpl, &write_iov);
     evpl_iovec_release(evpl, &read_iov);
     evpl_block_close_queue(evpl, queue);
-    evpl_block_close_device(device);
+    test_block_close(evpl, device);
     evpl_destroy(evpl);
     evpl_test_abort_if(!DeleteFileW(path), "file handle leaked");
     return 0;

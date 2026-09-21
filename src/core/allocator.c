@@ -302,7 +302,7 @@ evpl_allocator_build_slab(
     } else {
 
         slab->data = evpl_valloc(evpl_shared->config->slab_size,
-                                 evpl_shared->config->page_size);
+                                 evpl_shared->config->slab_alignment);
 
     }
 
@@ -869,6 +869,7 @@ evpl_buffer_alloc(
     buffer->used       = 0;
 #ifdef EVPL_IOVEC_TRACE
     buffer->ref.owner_thread = evpl_current_thread();
+    buffer->ref.owner_spdk   = evpl_current_spdk_thread();
 #endif /* ifdef EVPL_IOVEC_TRACE */
 
     if (flags & EVPL_IOVEC_FLAG_SHARED) {

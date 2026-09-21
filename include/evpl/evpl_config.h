@@ -30,6 +30,12 @@ enum evpl_core_mech {
     EVPL_CORE_MECH_KQUEUE  = 2,
     EVPL_CORE_MECH_SELECT  = 3,
     EVPL_CORE_MECH_IOCP    = 4,
+    /* Guest mode inside an SPDK application: each evpl is pumped by an
+     * spdk_poller on the spdk_thread that created it.  Never the platform
+     * default; requires the host to have initialized the SPDK env and thread
+     * library, and evpl_create() must run on an spdk_thread. */
+    EVPL_CORE_MECH_SPDK    = 5,
+    EVPL_CORE_MECH_INHERIT = 6, /* per-context: use the global default */
 };
 
 EVPL_API struct evpl_global_config *
@@ -124,6 +130,12 @@ evpl_thread_config_init(
 EVPL_API void evpl_thread_config_release(
     struct evpl_thread_config *config);
 
+/* Select a backend for this context/worker. DEFAULT selects the native
+ * platform backend, even when the global default is SPDK. */
+EVPL_API void evpl_thread_config_set_core_mech(
+    struct evpl_thread_config *config,
+    enum evpl_core_mech        mech);
+
 EVPL_API void evpl_thread_config_set_poll_mode(
     struct evpl_thread_config *config,
     int                        poll_mode);
@@ -135,6 +147,20 @@ EVPL_API void evpl_thread_config_set_poll_iterations(
 EVPL_API void evpl_thread_config_set_wait_ms(
     struct evpl_thread_config *config,
     int                        wait_ms);
+
+/* Thread name, used e.g. to name the spdk_thread created for an evpl_thread
+ * under EVPL_CORE_MECH_SPDK.  Truncated to the config field size. */
+EVPL_API void evpl_thread_config_set_name(
+    struct evpl_thread_config *config,
+    const char                *name);
+
+/* SPDK cpumask string (as accepted by spdk_cpuset_parse, e.g. "0x3" or
+ * "[0,1]") constraining where the host scheduler may place the spdk_thread
+ * created for an evpl_thread.  Empty (default) lets the host decide.  Only
+ * meaningful under EVPL_CORE_MECH_SPDK. */
+EVPL_API void evpl_thread_config_set_spdk_cpumask(
+    struct evpl_thread_config *config,
+    const char                *cpumask);
 
 EVPL_API void evpl_global_config_set_slab_size(
     struct evpl_global_config *config,
@@ -282,6 +308,16 @@ EVPL_API void evpl_global_config_set_vfio_enabled(
 EVPL_API void evpl_global_config_set_libaio_enabled(
     struct evpl_global_config *config,
     int                        enabled);
+
+EVPL_API void evpl_global_config_set_spdk_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+/* spdk_sock implementation for STREAM_SPDK_TCP ("posix", "uring", ...);
+ * NULL (default) selects SPDK's default implementation. */
+EVPL_API void evpl_global_config_set_spdk_sock_impl(
+    struct evpl_global_config *config,
+    const char                *impl_name);
 
 EVPL_API void evpl_global_config_set_libaio_max_pending(
     struct evpl_global_config *config,

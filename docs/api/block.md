@@ -81,6 +81,26 @@ libevpl's Block I/O subsystem offers:
 **Use cases:** macOS and any other platform with no asynchronous I/O facility;
 development and test on machines without io_uring, libaio or VFIO
 
+### SPDK bdev
+
+**Description:** Access to any SPDK block device (bdev) of a host SPDK application
+
+**Availability:** Builds with SPDK installed (`SPDK_ENABLED`); at runtime
+requires `EVPL_CORE_MECH_SPDK` — the opening event loop must be an evpl thread
+running as an spdk_thread inside an SPDK application that owns the bdev layer.
+
+**Characteristics:**
+- Full access to the host application's bdev stack (NVMe, malloc, RAID,
+  logical volumes, crypto, ...)
+- Userspace polled completions delivered by the bdev I/O channel on the
+  owning spdk_thread
+- evpl slab buffers are pre-registered with `spdk_mem_register`, so I/O is
+  zero-copy DMA-safe
+- The URI is the bdev name registered in the host application
+
+**Use cases:** libevpl workloads embedded in an existing SPDK application that
+need to share its storage stack
+
 ## Types
 
 ### `struct evpl_block_device`
@@ -102,6 +122,9 @@ Identifies block device backend:
 | `EVPL_BLOCK_PROTOCOL_LIBAIO` | Linux native AIO |
 | `EVPL_BLOCK_PROTOCOL_PREAD` | Blocking pread/pwrite on a per-device thread |
 
+| `EVPL_BLOCK_PROTOCOL_IO_URING_NVME` | io_uring NVMe passthrough (uring_cmd) |
+| `EVPL_BLOCK_PROTOCOL_SPDK_BDEV` | SPDK bdev (requires the SPDK core mechanism) |
+
 ### `evpl_block_callback_t`
 
 ```c
@@ -115,50 +138,102 @@ Callback invoked when a block operation completes.
 
 **Parameters:**
 - `evpl` - Event loop
-- `status` - 0 on success, negative error code on failure
+- `status` - 0 on success, positive errno on failure
+- `private_data` - User-provided context
+
+### `evpl_block_open_callback_t`
+
+```c
+typedef void (*evpl_block_open_callback_t)(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    int                       status,
+    void                     *private_data);
+```
+
+Callback invoked when an asynchronous device open completes.
+
+**Parameters:**
+- `evpl` - Event loop
+- `blockdev` - Opened device handle, or `NULL` on failure
+- `status` - 0 on success, positive errno on failure
 - `private_data` - User-provided context
 
 ## Functions
 
 ### Device Management
 
+Device open and close are asynchronous operations that run in the context of
+an event loop, like every other libevpl operation.  The completion callback
+always fires from a later iteration of the opening loop — never inline from
+the call itself — including for failures.
+
+The opening event loop owns the device for lifecycle purposes:
+
+- it must outlive the device,
+- backend device events (such as hot-remove) are handled on its thread, and
+- `evpl_block_close_device` must be called with this same event loop.
+
+Queues may still be opened against the device from any event loop / thread.
+
 #### `evpl_block_open_device`
 
 ```c
-struct evpl_block_device *evpl_block_open_device(
+void evpl_block_open_device(
+    struct evpl                *evpl,
     enum evpl_block_protocol_id protocol,
-    const char                 *uri);
+    const char                 *uri,
+    evpl_block_open_callback_t  callback,
+    void                       *private_data);
 ```
 
-Open a block device.  Each device should be opened once globally for the whole process.
+Open a block device asynchronously.  Each device should be opened once
+globally for the whole process.
 
 **Parameters:**
+- `evpl` - Event loop that will own the device
 - `protocol` - Backend protocol to use
 - `uri` - Device identifier (protocol-specific)
-
-**Returns:** Block device handle, or `NULL` on failure
+- `callback` - Completion callback; receives the device handle or `NULL`
+- `private_data` - User context
 
 **URI Formats:**
 
-**io_uring:**
+**io_uring / libaio:**
 - Device path: `/dev/nvme0n1`
 - File path: `/tmp/testfile`
 
+**io_uring NVMe passthrough:**
+- NVMe namespace block device: `/dev/nvme0n1`
+
 **VFIO-NVMe:**
 - PCI address: `0000:01:00.0`
+
+**SPDK bdev:**
+- bdev name in the host SPDK application: `Malloc0`, `Nvme0n1`
 
 ---
 
 #### `evpl_block_close_device`
 
 ```c
-void evpl_block_close_device(struct evpl_block_device *blockdev);
+void evpl_block_close_device(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    evpl_block_callback_t     callback,
+    void                     *private_data);
 ```
 
-Close a block device. All queues must be closed first.
+Close a block device asynchronously. All queues must be closed first, and the
+call must be made on the event loop that opened the device.  The device handle
+is invalid as soon as this is called; the callback (which may be `NULL`) fires
+from a later loop iteration once the backend has released the device.
 
 **Parameters:**
+- `evpl` - Event loop that opened the device
 - `blockdev` - Device to close
+- `callback` - Completion callback, or `NULL`
+- `private_data` - User context
 
 ---
 
@@ -376,3 +451,17 @@ Multiple outstanding requests improve IOPS to a point. Issue multiple requests i
 - [Configuration API]({{ '/api/config' | relative_url }}) - Performance tuning
 - [Core API]({{ '/api/core' | relative_url }}) - Event loop integration
 - [Architecture]({{ '/architecture' | relative_url }}) - Understanding async I/O
+
+### Device events and teardown
+
+`evpl_block_set_event_callback(device, callback, arg)` receives SPDK remove and
+resize events on the opener context. Device size reads are synchronized across
+threads. On removal, stop issuing work, close each queue on its owner, and close
+the device on its opener. A closing queue retains outstanding operations and
+metrics; device close waits for queues to finish. Buffers remain application-owned
+through their I/O callbacks.
+
+The SPDK backend accepts at most 64 iovecs and the configured buffer size per
+request, including bounced requests. Unsupported metadata/geometry is rejected.
+A cached device that cannot flush returns `ENOTSUP` for sync writes and flushes.
+[SPDK embedding](/api/spdk) documents host lifecycle and test coverage.

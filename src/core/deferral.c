@@ -19,6 +19,7 @@ evpl_defer(
         evpl->active_deferrals[index] = deferral;
 
         ++evpl->num_active_deferrals;
+        evpl_external_wake(evpl);
     }
 
 } /* evpl_defer */

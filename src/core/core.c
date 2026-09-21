@@ -50,6 +50,10 @@ evpl_core_ops_lookup(unsigned int mech)
         case EVPL_CORE_MECH_SELECT:
             return &evpl_core_select_ops;
 #endif /* ifdef EVPL_HAVE_SELECT */
+#ifdef HAVE_SPDK
+        case EVPL_CORE_MECH_SPDK:
+            return &evpl_core_spdk_ops;
+#endif /* ifdef HAVE_SPDK */
         default:
             return NULL;
     } /* switch */
@@ -68,6 +72,8 @@ evpl_core_mech_name(unsigned int mech)
             return "kqueue";
         case EVPL_CORE_MECH_SELECT:
             return "select";
+        case EVPL_CORE_MECH_SPDK:
+            return "spdk";
         default:
             return "unknown";
     } /* switch */
@@ -78,7 +84,7 @@ evpl_core_init(
     struct evpl_core *evc,
     int               max_events)
 {
-    unsigned int mech = evpl_shared->config->core_mech;
+    unsigned int mech = evpl_from_core(evc)->config.core_mech;
 
     evc->ops = evpl_core_ops_lookup(mech);
 

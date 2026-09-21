@@ -83,7 +83,7 @@ evpl_doorbell_signal(struct evpl_doorbell_sender *sender)
     /* Closing and native wake submission are serialized. The owner can close
      * its loop immediately after retirement without racing an in-flight write. */
     evpl_mutex_lock(&sender->lock);
-    if (!sender->owner) {
+    if (!sender->owner && !sender->awaiting_owner) {
         result = ECANCELED;
     } else {
 #ifdef _WIN32
@@ -104,6 +104,41 @@ evpl_doorbell_signal(struct evpl_doorbell_sender *sender)
     evpl_mutex_unlock(&sender->lock);
     return result;
 } /* evpl_doorbell_signal */
+
+#ifdef HAVE_SPDK
+SYMBOL_EXPORT void
+evpl_doorbell_open(struct evpl_doorbell *receiver)
+{
+    struct evpl_doorbell_sender *sender = evpl_zalloc(sizeof(*sender));
+
+    atomic_init(&sender->refs, 1);
+    evpl_mutex_init(&sender->lock, NULL);
+    sender->receiver       = receiver;
+    sender->awaiting_owner = 1;
+    receiver->sender       = sender;
+    evpl_core_abort_if(evpl_wakeup_open(&sender->wakeup) < 0,
+                       "evpl_doorbell_open: wakeup open failed");
+} /* evpl_doorbell_open */
+
+SYMBOL_EXPORT void
+evpl_add_doorbell_opened(
+    struct evpl             *evpl,
+    struct evpl_doorbell    *receiver,
+    evpl_doorbell_callback_t callback)
+{
+    struct evpl_doorbell_sender *sender = receiver->sender;
+
+    evpl_mutex_lock(&sender->lock);
+    sender->owner          = evpl;
+    sender->awaiting_owner = 0;
+    sender->callback       = callback;
+    evpl_add_event(evpl, &sender->event, sender->wakeup.rfd,
+                   evpl_event_user_callback, NULL, NULL);
+    evpl_event_read_interest(evpl, &sender->event);
+    DL_APPEND(evpl->doorbells, sender);
+    evpl_mutex_unlock(&sender->lock);
+} /* evpl_add_doorbell_opened */
+#endif /* ifdef HAVE_SPDK */
 
 SYMBOL_EXPORT void
 evpl_add_doorbell(

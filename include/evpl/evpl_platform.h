@@ -53,6 +53,11 @@ static inline int evpl_rwlock_init(
 static inline int evpl_rwlock_rdlock(evpl_rwlock_t *m) { return evpl_mutex_lock(m); }
 static inline int evpl_rwlock_wrlock(evpl_rwlock_t *m) { return evpl_mutex_lock(m); }
 static inline int evpl_rwlock_unlock(evpl_rwlock_t *m) { return evpl_mutex_unlock(m); }
+static inline int
+evpl_native_thread_detach(evpl_native_thread_t t)
+{
+    return CloseHandle(t) ? 0 : (int) GetLastError();
+} // evpl_native_thread_detach
 static inline evpl_thread_id_t evpl_current_thread(void) { return GetCurrentThreadId(); }
 static inline int evpl_thread_equal(
     evpl_thread_id_t a,
@@ -72,7 +77,7 @@ evpl_once_callback(
 static inline int
 evpl_once(
     evpl_once_t *once,
-    void       (*fn)(
+    void (      *fn )(
         void))
 {
     return InitOnceExecuteOnce(once, evpl_once_callback, &fn, NULL) ? 0 : (int) GetLastError();
@@ -98,7 +103,7 @@ static inline int
 evpl_native_thread_create(
     evpl_native_thread_t            *t,
     const evpl_native_thread_attr_t *a,
-    void *                         (*fn)(
+    void *(*fn)(
         void *),
     void                            *arg)
 {
@@ -158,6 +163,7 @@ typedef pthread_rwlock_t evpl_rwlock_t;
 #define evpl_native_thread_attr_setstacksize pthread_attr_setstacksize
 #define evpl_native_thread_create            pthread_create
 #define evpl_native_thread_join              pthread_join
+#define evpl_native_thread_detach            pthread_detach
 #define evpl_current_thread                  pthread_self
 #define evpl_thread_equal                    pthread_equal
 #endif // ifdef _WIN32

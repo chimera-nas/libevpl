@@ -27,6 +27,7 @@ evpl_event_read_interest(
         event->flags |= EVPL_ACTIVE;
 
         evpl->active_events[evpl->num_active_events++] = event;
+        evpl_external_wake(evpl);
     }
 
 } /* evpl_event_read_interest */
@@ -63,6 +64,7 @@ evpl_event_write_interest(
         event->flags |= EVPL_ACTIVE;
 
         evpl->active_events[evpl->num_active_events++] = event;
+        evpl_external_wake(evpl);
     }
 
 } /* evpl_event_write_interest */
@@ -96,6 +98,7 @@ evpl_event_mark_readable(
         event->flags |= EVPL_ACTIVE;
 
         evpl->active_events[evpl->num_active_events++] = event;
+        evpl_external_wake(evpl);
     }
 } /* evpl_event_mark_readable */
 
@@ -124,6 +127,7 @@ evpl_event_mark_writable(
         event->flags |= EVPL_ACTIVE;
 
         evpl->active_events[evpl->num_active_events++] = event;
+        evpl_external_wake(evpl);
     }
 
 } /* evpl_event_mark_writable */
@@ -150,6 +154,7 @@ evpl_event_mark_error(
     if (!(event->flags & EVPL_ACTIVE)) {
         event->flags                                  |= EVPL_ACTIVE;
         evpl->active_events[evpl->num_active_events++] = event;
+        evpl_external_wake(evpl);
     }
 
 } /* evpl_event_mark_error */

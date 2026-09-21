@@ -23,7 +23,8 @@ evpl_global_config_init(void)
     struct evpl_global_config *config = evpl_zalloc(sizeof(*config));
     const char                *env;
 
-    config->core_mech = EVPL_CORE_MECH_DEFAULT;
+    config->core_mech                = EVPL_CORE_MECH_DEFAULT;
+    config->thread_default.core_mech = EVPL_CORE_MECH_INHERIT;
 
     config->thread_default.poll_mode       = 1;
     config->thread_default.poll_iterations = 1000;
@@ -159,7 +160,9 @@ evpl_global_config_init(void)
     config->libaio_enabled     = 1;
     config->libaio_max_pending = 256;
 
-    config->pread_enabled = 1;
+    config->pread_enabled  = 1;
+    config->spdk_enabled   = 1;
+    config->slab_alignment = config->page_size;
 
     config->preallocate_slabs   = 0;
     config->preallocate_threads = 0;
@@ -194,6 +197,9 @@ evpl_global_config_free(struct evpl_global_config *config)
 
     if (config->libfabric_provider) {
         evpl_free(config->libfabric_provider);
+    }
+    if (config->spdk_sock_impl) {
+        evpl_free(config->spdk_sock_impl);
     }
 
     evpl_free(config);
@@ -407,6 +413,7 @@ evpl_global_config_get_http_max_header_size(void)
 SYMBOL_EXPORT struct evpl_thread_config *
 evpl_thread_config_init(void)
 {
+    __evpl_init();
     struct evpl_thread_config *config = evpl_zalloc(sizeof(*config));
 
     *config = evpl_shared->config->thread_default;
@@ -420,6 +427,14 @@ evpl_thread_config_release(struct evpl_thread_config *config)
     evpl_free(config);
 } /* evpl_thread_config_release */
 
+
+SYMBOL_EXPORT void
+evpl_thread_config_set_core_mech(
+    struct evpl_thread_config *config,
+    enum evpl_core_mech        mech)
+{
+    config->core_mech = mech;
+} /* evpl_thread_config_set_core_mech */
 
 SYMBOL_EXPORT void
 evpl_thread_config_set_poll_mode(
@@ -444,6 +459,22 @@ evpl_thread_config_set_wait_ms(
 {
     config->wait_ms = wait_ms;
 } /* evpl_thread_config_set_wait_ms */
+
+SYMBOL_EXPORT void
+evpl_thread_config_set_name(
+    struct evpl_thread_config *config,
+    const char                *name)
+{
+    snprintf(config->name, sizeof(config->name), "%s", name);
+} /* evpl_thread_config_set_name */
+
+SYMBOL_EXPORT void
+evpl_thread_config_set_spdk_cpumask(
+    struct evpl_thread_config *config,
+    const char                *cpumask)
+{
+    snprintf(config->spdk_cpumask, sizeof(config->spdk_cpumask), "%s", cpumask);
+} /* evpl_thread_config_set_spdk_cpumask */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_slab_size(
@@ -787,4 +818,25 @@ evpl_global_config_set_preallocate_threads(
 {
     config->preallocate_threads = threads;
 } /* evpl_global_config_set_preallocate_threads */
+
+
+SYMBOL_EXPORT void
+evpl_global_config_set_spdk_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->spdk_enabled = enabled;
+} /* evpl_global_config_set_spdk_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_spdk_sock_impl(
+    struct evpl_global_config *config,
+    const char                *impl_name)
+{
+    if (config->spdk_sock_impl) {
+        evpl_free(config->spdk_sock_impl);
+    }
+
+    config->spdk_sock_impl = impl_name ? evpl_strdup(impl_name) : NULL;
+} /* evpl_global_config_set_spdk_sock_impl */
 

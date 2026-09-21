@@ -614,7 +614,11 @@ evpl_pread_open_queue(
 } /* evpl_pread_open_queue */
 
 static void
-evpl_pread_close_device(struct evpl_block_device *bdev)
+evpl_pread_close_device(
+    struct evpl                 *evpl,
+    struct evpl_block_device    *bdev,
+    evpl_block_device_complete_t complete,
+    void                        *ctx)
 {
     struct evpl_pread_device *dev = bdev->private_data;
 
@@ -634,6 +638,7 @@ evpl_pread_close_device(struct evpl_block_device *bdev)
 
     evpl_free(dev);
     evpl_free(bdev);
+    complete(evpl, NULL, 0, ctx);
 } /* evpl_pread_close_device */
 
 /*
@@ -688,7 +693,7 @@ evpl_pread_device_size(
 #endif /* ifndef _WIN32 */
 
 static struct evpl_block_device *
-evpl_pread_open_device(
+evpl_pread_open_device_sync(
     const char *uri,
     void       *private_data)
 {
@@ -701,6 +706,7 @@ evpl_pread_open_device(
     LARGE_INTEGER             size;
 #else  /* ifdef _WIN32 */
     struct stat               st;
+    uint64_t                  device_size;
 #endif /* ifdef _WIN32 */
     int                       rc;
 
@@ -738,7 +744,7 @@ evpl_pread_open_device(
     }
 
     if (fstat(dev->fd, &st) < 0 ||
-        evpl_pread_device_size(dev->fd, &st, &bdev->size) < 0) {
+        evpl_pread_device_size(dev->fd, &st, &device_size) < 0) {
         evpl_pread_error("failed to size %s: %s", uri, strerror(errno));
         evpl_pread_close_fd(dev->fd);
         evpl_free(dev);
@@ -746,6 +752,7 @@ evpl_pread_open_device(
         return NULL;
     }
 
+    bdev->size = device_size;
 #endif /* ifdef _WIN32 */
 
     evpl_mutex_init(&dev->lock, NULL);
@@ -772,6 +779,21 @@ evpl_pread_open_device(
     bdev->max_request_size = EVPL_PREAD_MAX_REQUEST;
 
     return bdev;
+} /* evpl_pread_open_device */
+
+static void
+evpl_pread_open_device(
+    struct evpl                 *evpl,
+    const char                  *uri,
+    void                        *private_data,
+    evpl_block_device_complete_t complete,
+    void                        *ctx)
+{
+    struct evpl_block_device *bdev;
+
+    errno = 0;
+    bdev  = evpl_pread_open_device_sync(uri, private_data);
+    complete(evpl, bdev, bdev ? 0 : (errno ? errno : EIO), ctx);
 } /* evpl_pread_open_device */
 
 struct evpl_block_protocol evpl_block_protocol_pread = {

@@ -64,6 +64,10 @@ evpl_block_op_get(struct evpl_block_queue *queue)
     return op;
 } /* evpl_block_op_get */
 
+static void evpl_block_queue_finish(
+    struct evpl             *evpl,
+    struct evpl_block_queue *queue);
+
 static void
 evpl_block_complete(
     struct evpl *evpl,
@@ -93,36 +97,133 @@ evpl_block_complete(
     queue->op_freelist = op;
 
     callback(evpl, status, callback_private);
+    if (--queue->outstanding == 0 && queue->closing) {
+        evpl_block_queue_finish(evpl, queue);
+    }
+    evpl->block_pending--;
 } /* evpl_block_complete */
 
-SYMBOL_EXPORT struct evpl_block_device *
-evpl_block_open_device(
-    enum evpl_block_protocol_id protocol_id,
-    const char                 *uri)
-{
+/* Transient state for an asynchronous device open.  The deferral normalizes
+ * delivery: the user callback always fires from a loop iteration after
+ * evpl_block_open_device returned, whether the backend completed inline
+ * (io_uring/libaio/vfio) or later, and for failures too.
+ */
+struct evpl_block_open_request {
     struct evpl_block_protocol *protocol;
+    char                       *uri;
+    evpl_block_open_callback_t  callback;
+    void                       *private_data;
     struct evpl_block_device   *blockdev;
-    void                       *protocol_private_data;
+    int                         status;
+    struct evpl_deferral        deferral;
+};
 
-    __evpl_init();
+static void
+evpl_block_open_deliver(
+    struct evpl *evpl,
+    void        *private_data)
+{
+    struct evpl_block_open_request *request          = private_data;
+    evpl_block_open_callback_t      callback         = request->callback;
+    void                           *callback_private = request->private_data;
+    struct evpl_block_device       *blockdev         = request->blockdev;
+    int                             status           = request->status;
 
-    if (protocol_id >= EVPL_NUM_BLOCK_PROTOCOL) {
-        return NULL;
+    if (request->uri) {
+        evpl_free(request->uri);
     }
 
+    evpl_free(request);
 
-    protocol = evpl_shared->block_protocol[protocol_id];
+    callback(evpl, blockdev, status, callback_private);
+    evpl->block_pending--;
+} /* evpl_block_open_deliver */
 
-    if (!protocol) {
-        /* In-range id but the backend was not registered (e.g. gated out at
-         * build time, such as the NVMe uring_cmd backend on older liburing).
-         * Report failure rather than dereferencing a NULL protocol. */
-        return NULL;
+static void
+evpl_block_open_complete(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    int                       status,
+    void                     *ctx)
+{
+    struct evpl_block_open_request *request  = ctx;
+    struct evpl_block_protocol     *protocol = request->protocol;
+
+    request->blockdev = blockdev;
+    request->status   = status;
+
+    if (blockdev) {
+
+        blockdev->protocol = protocol;
+
+        /* Per-device metric series, labelled with the device URI and the
+         * protocol type so callers can aggregate across all devices or
+         * break out by device/type.  The histograms additionally carry an
+         * "op" label, so one series is created per operation class.
+         */
+        for (int k = 0; k < EVPL_BLOCK_NUM_OP_KIND; k++) {
+            blockdev->m_latency[k] = prometheus_histogram_create_series(
+                evpl_shared->block_latency,
+                (const char *[]) { "device", "type", "op" },
+                (const char *[]) { request->uri, protocol->name,
+                                   evpl_block_op_names[k] }, 3);
+
+            blockdev->m_request_size[k] = prometheus_histogram_create_series(
+                evpl_shared->block_request_size,
+                (const char *[]) { "device", "type", "op" },
+                (const char *[]) { request->uri, protocol->name,
+                                   evpl_block_op_names[k] }, 3);
+        }
+
+        blockdev->m_queue_depth = prometheus_gauge_create_series(
+            evpl_shared->block_queue_depth,
+            (const char *[]) { "device", "type" },
+            (const char *[]) { request->uri, protocol->name }, 2);
     }
 
-    /* A block protocol needs a framework only if it has process-wide or
-     * per-thread state to stand up; the pread backend keeps everything on the
-     * device and queue it owns, so its framework pointer is NULL. */
+    evpl_defer(evpl, &request->deferral);
+} /* evpl_block_open_complete */
+
+SYMBOL_EXPORT void
+evpl_block_open_device(
+    struct evpl                *evpl,
+    enum evpl_block_protocol_id protocol_id,
+    const char                 *uri,
+    evpl_block_open_callback_t  callback,
+    void                       *private_data)
+{
+    struct evpl_block_open_request *request;
+    struct evpl_block_protocol     *protocol = NULL;
+    void                           *protocol_private_data;
+    size_t                          urilen;
+
+    evpl->block_pending++;
+    request = evpl_zalloc(sizeof(*request));
+
+    request->callback     = callback;
+    request->private_data = private_data;
+
+    evpl_deferral_init(&request->deferral, evpl_block_open_deliver, request);
+
+    if (protocol_id < EVPL_NUM_BLOCK_PROTOCOL) {
+        protocol = evpl_shared->block_protocol[protocol_id];
+    }
+
+    if (!protocol || (protocol_id == EVPL_BLOCK_PROTOCOL_SPDK_BDEV &&
+                      evpl->config.core_mech != EVPL_CORE_MECH_SPDK)) {
+        /* Out-of-range id, or an in-range backend that was not registered
+         * (gated out at build time or disabled at runtime).  Uniform
+         * asynchronous failure rather than dereferencing a NULL protocol. */
+        request->status = ENOTSUP;
+        evpl_defer(evpl, &request->deferral);
+        return;
+    }
+
+    request->protocol = protocol;
+    urilen            = strlen(uri) + 1;
+    request->uri      = evpl_zalloc(urilen);
+    memcpy(request->uri, uri, urilen);
+
     if (protocol->framework) {
         evpl_attach_framework_shared(protocol->framework->id);
 
@@ -132,42 +233,68 @@ evpl_block_open_device(
         protocol_private_data = NULL;
     }
 
-    blockdev = protocol->open_device(uri, protocol_private_data);
-
-    if (!blockdev) {
-        return NULL;
-    }
-
-    blockdev->protocol = protocol;
-
-    /* Per-device metric series, labelled with the device URI and the
-     * protocol type so callers can aggregate across all devices or
-     * break out by device/type.  The histograms additionally carry an
-     * "op" label, so one series is created per operation class.
-     */
-    for (int k = 0; k < EVPL_BLOCK_NUM_OP_KIND; k++) {
-        blockdev->m_latency[k] = prometheus_histogram_create_series(
-            evpl_shared->block_latency,
-            (const char *[]) { "device", "type", "op" },
-            (const char *[]) { uri, protocol->name, evpl_block_op_names[k] }, 3);
-
-        blockdev->m_request_size[k] = prometheus_histogram_create_series(
-            evpl_shared->block_request_size,
-            (const char *[]) { "device", "type", "op" },
-            (const char *[]) { uri, protocol->name, evpl_block_op_names[k] }, 3);
-    }
-
-    blockdev->m_queue_depth = prometheus_gauge_create_series(
-        evpl_shared->block_queue_depth,
-        (const char *[]) { "device", "type" },
-        (const char *[]) { uri, protocol->name }, 2);
-
-    return blockdev;
+    protocol->open_device(evpl, request->uri, protocol_private_data,
+                          evpl_block_open_complete, request);
 } /* evpl_block_open_device */
 
-SYMBOL_EXPORT void
-evpl_block_close_device(struct evpl_block_device *bdev)
+/* Transient state for an asynchronous device close; same deferral
+ * normalization as open.  The user callback may be NULL. */
+struct evpl_block_close_request {
+    struct evpl_block_device *device;
+    struct evpl_timer         timer;
+    evpl_block_callback_t     callback;
+    void                     *private_data;
+    int                       status;
+    struct evpl_deferral      deferral;
+};
+
+static void
+evpl_block_close_deliver(
+    struct evpl *evpl,
+    void        *private_data)
 {
+    struct evpl_block_close_request *request          = private_data;
+    evpl_block_callback_t            callback         = request->callback;
+    void                            *callback_private = request->private_data;
+    int                              status           = request->status;
+
+    evpl_free(request);
+
+    if (callback) {
+        callback(evpl, status, callback_private);
+    }
+    evpl->block_pending--;
+} /* evpl_block_close_deliver */
+
+static void
+evpl_block_close_complete(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    int                       status,
+    void                     *ctx)
+{
+    struct evpl_block_close_request *request = ctx;
+
+    request->status = status;
+
+    evpl_defer(evpl, &request->deferral);
+} /* evpl_block_close_complete */
+
+static void
+evpl_block_close_start(
+    struct evpl       *evpl,
+    struct evpl_timer *timer)
+{
+    struct evpl_block_close_request *request =
+        container_of(timer, struct evpl_block_close_request, timer);
+    struct evpl_block_device        *bdev = request->device;
+
+    if (atomic_load(&bdev->queues)) {
+        evpl_add_oneshot_timer(evpl, timer, evpl_block_close_start, 100);
+        return;
+    }
+    /* The metric series hang off the device struct, which the backend frees;
+     * destroy them before handing the device over. */
     for (int k = 0; k < EVPL_BLOCK_NUM_OP_KIND; k++) {
         prometheus_histogram_destroy_series(evpl_shared->block_latency,
                                             bdev->m_latency[k]);
@@ -177,7 +304,28 @@ evpl_block_close_device(struct evpl_block_device *bdev)
     prometheus_gauge_destroy_series(evpl_shared->block_queue_depth,
                                     bdev->m_queue_depth);
 
-    bdev->close_device(bdev);
+    bdev->close_device(evpl, bdev, evpl_block_close_complete, request);
+} /* evpl_block_close_start */
+
+SYMBOL_EXPORT void
+evpl_block_close_device(
+    struct evpl              *evpl,
+    struct evpl_block_device *bdev,
+    evpl_block_callback_t     callback,
+    void                     *private_data)
+{
+    struct evpl_block_close_request *request;
+
+    evpl->block_pending++;
+    request = evpl_zalloc(sizeof(*request));
+
+    request->callback     = callback;
+    request->private_data = private_data;
+
+    evpl_deferral_init(&request->deferral, evpl_block_close_deliver, request);
+
+    request->device = bdev;
+    evpl_block_close_start(evpl, &request->timer);
 } /* evpl_block_close_device */
 
 SYMBOL_EXPORT uint64_t
@@ -221,11 +369,12 @@ evpl_block_open_queue(
     queue->m_queue_depth = prometheus_gauge_series_create_instance(
         blockdev->m_queue_depth);
 
+    atomic_fetch_add(&blockdev->queues, 1);
     return queue;
 } /* evpl_block_open_queue */
 
-SYMBOL_EXPORT void
-evpl_block_close_queue(
+static void
+evpl_block_queue_finish(
     struct evpl             *evpl,
     struct evpl_block_queue *queue)
 {
@@ -247,7 +396,21 @@ evpl_block_close_queue(
     }
 
     queue->close_queue(evpl, queue);
+    atomic_fetch_sub(&bdev->queues, 1);
+} /* evpl_block_queue_finish */
+
+SYMBOL_EXPORT void
+evpl_block_close_queue(
+    struct evpl             *evpl,
+    struct evpl_block_queue *queue)
+{
+    evpl_core_abort_if(queue->closing, "queue closed twice");
+    queue->closing = 1;
+    if (!queue->outstanding) {
+        evpl_block_queue_finish(evpl, queue);
+    }
 } /* evpl_block_close_queue */
+
 
 
 SYMBOL_EXPORT void
@@ -271,6 +434,9 @@ evpl_block_read(
     op->size         = evpl_block_iov_size(iov, niov);
     op->kind         = EVPL_BLOCK_OP_READ;
 
+    evpl_core_abort_if(queue->closing, "I/O submitted on closing queue");
+    queue->outstanding++;
+    evpl->block_pending++;
     prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
 
@@ -299,6 +465,9 @@ evpl_block_write(
     op->size         = evpl_block_iov_size(iov, niov);
     op->kind         = EVPL_BLOCK_OP_WRITE;
 
+    evpl_core_abort_if(queue->closing, "I/O submitted on closing queue");
+    queue->outstanding++;
+    evpl->block_pending++;
     prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
 
@@ -323,6 +492,9 @@ evpl_block_flush(
     op->size         = 0;
     op->kind         = EVPL_BLOCK_OP_FLUSH;
 
+    evpl_core_abort_if(queue->closing, "I/O submitted on closing queue");
+    queue->outstanding++;
+    evpl->block_pending++;
     prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
 
@@ -356,6 +528,9 @@ evpl_block_discard(
     op->size         = length;
     op->kind         = EVPL_BLOCK_OP_DISCARD;
 
+    evpl_core_abort_if(queue->closing, "I/O submitted on closing queue");
+    queue->outstanding++;
+    evpl->block_pending++;
     prometheus_stopwatch_start(&op->start);
     prometheus_gauge_add(queue->m_queue_depth, 1);
 
@@ -447,6 +622,9 @@ evpl_block_write_zeroes(
         op->size         = length;
         op->kind         = EVPL_BLOCK_OP_WRITE;
 
+        evpl_core_abort_if(queue->closing, "I/O submitted on closing queue");
+        queue->outstanding++;
+        evpl->block_pending++;
         prometheus_stopwatch_start(&op->start);
         prometheus_gauge_add(queue->m_queue_depth, 1);
 
@@ -499,3 +677,13 @@ evpl_block_write_zeroes(
 
     evpl_block_wz_emul_step(evpl, e);
 } /* evpl_block_write_zeroes */
+
+SYMBOL_EXPORT void
+evpl_block_set_event_callback(
+    struct evpl_block_device   *device,
+    evpl_block_event_callback_t callback,
+    void                       *private_data)
+{
+    device->event_callback = callback;
+    device->event_private  = private_data;
+} /* evpl_block_set_event_callback */

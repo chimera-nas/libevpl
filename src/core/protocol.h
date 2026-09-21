@@ -218,6 +218,19 @@ enum evpl_block_op_kind {
     EVPL_BLOCK_NUM_OP_KIND
 };
 
+/*
+ * Backend completion for asynchronous device open/close.  Backends may invoke
+ * it inline from open_device/close_device or later from their own machinery;
+ * the core normalizes delivery to the user through a deferral either way.
+ * blockdev is the opened device (NULL on open failure, and always NULL for
+ * close); status is 0 or a positive errno.
+ */
+typedef void (*evpl_block_device_complete_t)(
+    struct evpl              *evpl,
+    struct evpl_block_device *blockdev,
+    int                       status,
+    void                     *ctx);
+
 struct evpl_block_device {
     /* Private data owned by the protocol */
     void                               *private_data;
@@ -226,10 +239,13 @@ struct evpl_block_device {
     struct evpl_block_protocol         *protocol;
 
     /* Size of the device in bytes, set by the protocol */
-    uint64_t                            size;
+    atomic_uint_fast64_t                size;
 
     /* maximum size of a single I/O request in bytes */
     uint64_t                            max_request_size;
+    atomic_uint                         queues;
+    evpl_block_event_callback_t         event_callback;
+    void                               *event_private;
 
     /* Per-device metric series, labelled by device URI and protocol
      * type.  Each queue creates its own instance from these so the
@@ -246,8 +262,14 @@ struct evpl_block_device {
         struct evpl              *evpl,
         struct evpl_block_device *blockdev);
 
+    /* Close the device.  Runs on the evpl that opened the device; the
+     * backend frees blockdev and invokes complete (with a NULL blockdev)
+     * when teardown is finished. */
     void                                (*close_device)(
-        struct evpl_block_device *blockdev);
+        struct evpl                 *evpl,
+        struct evpl_block_device    *blockdev,
+        evpl_block_device_complete_t complete,
+        void                        *ctx);
 };
 
 struct evpl_block_queue {
@@ -272,6 +294,8 @@ struct evpl_block_queue {
 
     /* Freelist of completion-tracking ops; queue-thread-local. */
     struct evpl_block_op                 *op_freelist;
+    unsigned int                          outstanding;
+    unsigned int                          closing;
 
     /* Close a device queue */
     void                                  (*close_queue)(
@@ -327,18 +351,23 @@ struct evpl_block_queue {
 
 struct evpl_block_protocol {
     /* unique ID number for each protocol */
-    unsigned int               id;
+    unsigned int           id;
 
     /* human readable name for protocol, no spaces */
-    const char                *name;
+    const char            *name;
 
     /* pointer to associated framework, or NULL if no framework */
-    struct evpl_framework     *framework;
+    struct evpl_framework *framework;
 
-    /* Open a block device */
-    struct evpl_block_device * (*open_device)(
-        const char *uri,
-        void       *private_data);
+    /* Open a block device.  Runs on the opening evpl's thread; the backend
+     * allocates the evpl_block_device and invokes complete with it (or with
+     * NULL and a positive errno on failure), inline or asynchronously. */
+    void                   (*open_device)(
+        struct evpl                 *evpl,
+        const char                  *uri,
+        void                        *private_data,
+        evpl_block_device_complete_t complete,
+        void                        *ctx);
 };
 
 void

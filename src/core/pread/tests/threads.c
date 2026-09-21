@@ -25,6 +25,7 @@
 #include "core/test_log.h"
 #include "evpl/evpl.h"
 #include "tests/test_common.h"
+#include "tests/test_block.h"
 
 #define DEVICE_PATH "pread_threads.img"
 #define DEVICE_SIZE (16 * 1024 * 1024)
@@ -165,6 +166,7 @@ main(
 {
     struct shared_state     shared;
     struct evpl_threadpool *pool;
+    struct evpl            *evpl;
     int                     fd, rc;
 
     test_evpl_config();
@@ -179,10 +181,11 @@ main(
 
     evpl_test_close(fd);
 
+    evpl = evpl_create(NULL);
     memset(&shared, 0, sizeof(shared));
 
-    shared.bdev = evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD,
-                                         DEVICE_PATH);
+    shared.bdev = test_block_open(evpl, EVPL_BLOCK_PROTOCOL_PREAD,
+                                  DEVICE_PATH);
 
     evpl_test_abort_if(!shared.bdev, "failed to open pread device");
 
@@ -198,7 +201,8 @@ main(
 
     evpl_threadpool_destroy(pool);
 
-    evpl_block_close_device(shared.bdev);
+    test_block_close(evpl, shared.bdev);
+    evpl_destroy(evpl);
 
     evpl_test_unlink(DEVICE_PATH);
 

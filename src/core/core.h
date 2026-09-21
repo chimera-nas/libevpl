@@ -21,23 +21,29 @@
 struct evpl_core;
 struct evpl_event;
 
+/* The mechanism is pumped by an external loop (e.g. an SPDK reactor): the
+ * mechanism's own machinery invokes evpl_continue(), so evpl_run()/evpl_stop()
+ * must not be used and the wait op never blocks. */
+#define EVPL_CORE_OPS_EXTERNAL_LOOP 0x1
+
 struct evpl_core_ops {
     /* Dispatch collected completions after post_wait, on the loop thread. */
-    void        (*dispatch)(
+    void         (*dispatch)(
         struct evpl_core *);
-    const char *name;
-    int         (*init)(
+    const char  *name;
+    unsigned int flags;
+    int          (*init)(
         struct evpl_core *evc,
         int               max_events);
-    void        (*destroy)(
+    void         (*destroy)(
         struct evpl_core *evc);
-    void        (*add)(
+    void         (*add)(
         struct evpl_core  *evc,
         struct evpl_event *event);
-    void        (*remove)(
+    void         (*remove)(
         struct evpl_core  *evc,
         struct evpl_event *event);
-    int         (*wait)(
+    int          (*wait)(
         struct evpl_core *evc,
         int               max_msecs);
 };
@@ -57,6 +63,9 @@ struct evpl_core_ops {
 #ifdef EVPL_HAVE_IOCP
 #include "core/iocp.h"
 #endif // ifdef EVPL_HAVE_IOCP
+#ifdef HAVE_SPDK
+#include "core/spdk/evpl_spdk.h"
+#endif /* ifdef HAVE_SPDK */
 
 struct evpl_core {
     const struct evpl_core_ops *ops;
@@ -73,6 +82,9 @@ struct evpl_core {
 #ifdef EVPL_HAVE_SELECT
         struct evpl_core_select select;
 #endif /* ifdef EVPL_HAVE_SELECT */
+#ifdef HAVE_SPDK
+        struct evpl_core_spdk   spdk;
+#endif /* ifdef HAVE_SPDK */
     } u;
 };
 

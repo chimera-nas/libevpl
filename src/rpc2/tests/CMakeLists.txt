@@ -30,6 +30,9 @@ macro(unit_test_rpc2 test_name xdr_file)
 
     add_executable(evpl_rpc2_${test_name} ${sources} ${XDR_C} ${XDR_H})
     target_link_libraries(evpl_rpc2_${test_name} evpl_rpc2 evpl)
+    if(HAVE_SPDK)
+        target_link_libraries(evpl_rpc2_${test_name} ${SPDK_LINK_TARGETS})
+    endif()
 
     # Set the first source for TEST_FILE environment variable
     list(GET sources 0 first_source)
@@ -459,3 +462,28 @@ else()
     message(STATUS
         "RPC2 conformance test disabled (supply EVPL_CONFORMANCE_CASES_DIR, or quint and python3 on a Unix host)")
 endif()
+
+macro(unit_test_rpc2_instance_spdk test_name protocol port)
+    if (HAVE_SPDK)
+        set(_test libevpl/rpc2/${test_name}_${protocol}_spdk)
+
+        if(LIBEVPL_NETNS_TESTING)
+            add_test(NAME ${_test}
+                     COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
+                             ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
+
+            set_tests_properties(${_test} PROPERTIES
+                ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=spdk;ASAN_OPTIONS=detect_leaks=1"
+                TIMEOUT 10)
+        else()
+            add_test(NAME ${_test}
+                     COMMAND ${RPC2_TEST_EXE_${test_name}} -r ${protocol} -p ${port})
+
+            set_tests_properties(${_test} PROPERTIES
+                RESOURCE_LOCK evpl_net
+                ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_${test_name}};EVPL_TEST_CORE_MECH=spdk;ASAN_OPTIONS=detect_leaks=1"
+                TIMEOUT 10)
+        endif()
+    endif()
+endmacro()
+unit_test_rpc2_instance_spdk(multifrag STREAM_SOCKET_TCP 8103)

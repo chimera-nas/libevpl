@@ -52,6 +52,7 @@
 #include "core/test_log.h"
 #include "evpl/evpl.h"
 #include "tests/test_common.h"
+#include "tests/test_block.h"
 
 #include "core_cases.h"
 
@@ -1669,7 +1670,7 @@ block_device_open(
                        "could not size %s", ps->device_path);
     evpl_test_close(fd);
 
-    ps->bdev = evpl_block_open_device(block_protocol(), ps->device_path);
+    ps->bdev = test_block_open(ps->evpl, block_protocol(), ps->device_path);
 
     evpl_test_abort_if(!ps->bdev, "could not open %s as a block device",
                        ps->device_path);
@@ -1702,7 +1703,7 @@ block_device_close(struct prog_state *ps)
     }
 
     if (ps->bdev) {
-        evpl_block_close_device(ps->bdev);
+        test_block_close(ps->evpl, ps->bdev);
         ps->bdev = NULL;
     }
 

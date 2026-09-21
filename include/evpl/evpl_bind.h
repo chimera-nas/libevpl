@@ -242,3 +242,23 @@ EVPL_API int evpl_bind_is_rdma(
  * runs. */
 EVPL_API int evpl_bind_is_closing(
     struct evpl_bind *bind);
+
+/* Consumes config; NULL inherits the global default. Use the same selected
+ * backend as the attached workers when creating an SPDK listener. */
+EVPL_API struct evpl_listener * evpl_listener_create_config(
+    struct evpl_thread_config *config);
+/* Completion runs on the listener worker; validation failures may complete
+* inline. Endpoint resolution follows the existing synchronous resolver. */
+EVPL_API void evpl_listen_async(
+    struct evpl_listener *listener,
+    enum evpl_protocol_id protocol_id,
+    struct evpl_endpoint *endpoint,
+    void (               *callback )(
+        int   status,
+        void *private_data),
+    void                 *private_data);
+/* Consumes listener; completion follows worker guest cleanup. */
+EVPL_API void evpl_listener_destroy_async(
+    struct evpl_listener *listener,
+    evpl_completion_t     callback,
+    void                 *private_data);

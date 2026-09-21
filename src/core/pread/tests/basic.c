@@ -20,6 +20,7 @@
 #include "core/test_log.h"
 #include "evpl/evpl.h"
 #include "tests/test_common.h"
+#include "tests/test_block.h"
 
 #define DEVICE_PATH "pread_basic.img"
 #define FIFO_PATH   "pread_basic.fifo"
@@ -89,7 +90,7 @@ main(
 
     evpl = evpl_create(NULL);
 
-    bdev = evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD, DEVICE_PATH);
+    bdev = test_block_open(evpl, EVPL_BLOCK_PROTOCOL_PREAD, DEVICE_PATH);
 
     evpl_test_abort_if(!bdev, "failed to open pread device");
 
@@ -180,29 +181,29 @@ main(
     }
 
     evpl_block_close_queue(evpl, queue);
-    evpl_block_close_device(bdev);
+    test_block_close(evpl, bdev);
 
     /* A path that is not there at all, and one that is there but cannot be
      * addressed by offset.  Both are ordinary operating conditions rather
      * than programming errors, so both report failure instead of aborting --
      * and neither may leave the device thread or the descriptor behind. */
-    evpl_test_abort_if(evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD,
-                                              "pread_basic_absent.img"),
+    evpl_test_abort_if(test_block_open(evpl, EVPL_BLOCK_PROTOCOL_PREAD,
+                                       "pread_basic_absent.img"),
                        "opening a nonexistent path produced a device");
 
 #ifndef _WIN32
     evpl_test_unlink(FIFO_PATH);
 
     if (mkfifo(FIFO_PATH, 0644) == 0) {
-        evpl_test_abort_if(evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD,
-                                                  FIFO_PATH),
+        evpl_test_abort_if(test_block_open(evpl, EVPL_BLOCK_PROTOCOL_PREAD,
+                                           FIFO_PATH),
                            "opening a fifo produced a device");
         evpl_test_unlink(FIFO_PATH);
     }
 
 #endif /* ifndef _WIN32 */
 
-    evpl_test_abort_if(evpl_block_open_device(EVPL_BLOCK_PROTOCOL_PREAD, "."),
+    evpl_test_abort_if(test_block_open(evpl, EVPL_BLOCK_PROTOCOL_PREAD, "."),
                        "opening a directory produced a device");
 
     evpl_destroy(evpl);

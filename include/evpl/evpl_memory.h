@@ -55,6 +55,9 @@
 struct evpl_iovec_ref;
 struct evpl;
 
+EVPL_API void * evpl_current_spdk_thread(
+    void);
+
 struct evpl_iovec_ref {
     union {
         unsigned int refcnt;         /* LOCAL type: non-atomic */
@@ -66,6 +69,7 @@ struct evpl_iovec_ref {
         struct evpl           *evpl,
         struct evpl_iovec_ref *ref);
 #ifdef EVPL_IOVEC_TRACE
+    void             *owner_spdk;
     evpl_thread_id_t  owner_thread;             /* Thread that allocated this ref (LOCAL only) */
 #endif // ifdef EVPL_IOVEC_TRACE
 };
@@ -268,7 +272,9 @@ evpl_iovec_ref_release(
                                          memory_order_release);
     } else {
 #ifdef EVPL_IOVEC_TRACE
-        evpl_iovec_trace_abort_if(!evpl_thread_equal(evpl_current_thread(), ref->owner_thread),
+        evpl_iovec_trace_abort_if((ref->owner_spdk ? ref->owner_spdk != evpl_current_spdk_thread() :
+                                   evpl_current_spdk_thread() != NULL ||
+                                   !evpl_thread_equal(evpl_current_thread(), ref->owner_thread)),
                                   "evpl_iovec_ref_release called on LOCAL iovec from wrong thread "
                                   "(owner=%lu, caller=%lu)",
                                   (unsigned long) ref->owner_thread,
@@ -393,7 +399,9 @@ evpl_iovec_ref_incr(struct evpl_iovec_ref *ref)
         atomic_fetch_add_explicit(&ref->refcnt_atomic, 1, memory_order_relaxed);
     } else {
 #ifdef EVPL_IOVEC_TRACE
-        evpl_iovec_trace_abort_if(!evpl_thread_equal(evpl_current_thread(), ref->owner_thread),
+        evpl_iovec_trace_abort_if((ref->owner_spdk ? ref->owner_spdk != evpl_current_spdk_thread() :
+                                   evpl_current_spdk_thread() != NULL ||
+                                   !evpl_thread_equal(evpl_current_thread(), ref->owner_thread)),
                                   "evpl_iovec_ref_incr called on LOCAL iovec from wrong thread "
                                   "(owner=%lu, caller=%lu)",
                                   (unsigned long) ref->owner_thread,
