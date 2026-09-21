@@ -4344,7 +4344,7 @@ main(
      * per-pid socket name under the build tree, which is what makes these runs
      * safe to execute concurrently without a network namespace or a port
      * lock -- the name is what has to be unique, not the port. */
-    g_address = test_address(proto, "127.0.0.1", argv[0]);
+    g_address = test_address(proto, test_mbt_address(), argv[0]);
     endpoint  = evpl_endpoint_create(g_address, port);
     evpl_test_abort_if(evpl_rpc2_server_start(server, proto, endpoint),
                        "failed to start RPC2 listener");

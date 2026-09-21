@@ -25,6 +25,8 @@ const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
 
+static unsigned int   client_received, server_received;
+
 void
 client_callback(
     struct evpl        *evpl,
@@ -36,6 +38,8 @@ client_callback(
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_MSG:
+            test_message_equals(notify, hello, sizeof(hello));
+            client_received++;
 
             evpl_test_info("client received '%s' len %d",
                            notify->recv_msg.iovec[0].data,
@@ -88,6 +92,8 @@ server_callback(
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_RECV_MSG:
+            test_message_equals(notify, hello, sizeof(hello));
+            server_received++;
 
             evpl_test_info("server received '%s'",
                            notify->recv_msg.iovec[0].data);
@@ -159,6 +165,8 @@ main(
     }
 
     evpl_native_thread_join(thr, NULL);
+    evpl_test_abort_if(client_received != 1 || server_received != 1,
+                       "expected one verified message in each direction");
 
     evpl_destroy(evpl);
 

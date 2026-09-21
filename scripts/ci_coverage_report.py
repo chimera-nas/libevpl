@@ -102,6 +102,12 @@ def main():
             "unbuilt code are not measured. This is code coverage, not model "
             "state/transition coverage.", ""]
 
+    if os.environ.get('MBT_RDMA_COVERAGE') == '1':
+        out += ["Includes native RDMA model replays in a Soft-RoCE KVM guest "
+                "running the same container and instrumented binaries. Native "
+                "and guest LLVM profiles are merged before counting coverage; "
+                "ordinary RDMA integration tests are excluded.", ""]
+
     out += ["| Component | Functions | Lines | Branches |",
             "|---|---|---|---|"]
 

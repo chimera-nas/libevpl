@@ -25,6 +25,8 @@ const char            localhost[] = "127.0.0.1";
 const char           *address     = localhost;
 int                   port        = 8000;
 
+static unsigned int   client_received, server_received;
+
 void
 client_callback(
     struct evpl        *evpl,
@@ -41,6 +43,8 @@ client_callback(
             length = evpl_recv(evpl, bind, buffer, hellolen, EVPL_RECV_FLAG_ALL_OR_NONE);
 
             if (length == hellolen) {
+                evpl_test_abort_if(memcmp(buffer, hello, hellolen), "incorrect client payload");
+                client_received++;
                 evpl_test_info("client received '%s'", buffer);
             }
 
@@ -100,6 +104,8 @@ server_callback(
             length = evpl_recv(evpl, bind, buffer, hellolen, EVPL_RECV_FLAG_ALL_OR_NONE);
 
             if (length == hellolen) {
+                evpl_test_abort_if(memcmp(buffer, hello, hellolen), "incorrect server payload");
+                server_received++;
 
                 evpl_test_info("server received '%s'", buffer);
 
@@ -184,6 +190,8 @@ main(
     }
 
     evpl_native_thread_join(thr, NULL);
+    evpl_test_abort_if(client_received != 1 || server_received != 1,
+                       "expected one verified message in each direction");
 
 
     evpl_listener_detach(evpl, binding);

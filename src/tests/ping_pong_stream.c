@@ -107,8 +107,6 @@ client_thread(void *arg)
 
     evpl_test_debug("client completed iterations");
 
-    state->run = 0;
-
     evpl_endpoint_close(ep);
 
     evpl_destroy(evpl);
@@ -123,8 +121,9 @@ server_callback(
     struct evpl_notify *notify,
     void               *private_data)
 {
-    uint32_t value;
-    int      length;
+    struct client_state *state = private_data;
+    uint32_t             value;
+    int                  length;
 
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
@@ -132,6 +131,7 @@ server_callback(
             break;
         case EVPL_NOTIFY_DISCONNECTED:
             evpl_test_info("server disconnected");
+            state->run = 0;
             break;
         case EVPL_NOTIFY_RECV_DATA:
 
@@ -220,6 +220,8 @@ main(
 
     evpl_native_thread_create(&thr, NULL, client_thread, &state);
 
+    /* Keep progressing the server until the client's disconnect completes;
+     * joining a client inside evpl_destroy before this can deadlock CM. */
     while (state.run) {
         evpl_continue(evpl);
     }

@@ -105,7 +105,7 @@ endif()
 if (HAVE_RDMACM)
     set(CORE_SRC ${CORE_SRC} rdmacm/rdmacm.c rdmacm/rdmacm.h)
     add_subdirectory(rdmacm)
-    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} rdmacm ibverbs)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} ${RDMACM_LIB} ${IBVERBS_LIB})
 endif()
 
 if (HAVE_LIBFABRIC)

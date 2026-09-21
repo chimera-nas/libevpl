@@ -595,6 +595,7 @@ size_bytes(uint8_t size)
         case CSZ_SZSMALL: return 100;
         case CSZ_SZMEDIUM: return 8192;
         case CSZ_SZLARGE: return 131072;
+        case CSZ_SZUDMTU: return 4096;
         default: return 0;
     } /* switch */
 } /* size_bytes */
@@ -1360,10 +1361,10 @@ do_listen(
         ps->endpoint = evpl_endpoint_create_inproc(name);
     } else {
         /* A port of its own per listen; see CONF_BASE_PORT. */
-        snprintf(name, sizeof(name), "127.0.0.1:%d",
+        snprintf(name, sizeof(name), "%s:%d", test_mbt_address(),
                  CONF_BASE_PORT + g_port_seq);
 
-        ps->endpoint = evpl_endpoint_create("127.0.0.1",
+        ps->endpoint = evpl_endpoint_create(test_mbt_address(),
                                             CONF_BASE_PORT + g_port_seq++);
     }
 
@@ -1478,7 +1479,7 @@ do_bind_pair(
     memset(cs->rx_off, 0, sizeof(cs->rx_off));
 
     for (s = 0; s < NUM_SIDE; s++) {
-        cs->ep[s] = evpl_endpoint_create("127.0.0.1",
+        cs->ep[s] = evpl_endpoint_create(test_mbt_address(),
                                          CONF_BASE_PORT + g_port_seq++);
 
         evpl_test_abort_if(!cs->ep[s], "failed to create a bind endpoint");
@@ -2262,6 +2263,9 @@ run_program(
         case CTR_TSTREAMUNIX:
             ps->proto = EVPL_STREAM_SOCKET_UNIX;
             break;
+        case CTR_TDATAGRAMRDMAUD:
+            ps->proto = EVPL_DATAGRAM_RDMACM_UD;
+            break;
         case CTR_TDATAGRAMUDP:
             ps->proto = EVPL_DATAGRAM_SOCKET_UDP;
             if (getenv("EVPL_TEST_DATAGRAM_PROTOCOL")) {
@@ -2442,6 +2446,15 @@ core_conformance_init(void)
     evpl_global_config_set_max_datagram_size(config, CONF_BUFFER_SIZE / 2);
     evpl_global_config_set_iovec_ring_size(config, 1024);
 
+    if (getenv("EVPL_TEST_RDMA_IP")) {
+        /* RC receives one SEND into an SRQ buffer. Provision for the model's
+        * largest SEND without changing any payload or expected callback.
+        * A bounded SRQ keeps repeated contexts practical in the CI guest. */
+        evpl_global_config_set_buffer_size(config, MAX_SEND_BYTES);
+        evpl_global_config_set_max_datagram_size(config, MAX_SEND_BYTES);
+        evpl_global_config_set_rdmacm_srq_size(config, 256);
+    }
+
     /* As test_evpl_config(), which this replaces: ctest runs the suite once
      * per event-loop mechanism compiled in and selects it through the
      * environment. */
@@ -2464,7 +2477,7 @@ main(
     int   argc,
     char *argv[])
 {
-    unsigned int i;
+    unsigned int i, rdma_mtu_modes = 0;
     int          failures = 0;
 
     /* Unbuffered: a sanitizer that finds something at exit terminates the
@@ -2483,12 +2496,17 @@ main(
                    (unsigned int) (sizeof(core_steps) / sizeof(core_steps[0])));
 
     for (i = 0; i < CORE_NUM_PROGRAMS; i++) {
+        if (core_steps[core_programs[i].first_step].transport == CTR_TDATAGRAMRDMAUD &&
+            !getenv("EVPL_TEST_RDMA_IP")) {
+            g_results.skipped++;
+            continue;
+        }
         /* The poll oracle assumes that only OpActivity reports activity and
          * that the native spin grace applies. Providers report I/O activity
          * themselves; SPDK deliberately has no native spin grace. Keep those
          * programs in the native matrix, and replay the remaining programs
          * with their complete, unchanged obligations on optional backends. */
-        if (test_mbt_spdk() || getenv("EVPL_TEST_DATAGRAM_PROTOCOL")) {
+        if (test_mbt_spdk() || getenv("EVPL_TEST_DATAGRAM_PROTOCOL") || getenv("EVPL_TEST_RDMA_IP")) {
             const struct core_program *p = &core_programs[i];
             int                        j;
             for (j = 0; j < p->nsteps; j++) {
@@ -2502,6 +2520,16 @@ main(
             }
         }
         failures += run_program(&core_programs[i], (int) i);
+        if (core_steps[core_programs[i].first_step].transport == CTR_TDATAGRAMRDMAUD) {
+            const struct core_program *p = &core_programs[i];
+            int                        j;
+            for (j = 0; j < p->nsteps; ++j) {
+                const struct core_step *step = &core_steps[p->first_step + j];
+                if (step->op == COP_OPSEND && step->size == CSZ_SZUDMTU) {
+                    rdma_mtu_modes |= 1U << step->send;
+                }
+            }
+        }
         g_results.programs++;
     }
 
@@ -2511,7 +2539,11 @@ main(
     }
 #endif /* ifdef HAVE_SPDK */
     evpl_test_abort_if(!g_results.programs, "no applicable core programs");
-    printf("native poll-mode programs omitted from this backend: %d\n", g_results.skipped);
+    evpl_test_abort_if(getenv("EVPL_TEST_RDMA_IP") &&
+                       (rdma_mtu_modes & ((1U << CSND_SENDTOEP) | (1U << CSND_SENDTOEPV))) !=
+                       ((1U << CSND_SENDTOEP) | (1U << CSND_SENDTOEPV)),
+                       "RDMA UD corpus must exercise MTU-sized scalar and vector sends");
+    printf("programs not applicable to this backend: %d\n", g_results.skipped);
     g_results.failed = failures;
 
     printf("core programs: %d run, %d steps, %d quiesces, %d obligations "

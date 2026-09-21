@@ -43,6 +43,13 @@ extern struct evpl_shared *evpl_shared;
 #define evpl_rdmacm_abort_if(cond, ...) \
         evpl_abort_if(cond, "rdmacm", __FILE__, __LINE__, __VA_ARGS__)
 
+/* Completion IDs must survive datagram-ring growth. The low two bits name
+ * the request kind; the remaining bits hold a per-QP sequence or SRQ index. */
+#define EVPL_RDMACM_WR_SEND 0U
+#define EVPL_RDMACM_WR_READ 1U
+#define EVPL_RDMACM_WR_RECV 2U
+#define EVPL_RDMACM_WR_MASK (UINT64_MAX >> 2)
+
 struct ibv_context **context = NULL;
 
 struct evpl_rdmacm_ah {
@@ -96,6 +103,8 @@ struct evpl_rdmacm_device {
     int                         srq_fill;
     int                         index;
     int                         num_qp;
+    uint8_t                     initiator_depth;
+    uint8_t                     responder_resources;
     struct evpl_rdmacm_id     **qp_lookup[QP_LOOKUP_LEVEL1_SIZE];
 };
 
@@ -134,6 +143,8 @@ struct evpl_rdmacm_id {
     int                           max_rdma_reads;
     int                           cur_rdma_reads;
     int                           cur_sends;
+    uint64_t                      sends_posted, sends_completed;
+    uint64_t                      reads_posted, reads_completed;
 
     /* RNR diagnostics: message-SEND (reply) work requests in flight on this
      * connection, and the high-water mark.  If a SEND completes with RNR
@@ -298,9 +309,11 @@ evpl_rdmacm_create_qp(
     qp_attr.cap.max_inline_data = evpl_shared->config->rdmacm_max_inline;
     qp_attr.sq_sig_all          = 0;
 
-    qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND |
-        IBV_QP_EX_WITH_RDMA_READ |
-        IBV_QP_EX_WITH_RDMA_WRITE;
+    qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND;
+    if (!rdmacm_id->ud) {
+        qp_attr.send_ops_flags |= IBV_QP_EX_WITH_RDMA_READ |
+            IBV_QP_EX_WITH_RDMA_WRITE;
+    }
 
     qp_attr.comp_mask = IBV_QP_INIT_ATTR_CREATE_FLAGS |
         IBV_QP_INIT_ATTR_PD |
@@ -345,7 +358,10 @@ evpl_rdmacm_event_callback(
     struct evpl_rdmacm_accepted_id *accepted_id;
     struct evpl_rdmacm_ah          *ah;
     struct rdma_cm_event           *cm_event;
+    struct rdma_cm_id              *request_id;
     struct rdma_conn_param          conn_param;
+    struct ibv_qp_attr              qp_attr;
+    struct ibv_qp_init_attr         qp_init_attr;
     int                             rc;
 
  again:
@@ -373,11 +389,16 @@ evpl_rdmacm_event_callback(
             }
 
             memset(&conn_param, 0, sizeof(conn_param));
-            conn_param.private_data        = rdmacm_id;
-            conn_param.retry_count         = evpl_shared->config->rdmacm_retry_count;
-            conn_param.rnr_retry_count     = evpl_shared->config->rdmacm_rnr_retry_count;
-            conn_param.initiator_depth     = 0;
-            conn_param.responder_resources = 16;
+            conn_param.private_data    = rdmacm_id;
+            conn_param.retry_count     = evpl_shared->config->rdmacm_retry_count;
+            conn_param.rnr_retry_count = evpl_shared->config->rdmacm_rnr_retry_count;
+            if (rdmacm_id->ud) {
+                conn_param.qp_num = rdmacm_id->qp_num;
+                conn_param.srq    = 1;
+            } else {
+                conn_param.initiator_depth     = rdmacm_id->dev->initiator_depth;
+                conn_param.responder_resources = rdmacm_id->dev->responder_resources;
+            }
 
             rc = rdma_connect(cm_event->id, &conn_param);
 
@@ -409,13 +430,17 @@ evpl_rdmacm_event_callback(
                 goto again;
 
             } else {
-                /* XXX why is this necessary? */
-                cm_event->id->qp = (struct ibv_qp *) rdmacm_id->qp;
-
-                rc = rdma_accept(cm_event->id, &conn_param);
-
-                evpl_rdmacm_abort_if(rc, "rdma_accept error %s", strerror(errno)
-                                     );
+                /* SIDR advertises the bound UD QP; this request does not own
+                 * that QP and has no subsequent connection lifecycle. */
+                request_id = cm_event->id;
+                memset(&conn_param, 0, sizeof(conn_param));
+                conn_param.qp_num = rdmacm_id->qp_num;
+                conn_param.srq    = 1;
+                rc                = rdma_accept(request_id, &conn_param);
+                evpl_rdmacm_abort_if(rc, "rdma_accept error %s", strerror(errno));
+                rdma_ack_cm_event(cm_event);
+                rdma_destroy_id(request_id);
+                goto again;
             }
 
             break;
@@ -439,8 +464,17 @@ evpl_rdmacm_event_callback(
 
                 evpl_address_release(rdmacm_id->resolve_addr);
                 rdmacm_id->resolve_addr = NULL;
+                evpl_defer(evpl, &bind->flush_deferral);
 
             } else {
+                if (!rdmacm_id->ud) {
+                    /* Use the negotiated outbound depth on both peers. A
+                     * zero-initialized limit would strand every queued read. */
+                    rc = ibv_query_qp(rdmacm_id->id->qp, &qp_attr,
+                                      IBV_QP_MAX_QP_RD_ATOMIC, &qp_init_attr);
+                    evpl_rdmacm_abort_if(rc, "ibv_query_qp: %s", strerror(rc));
+                    rdmacm_id->max_rdma_reads = qp_attr.max_rd_atomic;
+                }
                 /* On the connecting (client) side bind->local was never
                  * populated; the accept path sets it, but connect() does not.
                  * Now that the connection is established the cm_id's route
@@ -476,6 +510,11 @@ evpl_rdmacm_event_callback(
             bind = evpl_private2bind(rdmacm_id);
 
             rdmacm_id->connected = 0;
+
+            /* Reply to a peer's DREQ, including simultaneous disconnects.
+             * For a DREP this is harmless: the CM has nothing left to send. */
+            rc = rdma_disconnect(cm_event->id);
+            evpl_rdmacm_abort_if(rc, "rdma_disconnect reply: %s", strerror(errno));
 
             if (bind->flags & EVPL_BIND_CLOSE_DEFERRED) {
                 /* We initiated this disconnect; the bind has been parked on
@@ -559,7 +598,7 @@ evpl_rdmacm_fill_srq(
         req->sge.length = req->iovec.length;
         req->sge.lkey   = mr->lkey;
 
-        wr->wr_id = (uint64_t) req;
+        wr->wr_id = ((uint64_t) (req - dev->srq_reqs) << 2) | EVPL_RDMACM_WR_RECV;
         wr->next  = NULL;
 
         wr->sg_list = &req->sge;
@@ -590,45 +629,29 @@ evpl_rdmacm_fill_all_srq(
     }
 } /* evpl_rdmacm_fill_all_srq */
 
-static const char *
-ibv_wc_opcode_str(enum ibv_wc_opcode opcode)
-{
-    switch (opcode) {
-        case IBV_WC_SEND:
-            return "send";
-        case IBV_WC_RECV:
-            return "recv";
-        case IBV_WC_RDMA_READ:
-            return "read";
-        case IBV_WC_RDMA_WRITE:
-            return "write";
-        default:
-            return "unknown";
-    } /* switch */
-} /* ibv_wc_opcode_str */
-
 static inline void
 evpl_rdmacm_process_send_completions(
     struct evpl           *evpl,
     struct evpl_rdmacm_id *rdmacm_id,
-    struct evpl_dgram     *signaled_dgram,
+    uint64_t               completed,
     int                    status)
 {
     struct evpl_dgram *dgram;
     struct evpl_bind  *bind = evpl_private2bind(rdmacm_id);
     struct evpl_iovec *iovec;
     struct evpl_notify notify;
-    int                i, seen_completed = 0;
+    int                i;
+    uint64_t           remaining   = (completed - rdmacm_id->sends_completed) & EVPL_RDMACM_WR_MASK;
     uint64_t           total_bytes = 0;
     uint64_t           total_msgs  = 0;
 
-    while (bind->dgram_send.tail != bind->dgram_send.waist && !seen_completed) {
+    evpl_rdmacm_abort_if(!remaining || remaining > (uint64_t) rdmacm_id->cur_sends,
+                         "invalid send completion sequence");
+    while (remaining--) {
+        evpl_rdmacm_abort_if(bind->dgram_send.tail == bind->dgram_send.waist,
+                             "completion exceeds posted datagrams");
 
         dgram = evpl_dgram_ring_tail(&bind->dgram_send);
-
-        if (dgram == signaled_dgram) {
-            seen_completed = 1;
-        }
 
         evpl_dgram_ring_remove(&bind->dgram_send);
 
@@ -639,6 +662,7 @@ evpl_rdmacm_process_send_completions(
         }
 
         --rdmacm_id->cur_sends;
+        rdmacm_id->sends_completed = (rdmacm_id->sends_completed + 1) & EVPL_RDMACM_WR_MASK;
 
         if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
             --rdmacm_id->dbg_send_inflight;
@@ -654,18 +678,13 @@ evpl_rdmacm_process_send_completions(
         }
     }
 
-    if (unlikely(!seen_completed)) {
-        evpl_rdmacm_error("completed dgram %p not found", signaled_dgram);
-        return;
-    }
-
     bind = evpl_private2bind(rdmacm_id);
 
     if (likely(rdmacm_id->id)) {
 
         if ((total_bytes || total_msgs) && (bind->flags & EVPL_BIND_SENT_NOTIFY)) {
             notify.notify_type   = EVPL_NOTIFY_SENT;
-            notify.notify_status = 0;
+            notify.notify_status = status;
             notify.sent.bytes    = total_bytes;
             notify.sent.msgs     = total_msgs;
 
@@ -691,20 +710,21 @@ static inline void
 evpl_rdmacm_process_rdma_read_completions(
     struct evpl           *evpl,
     struct evpl_rdmacm_id *rdmacm_id,
-    struct evpl_dgram     *signaled_dgram,
+    uint64_t               completed,
     int                    status)
 {
     struct evpl_dgram *dgram;
     struct evpl_bind  *bind = evpl_private2bind(rdmacm_id);
-    int                i, seen_completed = 0;
+    int                i;
+    uint64_t           remaining = (completed - rdmacm_id->reads_completed) & EVPL_RDMACM_WR_MASK;
 
-    while (bind->dgram_read.tail != bind->dgram_read.waist && !seen_completed) {
+    evpl_rdmacm_abort_if(!remaining || remaining > (uint64_t) rdmacm_id->cur_rdma_reads,
+                         "invalid read completion sequence");
+    while (remaining--) {
+        evpl_rdmacm_abort_if(bind->dgram_read.tail == bind->dgram_read.waist,
+                             "completion exceeds posted datagrams");
 
         dgram = evpl_dgram_ring_tail(&bind->dgram_read);
-
-        if (dgram == signaled_dgram) {
-            seen_completed = 1;
-        }
 
         evpl_dgram_ring_remove(&bind->dgram_read);
 
@@ -716,16 +736,12 @@ evpl_rdmacm_process_rdma_read_completions(
         }
 
         --rdmacm_id->cur_rdma_reads;
+        rdmacm_id->reads_completed = (rdmacm_id->reads_completed + 1) & EVPL_RDMACM_WR_MASK;
 
         if (dgram->callback) {
             dgram->callback(status, dgram->private_data);
         }
 
-    }
-
-    if (unlikely(!seen_completed)) {
-        evpl_rdmacm_error("completed dgram %p not found", signaled_dgram);
-        return;
     }
 
     bind = evpl_private2bind(rdmacm_id);
@@ -737,6 +753,47 @@ evpl_rdmacm_process_rdma_read_completions(
 } /* evpl_rdmacm_process_send_completions */
 
 
+static void
+evpl_rdmacm_recv_stream(
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct evpl_iovec *received)
+{
+    struct evpl_iovec *iov;
+    struct evpl_notify notify;
+    int                length, niov;
+
+    evpl_iovec_ring_add(&bind->iovec_recv, received);
+
+    if (!bind->segment_callback) {
+        notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
+        notify.notify_status = 0;
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
+        return;
+    }
+
+    iov = alloca(sizeof(*iov) * evpl_shared->config->max_num_iovec);
+    while (!(bind->flags & EVPL_BIND_PENDING_CLOSED)) {
+        length = bind->segment_callback(evpl, bind, bind->private_data);
+        if (length < 0) {
+            evpl_close(evpl, bind);
+            break;
+        }
+        if (!length || evpl_iovec_ring_bytes(&bind->iovec_recv) < (uint64_t) length) {
+            break;
+        }
+        niov                   = evpl_iovec_ring_copyv(evpl, iov, &bind->iovec_recv, length);
+        notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+        notify.notify_status   = 0;
+        notify.recv_msg.iovec  = iov;
+        notify.recv_msg.niov   = niov;
+        notify.recv_msg.length = length;
+        notify.recv_msg.addr   = bind->remote;
+        bind->notify_callback(evpl, bind, &notify, bind->private_data);
+    }
+} /* evpl_rdmacm_recv_stream */
+
+
 static FORCE_INLINE void
 evpl_rdmacm_poll_cq(
     struct evpl               *evpl,
@@ -746,13 +803,13 @@ evpl_rdmacm_poll_cq(
     struct evpl_rdmacm            *rdmacm = dev->rdmacm;
     struct evpl_rdmacm_id         *rdmacm_id;
     struct evpl_rdmacm_request    *req;
-    struct evpl_dgram             *dgram;
     struct evpl_bind              *bind;
     struct evpl_notify             notify;
     struct ibv_cq_ex              *cq      = (struct ibv_cq_ex *) dev->cq;
     static struct ibv_poll_cq_attr cq_attr = { .comp_mask = 0 };
     int                            rc, n;
-    uint32_t                       qp_num, wc_flags;
+    uint32_t                       qp_num, kind;
+    uint64_t                       id;
 
  again:
 
@@ -770,129 +827,83 @@ evpl_rdmacm_poll_cq(
 
         n++;
 
+        /* qp_num and wr_id remain valid on errors; opcode does not. */
+        qp_num    = ibv_wc_read_qp_num(cq);
+        kind      = cq->wr_id & 3;
+        id        = cq->wr_id >> 2;
+        rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
+
         if (unlikely(cq->status)) {
-            switch (ibv_wc_read_opcode(cq)) {
-                case IBV_WC_RECV:
+            evpl_rdmacm_error("completion error wr_id %lu qp %u status %u vendor_err %u",
+                              cq->wr_id, qp_num, cq->status, ibv_wc_read_vendor_err(cq));
+        }
+
+        if (kind == EVPL_RDMACM_WR_RECV) {
+            evpl_rdmacm_abort_if(id >= (uint64_t) dev->srq_max, "invalid receive request ID");
+            req = &dev->srq_reqs[id];
+            if (unlikely(cq->status)) {
+                evpl_iovec_release_internal(evpl, &req->iovec);
+            } else {
+                req->iovec.length = ibv_wc_read_byte_len(cq);
+
+                if (unlikely(!rdmacm_id)) {
+                    evpl_iovec_release_internal(evpl, &req->iovec);
+                } else if (rdmacm_id->stream) {
+
+                    bind = evpl_private2bind(rdmacm_id);
+
+                    evpl_rdmacm_recv_stream(evpl, bind, &req->iovec);
+                } else {
+
+                    bind = evpl_private2bind(rdmacm_id);
+
+                    /* UD reserves a GRH-sized prefix even without a
+                     * valid GRH. RC has no prefix; RXE may still set the
+                     * completion flag there, so use the QP type. */
+                    if (rdmacm_id->ud) {
+                        evpl_rdmacm_abort_if(req->iovec.length < sizeof(struct ibv_grh),
+                                             "short UD receive buffer");
+                        req->iovec.length -= sizeof(struct ibv_grh);
+                        req->iovec.data    = (char *) req->iovec.data + sizeof(struct ibv_grh);
+                    }
+
+                    rdmacm_id->dbg_req_recv++;
+
+                    notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+                    notify.notify_status   = 0;
+                    notify.recv_msg.iovec  = &req->iovec;
+                    notify.recv_msg.niov   = 1;
+                    notify.recv_msg.addr   = bind->remote;
+                    notify.recv_msg.length = req->iovec.length;
+
+                    bind->notify_callback(evpl, bind, &notify,
+                                          bind->private_data);
+                }
+
+            }
+            --dev->srq_fill;
+            req->used = 0;
+            LL_PREPEND(dev->srq_free_reqs, req);
+        } else if (rdmacm_id) {
+            if (kind == EVPL_RDMACM_WR_READ) {
+                evpl_rdmacm_process_rdma_read_completions(evpl, rdmacm_id, id, cq->status ? EIO : 0);
+            } else {
+                evpl_rdmacm_abort_if(kind != EVPL_RDMACM_WR_SEND, "invalid send request ID");
+                if (cq->status == IBV_WC_RNR_RETRY_EXC_ERR) {
+                    rdmacm_id->dbg_send_rnr++;
                     evpl_rdmacm_error(
-                        "receive completion error wr_id %lu type %u status %u vendor_err %u",
-                        cq->wr_id,
-                        ibv_wc_read_opcode(cq),
-                        cq->status,
-                        ibv_wc_read_vendor_err(cq));
-                    break;
-                case IBV_WC_SEND:
-                case IBV_WC_RDMA_READ:
-                case IBV_WC_RDMA_WRITE:
-                    evpl_rdmacm_error(
-                        "rdma %s completion error wr_id %lu type %u status %u vendor_err %u",
-                        ibv_wc_opcode_str(ibv_wc_read_opcode(cq)),
-                        cq->wr_id,
-                        ibv_wc_read_opcode(cq),
-                        cq->status,
-                        ibv_wc_read_vendor_err(cq));
-
-                    dgram     = (struct evpl_dgram *) cq->wr_id;
-                    rdmacm_id = evpl_bind_private(dgram->bind);
-
-                    /* RNR diagnostics: on an RNR_RETRY_EXC (status 13) SEND, the
-                     * client had no receive posted for our reply.  dbg_send_inflight
-                     * (this failing SEND included) is the number of reply SENDs we
-                     * had outstanding on this QP.  Near/above the client's ~128 recv
-                     * credit => chimera over-sent replies on the connection; a small
-                     * value => wrong-QP routing or a client-side recv gap instead. */
-                    if (cq->status == IBV_WC_RNR_RETRY_EXC_ERR &&
-                        dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
-                        rdmacm_id->dbg_send_rnr++;
-                        evpl_rdmacm_error(
-                            "RNR-DIAG qp=%u send_inflight=%d send_hwm=%d cur_sends=%d rnr_count=%lu req_recv=%lu reply_sent=%lu excess_replies=%ld",
-                            rdmacm_id->qp_num, rdmacm_id->dbg_send_inflight,
-                            rdmacm_id->dbg_send_hwm, rdmacm_id->cur_sends,
-                            rdmacm_id->dbg_send_rnr,
-                            rdmacm_id->dbg_req_recv, rdmacm_id->dbg_reply_sent,
-                            (long) (rdmacm_id->dbg_reply_sent - rdmacm_id->dbg_req_recv));
-                    }
-
-                    if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_READ) {
-                        evpl_rdmacm_process_rdma_read_completions(evpl, rdmacm_id, dgram, EIO);
-                    } else {
-                        evpl_rdmacm_process_send_completions(evpl, rdmacm_id, dgram, EIO);
-                    }
-
-                    break;
-                default:
-                    abort();
-            } /* switch */
-        } else {
-            switch (ibv_wc_read_opcode(cq)) {
-                case IBV_WC_RECV:
-
-                    req               = (struct evpl_rdmacm_request *) cq->wr_id;
-                    req->iovec.length = ibv_wc_read_byte_len(cq);
-
-                    qp_num = ibv_wc_read_qp_num(cq);
-
-                    rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
-
-                    if (unlikely(!rdmacm_id)) {
-                        evpl_iovec_release_internal(evpl, &req->iovec);
-                    } else if (rdmacm_id->stream) {
-
-                        bind = evpl_private2bind(rdmacm_id);
-
-                        evpl_iovec_ring_add(&bind->iovec_recv, &req->iovec);
-
-                        notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
-                        notify.notify_status = 0;
-
-                        bind->notify_callback(evpl, bind, &notify,
-                                              bind->private_data);
-                    } else {
-
-                        bind = evpl_private2bind(rdmacm_id);
-
-                        wc_flags = ibv_wc_read_wc_flags(cq);
-
-                        if (wc_flags & IBV_WC_GRH) {
-                            req->iovec.length -= 40;
-                            req->iovec.data    = (char *) req->iovec.data + 40;
-                        }
-
-                        rdmacm_id->dbg_req_recv++;
-
-                        notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
-                        notify.notify_status   = 0;
-                        notify.recv_msg.iovec  = &req->iovec;
-                        notify.recv_msg.niov   = 1;
-                        notify.recv_msg.addr   = bind->remote;
-                        notify.recv_msg.length = req->iovec.length;
-
-                        bind->notify_callback(evpl, bind, &notify,
-                                              bind->private_data);
-                    }
-
-                    --dev->srq_fill;
-                    req->used = 0;
-                    LL_PREPEND(dev->srq_free_reqs, req);
-
-                    break;
-                case IBV_WC_SEND:
-                case IBV_WC_RDMA_READ:
-                case IBV_WC_RDMA_WRITE:
-
-                    dgram     = (struct evpl_dgram *) cq->wr_id;
-                    rdmacm_id = evpl_bind_private(dgram->bind);
-
-                    if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_READ) {
-                        evpl_rdmacm_process_rdma_read_completions(evpl, rdmacm_id, dgram, 0);
-                    } else {
-                        evpl_rdmacm_process_send_completions(evpl, rdmacm_id, dgram, 0);
-                    }
-
-                    break;
-                default:
-                    evpl_rdmacm_error("Unhandled RDMA completion opcode %u",
-                                      ibv_wc_read_opcode(cq));
-            } /* switch */
+                        "RNR-DIAG qp=%u send_inflight=%d send_hwm=%d cur_sends=%d rnr_count=%lu req_recv=%lu reply_sent=%lu excess_replies=%ld",
+                        rdmacm_id->qp_num, rdmacm_id->dbg_send_inflight,
+                        rdmacm_id->dbg_send_hwm, rdmacm_id->cur_sends,
+                        rdmacm_id->dbg_send_rnr,
+                        rdmacm_id->dbg_req_recv, rdmacm_id->dbg_reply_sent,
+                        (long) (rdmacm_id->dbg_reply_sent - rdmacm_id->dbg_req_recv));
+                }
+                evpl_rdmacm_process_send_completions(evpl, rdmacm_id, id, cq->status ? EIO : 0);
+            }
+        }
+        if (unlikely(cq->status) && rdmacm_id) {
+            evpl_close(evpl, evpl_private2bind(rdmacm_id));
         }
 
 
@@ -1068,8 +1079,12 @@ evpl_rdmacm_create(
 
         dev->rdmacm = rdmacm;
 
-        dev->context = rdmacm_devices->context[i];
-        dev->index   = i;
+        dev->context         = rdmacm_devices->context[i];
+        dev->index           = i;
+        dev->initiator_depth = rdmacm_devices->device_attr[i].max_qp_init_rd_atom > 16 ?
+            16 : rdmacm_devices->device_attr[i].max_qp_init_rd_atom;
+        dev->responder_resources = rdmacm_devices->device_attr[i].max_qp_rd_atom > 16 ?
+            16 : rdmacm_devices->device_attr[i].max_qp_rd_atom;
 
         evpl_rdmacm_qp_lookup_init(dev);
 
@@ -1099,7 +1114,7 @@ evpl_rdmacm_create(
 
         dev->td = ibv_alloc_td(dev->context, &td_attr);
 
-        evpl_rdmacm_abort_if(!dev->td,
+        evpl_rdmacm_abort_if(!dev->td && errno != EOPNOTSUPP && errno != ENOSYS,
                              "Failed to allocate thread domain for rdma device: %s",
                              strerror(errno));
 
@@ -1109,23 +1124,30 @@ evpl_rdmacm_create(
         pd_attr.td        = dev->td;
         pd_attr.comp_mask = 0;
 
-        dev->pd = ibv_alloc_parent_domain(dev->context, &pd_attr);
-
-        evpl_rdmacm_abort_if(!dev->pd,
-                             "Failed to allocate parent domain for rdma device: %s",
-                             strerror(errno));
+        if (dev->td) {
+            dev->pd = ibv_alloc_parent_domain(dev->context, &pd_attr);
+            evpl_rdmacm_abort_if(!dev->pd && errno != EOPNOTSUPP && errno != ENOSYS,
+                                 "Failed to allocate parent domain for rdma device: %s",
+                                 strerror(errno));
+        }
+        /* Thread/parent domains are optional provider optimizations. Keep the
+         * shared registration PD when they are unavailable (e.g. Soft-RoCE). */
+        if (!dev->pd) {
+            dev->pd = dev->parent_pd;
+        }
 
         memset(&cq_attr, 0, sizeof(cq_attr));
 
-        cq_attr.cqe           = evpl_shared->config->rdmacm_cq_size;
-        cq_attr.cq_context    = dev;
-        cq_attr.channel       = dev->comp_channel;
-        cq_attr.comp_vector   = 0;
-        cq_attr.parent_domain = dev->pd;
-        cq_attr.wc_flags      = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_QP_NUM;
-        cq_attr.flags         = IBV_CREATE_CQ_ATTR_SINGLE_THREADED;
-        cq_attr.comp_mask     = IBV_CQ_INIT_ATTR_MASK_FLAGS |
-            IBV_CQ_INIT_ATTR_MASK_PD;
+        cq_attr.cqe         = evpl_shared->config->rdmacm_cq_size;
+        cq_attr.cq_context  = dev;
+        cq_attr.channel     = dev->comp_channel;
+        cq_attr.comp_vector = 0;
+        cq_attr.wc_flags    = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_QP_NUM;
+        if (dev->pd != dev->parent_pd) {
+            cq_attr.parent_domain = dev->pd;
+            cq_attr.flags         = IBV_CREATE_CQ_ATTR_SINGLE_THREADED;
+            cq_attr.comp_mask     = IBV_CQ_INIT_ATTR_MASK_FLAGS | IBV_CQ_INIT_ATTR_MASK_PD;
+        }
 
         dev->cq = (struct ibv_cq *) ibv_create_cq_ex(dev->context, &cq_attr);
 
@@ -1224,9 +1246,13 @@ evpl_rdmacm_destroy(
         evpl_free(dev->srq_reqs);
 
         ibv_destroy_cq(dev->cq);
-        ibv_dealloc_pd(dev->pd);
+        if (dev->pd != dev->parent_pd) {
+            ibv_dealloc_pd(dev->pd);
+        }
         ibv_destroy_comp_channel(dev->comp_channel);
-        ibv_dealloc_td(dev->td);
+        if (dev->td) {
+            ibv_dealloc_td(dev->td);
+        }
     }
 
     evpl_free(rdmacm->devices);
@@ -1274,7 +1300,7 @@ evpl_rdmacm_attach(
                                     sizeof(accepted_id->id->route.addr.src_addr));
 
     rdmacm_id->rdmacm      = rdmacm;
-    rdmacm_id->stream      = rdmacm_id->stream;
+    rdmacm_id->stream      = bind->protocol->stream;
     rdmacm_id->connected   = 0;
     rdmacm_id->id          = accepted_id->id;
     rdmacm_id->id->context = rdmacm_id;
@@ -1282,13 +1308,20 @@ evpl_rdmacm_attach(
     evpl_rdmacm_create_qp(evpl, rdmacm, rdmacm_id);
 
     memset(&conn_param, 0, sizeof(conn_param));
-    conn_param.private_data        = rdmacm;
-    conn_param.retry_count         = evpl_shared->config->rdmacm_retry_count;
-    conn_param.rnr_retry_count     = evpl_shared->config->rdmacm_rnr_retry_count;
-    conn_param.responder_resources = accepted_id->conn_param.initiator_depth;
-    conn_param.initiator_depth     = accepted_id->conn_param.initiator_depth;//responder_resources;
+    conn_param.private_data    = rdmacm;
+    conn_param.retry_count     = evpl_shared->config->rdmacm_retry_count;
+    conn_param.rnr_retry_count = evpl_shared->config->rdmacm_rnr_retry_count;
+    /* CM presents the request limits from the accepting peer's perspective. */
+    conn_param.responder_resources = rdmacm_id->dev->responder_resources;
+    if (conn_param.responder_resources > accepted_id->conn_param.responder_resources) {
+        conn_param.responder_resources = accepted_id->conn_param.responder_resources;
+    }
+    conn_param.initiator_depth = rdmacm_id->dev->initiator_depth;
+    if (conn_param.initiator_depth > accepted_id->conn_param.initiator_depth) {
+        conn_param.initiator_depth = accepted_id->conn_param.initiator_depth;
+    }
 
-    rdmacm_id->max_rdma_reads = accepted_id->conn_param.initiator_depth;
+    rdmacm_id->max_rdma_reads = 0;
     rdmacm_id->cur_rdma_reads = 0;
 
     rc = rdma_accept(accepted_id->id, &conn_param);
@@ -1493,6 +1526,15 @@ evpl_rdmacm_ud_resolve(
 {
     int rc;
 
+    /* A completed SIDR lookup cannot resolve another destination on the
+     * same CM ID. The bound data QP remains on rdmacm_id->id. */
+    if (rdmacm_id->resolve_id) {
+        rdma_destroy_id(rdmacm_id->resolve_id);
+    }
+    rc = rdma_create_id(rdmacm_id->rdmacm->event_channel,
+                        &rdmacm_id->resolve_id, rdmacm_id, RDMA_PS_UDP);
+    evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
+
     rdmacm_id->resolve_addr = address;
 
     evpl_address_incref(address);
@@ -1544,8 +1586,9 @@ evpl_rdmacm_flush_rdma_reads(
             bind->iovec_rdma_read.waist = (bind->iovec_rdma_read.waist + 1) & bind->iovec_rdma_read.mask;
         }
 
-        qp->wr_id    = (uint64_t) dgram;
-        qp->wr_flags = IBV_SEND_SIGNALED;
+        rdmacm_id->reads_posted = (rdmacm_id->reads_posted + 1) & EVPL_RDMACM_WR_MASK;
+        qp->wr_id               = (rdmacm_id->reads_posted << 2) | EVPL_RDMACM_WR_READ;
+        qp->wr_flags            = IBV_SEND_SIGNALED;
 
         ibv_wr_rdma_read(qp, dgram->remote_key, dgram->remote_address);
 
@@ -1571,7 +1614,7 @@ evpl_rdmacm_flush_datagram(
     int                    nsge, rc, send_inline, need_signal;
     int                    send_limit = evpl_shared->config->rdmacm_sq_size;
 
-    if (unlikely(!qp || !rdmacm_id->connected)) {
+    if (unlikely(!qp || (!rdmacm_id->ud && !rdmacm_id->connected))) {
         return;
     }
 
@@ -1660,8 +1703,10 @@ evpl_rdmacm_flush_datagram(
             bind->dgram_send.waist == bind->dgram_send.head;
 
 
-        qp->wr_id    = (uint64_t) dgram;
-        qp->wr_flags = need_signal ? IBV_SEND_SIGNALED : 0;
+        rdmacm_id->sends_posted = (rdmacm_id->sends_posted + 1) & EVPL_RDMACM_WR_MASK;
+        qp->wr_id               = (rdmacm_id->sends_posted << 2) | EVPL_RDMACM_WR_SEND;
+        qp->wr_flags            = (need_signal ? IBV_SEND_SIGNALED : 0) |
+            (send_inline ? IBV_SEND_INLINE : 0);
 
         if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND) {
             ibv_wr_send(qp);
@@ -1729,13 +1774,6 @@ evpl_rdmacm_bind(
     evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
 
     evpl_rdmacm_set_options(rdmacm_id->id);
-
-    rc = rdma_create_id(rdmacm->event_channel, &rdmacm_id->resolve_id,
-                        rdmacm_id,
-                        RDMA_PS_UDP);
-
-    evpl_rdmacm_abort_if(rc, "rdma_create_id error %s", strerror(errno));
-
 
     rc = rdma_bind_addr(rdmacm_id->id, bind->local->addr);
 
@@ -1806,7 +1844,7 @@ evpl_rdmacm_close(
     struct evpl_rdmacm        *rdmacm    = rdmacm_id->rdmacm;
     struct evpl_rdmacm_device *dev       = rdmacm_id->dev;
 
-    if (rdmacm) {
+    if (dev) {
         --dev->num_qp;
 
         if (dev->num_qp == 0) {
