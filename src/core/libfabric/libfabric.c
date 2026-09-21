@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdlib.h>
+#include <alloca.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -1012,10 +1013,33 @@ evpl_libfabric_handle_recv(
 
         evpl_iovec_ring_add(&bind->iovec_recv, &ctx->iovec);
 
-        notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
-        notify.notify_status = 0;
-
-        bind->notify_callback(evpl, bind, &notify, bind->private_data);
+        if (bind->segment_callback) {
+            struct evpl_iovec *iov = alloca(sizeof(*iov) *
+                                            evpl_shared->config->max_num_iovec);
+            int                length, niov;
+            while (!(bind->flags & EVPL_BIND_PENDING_CLOSED)) {
+                length = bind->segment_callback(evpl, bind, bind->private_data);
+                if (length < 0) {
+                    evpl_close(evpl, bind);
+                    break;
+                }
+                if (!length || evpl_iovec_ring_bytes(&bind->iovec_recv) < (uint64_t) length) {
+                    break;
+                }
+                niov                   = evpl_iovec_ring_copyv(evpl, iov, &bind->iovec_recv, length);
+                notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+                notify.notify_status   = 0;
+                notify.recv_msg.iovec  = iov;
+                notify.recv_msg.niov   = niov;
+                notify.recv_msg.length = length;
+                notify.recv_msg.addr   = bind->remote;
+                bind->notify_callback(evpl, bind, &notify, bind->private_data);
+            }
+        } else {
+            notify.notify_type   = EVPL_NOTIFY_RECV_DATA;
+            notify.notify_status = 0;
+            bind->notify_callback(evpl, bind, &notify, bind->private_data);
+        }
 
     } else {
 
@@ -1744,8 +1768,11 @@ evpl_libfabric_unwire_wait(struct evpl_libfabric_wait *wait)
      * retired.  Commit only after prepare_wait has refreshed every snapshot,
      * rather than re-registering a stale shared descriptor here. */
     evpl_free(wait->fds);
-    wait->fds = NULL;
-    wait->fid = NULL;
+    wait->fds          = NULL;
+    wait->fid          = NULL;
+    wait->capacity     = 0;
+    wait->valid        = 0;
+    wait->change_index = 0;
     evpl_libfabric_update_tick(wait->lf);
 } /* evpl_libfabric_unwire_wait */
 
@@ -2043,7 +2070,7 @@ evpl_libfabric_ep_removed(
     struct evpl_libfabric               *lf,
     struct evpl_libfabric_thread_device *tdev)
 {
-    int i;
+    int i, rc;
 
     tdev->num_ep--;
     lf->num_eps--;
@@ -2055,6 +2082,18 @@ evpl_libfabric_ep_removed(
                     lf->active_devices[--lf->num_active_devices];
                 break;
             }
+        }
+        /* No endpoint can produce another completion. Retire its queues
+         * now, rather than asking an idle provider wait set to progress
+         * endpoints that have already been closed (tcp/rxm can retain an
+         * underlying wait entry until the CQ itself is closed). A later
+         * endpoint recreates the queues through tdev_open. */
+        evpl_libfabric_cq_close(evpl, &tdev->cq);
+        if (tdev->eq) {
+            evpl_libfabric_unwire_wait(&tdev->eq_wait);
+            rc = fi_close(&tdev->eq->fid);
+            evpl_libfabric_abort_if(rc, "fi_close(eq): %s", fi_strerror(-rc));
+            tdev->eq = NULL;
         }
     }
 

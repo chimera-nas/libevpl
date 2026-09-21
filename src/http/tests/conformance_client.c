@@ -70,6 +70,7 @@
 
 
 #include "evpl/evpl.h"
+#include "tests/test_mbt.h"
 #include "evpl/evpl_http.h"
 
 #include "http_cases.h"
@@ -1250,7 +1251,7 @@ raw_server_function(void *ptr)
     struct wirebuf     wb;
     unsigned int       i;
     test_socket_t      fd;
-    int                close_after;
+    int                close_after, one = 1;
 
     /* One more accept than there are cases: the last is the API checks', and
      * it is answered by dropping the connection.  See run_api_cases. */
@@ -1262,6 +1263,11 @@ raw_server_function(void *ptr)
         fd = test_socket_accept(raw->listen_fd, NULL, NULL);
 
         raw->ready = 0;
+
+        if (fd != TEST_INVALID_SOCKET) {
+            /* Fragmentation is controlled by deliver(), not Nagle/delayed ACK. */
+            test_socket_option(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        }
 
         if (fd != TEST_INVALID_SOCKET && raw->case_index == (int) HTTP_NUM_CLIENT_CASES) {
             test_socket_close(fd);
@@ -1800,7 +1806,7 @@ run_client_case(
     g_raw.case_done  = 0;
     atomic_thread_fence(memory_order_seq_cst);
 
-    conn = evpl_http_client_connect(agent, EVPL_STREAM_SOCKET_TCP, endpoint,
+    conn = evpl_http_client_connect(agent, test_mbt_stream_protocol(), endpoint,
                                     EVPL_HTTP_VERSION_HTTP1, ctx);
 
     if (!dispatch_one(evpl, conn, c, ctx) ||
@@ -1819,7 +1825,7 @@ run_client_case(
 
     while (now_ms() < deadline &&
            (!ctx_done(ctx) || (two && !ctx_done(ctx2)))) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
     }
 
     /* Keep pumping for a moment after the case has reached its end: a second
@@ -1829,7 +1835,7 @@ run_client_case(
     deadline = now_ms() + SETTLE_MS;
 
     while (now_ms() < deadline) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
     }
 
     check_request(c, ctx, 0);
@@ -1900,7 +1906,7 @@ run_client_case(
     deadline = now_ms() + 20;
 
     while (now_ms() < deadline) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
     }
 } /* run_client_case */
 
@@ -1946,7 +1952,7 @@ run_api_cases(
     g_raw.case_done  = 0;
     atomic_thread_fence(memory_order_seq_cst);
 
-    conn = evpl_http_client_connect(agent, EVPL_STREAM_SOCKET_TCP, endpoint,
+    conn = evpl_http_client_connect(agent, test_mbt_stream_protocol(), endpoint,
                                     EVPL_HTTP_VERSION_HTTP1, ctx1);
 
     request = evpl_http_request_create(conn, EVPL_HTTP_REQUEST_TYPE_GET,
@@ -1957,7 +1963,7 @@ run_api_cases(
     deadline = now_ms() + CASE_TIMEOUT_MS;
 
     while (now_ms() < deadline && !ctx_done(ctx1)) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
     }
 
     ok = ctx1->n_failed == 1 && ctx1->error == EVPL_HTTP_ERROR_CONN_LOST;
@@ -2081,7 +2087,7 @@ main(
         } /* switch */
     }
 
-    evpl_init(NULL);
+    test_evpl_config();
 
     g_raw.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -2115,7 +2121,7 @@ main(
      * arriving, which is what lets a case reach its deadline. */
     tconfig = evpl_thread_config_init();
     evpl_thread_config_set_wait_ms(tconfig, PUMP_WAIT_MS);
-    evpl = evpl_create(tconfig);
+    evpl = test_mbt_create(tconfig);
 
     agent    = evpl_http_init(evpl);
     endpoint = evpl_endpoint_create("127.0.0.1", port);
@@ -2130,7 +2136,7 @@ main(
     test_socket_close(g_raw.listen_fd);
 
     evpl_http_destroy(agent);
-    evpl_destroy(evpl);
+    test_mbt_destroy(evpl);
 
     for (i = 0; i < (unsigned int) g_num_ctx; i++) {
         free(g_ctx[i]);

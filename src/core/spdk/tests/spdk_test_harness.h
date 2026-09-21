@@ -47,15 +47,22 @@ struct evpl_spdk_test_reactor {
 };
 
 static struct evpl_spdk_test_reactor
-                    evpl_spdk_test_reactors[EVPL_SPDK_TEST_MAX_REACTORS];
-static int          evpl_spdk_test_num_reactors;
-static unsigned int evpl_spdk_test_rotor;
+                         evpl_spdk_test_reactors[EVPL_SPDK_TEST_MAX_REACTORS];
+static int               evpl_spdk_test_num_reactors;
+static unsigned int      evpl_spdk_test_rotor;
+/* A replay driver may own and poll its own logical thread. Never also place
+ * that thread on a background reactor. The flag is local to its creator. */
+static _Thread_local int evpl_spdk_test_manual;
 
 static int
 evpl_spdk_test_new_thread(struct spdk_thread *thread)
 {
     struct evpl_spdk_test_reactor *reactor;
     unsigned int                   idx;
+
+    if (evpl_spdk_test_manual) {
+        return 0;
+    }
 
     idx = __sync_fetch_and_add(&evpl_spdk_test_rotor, 1);
 

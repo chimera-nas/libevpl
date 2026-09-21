@@ -183,6 +183,34 @@ if(NOT WIN32)
     target_include_directories(core_close_ready PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
 endif()
 
+if(TARGET core_core_conformance)
+    if(HAVE_LIBFABRIC)
+        foreach(mech ${EVPL_MECHANISMS})
+            unit_test_mbt_variant(core core_conformance_libfabric_${mech}
+                core_core_conformance ${mech} TIMEOUT 120 ENVIRONMENT
+                FI_PROVIDER=tcp EVPL_TEST_STREAM_PROTOCOL=STREAM_LIBFABRIC_MSG
+                EVPL_TEST_DATAGRAM_PROTOCOL=DATAGRAM_LIBFABRIC_RDM
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        endforeach()
+    endif()
+    if(HAVE_SPDK)
+        target_link_libraries(core_core_conformance ${SPDK_TEST_LINK_TARGETS})
+        # The core oracle advances virtual time. Interrupt-mode replay uses
+        # real-time HTTP/RPC models instead of sleeping on virtual deadlines.
+        unit_test_mbt_variant(core core_conformance_spdk core_core_conformance
+            spdk TIMEOUT 120 ENVIRONMENT ASAN_OPTIONS=detect_leaks=1
+            EVPL_TEST_BLOCK_PROTOCOL=spdk EVPL_TEST_STREAM_PROTOCOL=STREAM_SPDK_TCP
+            EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        if(HAVE_LIBFABRIC)
+            unit_test_mbt_variant(core core_conformance_libfabric_spdk core_core_conformance
+                spdk TIMEOUT 120 ENVIRONMENT ASAN_OPTIONS=detect_leaks=1 FI_PROVIDER=tcp
+                EVPL_TEST_BLOCK_PROTOCOL=spdk EVPL_TEST_STREAM_PROTOCOL=STREAM_LIBFABRIC_MSG
+                EVPL_TEST_DATAGRAM_PROTOCOL=DATAGRAM_LIBFABRIC_RDM
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        endif()
+    endif()
+endif()
+
 # C trace replays, distinct from the Quint specification checks (label quint).
 get_property(_mbt_tests DIRECTORY PROPERTY TESTS)
 foreach(_test ${_mbt_tests})

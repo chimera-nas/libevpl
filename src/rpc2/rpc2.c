@@ -4185,7 +4185,10 @@ evpl_rpc2_accept(
     rpc2_conn->thread         = server_binding->thread;
     rpc2_conn->bind           = bind;
     rpc2_conn->protocol       = evpl_bind_get_protocol(bind);
-    rpc2_conn->rdma           = evpl_bind_is_rdma(bind);
+    /* RPC-over-RDMA requires message boundaries. A stream may expose RMA
+     * operations too, but RPC on that stream still uses record marking. */
+    rpc2_conn->rdma = evpl_bind_is_rdma(bind) &&
+        !evpl_protocol_is_stream(rpc2_conn->protocol);
 
     memcpy(rpc2_conn->server_programs,
            server_binding->server->programs,
@@ -4496,7 +4499,8 @@ evpl_rpc2_client_connect(
         return NULL;
     }
 
-    conn->rdma = evpl_bind_is_rdma(conn->bind);
+    conn->rdma = evpl_bind_is_rdma(conn->bind) &&
+        !evpl_protocol_is_stream(protocol);
 
     return conn;
 } /* evpl_rpc2_client_connect */

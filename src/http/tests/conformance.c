@@ -59,6 +59,7 @@
 
 
 #include "evpl/evpl.h"
+#include "tests/test_mbt.h"
 #include "evpl/evpl_http.h"
 
 #include "http_cases.h"
@@ -834,7 +835,7 @@ server_function(void *ptr)
     struct evpl_listener    *listener;
     struct evpl_http_agent  *agent;
 
-    evpl = evpl_create(NULL);
+    evpl = test_mbt_create(NULL);
 
     evpl_add_doorbell(evpl, &ctx->doorbell, server_wake);
 
@@ -846,7 +847,7 @@ server_function(void *ptr)
 
     server = evpl_http_attach(agent, listener, server_dispatch, NULL);
 
-    if (evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint)) {
+    if (test_mbt_listen(evpl, listener, test_mbt_stream_protocol(), endpoint)) {
         fprintf(stderr, "HTTP conformance listener failed on port %d\n", port);
         exit(1);
     }
@@ -856,14 +857,14 @@ server_function(void *ptr)
     ctx->run = 1;
 
     while (ctx->run) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
     }
 
     evpl_http_server_destroy(agent, server);
     evpl_http_destroy(agent);
 
-    evpl_listener_destroy(listener);
-    evpl_destroy(evpl);
+    test_mbt_listener_destroy(evpl, listener);
+    test_mbt_destroy(evpl);
 
     return NULL;
 } /* server_function */
@@ -3260,7 +3261,7 @@ main(
     snprintf(g_uri_absolute, sizeof(g_uri_absolute), "http://%s%s",
              g_host_value, URI_PATH);
 
-    evpl_init(NULL);
+    test_evpl_config();
 
     server.run = 0;
 

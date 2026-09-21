@@ -38,6 +38,8 @@ macro(unit_test_rpc2 test_name xdr_file)
     list(GET sources 0 first_source)
     set(RPC2_TEST_EXE_${test_name} $<TARGET_FILE:evpl_rpc2_${test_name}>)
     set(RPC2_TEST_SRC_${test_name} ${CMAKE_CURRENT_SOURCE_DIR}/${first_source})
+    set_target_properties(evpl_rpc2_${test_name} PROPERTIES
+        TEST_FILE ${RPC2_TEST_SRC_${test_name}})
 endmacro()
 
 # Add a test instance for a specific protocol, once per event-loop core
@@ -487,6 +489,40 @@ macro(unit_test_rpc2_instance_spdk test_name protocol port)
     endif()
 endmacro()
 unit_test_rpc2_instance_spdk(multifrag STREAM_SOCKET_TCP 8103)
+
+if(TARGET evpl_rpc2_conformance)
+    if(HAVE_LIBFABRIC)
+        foreach(mech ${EVPL_MECHANISMS})
+            foreach(proto STREAM_LIBFABRIC_MSG DATAGRAM_LIBFABRIC_MSG)
+                unit_test_mbt_variant(rpc2 conformance_${proto}_${mech}
+                    evpl_rpc2_conformance ${mech} TIMEOUT 120
+                    ARGS -r ${proto} -p 8104 ENVIRONMENT FI_PROVIDER=tcp)
+            endforeach()
+        endforeach()
+    endif()
+    if(HAVE_SPDK)
+        foreach(mode polling interrupt)
+            set(env ASAN_OPTIONS=detect_leaks=1)
+            if(mode STREQUAL "interrupt")
+                list(APPEND env EVPL_TEST_INTERRUPT=1)
+            endif()
+            set(protocols STREAM_SOCKET_TCP STREAM_SPDK_TCP)
+            if(HAVE_LIBFABRIC)
+                list(APPEND protocols STREAM_LIBFABRIC_MSG DATAGRAM_LIBFABRIC_MSG)
+            endif()
+            foreach(proto ${protocols})
+                unit_test_mbt_variant(rpc2 conformance_${proto}_spdk_${mode}
+                    evpl_rpc2_conformance spdk TIMEOUT 120
+                    ARGS -r ${proto} -p 8104 ENVIRONMENT ${env} FI_PROVIDER=tcp)
+            endforeach()
+            foreach(proto STREAM_SOCKET_TCP STREAM_SPDK_TCP)
+                unit_test_mbt_variant(rpc2 conformance_client_${proto}_spdk_${mode}
+                    evpl_rpc2_conformance_client spdk TIMEOUT 120
+                    ARGS -r ${proto} -p 8106 ENVIRONMENT ${env})
+            endforeach()
+        endforeach()
+    endif()
+endif()
 
 # C trace replays, distinct from the Quint specification checks (label quint).
 get_property(_mbt_tests DIRECTORY PROPERTY TESTS)

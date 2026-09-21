@@ -31,10 +31,10 @@
  * EVPL_TEST_CORE_MECH.  Keeping this in the harness rather than in the library
  * means no test source -- and no libevpl consumer -- needs to know about it.
  *
- * "spdk" is only valid for tests that are fully evpl_thread/callback driven
- * (no evpl_run or manual pumping from the main thread) and registered via the
- * *_spdk CMake macros: it boots the mini-reactor harness so every evpl thread
- * runs as an spdk_thread in guest mode.
+ * "spdk" boots the mini-reactor harness so evpl threads run as SPDK
+ * threads in guest mode. Callback-driven tests use the *_spdk CMake macros;
+ * manual model replay drivers use test_mbt.h to own and poll an SPDK thread.
+ * A plain pthread must not drive an SPDK evpl with evpl_run/evpl_continue.
  */
 static inline void
 test_evpl_set_core_mech(struct evpl_global_config *config)

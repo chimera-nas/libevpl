@@ -2,6 +2,32 @@
 #
 # SPDX-License-Identifier: LGPL-2.1-only
 
+# Additional model trace replays over a selected execution/transport backend.
+function(unit_test_mbt_variant module name binary mech)
+    cmake_parse_arguments(MBT "" "TIMEOUT" "ENVIRONMENT;ARGS" ${ARGN})
+    set(test libevpl/${module}/${name})
+    if(LIBEVPL_NETNS_TESTING)
+        add_test(NAME ${test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
+                 $<TARGET_FILE:${binary}> ${MBT_ARGS})
+    else()
+        add_test(NAME ${test} COMMAND $<TARGET_FILE:${binary}> ${MBT_ARGS})
+        set_tests_properties(${test} PROPERTIES RESOURCE_LOCK evpl_net)
+    endif()
+    get_target_property(test_file ${binary} TEST_FILE)
+    set(labels mbt)
+    if(name MATCHES "LIBFABRIC|libfabric")
+        list(APPEND labels mbt_libfabric)
+    endif()
+    if(mech STREQUAL "spdk")
+        list(APPEND labels mbt_spdk)
+        # The host driver and background reactors need CPU time concurrently.
+        # Account for them when CTest schedules the CPU-bound polling variants.
+        set_tests_properties(${test} PROPERTIES PROCESSORS 2)
+    endif()
+    set_tests_properties(${test} PROPERTIES LABELS "${labels}" TIMEOUT ${MBT_TIMEOUT}
+        ENVIRONMENT "TEST_FILE=${test_file};EVPL_TEST_CORE_MECH=${mech};${MBT_ENVIRONMENT}")
+endfunction()
+
 # Tests bind fixed loopback ports (e.g. 127.0.0.1:8000).  On Linux with
 # CAP_NET_ADMIN each runs inside its own network namespace, so they are safe to
 # run concurrently.  Where network namespaces are unavailable (macOS, or Linux

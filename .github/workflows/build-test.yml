@@ -548,7 +548,7 @@ jobs:
                 -DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON \
                 -DEVPL_CONFORMANCE_CASES_DIR=/workspace/corpus
               cmake --build /build --parallel "$(nproc)"
-              bash scripts/run_mbt_coverage.sh /build /workspace/coverage-output /workspace/coverage-output/pr.diff
+              bash scripts/run_mbt_coverage.sh /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk
             '
       - name: Add job summary
         run: cat coverage-output/coverage-report.md >> "$GITHUB_STEP_SUMMARY"

@@ -493,14 +493,15 @@ evpl_spdk_sock_recv_cb(
 
             length = bind->segment_callback(evpl, bind, bind->private_data);
 
-            if (length == 0 ||
-                evpl_iovec_ring_bytes(&bind->iovec_recv) < length) {
-                break;
-            }
-
+            /* Check rejection before the unsigned byte-count comparison. */
             if (unlikely(length < 0)) {
                 evpl_close(evpl, bind);
                 return;
+            }
+
+            if (length == 0 ||
+                evpl_iovec_ring_bytes(&bind->iovec_recv) < (uint64_t) length) {
+                break;
             }
 
             niov = evpl_iovec_ring_copyv(evpl, iovec, &bind->iovec_recv,

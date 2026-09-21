@@ -132,6 +132,22 @@ if (HAVE_NGHTTP2)
     target_link_libraries(http_h2_tls evpl_http CURL::libcurl)
 endif()
 
+if(TARGET http_conformance AND HAVE_SPDK)
+    foreach(mode polling interrupt)
+        set(env ASAN_OPTIONS=detect_leaks=1)
+        if(mode STREQUAL "interrupt")
+            list(APPEND env EVPL_TEST_INTERRUPT=1)
+        endif()
+        foreach(proto STREAM_SOCKET_TCP STREAM_SPDK_TCP)
+            foreach(suite conformance conformance_client)
+                unit_test_mbt_variant(http ${suite}_${proto}_spdk_${mode}
+                    http_${suite} spdk TIMEOUT 300 ENVIRONMENT
+                    ${env} EVPL_TEST_STREAM_PROTOCOL=${proto})
+            endforeach()
+        endforeach()
+    endforeach()
+endif()
+
 # C trace replays, distinct from the Quint specification checks (label quint).
 get_property(_mbt_tests DIRECTORY PROPERTY TESTS)
 foreach(_test ${_mbt_tests})
