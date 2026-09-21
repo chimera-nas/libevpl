@@ -54,7 +54,8 @@ MODEL="${SRC_DIR}/core.qnt"
   "backend": "typescript",
   "tests": [ {} ],
   "runs": [
-    { "invariant": "safety", "maxSamples": 500, "maxSteps": 60 }
+    { "invariant": "safety", "maxSamples": 500, "maxSteps": 60 },
+    { "init": "initRdmaUd", "step": "stepRdmaUd", "invariant": "safety", "maxSamples": 100, "maxSteps": 60 }
   ]
 }
 SPEC

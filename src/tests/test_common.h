@@ -18,6 +18,7 @@
 #endif // ifdef _WIN32
 
 #include "evpl/evpl.h"
+#include "core/test_log.h"
 
 #ifdef HAVE_SPDK
 #include "core/spdk/tests/spdk_test_harness.h"
@@ -229,3 +230,25 @@ test_listen_address(const char *address)
 {
     return test_address_is_named(address) ? address : "0.0.0.0";
 } /* test_listen_address */
+
+/* Compare a received message across every iovec, including its exact length. */
+static inline void
+test_message_equals(
+    const struct evpl_notify *notify,
+    const void               *expected,
+    unsigned int              length)
+{
+    unsigned int i, offset = 0, chunk;
+
+    evpl_test_abort_if(notify->recv_msg.length != length,
+                       "message length %u, expected %u", notify->recv_msg.length, length);
+    for (i = 0; i < notify->recv_msg.niov; ++i) {
+        chunk = notify->recv_msg.iovec[i].length;
+        evpl_test_abort_if(chunk > length - offset, "message iovecs exceed payload length");
+        evpl_test_abort_if(memcmp(notify->recv_msg.iovec[i].data,
+                                  (const char *) expected + offset, chunk),
+                           "message payload differs at iovec %u", i);
+        offset += chunk;
+    }
+    evpl_test_abort_if(offset != length, "message iovecs do not cover the payload");
+} /* test_message_equals */

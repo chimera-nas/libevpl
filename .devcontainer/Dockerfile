@@ -133,5 +133,23 @@ RUN apt-get -y --no-install-recommends install \
     ldconfig && \
     cd / && rm -rf /tmp/spdk
 
+# Noble's rdma-core 50 has RXE extended-CQ consumer-index/double-unlock bugs
+# and incorrect inline/SG-list lengths. Use a release containing their fixes
+# for software RDMA tests; install after SPDK to preserve its cached build.
+# Prioritize the whole /usr/local stack, including indirect EFA dependencies:
+# Ubuntu's default multiarch loader order differs between amd64 and arm64.
+ARG RDMA_CORE_VERSION=v65.0
+RUN apt-get -y --no-install-recommends install libnl-3-dev libnl-route-3-dev libudev-dev && \
+    git clone --depth 1 --branch ${RDMA_CORE_VERSION} \
+        https://github.com/linux-rdma/rdma-core.git /tmp/rdma-core && \
+    cmake -S /tmp/rdma-core -B /tmp/rdma-core/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DCMAKE_INSTALL_LIBDIR=lib -DNO_MAN_PAGES=ON -DNO_PYVERBS=ON \
+        -DBUILD_TESTING=OFF && \
+    cmake --build /tmp/rdma-core/build --parallel "$(nproc)" && \
+    cmake --install /tmp/rdma-core/build && \
+    printf '/usr/local/lib\n' > /etc/ld.so.conf.d/00-rdma-core.conf && \
+    ldconfig && fi_info -l > /dev/null && rm -rf /tmp/rdma-core
+
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8

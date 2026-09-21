@@ -184,6 +184,14 @@ if(NOT WIN32)
 endif()
 
 if(TARGET core_core_conformance)
+    if(HAVE_RDMACM AND EVPL_RDMA_TEST_IP)
+        foreach(mech ${EVPL_MECHANISMS})
+            unit_test_mbt_variant(core core_conformance_rdma_${mech}
+                core_core_conformance ${mech} RDMA TIMEOUT 300 ENVIRONMENT
+                CORE_TRACE=1 EVPL_TEST_STREAM_PROTOCOL=STREAM_RDMACM_RC
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        endforeach()
+    endif()
     if(HAVE_LIBFABRIC)
         foreach(mech ${EVPL_MECHANISMS})
             unit_test_mbt_variant(core core_conformance_libfabric_${mech}

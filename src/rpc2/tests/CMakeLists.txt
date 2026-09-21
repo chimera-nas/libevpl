@@ -491,6 +491,15 @@ endmacro()
 unit_test_rpc2_instance_spdk(multifrag STREAM_SOCKET_TCP 8103)
 
 if(TARGET evpl_rpc2_conformance)
+    if(HAVE_RDMACM AND EVPL_RDMA_TEST_IP)
+        foreach(mech ${EVPL_MECHANISMS})
+            foreach(proto STREAM_RDMACM_RC DATAGRAM_RDMACM_RC)
+                unit_test_mbt_variant(rpc2 conformance_${proto}_${mech}
+                    evpl_rpc2_conformance ${mech} RDMA TIMEOUT 300
+                    ARGS -r ${proto} -p 8104)
+            endforeach()
+        endforeach()
+    endif()
     if(HAVE_LIBFABRIC)
         foreach(mech ${EVPL_MECHANISMS})
             foreach(proto STREAM_LIBFABRIC_MSG DATAGRAM_LIBFABRIC_MSG)

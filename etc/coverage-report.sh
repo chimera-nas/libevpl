@@ -23,7 +23,7 @@ set -euo pipefail
 
 BUILD_DIR="${1:?usage: coverage-report.sh BUILD_DIR}"
 COV_DIR="${BUILD_DIR}/coverage"
-PROFRAW_DIR="${COV_DIR}/profraw"
+PROFRAW_DIR="${COVERAGE_PROFILE_DIR:-${COV_DIR}/profraw}"
 PROFDATA="${COV_DIR}/coverage.profdata"
 
 PROFDATA_TOOL="${LLVM_PROFDATA:-llvm-profdata}"

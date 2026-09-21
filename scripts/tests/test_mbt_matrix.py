@@ -5,10 +5,29 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from ci_mbt_matrix import check_execution, check_tests
+from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests
 
 
 class MatrixTests(unittest.TestCase):
+    def test_rdma_requires_all_transports_and_mechanisms(self):
+        names = []
+        for mech in ('epoll', 'select'):
+            names.append(f'core/core_conformance_rdma_{mech}')
+            names.extend(f'rpc2/conformance_{proto}_{mech}' for proto in
+                         ('STREAM_RDMACM_RC', 'DATAGRAM_RDMACM_RC'))
+        data = {'tests': [{'name': 'libevpl/' + name} for name in names]}
+        check_rdma_tests(data)
+        for index in range(len(names)):
+            with self.assertRaisesRegex(ValueError, 'Missing RDMA'):
+                check_rdma_tests({'tests': data['tests'][:index] + data['tests'][index + 1:]})
+
+    def test_rdma_execution_is_required(self):
+        with self.assertRaisesRegex(ValueError, 'rdmacm.c'):
+            check_execution({'data': []}, '/repo', ['rdma'])
+        data = {'data': [{'files': [{'filename': '/repo/src/core/rdmacm/rdmacm.c',
+                                    'summary': {'lines': {'covered': 100}}}]}]}
+        check_execution(data, '/repo', ['rdma'])
+
     def setUp(self):
         names = ['core/core_conformance_epoll', 'http/conformance',
                  'http/conformance_client', 'rpc2/conformance_STREAM_SOCKET_TCP_epoll',

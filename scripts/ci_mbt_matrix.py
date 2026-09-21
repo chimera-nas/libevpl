@@ -10,6 +10,17 @@ import re
 from ci_coverage_report import relative
 
 
+def check_rdma_tests(data):
+    names = {test['name'] for test in data['tests']}
+    for mech in ('epoll', 'select'):
+        required = [f'core/core_conformance_rdma_{mech}']
+        required.extend(f'rpc2/conformance_{proto}_{mech}' for proto in
+                        ('STREAM_RDMACM_RC', 'DATAGRAM_RDMACM_RC'))
+        for name in required:
+            if 'libevpl/' + name not in names:
+                raise ValueError('Missing RDMA MBT replay: ' + name)
+
+
 def check_tests(data, backends):
     names = [test['name'] for test in data['tests']]
     required = [r'libevpl/core/core_conformance_', r'libevpl/http/conformance$',
@@ -38,6 +49,8 @@ def check_tests(data, backends):
 
 def check_execution(data, root, backends):
     required = []
+    if 'rdma' in backends:
+        required.append('src/core/rdmacm/rdmacm.c')
     if 'libfabric' in backends:
         required.append('src/core/libfabric/libfabric.c')
     if 'spdk' in backends:
@@ -55,16 +68,18 @@ def check_execution(data, root, backends):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('tests', 'execution'))
+    parser.add_argument('mode', choices=('tests', 'rdma-tests', 'execution'))
     parser.add_argument('input')
     parser.add_argument('--root', default='.')
-    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk'), default=[])
+    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma'), default=[])
     args = parser.parse_args()
     with open(args.input) as stream:
         data = json.load(stream)
     try:
         if args.mode == 'tests':
             check_tests(data, args.require)
+        elif args.mode == 'rdma-tests':
+            check_rdma_tests(data)
         else:
             check_execution(data, args.root, args.require)
     except ValueError as error:

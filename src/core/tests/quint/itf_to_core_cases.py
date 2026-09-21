@@ -68,10 +68,10 @@ OPS = [
 TIMER_KINDS = ["TOneshot", "TPeriodic", "TRearm"]
 DELAYS = ["DFast", "DSlow"]
 BUDGETS = ["QShort", "QLong"]
-SIZES = ["SzTiny", "SzSmall", "SzMedium", "SzLarge"]
+SIZES = ["SzTiny", "SzSmall", "SzMedium", "SzLarge", "SzUdMtu"]
 DRAINS = ["DrainRecv", "DrainRecvV", "DrainPeek", "DrainPeekV"]
 TRANSPORTS = ["TStreamInproc", "TDatagramInproc", "TStreamTcp", "TStreamUnix",
-              "TDatagramUdp"]
+              "TDatagramUdp", "TDatagramRdmaUd"]
 SENDS = ["SendBuf", "SendV", "SendVTakeRef", "SendToEp", "SendToEpV",
          "SendReserveCommit", "SendGlobal"]
 SEGS = ["BSeg1", "BSeg4", "BSeg16"]

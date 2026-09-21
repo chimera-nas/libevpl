@@ -61,8 +61,8 @@ for (const fn of ['load', 'parse', 'typecheck', 'runTests', 'runSimulator']) {
 const argsFor = o => ({
   input: spec.model,
   main: o.main,
-  init: 'init',
-  step: 'step',
+  init: o.init ?? 'init',
+  step: o.step ?? 'step',
   invariant: o.invariant ?? 'true',
   invariants: [],
   witnesses: [],

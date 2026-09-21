@@ -315,8 +315,9 @@ module evpl_core {
     /// Medium and Large are chosen to span several, so the send and receive
     /// paths have to gather and scatter rather than hand over a single iovec.
     ///
-    /// The driver maps them to 1, 100, 8192 and 131072 bytes.
-    type SizeCls = | SzTiny | SzSmall | SzMedium | SzLarge
+    /// The driver maps these to 1, 100, 8192 and 131072 bytes, plus
+    /// a separate 4096-byte UD MTU class.
+    type SizeCls = | SzTiny | SzSmall | SzMedium | SzLarge | SzUdMtu
 
     pure def sizeBytes(s: SizeCls): int =
         match s {
@@ -324,6 +325,7 @@ module evpl_core {
             | SzSmall => 100
             | SzMedium => 8192
             | SzLarge => 131072
+            | SzUdMtu => 4096
         }
 
     /// How the sending end hands its bytes over.  All five must put the same
@@ -404,15 +406,16 @@ module evpl_core {
         | TStreamTcp
         | TStreamUnix
         | TDatagramUdp
+        | TDatagramRdmaUd
 
     /// What the transport owes: bytes, or whole messages.
     pure def isDatagram(k: TransportKind): bool =
-        k == TDatagramInproc or k == TDatagramUdp
+        k == TDatagramInproc or k == TDatagramUdp or k == TDatagramRdmaUd
 
     /// Whether it has a connection at all.  UDP does not: it is bind-only --
     /// no listen, no connect, no CONNECTED -- so it needs a lifecycle of its
     /// own rather than a variation on the connected one.
-    pure def isConnected(k: TransportKind): bool = k != TDatagramUdp
+    pure def isConnected(k: TransportKind): bool = k != TDatagramUdp and k != TDatagramRdmaUd
 
     /// Addressed by a filesystem path rather than a port or a private name.
     /// The driver has to supply one; libevpl owns it from there, including
@@ -1287,6 +1290,8 @@ module evpl_core {
          * max_datagram_size; the driver leaves that at its default, which the
          * largest payload class exceeds. */
         isDatagram(transport) implies sz != SzLarge,
+        // UD does not fragment: its payload must fit the configured 4096-byte MTU.
+        transport == TDatagramRdmaUd implies sizeBytes(sz) <= 4096,
         /* An unconnected bind has no peer to send to, so it must name one;
          * a connected one has no endpoint the model tracks, and the
          * endpoint-addressed calls leak on every transport that does not
@@ -1743,7 +1748,9 @@ module evpl_core {
 
     /// The UDP form: addressed by endpoint, because there is no connection.
     action sendAnyEp = {
-        nondet sz = Set(SzTiny, SzSmall, SzMedium).oneOf()
+        nondet sz = (if (transport == TDatagramRdmaUd)
+                        Set(SzTiny, SzSmall, SzUdMtu)
+                     else Set(SzTiny, SzSmall, SzMedium)).oneOf()
         nondet sd = SIDES.oneOf()
         nondet sm = Set(SendToEp, SendToEpV).oneOf()
         send(0, sd, sz, sm)
@@ -1777,6 +1784,10 @@ module evpl_core {
     }
 
     action resetUdp = doReset(ShapeUdp, TDatagramUdp)
+
+    // Separate traces preserve the existing UDP corpus and its 8 KiB payloads.
+    action initRdmaUd = doReset(ShapeUdp, TDatagramRdmaUd)
+    action stepRdmaUd = if (programStep >= PROGRAM_LEN) initRdmaUd else step
 
     action resetAny = {
         nondet sh = Set(ShapeMixed, ShapeTransport, ShapeTransportNotify,
@@ -2320,6 +2331,15 @@ module evpl_core {
     /// endpoint.  Nothing is notified about the pair coming up, which is what
     /// distinguishes this from connect -- and the message-boundary obligation
     /// is the same as any other datagram's.
+    run rdmaUdMtuTest =
+        initRdmaUd
+            .then(bindPair(0))
+            .then(send(0, SIDE_CLIENT, SzUdMtu, SendToEp))
+            .then(quiesce(QShort))
+            .expect(expects == Set(
+                { kind: EvRecv, slot: sideSlot(0, SIDE_SERVER), mult: MExactly, count: 4096 },
+                { kind: EvRecvMsg, slot: sideSlot(0, SIDE_SERVER), mult: MExactly, count: 1 }))
+
     run udpPairNeedsNoConnectionTest =
         init
             .then(resetUdp)

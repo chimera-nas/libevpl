@@ -17,7 +17,7 @@ on:
       platform:
         description: Platforms to exercise during development
         type: choice
-        options: [all, windows]
+        options: [all, windows, mbt]
         default: all
 
 # One phase, not two.  Each cell builds the container image it needs and loads
@@ -72,7 +72,7 @@ jobs:
   # which would otherwise turn a broken runner into a green run.
   # ---------------------------------------------------------------------------
   test:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     name: Test ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -263,7 +263,7 @@ jobs:
   # here catches that at source instead of in a downstream bump.
   # ---------------------------------------------------------------------------
   static-analysis:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     name: Analyze ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -339,7 +339,7 @@ jobs:
   # above it -- which is exactly the part nothing else in this matrix exercises.
   # ---------------------------------------------------------------------------
   macos:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     name: Test macOS ${{ matrix.build_type }}
     runs-on: macos-14
     permissions:
@@ -456,25 +456,35 @@ jobs:
   ci-complete:
     name: CI complete
     if: always()
-    needs: [test, static-analysis, macos, native]
+    needs: [test, static-analysis, macos, native, mbt-coverage]
     runs-on: ubuntu-24.04
     # It reads `needs` and nothing else -- no checkout, no API call -- so the
     # token it runs with can be empty.
     permissions: {}
     steps:
       - name: Check matrix results
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          PLATFORM: ${{ inputs.platform }}
         run: |
-          results='${{ join(needs.*.result, ' ') }}'
-          echo "dependency results: ${results}"
-          for r in ${results}; do
-            if [ "$r" = "skipped" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.platform }}" = "windows" ]; then
-              continue
-            fi
-            if [ "$r" != "success" ]; then
-              echo "a required job did not succeed"
-              exit 1
-            fi
-          done
+          python3 - <<'PYCODE'
+          import json, os
+          allowed_skips = set()
+          if os.environ['EVENT'] == 'push':
+              allowed_skips = {'mbt-coverage'}
+          elif os.environ['EVENT'] == 'workflow_dispatch':
+              allowed_skips = {
+                  'all': {'mbt-coverage'},
+                  'windows': {'test', 'static-analysis', 'macos', 'mbt-coverage'},
+                  'mbt': {'test', 'static-analysis', 'macos', 'native'},
+              }[os.environ['PLATFORM']]
+          for name, job in json.loads(os.environ['JOB_RESULTS']).items():
+              result = job['result']
+              print(f'{name}: {result}')
+              if result != 'success' and not (result == 'skipped' and name in allowed_skips):
+                  raise SystemExit(f'Required job did not succeed: {name}')
+          PYCODE
 
   conformance-corpus:
     name: Generate native conformance cases
@@ -501,7 +511,8 @@ jobs:
   mbt-coverage:
     name: Model-based test coverage
     needs: conformance-corpus
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.platform == 'mbt')
+    timeout-minutes: 45
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -536,20 +547,33 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
-          mkdir -p coverage-output
+          mkdir -p coverage-output coverage-build
           # Test the PR merge tree and compare it with its base parent.
           git -c core.quotePath=false diff --no-ext-diff --no-renames -U0 HEAD^1 HEAD > coverage-output/pr.diff
           docker run --rm --privileged \
-            -v "$PWD:/workspace" -w /workspace \
+            -v "$PWD:/workspace" -v "$PWD/coverage-build:/build" -w /workspace \
             -e RUN_URL -e GH_REPO -e SOURCE_SHA \
             libevpl-coverage:ci bash -euo pipefail -c '
-              cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Coverage \
+              EVPL_REQUIRE_LLVM_TEST=1 python3 -m unittest discover -s scripts/tests -p test_profile_merge.py -v
+              cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Coverage -DCMAKE_C_FLAGS=-g \
                 -DCMAKE_C_COMPILER=clang -DREQUIRE_NETNS_TESTS=ON \
                 -DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON \
-                -DEVPL_CONFORMANCE_CASES_DIR=/workspace/corpus
+                -DEVPL_CONFORMANCE_CASES_DIR=/workspace/corpus -DEVPL_RDMA_TEST_IP=192.0.2.1
               cmake --build /build --parallel "$(nproc)"
-              bash scripts/run_mbt_coverage.sh /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk
+              MBT_COVERAGE_PHASE=run bash scripts/run_mbt_coverage.sh /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk
             '
+      - name: Run RDMA integration and model tests in KVM
+        run: bash scripts/run_rdma_vm.sh libevpl-coverage:ci
+      - name: Merge native and RDMA model coverage
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          docker run --rm -v "$PWD:/workspace" -v "$PWD/coverage-build:/build" -w /workspace \
+            -e RUN_URL -e GH_REPO -e SOURCE_SHA -e MBT_COVERAGE_PHASE=report -e MBT_RDMA_COVERAGE=1 \
+            libevpl-coverage:ci bash scripts/run_mbt_coverage.sh \
+            /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk rdma
       - name: Add job summary
         run: cat coverage-output/coverage-report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Record pull request
@@ -565,6 +589,7 @@ jobs:
           if-no-files-found: error
 
   native:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'mbt'
     needs: conformance-corpus
     name: MSVC ${{ matrix.arch }} ${{ matrix.config }}
     runs-on: ${{ matrix.runner }}

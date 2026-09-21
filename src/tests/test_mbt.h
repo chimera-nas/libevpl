@@ -6,6 +6,14 @@
 #include "test_common.h"
 #include "core/test_log.h"
 
+static const char *
+test_mbt_address(void)
+{
+    const char *address = getenv("EVPL_TEST_RDMA_IP");
+
+    return address ? address : "127.0.0.1";
+} // test_mbt_address
+
 static int
 test_mbt_spdk(void)
 {

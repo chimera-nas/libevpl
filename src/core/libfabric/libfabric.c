@@ -1516,6 +1516,10 @@ evpl_libfabric_drain_eq(
             case FI_SHUTDOWN:
                 lfep = buf.entry.fid->context;
 
+                /* EQ readiness can arrive before receive-CQ readiness. Deliver
+                 * the peer's final messages before close marks the endpoint
+                 * closed and discards its completed receive buffers. */
+                evpl_libfabric_poll_cq(evpl, &lfep->recv_cq, 1);
                 lfep->connected = 0;
 
                 bind = evpl_private2bind(lfep);
@@ -2730,7 +2734,9 @@ evpl_libfabric_flush(
             msg.context   = ctx;
         }
 
-        flags = FI_COMPLETION;
+        /* Buffer reuse is insufficient for evpl_finish: injected data must
+         * leave provider staging before endpoint shutdown can discard it. */
+        flags = FI_COMPLETION | FI_TRANSMIT_COMPLETE;
 
         if (len + header_size <= dev->inject_size &&
             (evpl_shared->config->libfabric_inject_max == 0 ||

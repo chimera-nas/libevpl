@@ -67,6 +67,15 @@ for s in "${SEEDS[@]}"; do
     done
 done
 
+# UD needs its own size bounds: keep the original UDP traces unchanged and
+# add separately generated, MTU-sized RDMA programs using the same obligations.
+"${QUINT}" run --backend=typescript "${SRC_DIR}/core.qnt" \
+    --init=initRdmaUd --step=stepRdmaUd --seed=0xe6 --max-steps="${STEPS}" \
+    --max-samples=2 --n-traces=2 \
+    --out-itf="${WORK_DIR}/core-rdma-{seq}.itf.json" > /dev/null &
+PIDS+=($!)
+TRACES+=("${WORK_DIR}/core-rdma-0.itf.json" "${WORK_DIR}/core-rdma-1.itf.json")
+
 for pid in "${PIDS[@]}"; do
     wait "$pid" || { echo "quint run failed" >&2; exit 1; }
 done
