@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
 #include <pthread.h>
 #include <sys/uio.h>
@@ -234,6 +235,8 @@ client_thread(void *arg)
     struct evpl_bind     *bind;
     struct client_state  *state = arg;
 
+    const char           *early = getenv("EVPL_TEST_EARLY_RDMA");
+
     evpl        = evpl_create(NULL);
     state->evpl = evpl;
 
@@ -243,6 +246,16 @@ client_thread(void *arg)
                         test_segment_callback, state);
 
     state->bind = bind;
+    if (early && !strcmp(early, "connect")) {
+        uint32_t rkey;
+        uint64_t raddr;
+        evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->local_buffer);
+        /* Provider dependencies may install abort handlers that run process
+         * cleanup with live threads.  This death test requires plain SIGABRT. */
+        signal(SIGABRT, SIG_DFL);
+        evpl_rdma_get_address(evpl, bind, &state->local_buffer, &rkey, &raddr);
+    }
+
 
     while (!state->complete) {
         evpl_continue(evpl);
@@ -275,6 +288,31 @@ server_callback(
     int                  i, match;
 
     switch (notify->notify_type) {
+        case EVPL_NOTIFY_CONNECTED: {
+            struct rdma_info_msg rdma_info;
+            uint32_t             rkey;
+            uint64_t             raddr;
+            /* Allocate RDMA buffer and fill with pattern */
+            evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->rdma_buffer);
+            state->rdma_buffer_valid = 1;
+            memset(state->rdma_buffer.data, PATTERN_SERVER, BUFFER_SIZE);
+
+            /* Get RDMA address for the buffer */
+            evpl_rdma_get_address(evpl, bind, &state->rdma_buffer, &rkey, &raddr);
+
+            evpl_test_info("Server RDMA buffer: rkey=%u raddr=0x%lx", rkey, raddr);
+
+            /* Send RDMA info to client */
+            rdma_info.msg_type = MSG_TYPE_RDMA_INFO;
+            rdma_info.rkey     = rkey;
+            rdma_info.raddr    = raddr;
+            rdma_info.length   = BUFFER_SIZE;
+
+            evpl_send(evpl, bind, &rdma_info, sizeof(rdma_info));
+
+            break;
+        }
+
         case EVPL_NOTIFY_RECV_MSG:
             msg = (struct simple_msg *) notify->recv_msg.iovec[0].data;
 
@@ -325,31 +363,21 @@ accept_callback(
     void                    *private_data)
 {
     struct server_state *state = private_data;
-    struct rdma_info_msg rdma_info;
     uint32_t             rkey;
     uint64_t             raddr;
+
+    const char          *early = getenv("EVPL_TEST_EARLY_RDMA");
 
     evpl_test_info("Server accepted connection");
 
     state->bind = bind;
 
-    /* Allocate RDMA buffer and fill with pattern */
-    evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->rdma_buffer);
-    state->rdma_buffer_valid = 1;
-    memset(state->rdma_buffer.data, PATTERN_SERVER, BUFFER_SIZE);
-
-    /* Get RDMA address for the buffer */
-    evpl_rdma_get_address(evpl, bind, &state->rdma_buffer, &rkey, &raddr);
-
-    evpl_test_info("Server RDMA buffer: rkey=%u raddr=0x%lx", rkey, raddr);
-
-    /* Send RDMA info to client */
-    rdma_info.msg_type = MSG_TYPE_RDMA_INFO;
-    rdma_info.rkey     = rkey;
-    rdma_info.raddr    = raddr;
-    rdma_info.length   = BUFFER_SIZE;
-
-    evpl_send(evpl, bind, &rdma_info, sizeof(rdma_info));
+    if (early && !strcmp(early, "accept")) {
+        evpl_iovec_alloc(evpl, BUFFER_SIZE, 1, 1, 0, &state->rdma_buffer);
+        /* Restore the default after provider initialization, as above. */
+        signal(SIGABRT, SIG_DFL);
+        evpl_rdma_get_address(evpl, bind, &state->rdma_buffer, &rkey, &raddr);
+    }
 
     *notify_callback   = server_callback;
     *segment_callback  = test_segment_callback;

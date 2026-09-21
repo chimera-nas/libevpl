@@ -50,27 +50,31 @@ evpl_core_kqueue_add(
 {
     struct evpl_core_kqueue *k = &evc->u.kqueue;
     struct kevent            ev[2];
-    int                      rc;
+    int                      rc, n = 0;
 
     if (event->fd <= 0) {
         abort();
     }
 
-    /*
-     * Register both read and write filters up front, edge-triggered
-     * (EV_CLEAR), mirroring how the epoll backend registers IN|OUT once with
-     * EPOLLET and lets the software EVPL_*_INTEREST flags decide dispatch.
-     * EV_CLEAR is essential: a connected socket is almost always writable, so
-     * a level-triggered write filter would report ready on every kevent() call
-     * and spin the event loop at 100% CPU.  Readiness is latched in
-     * event->flags, and the read/write paths re-arm by clearing that flag only
-     * once the fd is genuinely drained/full, so a single edge is never lost.
-     * udata carries the evpl_event back to us in the wait below.
-     */
-    EV_SET(&ev[0], event->fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, event);
-    EV_SET(&ev[1], event->fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, event);
+    /* Socket readiness is latched in software until EAGAIN.  Provider wait
+     * descriptors instead need level triggering: progress can leave them
+     * ready without producing a completion, so consuming one edge is not
+     * enough to determine when it is safe to sleep. */
+    /* Native wait descriptors (notably another kqueue) may support only a
+     * read filter.  Register the directions with callbacks; callback updates
+     * refresh the registration if a direction is added or removed. */
+    if (event->read_callback || (!event->read_callback && !event->write_callback)) {
+        EV_SET(&ev[n], event->fd, EVFILT_READ, EV_ADD | (event->flags & EVPL_LEVEL_TRIGGERED ? 0 : EV_CLEAR), 0, 0,
+               event);
+        n++;
+    }
+    if (event->write_callback || (!event->read_callback && !event->write_callback)) {
+        EV_SET(&ev[n], event->fd, EVFILT_WRITE, EV_ADD | (event->flags & EVPL_LEVEL_TRIGGERED ? 0 : EV_CLEAR), 0, 0,
+               event);
+        n++;
+    }
 
-    rc = kevent(k->fd, ev, 2, NULL, 0, NULL);
+    rc = kevent(k->fd, ev, n, NULL, 0, NULL);
 
     evpl_core_abort_if(rc < 0, "Failed to add file descriptor to kqueue");
 } /* evpl_core_kqueue_add */

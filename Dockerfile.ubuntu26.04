@@ -75,7 +75,7 @@ RUN apt-get -y update && \
     cmake ninja-build ccache git flex bison build-essential pkg-config \
     uncrustify ca-certificates curl iproute2 \
     libssl-dev openssl \
-    liburing-dev libaio-dev librdmacm-dev libnuma-dev libunwind-dev \
+    liburing-dev libaio-dev librdmacm-dev libfabric-dev libfabric-bin libnuma-dev libunwind-dev \
     libnghttp2-dev libcurl4-openssl-dev libprotobuf-c-dev protobuf-c-compiler \
     uthash-dev uuid-dev libsqlite3-dev \
     python3 && \

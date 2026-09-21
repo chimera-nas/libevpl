@@ -93,6 +93,12 @@ if (HAVE_RDMACM)
     set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} rdmacm ibverbs)
 endif()
 
+if (HAVE_LIBFABRIC)
+    set(CORE_SRC ${CORE_SRC} libfabric/libfabric.c libfabric/libfabric.h)
+    add_subdirectory(libfabric)
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} fabric)
+endif()
+
 if (HAVE_XLIO)
     set(CORE_SRC ${CORE_SRC} xlio/xlio.c xlio/xlio.h xlio/tcp.c xlio/common.h)
     add_subdirectory(xlio)

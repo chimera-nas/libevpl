@@ -12,12 +12,21 @@ libevpl supports one-sided READ/WRITE RDMA operations, wherein the initiator rea
 
 ## Backends
 
-libevpl provides two backends for RDMA operations:
+libevpl provides these backends for RDMA operations:
 
 - **Native RDMA** (`EVPL_STREAM_RDMACM_RC`) - Hardware-accelerated RDMA via RDMACM
+- **Libfabric** (`EVPL_STREAM_LIBFABRIC_MSG`, `EVPL_DATAGRAM_LIBFABRIC_MSG`) - Provider-backed RDMA operations
 - **TCP-RDMA** (`EVPL_DATAGRAM_TCP_RDMA`) - RDMA emulation over TCP for development and testing without RDMA hardware
 
 ## Functions
+
+### `evpl_rdma_get_address`
+
+Exports a registered iovec's remote key and address for this connection.
+Call it only after `EVPL_NOTIFY_CONNECTED` on the bind. An accept callback
+runs before transport attachment has selected the memory-registration domain.
+Advertising a key there can give the peer a key for the wrong device. The
+libfabric backend rejects early calls instead of guessing a domain.
 
 ### `evpl_rdma_read`
 

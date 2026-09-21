@@ -10,6 +10,8 @@
 
 #define EVPL_RDMA_FLAG_TAKE_REF 0x01
 
+/* Export only after EVPL_NOTIFY_CONNECTED for this bind: the remote key
+ * belongs to the connection's memory-registration domain. */
 void evpl_rdma_get_address(
     struct evpl       *evpl,
     struct evpl_bind  *bind,

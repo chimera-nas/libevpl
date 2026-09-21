@@ -8,8 +8,9 @@
 #include "evpl/evpl.h"
 
 struct evpl_poll {
-    evpl_poll_enter_callback_t enter_callback;
-    evpl_poll_exit_callback_t  exit_callback;
-    evpl_poll_callback_t       callback;
-    void                      *private_data;
+    evpl_poll_enter_callback_t   enter_callback;
+    evpl_poll_exit_callback_t    exit_callback;
+    evpl_poll_callback_t         callback;
+    evpl_poll_prepare_callback_t prepare_callback;
+    void                        *private_data;
 };
