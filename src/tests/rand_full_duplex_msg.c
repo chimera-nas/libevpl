@@ -2,12 +2,13 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
-#include <sys/uio.h>
-#include <unistd.h>
+#include "evpl/evpl_platform.h"
+
+
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
@@ -23,13 +24,13 @@ uint64_t              total_bytes  = 128 * 1024 * 1024;
 
 
 struct thread_state {
-    int       run;
-    int       index;
-    int64_t   sent;
-    int64_t   recv;
-    int64_t   recv_msg;
-    int64_t   sent_msg;
-    pthread_t thread;
+    int                  run;
+    int                  index;
+    int64_t              sent;
+    int64_t              recv;
+    int64_t              recv_msg;
+    int64_t              sent_msg;
+    evpl_native_thread_t thread;
 };
 
 
@@ -139,12 +140,12 @@ main(
         memset(&state[i], 0, sizeof(state[i]));
         state[i].run   = 1;
         state[i].index = i;
-        pthread_create(&state[i].thread, NULL, client_thread, &state[i]);
+        evpl_native_thread_create(&state[i].thread, NULL, client_thread, &state[i]);
 
     }
 
     for (i = 0; i < 2; ++i) {
-        pthread_join(state[i].thread, NULL);
+        evpl_native_thread_join(state[i].thread, NULL);
     }
 
     return 0;

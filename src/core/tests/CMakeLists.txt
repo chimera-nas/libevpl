@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: LGPL-2.1-only
 
 unit_test(core init_no_config init_no_config.c)
+unit_test_all_mechs(core destroy_pending destroy_pending.c)
+unit_test_all_mechs(core listener_lifetime listener_lifetime.c)
 
 # Builds the binary and registers the platform-default case; the loop below
 # then runs the same binary once per mechanism compiled into this build.
@@ -12,7 +14,7 @@ unit_test(core init_core_mech init_core_mech.c)
 
 foreach(mech ${EVPL_MECHANISMS})
     add_test(NAME libevpl/core/init_core_mech_${mech}
-             COMMAND ${CMAKE_CURRENT_BINARY_DIR}/core_init_core_mech ${mech})
+             COMMAND $<TARGET_FILE:core_init_core_mech> ${mech})
 endforeach()
 unit_test(core init_auto_no_config init_auto_no_config.c)
 unit_test(core init_with_clean_config init_with_clean_config.c)
@@ -25,6 +27,7 @@ unit_test_all_mechs(core timer_oneshot timer_oneshot.c)
 # load-bearing: a regression that strands an entry in the active list stops
 # delivery rather than crashing, which shows up here as a hang.
 unit_test_all_mechs(core doorbell_remove doorbell_remove.c)
+unit_test_all_mechs(core doorbell_sender doorbell_sender.c)
 
 foreach(mech ${EVPL_MECHANISMS})
     set_tests_properties(libevpl/core/doorbell_remove_${mech}
@@ -45,12 +48,15 @@ endforeach()
 # Growing an iovec ring with a wrapped waist.  Drives the ring directly rather
 # than through a protocol, since the waist is only advanced by the RDMA CM one.
 unit_test(core iovec_ring_resize iovec_ring_resize.c)
+unit_test(core iovec_ring_gather iovec_ring_gather.c)
+
 
 # The public fd-event API against a pipe: latched readiness, quiescence after
 # drain, mark_readable without a kernel edge, and retiring an event from its
 # own callback.  Touches no network.  A regression that keeps a drained event
 # active shows up as a spin, one that strands it shows up as a hang; the
 # bounded timeout catches both.
+if(NOT WIN32)
 unit_test_all_mechs(core fd_event_pipe fd_event_pipe.c)
 
 foreach(mech ${EVPL_MECHANISMS})
@@ -60,6 +66,7 @@ endforeach()
 
 # Local (AF_UNIX) endpoints: addressed by socket name, so no namespace needed.
 unit_test_local(core endpoint_local endpoint_local.c)
+endif()
 
 # In-process endpoints: named through a registry private to the process, so
 # nothing outside it is shared and no namespace is needed either.
@@ -84,11 +91,15 @@ unit_test_local(core endpoint_inproc endpoint_inproc.c)
 find_program(QUINT_EXECUTABLE quint)
 find_program(PYTHON3_EXECUTABLE NAMES python3 python)
 
-if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
+if(EVPL_CONFORMANCE_CASES_DIR OR (NOT WIN32 AND QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     set(CORE_QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
     set(CORE_QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
+    if(EVPL_CONFORMANCE_CASES_DIR)
+        set(CORE_QUINT_WORK_DIR ${EVPL_CONFORMANCE_CASES_DIR})
+    endif()
     set(CORE_CASES ${CORE_QUINT_WORK_DIR}/core_cases.h)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     add_custom_command(
         OUTPUT ${CORE_CASES}
         COMMAND ${CORE_QUINT_SRC_DIR}/generate_core_cases.sh
@@ -99,6 +110,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                 ${CORE_QUINT_SRC_DIR}/generate_core_cases.sh
         COMMENT "Generating core conformance programs from the Quint model"
         VERBATIM)
+    endif()
 
     add_custom_target(core_cases DEPENDS ${CORE_CASES})
 
@@ -126,6 +138,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                              PROPERTIES TIMEOUT 60)
     endforeach()
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     # The model checking itself: scenario tests plus a random-simulation pass
     # against its invariants.  Separate from generation so that a broken
     # specification is a failing test rather than a failing build.
@@ -142,10 +155,11 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                          # exactly 120s on the switch.
                          LABELS "quint" TIMEOUT 360)
 
+    endif()
     message(STATUS "Core conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS
-        "Core conformance test disabled (needs quint and python3 on PATH)")
+        "Core conformance test disabled (supply EVPL_CONFORMANCE_CASES_DIR, or quint and python3 on a Unix host)")
 endif()
 
 # Reply using the borrowed source address after the receive callback returns.
@@ -159,5 +173,12 @@ endforeach()
 unit_test_all_mechs(core poll_prepare poll_prepare.c)
 target_include_directories(core_poll_prepare PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
 
-unit_test_all_mechs(core close_ready close_ready.c)
-target_include_directories(core_close_ready PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
+foreach(mech ${EVPL_MECHANISMS})
+    set_tests_properties(libevpl/core/poll_prepare_${mech} PROPERTIES TIMEOUT 10)
+endforeach()
+
+# This regression exercises POSIX descriptor readiness, unavailable with IOCP.
+if(NOT WIN32)
+    unit_test_all_mechs(core close_ready close_ready.c)
+    target_include_directories(core_close_ready PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
+endif()

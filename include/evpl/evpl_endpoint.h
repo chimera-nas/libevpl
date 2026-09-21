@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_endpoint.h directly, include evpl/evpl.h instead"
@@ -16,7 +17,7 @@ struct evpl_address;
  * The address is resolved lazily and re-resolved periodically, see
  * evpl_global_config_set_resolve_timeout_ms().
  */
-struct evpl_endpoint *
+EVPL_API struct evpl_endpoint *
 evpl_endpoint_create(
     const char *address,
     int         port);
@@ -41,7 +42,7 @@ evpl_endpoint_create(
  *
  * Returns NULL if the path is malformed or too long.
  */
-struct evpl_endpoint *
+EVPL_API struct evpl_endpoint *
 evpl_endpoint_create_local(
     const char *path);
 
@@ -61,24 +62,24 @@ evpl_endpoint_create_local(
  *
  * Returns NULL if the name is empty or too long.
  */
-struct evpl_endpoint *
+EVPL_API struct evpl_endpoint *
 evpl_endpoint_create_inproc(
     const char *name);
 
-void evpl_endpoint_close(
+EVPL_API void evpl_endpoint_close(
     struct evpl_endpoint *endpoint);
 
 /* 1 iff this endpoint names a local (AF_UNIX) socket. */
-int evpl_endpoint_is_local(
+EVPL_API int evpl_endpoint_is_local(
     const struct evpl_endpoint *ep);
 
 /* 1 iff this endpoint names a peer thread inside this process. */
-int evpl_endpoint_is_inproc(
+EVPL_API int evpl_endpoint_is_inproc(
     const struct evpl_endpoint *ep);
 
-const char *
+EVPL_API const char *
 evpl_endpoint_address(
     const struct evpl_endpoint *ep);
 
-int evpl_endpoint_port(
+EVPL_API int evpl_endpoint_port(
     const struct evpl_endpoint *ep);

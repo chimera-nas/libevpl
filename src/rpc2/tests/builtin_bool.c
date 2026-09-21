@@ -2,12 +2,17 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/uio.h>
-#include <unistd.h>
+
+
+#ifdef _WIN32
+#include "tests/test_options.h"
+#else  /* ifdef _WIN32 */
 #include <getopt.h>
+#endif /* ifdef _WIN32 */
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"
@@ -152,7 +157,7 @@ main(
     server = evpl_rpc2_server_init(programs, 1);
 
     /* Create endpoint */
-    endpoint = evpl_endpoint_create(test_address(proto, "0.0.0.0", argv[0]), port);
+    endpoint = evpl_endpoint_create(test_address(proto, "127.0.0.1", argv[0]), port);
 
     /* Start listening */
     evpl_rpc2_server_start(server, proto, endpoint);

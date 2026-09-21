@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -141,7 +142,7 @@ evpl_http_date(struct evpl_http_agent *agent)
     time_t                   now = time(NULL);
 
     if (now != agent->date_second) {
-        gmtime_r(&now, &tm);
+        evpl_gmtime(&now, &tm);
 
         snprintf(agent->date, sizeof(agent->date),
                  "%s, %02d %s %04d %02d:%02d:%02d GMT",
@@ -2441,7 +2442,7 @@ evpl_http_append_line(
     size_t      cap,
     char      **rsp,
     const char *fmt,
-    ...) __attribute__((format(printf, 4, 5)));
+    ...) EVPL_PRINTF(4, 5);
 
 static void
 evpl_http_append_line(

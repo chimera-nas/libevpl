@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "tests/test_socket.h"
 /*
  * Exercises the configurable HTTP header block limit (http_max_header_size,
  * default 8192) in all four places it is enforced:
@@ -25,12 +26,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <pthread.h>
+
+#include "evpl/evpl_platform.h"
 #include <signal.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+
+
+
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"
@@ -52,7 +53,7 @@ static volatile int g_server_hdrs_refused;
 /* ------------------------------------------------------------- evpl server */
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     volatile int         run;
     struct evpl_doorbell doorbell;
 };
@@ -149,7 +150,7 @@ server_function(void *ptr)
 
     evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
 
     server_ctx->run = 1;
 
@@ -322,11 +323,12 @@ test_inbound_server_limit(void)
     struct sockaddr_in addr;
     char               buf[65536];
     char               reply[256];
-    int                fd, off = 0, n, got = 0;
+    test_socket_t      fd;
+    int                off = 0, n, got = 0;
     int                i;
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
+    if (fd == TEST_INVALID_SOCKET) {
         perror("inbound-server: socket");
         return 1;
     }
@@ -350,14 +352,14 @@ test_inbound_server_limit(void)
                         "X-Big-%d: %s\r\n", i, big_value);
     }
 
-    if (write(fd, buf, off) != off) {
+    if (test_socket_send(fd, buf, off, 0) != off) {
         perror("inbound-server: write");
-        close(fd);
+        test_socket_close(fd);
         return 1;
     }
 
     while (got < (int) sizeof(reply) - 1) {
-        n = read(fd, reply + got, sizeof(reply) - 1 - got);
+        n = test_socket_recv(fd, reply + got, sizeof(reply) - 1 - got, 0);
         if (n <= 0) {
             break;
         }
@@ -365,7 +367,7 @@ test_inbound_server_limit(void)
     }
     reply[got] = '\0';
 
-    close(fd);
+    test_socket_close(fd);
 
     if (strncmp(reply, "HTTP/1.1 400 ", 13) != 0) {
         fprintf(stderr, "inbound-server: expected 400, got '%.40s'\n", reply);
@@ -388,15 +390,16 @@ raw_server_function(void *ptr)
 {
     struct sockaddr_in addr;
     char               buf[65536];
-    int                lfd, cfd, off = 0, i, one = 1;
+    test_socket_t      lfd, cfd;
+    int                off = 0, i, one = 1;
     ssize_t            n;
 
     lfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (lfd < 0) {
+    if (lfd == TEST_INVALID_SOCKET) {
         perror("raw-server: socket");
         exit(2);
     }
-    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    test_socket_option(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -410,12 +413,12 @@ raw_server_function(void *ptr)
     }
 
     cfd = accept(lfd, NULL, NULL);
-    if (cfd < 0) {
+    if (cfd == TEST_INVALID_SOCKET) {
         perror("raw-server: accept");
         exit(2);
     }
 
-    n = read(cfd, buf, sizeof(buf));
+    n = test_socket_recv(cfd, buf, sizeof(buf), 0);
     (void) n;
 
     off += snprintf(buf + off, sizeof(buf) - off, "HTTP/1.1 200 OK\r\n");
@@ -426,12 +429,12 @@ raw_server_function(void *ptr)
     }
 
     /* the client is expected to hang up mid-block; ignore the short write */
-    n = write(cfd, buf, off);
+    n = test_socket_send(cfd, buf, off, 0);
     (void) n;
 
-    usleep(200000);
-    close(cfd);
-    close(lfd);
+    evpl_sleep_us(200000);
+    test_socket_close(cfd);
+    test_socket_close(lfd);
 
     return NULL;
 } /* raw_server_function */
@@ -445,7 +448,7 @@ raw_server_function(void *ptr)
 static int
 test_inbound_client_limit(struct evpl *evpl)
 {
-    pthread_t                 raw_thread;
+    evpl_native_thread_t      raw_thread;
     struct evpl_http_agent   *agent;
     struct evpl_endpoint     *endpoint;
     struct evpl_http_conn    *conn;
@@ -455,8 +458,8 @@ test_inbound_client_limit(struct evpl *evpl)
 
     memset(&rc, 0, sizeof(rc));
 
-    pthread_create(&raw_thread, NULL, raw_server_function, NULL);
-    usleep(100000); /* let the raw server reach accept() */
+    evpl_native_thread_create(&raw_thread, NULL, raw_server_function, NULL);
+    evpl_sleep_us(100000); /* let the raw server reach accept() */
 
     agent = evpl_http_init(evpl);
 
@@ -477,7 +480,7 @@ test_inbound_client_limit(struct evpl *evpl)
         evpl_continue(evpl);
     }
 
-    pthread_join(raw_thread, NULL);
+    evpl_native_thread_join(raw_thread, NULL);
 
     evpl_http_destroy(agent);
 
@@ -514,7 +517,9 @@ main(
     int                        rc = 0;
 
     /* the raw peers close mid-conversation; a late write must not kill us */
+#ifdef SIGPIPE
     signal(SIGPIPE, SIG_IGN);
+#endif /* ifdef SIGPIPE */
 
     memset(big_value, 'A', BIG_HEADER_VALUE_LEN);
     big_value[BIG_HEADER_VALUE_LEN] = '\0';
@@ -523,10 +528,10 @@ main(
 
     server.run = 0;
 
-    pthread_create(&server.thread, NULL, server_function, &server);
+    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
 
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     /* bound event waits so the part-3 pump loop keeps ticking when idle */
@@ -553,9 +558,9 @@ main(
     evpl_destroy(evpl);
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     if (rc == 0) {
         fprintf(stderr, "all header limit checks ok\n");

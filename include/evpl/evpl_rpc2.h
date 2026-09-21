@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #include <stdint.h>
 #include <evpl/evpl.h>
@@ -75,9 +76,9 @@ struct evpl_rpc2_cred {
      * context cookie, for callers that need to re-key off it.
      */
     struct {
-        const char *principal;
-        uint32_t    service;
-        void       *gss_ctx;
+        const char                  *principal;
+        uint32_t                     service;
+        void                        *gss_ctx;
         /* Client side: the established context a call travels under.  Set by
          * a caller building a credential to SEND; NULL in the credential a
          * server RECEIVES, where the three fields above describe the peer
@@ -124,7 +125,7 @@ typedef void (*evpl_rpc2_notify_callback_t)(
     struct evpl_rpc2_notify *notify,
     void                    *private_data);
 
-struct evpl_rpc2_thread *
+EVPL_RPC2_API struct evpl_rpc2_thread *
 evpl_rpc2_thread_init(
     struct evpl                *evpl,
     struct evpl_rpc2_program  **programs,
@@ -132,7 +133,7 @@ evpl_rpc2_thread_init(
     evpl_rpc2_notify_callback_t notify_callback,
     void                       *private_data);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_thread_destroy(
     struct evpl_rpc2_thread *thread);
 
@@ -140,44 +141,44 @@ evpl_rpc2_thread_destroy(
 /*
  * Get the client dbuf from a thread for use by client call marshalling.
  */
-void *
+EVPL_RPC2_API void *
 evpl_rpc2_thread_get_client_dbuf(
     struct evpl_rpc2_thread *thread);
 
-struct evpl_rpc2_server *
+EVPL_RPC2_API struct evpl_rpc2_server *
 evpl_rpc2_server_init(
     struct evpl_rpc2_program **programs,
     int                        nprograms);
 
 /* Begin serving on endpoint.  Returns 0, or -1 if the listen could not be
  * established -- see evpl_listen(). */
-int
+EVPL_RPC2_API int
 evpl_rpc2_server_start(
     struct evpl_rpc2_server *server,
     int                      protocol,
     struct evpl_endpoint    *endpoint);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_server_attach(
     struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_server *server,
     void                    *private_data);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_server_detach(
     struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_server *server);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_server_stop(
     struct evpl_rpc2_server *server);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_server_destroy(
     struct evpl_rpc2_server *server);
 
 
-struct evpl_rpc2_conn *
+EVPL_RPC2_API struct evpl_rpc2_conn *
 evpl_rpc2_client_connect(
     struct evpl_rpc2_thread   *thread,
     int                        protocol,
@@ -186,7 +187,7 @@ evpl_rpc2_client_connect(
     int                        num_server_programs,
     void                      *server_private_data);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_client_disconnect(
     struct evpl_rpc2_thread *thread,
     struct evpl_rpc2_conn   *conn);
@@ -196,24 +197,24 @@ evpl_rpc2_client_disconnect(
  * without requiring the full struct definition.
  */
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_conn_get_local_address(
     struct evpl_rpc2_conn *conn,
     char                  *str,
     int                    len);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_conn_get_remote_address(
     struct evpl_rpc2_conn *conn,
     char                  *str,
     int                    len);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_conn_set_private_data(
     struct evpl_rpc2_conn *conn,
     void                  *private_data);
 
-void *
+EVPL_RPC2_API void *
 evpl_rpc2_conn_get_private_data(
     struct evpl_rpc2_conn *conn);
 
@@ -232,11 +233,11 @@ evpl_rpc2_conn_get_private_data(
  * are matched by XID, so the second would displace the first's pending record
  * and the first reply would be dropped as unknown.
  */
-uint32_t
+EVPL_RPC2_API uint32_t
 evpl_rpc2_conn_get_next_xid(
     struct evpl_rpc2_conn *conn);
 
-void
+EVPL_RPC2_API void
 evpl_rpc2_conn_set_next_xid(
     struct evpl_rpc2_conn *conn,
     uint32_t               xid);

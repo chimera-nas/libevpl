@@ -33,7 +33,7 @@ macro(unit_test_rpc2 test_name xdr_file)
 
     # Set the first source for TEST_FILE environment variable
     list(GET sources 0 first_source)
-    set(RPC2_TEST_EXE_${test_name} ${CMAKE_CURRENT_BINARY_DIR}/evpl_rpc2_${test_name})
+    set(RPC2_TEST_EXE_${test_name} $<TARGET_FILE:evpl_rpc2_${test_name}>)
     set(RPC2_TEST_SRC_${test_name} ${CMAKE_CURRENT_SOURCE_DIR}/${first_source})
 endmacro()
 
@@ -203,9 +203,15 @@ unit_test_rpc2_instance(rdma_ddp DATAGRAM_TCP_RDMA 8202)
 # STREAM_SOCKET_TCP set exactly; rdma_ddp is included for the same reason it is
 # registered for TCP, to cover the path where the transport reports no RDMA and
 # the chunks fall back to being carried inline.
+if(NOT WIN32)
 unit_test_rpc2_instance_named(hello_world STREAM_SOCKET_UNIX)
+endif()
+if(NOT WIN32)
 unit_test_rpc2_instance_named(builtin_bool STREAM_SOCKET_UNIX)
+endif()
+if(NOT WIN32)
 unit_test_rpc2_instance_named(rdma_ddp STREAM_SOCKET_UNIX)
+endif()
 
 # In-process transport.  DATAGRAM_INPROC is the point of the exercise: it puts
 # rpc2's RDMA/DDP path under test with no RDMA hardware, and without
@@ -238,11 +244,15 @@ unit_test_rpc2_instance_named(rdma_ddp STREAM_INPROC)
 find_program(QUINT_EXECUTABLE quint)
 find_program(PYTHON3_EXECUTABLE NAMES python3 python)
 
-if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
+if(EVPL_CONFORMANCE_CASES_DIR OR (NOT WIN32 AND QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     set(QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
     set(QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
+    if(EVPL_CONFORMANCE_CASES_DIR)
+        set(QUINT_WORK_DIR ${EVPL_CONFORMANCE_CASES_DIR})
+    endif()
     set(CONFORMANCE_CASES ${QUINT_WORK_DIR}/conformance_cases.h)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     add_custom_command(
         OUTPUT ${CONFORMANCE_CASES}
         COMMAND ${QUINT_SRC_DIR}/generate_cases.sh
@@ -254,6 +264,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                 ${QUINT_SRC_DIR}/generate_cases.sh
         COMMENT "Generating RPC2 conformance cases from the Quint models"
         VERBATIM)
+    endif()
 
     add_custom_target(conformance_cases DEPENDS ${CONFORMANCE_CASES})
 
@@ -265,7 +276,9 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                        krb5_local_none.c)
     endif()
 
-    target_link_libraries(evpl_rpc2_conformance m)
+    if(NOT WIN32)
+        target_link_libraries(evpl_rpc2_conformance m)
+    endif()
 
     if(KRB5_GSSAPI_FOUND)
         target_include_directories(evpl_rpc2_conformance PRIVATE
@@ -325,7 +338,9 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # AF_UNIX is a stream transport with a descriptor of its own, so it runs
     # the raw-socket defect phase too -- record marking is a property of the
     # framing, not of the address family, so the whole defect matrix applies.
+if(NOT WIN32)
     unit_test_rpc2_instance_named(conformance STREAM_SOCKET_UNIX)
+endif()
 
     # Inproc, both ways round: DATAGRAM_INPROC reports RDMA and so exercises
     # the chunk and rdma_msg paths with no hardware and none of TCP_RDMA's
@@ -341,8 +356,10 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     foreach(proto STREAM_SOCKET_TCP DATAGRAM_TCP_RDMA STREAM_SOCKET_UNIX
             DATAGRAM_INPROC STREAM_INPROC)
         foreach(mech ${EVPL_MECHANISMS})
-            set_tests_properties(libevpl/rpc2/conformance_${proto}_${mech}
-                                 PROPERTIES TIMEOUT 120)
+            if(TEST libevpl/rpc2/conformance_${proto}_${mech})
+                set_tests_properties(libevpl/rpc2/conformance_${proto}_${mech}
+                                     PROPERTIES TIMEOUT 120)
+            endif()
         endforeach()
     endforeach()
 
@@ -362,6 +379,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
 
     set(CLIENT_CASES ${QUINT_WORK_DIR}/client_cases.h)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     add_custom_command(
         OUTPUT ${CLIENT_CASES}
         COMMAND ${QUINT_SRC_DIR}/generate_client_cases.sh
@@ -372,6 +390,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                 ${QUINT_SRC_DIR}/generate_client_cases.sh
         COMMENT "Generating RPC2 client reply cases from the Quint model"
         VERBATIM)
+    endif()
 
     add_custom_target(client_cases DEPENDS ${CLIENT_CASES})
 
@@ -406,6 +425,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
             PROPERTIES TIMEOUT 120)
     endforeach()
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     # The models checking themselves: scenario tests plus a random-simulation
     # pass against their invariants.  Separate from generation so that a broken
     # specification is a failing test rather than a failing build.
@@ -433,8 +453,9 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     set_tests_properties(libevpl/rpc2/quint_client_invariants PROPERTIES
                          LABELS "quint" TIMEOUT 360)
 
+    endif()
     message(STATUS "RPC2 conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS
-        "RPC2 conformance test disabled (needs quint and python3 on PATH)")
+        "RPC2 conformance test disabled (supply EVPL_CONFORMANCE_CASES_DIR, or quint and python3 on a Unix host)")
 endif()

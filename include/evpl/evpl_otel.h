@@ -29,7 +29,7 @@ struct evpl_otel_exporter;
  * the oteltracing-c transport.  otel_init() must have been called first.
  * Returns NULL on failure (e.g. tracing not initialized).
  */
-struct evpl_otel_exporter *
+EVPL_OTEL_API struct evpl_otel_exporter *
 evpl_otel_exporter_create(
     struct evpl *evpl,
     const char  *host,
@@ -40,12 +40,12 @@ evpl_otel_exporter_create(
  * the exporter's evpl thread (e.g. from an evpl loop hook or a timer).  Returns
  * the number of spans shipped.
  */
-int
+EVPL_OTEL_API int
 evpl_otel_exporter_flush(
     struct evpl_otel_exporter *exporter);
 
 /* Close the collector connection and free the exporter. */
-void
+EVPL_OTEL_API void
 evpl_otel_exporter_destroy(
     struct evpl_otel_exporter *exporter);
 

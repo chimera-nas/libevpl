@@ -2,10 +2,11 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
 #include <string.h>
-#include <sys/uio.h>
+
 
 #include "core/evpl.h"
 #include "core/iovec.h"
@@ -361,7 +362,7 @@ evpl_iovec_ring_consume(
             ring->tail = (ring->tail + 1) & ring->mask;
             n++;
         } else {
-            iovec->data   += length;
+            iovec->data    = (char *) iovec->data + length;
             iovec->length -= length;
 
             length = 0;
@@ -394,7 +395,7 @@ evpl_iovec_ring_copyv(
              */
             chunk = left;
             evpl_iovec_clone_segment(&out[niov], iovec, 0, left);
-            iovec->data   += left;
+            iovec->data    = (char *) iovec->data + left;
             iovec->length -= left;
         } else {
             /*
@@ -416,6 +417,55 @@ evpl_iovec_ring_copyv(
 
     return niov;
 } /* evpl_iovec_ring_copyv */
+
+/* A completion backend can receive one byte per buffer. Bound the output
+ * array even when a complete frame occupies arbitrarily many ring entries.
+ * Preserve zero-copy delivery normally and gather only fragmented frames. */
+static inline int
+evpl_iovec_ring_copyv_bounded(
+    struct evpl            *evpl,
+    struct evpl_iovec      *out,
+    int                     capacity,
+    struct evpl_iovec_ring *ring,
+    int                     length)
+{
+    struct evpl_iovec *src;
+    int                pos = ring->tail, count = 0, left = length;
+    int                niov, i;
+    unsigned int       chunk, offset;
+
+    if (length < 0 || (uint64_t) length > ring->length) {
+        return -1;
+    }
+    while (left > 0 && pos != ring->head && count <= capacity) {
+        src   = &ring->iovec[pos];
+        left -= src->length < (unsigned int) left ? src->length : left;
+        count++;
+        pos = (pos + 1) & ring->mask;
+    }
+    if (count <= capacity && !left) {
+        return evpl_iovec_ring_copyv(evpl, out, ring, length);
+    }
+    niov = evpl_iovec_alloc(evpl, length, 0, capacity, 0, out);
+    if (niov <= 0) {
+        return -1;
+    }
+    for (i = 0; i < niov; i++) {
+        offset = 0;
+        while (offset < out[i].length) {
+            src   = evpl_iovec_ring_tail(ring);
+            chunk = out[i].length - offset;
+            if (chunk > src->length) {
+                chunk = src->length;
+            }
+            memcpy((char *) out[i].data + offset, src->data, chunk);
+            evpl_iovec_ring_consume(evpl, ring, chunk);
+            offset += chunk;
+        }
+    }
+    return niov;
+} /* evpl_iovec_ring_copyv_bounded */
+
 
 static inline void
 evpl_iovec_ring_consumev(
@@ -450,7 +500,7 @@ evpl_iovec_ring_append(
     head = evpl_iovec_ring_head(ring);
 
     if (head && evpl_iovec_get_ref(head) == evpl_iovec_get_ref(append) &&
-        head->data + head->length == append->data) {
+        (char *) head->data + head->length == append->data) {
         /*
          * The head iovec is from the same buffer as the one to be
          * appended and they are contiguous. Extend the head iovec.
@@ -474,7 +524,7 @@ evpl_iovec_ring_append(
         }
     }
 
-    append->data   += length;
+    append->data    = append->length == length ? NULL : (char *) append->data + length;
     append->length -= length;
 
     ring->length += length;

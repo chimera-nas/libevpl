@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * evpl_rpc2_conn_{get,set}_next_xid: the caller can observe, and choose, the
  * XID a client connection puts on its next call.
@@ -21,8 +22,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+#include "tests/test_options.h"
+#else  /* ifdef _WIN32 */
 #include <getopt.h>
+#endif /* ifdef _WIN32 */
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"
@@ -158,7 +163,7 @@ main(
     state.prog           = &prog;
 
     server   = evpl_rpc2_server_init(programs, 1);
-    endpoint = evpl_endpoint_create(test_address(proto, "0.0.0.0", argv[0]), port);
+    endpoint = evpl_endpoint_create(test_address(proto, "127.0.0.1", argv[0]), port);
     evpl_rpc2_server_start(server, proto, endpoint);
 
     thread = evpl_rpc2_thread_init(evpl, programs, 1, NULL, NULL);

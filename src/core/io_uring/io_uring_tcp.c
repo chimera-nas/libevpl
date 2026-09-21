@@ -1,18 +1,21 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 
-#include <alloca.h>
-#include <sys/socket.h>
+
+
 #include <sys/types.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <netinet/tcp.h> // For TCP_NODELAY
+
+
+
 #include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
+
 
 #include "core/bind.h"
 #include "core/io_uring/io_uring.h"
@@ -60,14 +63,16 @@ evpl_io_uring_post_multishot_recv(
     struct evpl_io_uring_request *req;
     struct io_uring_sqe          *sqe;
 
-    while (s->fd >= 0 && !s->recv_req) {
+    while (s->fd >= 0 && !(evpl_private2bind(s)->flags & EVPL_BIND_PENDING_CLOSED) && !s->recv_req) {
 
         req = evpl_io_uring_request_alloc(ctx, EVPL_IO_URING_REQ_TCP);
 
         req->callback = evpl_io_uring_tcp_recv_callback;
 
         req->tcp.socket = s;
-        sqe             = io_uring_get_sqe(&ctx->ring);
+        req->owner      = evpl_private2bind(s);
+        evpl_bind_operation_begin(req->owner);
+        sqe = io_uring_get_sqe(&ctx->ring);
 
         io_uring_prep_recv_multishot(sqe, s->fd, NULL, 0, 0);
 
@@ -234,7 +239,7 @@ evpl_io_uring_pump(
     struct evpl_io_uring_request *req;
     int                           offset = 0, i;
 
-    while (!evpl_iovec_ring_is_empty(&bind->iovec_send)) {
+    while (!(bind->flags & EVPL_BIND_PENDING_CLOSED) && !evpl_iovec_ring_is_empty(&bind->iovec_send)) {
 
         i = __builtin_ffsll(s->send_ring_empty);
 
@@ -247,8 +252,10 @@ evpl_io_uring_pump(
 
         req = evpl_io_uring_request_alloc(ctx, EVPL_IO_URING_REQ_TCP);
 
-        req->callback      = evpl_io_uring_tcp_send_callback;
-        req->tcp.socket    = s;
+        req->callback   = evpl_io_uring_tcp_send_callback;
+        req->tcp.socket = s;
+        req->owner      = evpl_private2bind(s);
+        evpl_bind_operation_begin(req->owner);
         req->tcp.msgs_sent = 0;
 
         s->send_ring_iov[i] = *evpl_iovec_ring_tail(&bind->iovec_send);
@@ -384,7 +391,9 @@ evpl_io_uring_tcp_connect(
     req = evpl_io_uring_request_alloc(ctx, EVPL_IO_URING_REQ_TCP);
 
     req->tcp.socket = s;
-    req->callback   = evpl_io_uring_tcp_connect_callback;
+    req->owner      = evpl_private2bind(s);
+    evpl_bind_operation_begin(req->owner);
+    req->callback = evpl_io_uring_tcp_connect_callback;
 
     s->fd = socket(bind->remote->addr->sa_family, SOCK_STREAM, 0);
 
@@ -422,7 +431,9 @@ evpl_io_uring_tcp_cancel_callback(
     sqe = io_uring_get_sqe(&ctx->ring);
 
     close_req->tcp.socket = s;
-    close_req->callback   = evpl_io_uring_tcp_close_callback;
+    close_req->owner      = evpl_private2bind(s);
+    evpl_bind_operation_begin(close_req->owner);
+    close_req->callback = evpl_io_uring_tcp_close_callback;
 
     io_uring_prep_close(sqe, s->fd);
 
@@ -447,7 +458,9 @@ evpl_io_uring_pending_close(
     sqe = io_uring_get_sqe(&ctx->ring);
 
     req->tcp.socket = s;
-    req->callback   = evpl_io_uring_tcp_cancel_callback;
+    req->owner      = evpl_private2bind(s);
+    evpl_bind_operation_begin(req->owner);
+    req->callback = evpl_io_uring_tcp_cancel_callback;
 
     io_uring_prep_cancel_fd(sqe, s->fd, IORING_ASYNC_CANCEL_ALL);
 
@@ -464,13 +477,9 @@ evpl_io_uring_close(
     struct evpl_io_uring_context *ctx = evpl_framework_private(evpl, EVPL_FRAMEWORK_IO_URING);
     struct evpl_io_uring_socket  *s   = evpl_bind_private(bind);
 
-    if (s->recv_req) {
-        evpl_io_uring_request_free(ctx, s->recv_req);
-    }
-
-    if (s->accept_req) {
-        evpl_io_uring_request_free(ctx, s->accept_req);
-    }
+    (void) ctx;
+    (void) s;
+    evpl_core_assert(!s->recv_req && !s->accept_req && !bind->outstanding);
 } /* evpl_io_uring_tcp_close */
 
 
@@ -560,7 +569,9 @@ evpl_io_uring_tcp_listen(
 
     req->callback   = evpl_io_uring_tcp_accept_callback;
     req->tcp.socket = s;
-    sqe             = io_uring_get_sqe(&ctx->ring);
+    req->owner      = evpl_private2bind(s);
+    evpl_bind_operation_begin(req->owner);
+    sqe = io_uring_get_sqe(&ctx->ring);
 
     io_uring_prep_multishot_accept(sqe, s->fd, NULL, 0, 0);
 
@@ -580,6 +591,18 @@ evpl_io_uring_tcp_listen(
 
     return -1;
 } /* evpl_io_uring_tcp_listen */
+
+static void
+evpl_io_uring_attach_discard(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    struct evpl_io_uring_accepted_socket *a = accepted;
+
+    (void) evpl;
+    close(a->fd);
+    evpl_free(a);
+} /* evpl_io_uring_attach_discard */
 
 static void
 evpl_io_uring_attach(
@@ -628,15 +651,16 @@ evpl_io_uring_flush(
 } /* evpl_io_uring_tcp_flush */
 
 struct evpl_protocol evpl_io_uring_tcp = {
-    .id            = EVPL_STREAM_IO_URING_TCP,
-    .connected     = 1,
-    .stream        = 1,
-    .name          = "STREAM_IO_URING_TCP",
-    .framework     = &evpl_framework_io_uring,
-    .connect       = evpl_io_uring_tcp_connect,
-    .pending_close = evpl_io_uring_pending_close,
-    .close         = evpl_io_uring_close,
-    .listen        = evpl_io_uring_tcp_listen,
-    .attach        = evpl_io_uring_attach,
-    .flush         = evpl_io_uring_flush,
+    .id               = EVPL_STREAM_IO_URING_TCP,
+    .connected        = 1,
+    .stream           = 1,
+    .name             = "STREAM_IO_URING_TCP",
+    .framework        = &evpl_framework_io_uring,
+    .connect          = evpl_io_uring_tcp_connect,
+    .pending_close    = evpl_io_uring_pending_close,
+    .close            = evpl_io_uring_close,
+    .listen           = evpl_io_uring_tcp_listen,
+    .discard_accepted = evpl_io_uring_attach_discard,
+    .attach           = evpl_io_uring_attach,
+    .flush            = evpl_io_uring_flush,
 };

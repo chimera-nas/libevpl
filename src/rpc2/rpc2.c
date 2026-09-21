@@ -1,13 +1,15 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <complex.h>
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <time.h>
 #include <utlist.h>
 #include <uthash.h>
@@ -46,7 +48,7 @@ static const char *evpl_rpc2_role_names[EVPL_RPC2_NUM_ROLES] = {
 
 /* Monotonic id stamped onto each rpc2 thread to label its gauge series.
  * Bumped atomically since threads initialize on their own cores. */
-static int         evpl_rpc2_next_thread_id = 0;
+static atomic_int  evpl_rpc2_next_thread_id = 0;
 
 /*
  * evpl_rpc2_msg represents a single received RPC message (either a CALL or REPLY).
@@ -350,7 +352,7 @@ static FORCE_INLINE uint32_t
 rpc2_hton32(uint32_t value)
 {
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-    return __builtin_bswap32(value);
+    return evpl_bswap32(value);
 #else  /* if __BYTE_ORDER == __LITTLE_ENDIAN */
     return value;
 #endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
@@ -360,7 +362,7 @@ static FORCE_INLINE uint32_t
 rpc2_ntoh32(uint32_t value)
 {
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-    return __builtin_bswap32(value);
+    return evpl_bswap32(value);
 #else  /* if __BYTE_ORDER == __LITTLE_ENDIAN */
     return value;
 #endif /* if __BYTE_ORDER == __LITTLE_ENDIAN */
@@ -580,6 +582,28 @@ evpl_rpc2_reasm_reset(
  *   0  -> intermediate fragment consumed; caller must return.
  *  -1  -> cap exceeded; caller must close the bind.
  */
+/* TCP record marks may cross receive-buffer boundaries. Completion-based
+ * backends naturally deliver each receive in a separate buffer. */
+static uint32_t
+evpl_rpc2_record_mark(
+    const struct evpl_iovec *iov,
+    int                      niov)
+{
+    uint32_t     mark;
+    unsigned int copied = 0;
+
+    for (int i = 0; i < niov && copied < sizeof(mark); i++) {
+        unsigned int length = iov[i].length;
+        if (length > sizeof(mark) - copied) {
+            length = sizeof(mark) - copied;
+        }
+        memcpy((char *) &mark + copied, iov[i].data, length);
+        copied += length;
+    }
+    evpl_rpc2_abort_if(copied != sizeof(mark), "incomplete RPC record mark");
+    return rpc2_ntoh32(mark);
+} /* evpl_rpc2_record_mark */
+
 static int
 evpl_rpc2_reassemble(
     struct evpl           *evpl,
@@ -596,7 +620,7 @@ evpl_rpc2_reassemble(
     int                last;
     int                added;
 
-    mark     = rpc2_ntoh32(*(uint32_t *) iovec->data);
+    mark     = evpl_rpc2_record_mark(iovec, niov);
     last     = (mark & 0x80000000) != 0;
     frag_len = mark & 0x7FFFFFFF;
 
@@ -1053,7 +1077,7 @@ evpl_rpc2_send_reply(
 
         offset = marshall_length_rdma_msg(&rdma_msg);
 
-        msg_iov[0].data   += reserve - (rpc_len + offset);
+        msg_iov[0].data    = (char *) msg_iov[0].data + reserve - (rpc_len + offset);
         msg_iov[0].length -= reserve - (rpc_len + offset);
         length            -= reserve - (rpc_len + offset);
 
@@ -1068,7 +1092,7 @@ evpl_rpc2_send_reply(
     } else {
         offset = 4;
 
-        msg_iov[0].data   += reserve - (rpc_len + offset);
+        msg_iov[0].data    = (char *) msg_iov[0].data + reserve - (rpc_len + offset);
         msg_iov[0].length -= reserve - (rpc_len + offset);
         length            -= reserve - (rpc_len + offset);
     }
@@ -1102,7 +1126,7 @@ evpl_rpc2_send_reply(
         final_reply_niov   = 1;
         final_reply_length = offset;
 
-        msg_iov[0].data   += offset;
+        msg_iov[0].data    = (char *) msg_iov[0].data + offset;
         msg_iov[0].length -= offset;
 
         evpl_rpc2_iovec_cursor_init(&reply_cursor, msg_iov, msg_niov);
@@ -1282,7 +1306,7 @@ struct evpl_rpc2_gss_context {
  * gss_ctx_id_t is never used concurrently from two threads.
  */
 static struct evpl_rpc2_gss_context *evpl_rpc2_gss_table       = NULL;
-static pthread_mutex_t               evpl_rpc2_gss_lock        = PTHREAD_MUTEX_INITIALIZER;
+static evpl_mutex_t                  evpl_rpc2_gss_lock        = EVPL_MUTEX_INITIALIZER;
 static uint32_t                      evpl_rpc2_gss_next_handle = 0;
 
 /*
@@ -1859,7 +1883,7 @@ evpl_rpc2_gss_unwrap_privacy(
      * header travels in the clear and can be edited, the seal cannot be
      * without the key. */
     lp = inner->data;
-    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) inner->data + 4, &embedded);
+    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) (char *) inner->data + 4, &embedded);
     if (embedded != seq) {
         evpl_rpc2_debug("rpcsec_gss: privacy seq mismatch embedded=%u cred=%u",
                         embedded, seq);
@@ -1870,7 +1894,7 @@ evpl_rpc2_gss_unwrap_privacy(
      * seq.  Advance the view rather than copying; the buffer reference is
      * unchanged, so releasing this iovec still frees the whole allocation. */
     inner_len     = (uint32_t) plain_len - 4;
-    inner->data   = (uint8_t *) inner->data + 4;
+    inner->data   = (uint8_t *) (char *) inner->data + 4;
     inner->length = inner_len;
 
     /* The received iovecs held the ciphertext and nothing else needs them. */
@@ -1933,7 +1957,7 @@ evpl_rpc2_gss_wrap_reply_integrity(
         return -1;
     }
 
-    p = (uint8_t *) out_iov->data + reserve;
+    p = (uint8_t *) (char *) out_iov->data + reserve;
 
     /* databody length prefix */
     pp = p;
@@ -1956,13 +1980,13 @@ evpl_rpc2_gss_wrap_reply_integrity(
     }
 
     /* checksum = MIC over databody, under the global context lock */
-    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+    evpl_mutex_lock(&evpl_rpc2_gss_lock);
     ctx = evpl_rpc2_gss_ctx_lookup(request->gss_handle);
     if (ctx) {
         thread->gss_provider->get_mic(thread->gss_provider_arg, ctx->gss_ctx,
                                       databody, db_len, &mic, &mic_len);
     }
-    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+    evpl_mutex_unlock(&evpl_rpc2_gss_lock);
 
     if (!mic || mic_len > 512) {
         if (mic) {
@@ -2056,16 +2080,16 @@ evpl_rpc2_gss_wrap_reply_privacy(
         return -1;
     }
 
-    tok = (uint8_t *) out_iov->data + reserve + 4;
+    tok = (uint8_t *) (char *) out_iov->data + reserve + 4;
 
-    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+    evpl_mutex_lock(&evpl_rpc2_gss_lock);
     ctx = evpl_rpc2_gss_ctx_lookup(request->gss_handle);
     if (ctx) {
         rc = thread->gss_provider->wrap(thread->gss_provider_arg, ctx->gss_ctx,
                                         pt, pt_len, tok,
                                         cap - reserve - 4, &token_len);
     }
-    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+    evpl_mutex_unlock(&evpl_rpc2_gss_lock);
 
     evpl_iovec_release(evpl, &plain_iov);
 
@@ -2076,7 +2100,7 @@ evpl_rpc2_gss_wrap_reply_privacy(
 
     /* databody_priv opaque: the length prefix, the token already in place,
      * then the XDR pad. */
-    pp = (uint8_t *) out_iov->data + reserve;
+    pp = (uint8_t *) (char *) out_iov->data + reserve;
     if (evpl_rpc2_gss_wr_u32(&pp, pp + 4, (uint32_t) token_len)) {
         evpl_iovec_release(evpl, out_iov);
         return -1;
@@ -2122,9 +2146,9 @@ evpl_rpc2_gss_send_init_res(
                             8, 1, 0, &iov);
     evpl_rpc2_abort_if(niov != 1, "Failed to allocate gss init reply iovec");
 
-    body = (uint8_t *) iov.data + EVPL_RPC2_GSS_REPLY_RESERVE;
+    body = (uint8_t *) (char *) iov.data + EVPL_RPC2_GSS_REPLY_RESERVE;
     p    = body;
-    end  = (uint8_t *) iov.data + iov.length;
+    end  = (uint8_t *) (char *) iov.data + iov.length;
 
     evpl_rpc2_abort_if(
         evpl_rpc2_gss_wr_opaque(&p, end, &ctx->handle, sizeof(ctx->handle)) ||
@@ -2189,7 +2213,7 @@ evpl_rpc2_gss_handle_init(
         return;
     }
 
-    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+    evpl_mutex_lock(&evpl_rpc2_gss_lock);
 
     /* INIT starts a new context; CONTINUE_INIT resumes an existing one. */
     if (cred->proc == RPCSEC_GSS_INIT) {
@@ -2202,7 +2226,7 @@ evpl_rpc2_gss_handle_init(
         }
         ctx = evpl_rpc2_gss_ctx_lookup(handle);
         if (!ctx) {
-            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+            evpl_mutex_unlock(&evpl_rpc2_gss_lock);
             evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
             return;
         }
@@ -2240,7 +2264,7 @@ evpl_rpc2_gss_handle_init(
             free(out_token);
         }
         evpl_rpc2_gss_ctx_destroy(thread, ctx);
-        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_mutex_unlock(&evpl_rpc2_gss_lock);
         evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
         return;
     }
@@ -2259,7 +2283,7 @@ evpl_rpc2_gss_handle_init(
     evpl_rpc2_gss_send_init_res(evpl, request, ctx, gss_major,
                                 out_token, (uint32_t) out_len, complete);
 
-    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+    evpl_mutex_unlock(&evpl_rpc2_gss_lock);
 
     if (out_token) {
         free(out_token);
@@ -2270,7 +2294,7 @@ evpl_rpc2_gss_handle_init(
     if (cred->proc == RPCSEC_GSS_INIT) {
         evpl_rpc2_gss_ctx_destroy(thread, ctx);
     }
-    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+    evpl_mutex_unlock(&evpl_rpc2_gss_lock);
     evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
 } /* evpl_rpc2_gss_handle_init */
 
@@ -2353,11 +2377,11 @@ evpl_rpc2_gss_handle_call(
         memcpy(&handle, cred.handle, sizeof(handle));
     }
 
-    pthread_mutex_lock(&evpl_rpc2_gss_lock);
+    evpl_mutex_lock(&evpl_rpc2_gss_lock);
 
     ctx = evpl_rpc2_gss_ctx_lookup(handle);
     if (!ctx || !ctx->established) {
-        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_mutex_unlock(&evpl_rpc2_gss_lock);
         evpl_rpc2_debug("rpcsec_gss: DATA ctx lookup miss handle=%u hlen=%u "
                         "found=%d proc=%u service=%u", handle, cred.handle_len,
                         ctx ? 1 : 0, cred.proc, cred.service);
@@ -2371,7 +2395,7 @@ evpl_rpc2_gss_handle_call(
     if (verf_flavor != RPCSEC_GSS || signed_len > sizeof(signed_buf) ||
         evpl_rpc2_iov_gather(request->msg->recv_iov, request->msg->recv_niov,
                              hdr_offset, signed_buf, signed_len)) {
-        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_mutex_unlock(&evpl_rpc2_gss_lock);
         evpl_rpc2_send_reply_denied(evpl, request, AUTH_BADVERF);
         return 0;
     }
@@ -2379,7 +2403,7 @@ evpl_rpc2_gss_handle_call(
     if (thread->gss_provider->verify_mic(thread->gss_provider_arg, ctx->gss_ctx,
                                          signed_buf, signed_len,
                                          verf_blob, verf_blob_len)) {
-        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_mutex_unlock(&evpl_rpc2_gss_lock);
         evpl_rpc2_debug("rpcsec_gss: HEADER verify_mic failed proc=%u service=%u",
                         cred.proc, cred.service);
         evpl_rpc2_send_reply_denied(evpl, request, RPCSEC_GSS_CTXPROBLEM);
@@ -2388,7 +2412,7 @@ evpl_rpc2_gss_handle_call(
 
     /* Replay/sequence-window enforcement; silently drop stale or replayed. */
     if (evpl_rpc2_gss_seq_check(ctx, cred.seq)) {
-        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_mutex_unlock(&evpl_rpc2_gss_lock);
         evpl_rpc2_debug("rpcsec_gss: dropping replayed/stale seq %u", cred.seq);
         evpl_rpc2_request_free(thread, request);
         return 0;
@@ -2412,7 +2436,7 @@ evpl_rpc2_gss_handle_call(
      * integrity. */
     if (cred.proc == RPCSEC_GSS_DESTROY) {
         evpl_rpc2_gss_ctx_destroy(thread, ctx);
-        pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+        evpl_mutex_unlock(&evpl_rpc2_gss_lock);
         evpl_rpc2_send_reply_error(evpl, request, SUCCESS);
         return 0;
     }
@@ -2423,7 +2447,7 @@ evpl_rpc2_gss_handle_call(
     if (cred.service == EVPL_RPC2_GSS_SVC_INTEGRITY) {
         if (evpl_rpc2_gss_unwrap_integrity(request, ctx, cred.seq, req_iov_p,
                                            req_niov_p, request_length_p)) {
-            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+            evpl_mutex_unlock(&evpl_rpc2_gss_lock);
             evpl_rpc2_debug("rpcsec_gss: integrity UNWRAP failed proc=%u seq=%u "
                             "reqlen=%d", cred.proc, cred.seq, *request_length_p);
             /* RFC 2203 sec 5.3.3.4.2 separates the two integrity failures.  A
@@ -2445,7 +2469,7 @@ evpl_rpc2_gss_handle_call(
     if (cred.service == EVPL_RPC2_GSS_SVC_PRIVACY) {
         if (evpl_rpc2_gss_unwrap_privacy(request, ctx, cred.seq, req_iov_p,
                                          req_niov_p, request_length_p)) {
-            pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+            evpl_mutex_unlock(&evpl_rpc2_gss_lock);
             evpl_rpc2_debug("rpcsec_gss: privacy UNWRAP failed proc=%u seq=%u "
                             "reqlen=%d", cred.proc, cred.seq, *request_length_p);
             evpl_rpc2_send_reply_error(evpl, request, GARBAGE_ARGS);
@@ -2464,7 +2488,7 @@ evpl_rpc2_gss_handle_call(
     request->gss_handle        = handle;
     request->gss_seq           = cred.seq;
 
-    pthread_mutex_unlock(&evpl_rpc2_gss_lock);
+    evpl_mutex_unlock(&evpl_rpc2_gss_lock);
 
     return 1;
 } /* evpl_rpc2_gss_handle_call */
@@ -2593,7 +2617,7 @@ evpl_rpc2_gss_wrap_call_integrity(
         return -1;
     }
 
-    p  = (uint8_t *) out_iov->data + reserve;
+    p  = (uint8_t *) (char *) out_iov->data + reserve;
     pp = p;
 
     if (evpl_rpc2_gss_wr_u32(&pp, p + 4, db_len)) {
@@ -2696,7 +2720,7 @@ evpl_rpc2_gss_wrap_call_privacy(
         return -1;
     }
 
-    tok = (uint8_t *) out_iov->data + reserve + 4;
+    tok = (uint8_t *) (char *) out_iov->data + reserve + 4;
 
     if (gc->provider->wrap(gc->provider_arg, gc->gss_ctx, pt, pt_len, tok,
                            cap - reserve - 4, &token_len) || token_len == 0) {
@@ -2707,7 +2731,7 @@ evpl_rpc2_gss_wrap_call_privacy(
 
     evpl_iovec_release(evpl, &plain_iov);
 
-    pp = (uint8_t *) out_iov->data + reserve;
+    pp = (uint8_t *) (char *) out_iov->data + reserve;
 
     if (evpl_rpc2_gss_wr_u32(&pp, pp + 4, (uint32_t) token_len)) {
         evpl_iovec_release(evpl, out_iov);
@@ -2841,7 +2865,7 @@ evpl_rpc2_gss_unwrap_reply(
     }
 
     lp = inner->data;
-    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) inner->data + 4, &embedded);
+    evpl_rpc2_gss_rd_u32(&lp, (const uint8_t *) (char *) inner->data + 4, &embedded);
 
     if (embedded != seq) {
         evpl_rpc2_debug("rpcsec_gss: reply seq %u, expected %u", embedded, seq);
@@ -2850,7 +2874,7 @@ evpl_rpc2_gss_unwrap_reply(
     }
 
     /* Past the echoed seq lie the results themselves. */
-    inner->data   = (uint8_t *) inner->data + 4;
+    inner->data   = (uint8_t *) (char *) inner->data + 4;
     inner->length = inner_len - 4;
 
     ninner  = 1;
@@ -3569,8 +3593,7 @@ evpl_rpc2_recv_msg(
 
         if (offset == 4) {
             /* Fast path: validate the 4-byte record mark. */
-            hdr = *(uint32_t *) iovec->data;
-            hdr = rpc2_ntoh32(hdr);
+            hdr = evpl_rpc2_record_mark(iovec, niov);
 
             evpl_rpc2_abort_if((hdr & 0x7FFFFFFF) + 4 != length
                                ,
@@ -4131,7 +4154,7 @@ evpl_rpc2_event(
             evpl_rpc2_reasm_reset(evpl, rpc2_conn);
             /* Tear down any RPCSEC_GSS contexts established on this conn. */
             evpl_rpc2_gss_conn_cleanup(rpc2_conn->thread, rpc2_conn);
-            free(rpc2_conn);
+            evpl_free(rpc2_conn);
             break;
         case EVPL_NOTIFY_RECV_MSG:
 
@@ -4208,8 +4231,8 @@ evpl_rpc2_thread_init(
     thread->private_data    = private_data;
     thread->client_dbuf     = xdr_dbuf_alloc(128 * 1024);
 
-    thread->id = __atomic_fetch_add(&evpl_rpc2_next_thread_id, 1,
-                                    __ATOMIC_RELAXED);
+    thread->id = atomic_fetch_add_explicit(&evpl_rpc2_next_thread_id, 1,
+                                           memory_order_relaxed);
 
     /* One in-flight gauge instance per role, labelled with role and thread
      * id.  The I/O path mutates the instance on this thread only. */
@@ -4547,7 +4570,7 @@ evpl_rpc2_call_gss_init(
         return -1;
     }
 
-    p   = (uint8_t *) arg_iov.data + reserve;
+    p   = (uint8_t *) (char *) arg_iov.data + reserve;
     end = p + arg_len;
 
     if (evpl_rpc2_gss_wr_opaque(&p, end, token, token_len)) {

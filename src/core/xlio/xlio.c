@@ -1,20 +1,23 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <netinet/tcp.h>
+
+
+
+
 #include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
+
 #include <dlfcn.h>
 #include <sys/mman.h>
 #include <linux/memfd.h>
@@ -82,7 +85,7 @@ evpl_xlio_init()
     snprintf(tmp, sizeof(tmp), "%lu", evpl_shared->config->slab_size);
     setenv("XLIO_MEMORY_LIMIT", tmp, 1);
 
-    pthread_mutex_init(&api->pd_lock, NULL);
+    evpl_mutex_init(&api->pd_lock, NULL);
 
     api->hdl = dlopen("/usr/local/lib/libxlio.so", RTLD_LAZY);
 
@@ -395,7 +398,7 @@ evpl_xlio_attach_pd(
     struct ibv_pd       **cur_pd;
     int                   i;
 
-    pthread_mutex_lock(&api->pd_lock);
+    evpl_mutex_lock(&api->pd_lock);
 
     for (i = 0, cur_pd = api->pd; *cur_pd; i++, cur_pd++) {
         if (*cur_pd == pd) {
@@ -408,7 +411,7 @@ evpl_xlio_attach_pd(
         evpl_allocator_reregister(evpl_shared->allocator);
     }
 
-    pthread_mutex_unlock(&api->pd_lock);
+    evpl_mutex_unlock(&api->pd_lock);
 
     return i;
 } /* evpl_xlio_attach_pd */

@@ -2,14 +2,15 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #pragma once
 
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <arpa/inet.h>
-#include <sys/un.h>
+
+
 #include <stdatomic.h>
 
 #include "core/evpl_shared.h"

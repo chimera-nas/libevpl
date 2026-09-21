@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "tests/test_socket.h"
 /*
  * Multi-fragment ONC RPC TCP record-mark reassembly test.
  *
@@ -15,13 +16,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+#include "tests/test_options.h"
+#else  /* ifdef _WIN32 */
 #include <getopt.h>
-#include <pthread.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
+#endif /* ifdef _WIN32 */
+#include "evpl/evpl_platform.h"
+
+
+
+
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_rpc2.h"
@@ -103,7 +108,7 @@ server_pump(void *arg)
     /* Publish evpl so the main thread can signal evpl_stop. The
      * store must be visible before ctx->ready, so use a barrier. */
     ctx->evpl = evpl;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     ctx->ready = 1;
 
     /* evpl_run blocks on epoll until evpl_stop writes the eventfd
@@ -163,8 +168,8 @@ build_greet_call(
  */
 static void
 recv_and_validate_reply(
-    int      sock,
-    uint32_t expect_xid)
+    test_socket_t sock,
+    uint32_t      expect_xid)
 {
     unsigned char buf[256] = { 0 };
     uint32_t      mark;
@@ -173,7 +178,7 @@ recv_and_validate_reply(
     size_t        off;
     uint32_t     *r;
 
-    got = recv(sock, &mark, 4, MSG_WAITALL);
+    got = test_socket_recv(sock, &mark, 4, MSG_WAITALL);
     evpl_test_abort_if(got != 4, "short mark read: %zd", got);
     mark     = ntohl(mark);
     frag_len = mark & 0x7FFFFFFFu;
@@ -183,7 +188,7 @@ recv_and_validate_reply(
 
     off = 0;
     while (off < frag_len) {
-        got = recv(sock, buf + off, frag_len - off, 0);
+        got = test_socket_recv(sock, buf + off, frag_len - off, 0);
         evpl_test_abort_if(got <= 0, "recv body: %zd", got);
         off += (size_t) got;
     }
@@ -197,16 +202,16 @@ recv_and_validate_reply(
     evpl_test_abort_if(ntohl(r[6]) != 100, "result id != 100: %u", ntohl(r[6]));
 } /* recv_and_validate_reply */
 
-static int
+static test_socket_t
 connect_client(void)
 {
-    int                sock;
+    test_socket_t      sock;
     int                one = 1;
     struct sockaddr_in sa;
 
     sock = socket(AF_INET, SOCK_STREAM, 0);
-    evpl_test_abort_if(sock < 0, "socket: %m");
-    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    evpl_test_abort_if(sock == TEST_INVALID_SOCKET, "socket: %m");
+    test_socket_option(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
     memset(&sa, 0, sizeof(sa));
     sa.sin_family      = AF_INET;
@@ -220,14 +225,14 @@ connect_client(void)
 
 static void
 send_all(
-    int         sock,
-    const void *buf,
-    size_t      len)
+    test_socket_t sock,
+    const void   *buf,
+    size_t        len)
 {
     const unsigned char *p = buf;
 
     while (len) {
-        ssize_t w = send(sock, p, len, 0);
+        ssize_t w = test_socket_send(sock, p, len, 0);
         evpl_test_abort_if(w <= 0, "send: %zd %m", w);
         p   += w;
         len -= (size_t) w;
@@ -245,7 +250,7 @@ test_fragmented_call(
 {
     unsigned char call[128];
     int           call_len = build_greet_call(call, xid);
-    int           sock     = connect_client();
+    test_socket_t sock     = connect_client();
     int           i;
     int           sent = 0;
 
@@ -270,7 +275,7 @@ test_fragmented_call(
     evpl_test_abort_if(sent != call_len, "send accounting %d != %d", sent, call_len);
 
     recv_and_validate_reply(sock, xid);
-    close(sock);
+    test_socket_close(sock);
 } /* test_fragmented_call */
 
 /*
@@ -285,7 +290,7 @@ test_abandoned_fragment(uint32_t xid)
 {
     unsigned char call[128];
     int           call_len = build_greet_call(call, xid);
-    int           sock     = connect_client();
+    test_socket_t sock     = connect_client();
     int           half     = call_len / 2;
     uint32_t      mark     = htonl((uint32_t) half);  /* L=0 */
 
@@ -293,7 +298,7 @@ test_abandoned_fragment(uint32_t xid)
 
     send_all(sock, &mark, 4);
     send_all(sock, call, (size_t) half);
-    close(sock);  /* peer never sends the terminal fragment */
+    test_socket_close(sock);  /* peer never sends the terminal fragment */
 } /* test_abandoned_fragment */
 
 static void
@@ -308,10 +313,10 @@ main(
     int   argc,
     char *argv[])
 {
-    struct server_ctx ctx = { 0 };
-    pthread_t         pump;
-    int               opt, rc;
-    int               i;
+    struct server_ctx    ctx = { 0 };
+    evpl_native_thread_t pump;
+    int                  opt, rc;
+    int                  i;
 
     test_evpl_config();
 
@@ -336,11 +341,11 @@ main(
         return 0;
     }
 
-    rc = pthread_create(&pump, NULL, server_pump, &ctx);
-    evpl_test_abort_if(rc != 0, "pthread_create: %d", rc);
+    rc = evpl_native_thread_create(&pump, NULL, server_pump, &ctx);
+    evpl_test_abort_if(rc != 0, "evpl_native_thread_create: %d", rc);
 
     while (!ctx.ready) {
-        usleep(1000);
+        evpl_sleep_us(1000);
     }
 
     /* Sub-test 1: 3-way fragmented CALL. */
@@ -357,14 +362,14 @@ main(
 
     /* Verify the server actually handled the expected calls. */
     for (i = 0; i < 200 && ctx.received_count < 3; i++) {
-        usleep(5000);
+        evpl_sleep_us(5000);
     }
     evpl_test_abort_if(ctx.received_count != 3,
                        "server processed %d calls, expected 3",
                        ctx.received_count);
 
     evpl_stop(ctx.evpl);
-    pthread_join(pump, NULL);
+    evpl_native_thread_join(pump, NULL);
 
     printf("Test PASSED\n");
     return 0;

@@ -6,7 +6,7 @@
 #include <stdlib.h>   /* alloca */
 #include <string.h>
 #include <errno.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <stdatomic.h>
 #include <utlist.h>
 
@@ -77,33 +77,20 @@
  * consumer is the thread that owns the bind this queue feeds.
  */
 struct evpl_inproc_queue {
-    pthread_mutex_t        lock;
+    evpl_mutex_t                 lock;
 
     /* Positionally paired, exactly as a bind's iovec_send/dgram_send are: the
      * Nth dgram owns the next dgram->niov iovecs. */
-    struct evpl_iovec_ring iovec;
-    struct evpl_dgram_ring dgram;
+    struct evpl_iovec_ring       iovec;
+    struct evpl_dgram_ring       dgram;
 
-    /* The consumer's doorbell, or NULL.  A pointer rather than the doorbell
-     * itself, so that it lives in the consuming bind's private area alongside
-     * every other backend's event rather than in this shared, heap-freed
-     * channel -- the doorbell is owned by one thread's event loop, and putting
-     * it in memory the peer also reaches only invites confusion about who may
-     * retire it.
-     *
-     * doorbell_valid is what makes the producer's ring safe: both sides touch
-     * it under this lock, and the consumer clears it before calling
-     * evpl_remove_doorbell(), so a producer can never write to an eventfd that
-     * has already been closed.  It also starts clear on the accepting end,
-     * which is what lets a send that arrives before the accept has run simply
-     * skip the wakeup -- evpl_inproc_attach() drains once unconditionally to
-     * pick it up. */
-    struct evpl_doorbell  *doorbell;
-    int                    doorbell_valid;
+    /* Sending reference owned by this shared queue, revoked by receiver close. */
+    struct evpl_doorbell_sender *sender;
+    int                          doorbell_valid;
 
     /* Rung and not yet drained.  Suppresses the wakeup on every message after
      * the first, so a busy producer pays one eventfd write per batch. */
-    int                    notified;
+    int                          notified;
 };
 
 struct evpl_inproc_channel {
@@ -165,7 +152,7 @@ struct evpl_inproc_global {
 
     /* Guards the listener list and every listener's pending list.  Never held
      * across an accept callback -- see evpl_inproc_accept(). */
-    pthread_mutex_t              lock;
+    evpl_mutex_t                 lock;
     struct evpl_inproc_listener *listeners;
     uint32_t                     next_id;
 };
@@ -237,7 +224,7 @@ evpl_inproc_channel_alloc(void)
     atomic_init(&chan->refcnt, 2);
 
     for (i = 0; i < 2; ++i) {
-        pthread_mutex_init(&chan->q[i].lock, NULL);
+        evpl_mutex_init(&chan->q[i].lock, NULL);
 
         evpl_iovec_ring_alloc(&chan->q[i].iovec,
                               evpl_shared->config->iovec_ring_size,
@@ -271,7 +258,7 @@ evpl_inproc_channel_release(
         evpl_iovec_ring_clear(evpl, &chan->q[i].iovec);
         evpl_iovec_ring_free(&chan->q[i].iovec);
         evpl_dgram_ring_free(&chan->q[i].dgram);
-        pthread_mutex_destroy(&chan->q[i].lock);
+        evpl_mutex_destroy(&chan->q[i].lock);
     }
 
     evpl_free(chan);
@@ -287,10 +274,10 @@ evpl_inproc_queue_arm(
 {
     evpl_add_doorbell(evpl, &ib->doorbell, callback);
 
-    pthread_mutex_lock(&q->lock);
-    q->doorbell       = &ib->doorbell;
+    evpl_mutex_lock(&q->lock);
+    q->sender         = evpl_doorbell_sender(&ib->doorbell);
     q->doorbell_valid = 1;
-    pthread_mutex_unlock(&q->lock);
+    evpl_mutex_unlock(&q->lock);
 } /* evpl_inproc_queue_arm */
 
 /* Retire the consumer end's doorbell.  Must run on the consumer's thread, and
@@ -303,11 +290,14 @@ evpl_inproc_queue_disarm(
 {
     int armed;
 
-    pthread_mutex_lock(&q->lock);
+    evpl_mutex_lock(&q->lock);
     armed             = q->doorbell_valid;
     q->doorbell_valid = 0;
-    q->doorbell       = NULL;
-    pthread_mutex_unlock(&q->lock);
+    if (q->sender) {
+        evpl_doorbell_sender_release(q->sender);
+    }
+    q->sender = NULL;
+    evpl_mutex_unlock(&q->lock);
 
     /* The producer observes doorbell_valid under the same lock, so once the
      * store above is visible no further ring can be issued and the eventfd is
@@ -325,7 +315,7 @@ evpl_inproc_queue_notify(struct evpl_inproc_queue *q)
 {
     if (!q->notified && q->doorbell_valid) {
         q->notified = 1;
-        evpl_ring_doorbell(q->doorbell);
+        (void) evpl_doorbell_signal(q->sender);
     }
 } /* evpl_inproc_queue_notify */
 
@@ -526,7 +516,7 @@ evpl_inproc_flush(
          * drain for the length of a copy. */
         evpl_inproc_share_message(evpl, bind, cur.niov);
 
-        pthread_mutex_lock(&q->lock);
+        evpl_mutex_lock(&q->lock);
 
         for (i = 0; i < cur.niov; ++i) {
             iovec = evpl_iovec_ring_tail(&bind->iovec_send);
@@ -544,7 +534,7 @@ evpl_inproc_flush(
 
         evpl_inproc_queue_notify(q);
 
-        pthread_mutex_unlock(&q->lock);
+        evpl_mutex_unlock(&q->lock);
 
         bytes += cur.length;
         msgs++;
@@ -691,14 +681,14 @@ evpl_inproc_drain(
 
     while (!ib->fin) {
 
-        pthread_mutex_lock(&q->lock);
+        evpl_mutex_lock(&q->lock);
 
         q->notified = 0;
 
         dgram = evpl_dgram_ring_tail(&q->dgram);
 
         if (!dgram) {
-            pthread_mutex_unlock(&q->lock);
+            evpl_mutex_unlock(&q->lock);
             break;
         }
 
@@ -717,7 +707,7 @@ evpl_inproc_drain(
 
         evpl_dgram_ring_remove(&q->dgram);
 
-        pthread_mutex_unlock(&q->lock);
+        evpl_mutex_unlock(&q->lock);
 
         if (type == EVPL_INPROC_MSG_FIN) {
             /* Carried in band rather than as a flag, so it is seen strictly
@@ -779,15 +769,36 @@ evpl_inproc_pending_discard(
     struct evpl                *evpl,
     struct evpl_inproc_pending *pending)
 {
-    /* The connecting end still holds its own reference and will find out when
-     * it sees no reply; releasing ours leaves it owning the channel alone. */
+    struct evpl_inproc_queue *q = &pending->chan->q[0];
+    struct evpl_dgram        *fin;
+
+    evpl_mutex_lock(&q->lock);
+    fin             = evpl_dgram_ring_add(&q->dgram);
+    fin->dgram_type = EVPL_INPROC_MSG_FIN;
+    fin->niov       = 0;
+    fin->length     = 0;
+    evpl_inproc_queue_notify(q);
+    evpl_mutex_unlock(&q->lock);
     evpl_inproc_channel_release(evpl, pending->chan);
 
     evpl_address_release(pending->local);
-    evpl_address_release(pending->remote);
+    if (pending->remote) {
+        evpl_address_release(pending->remote);
+    }
 
     evpl_free(pending);
 } /* evpl_inproc_pending_discard */
+
+static void
+evpl_inproc_discard_accepted(
+    struct evpl *evpl,
+    void        *accepted)
+{
+    struct evpl_inproc_pending *pending = accepted;
+
+    pending->remote = NULL;
+    evpl_inproc_pending_discard(evpl, pending);
+} /* evpl_inproc_discard_accepted */
 
 static void
 evpl_inproc_accept(
@@ -801,10 +812,10 @@ evpl_inproc_accept(
     struct evpl_bind            *listen_bind = evpl_private2bind(ib);
     struct evpl_inproc_pending  *pending, *list;
 
-    pthread_mutex_lock(&global->lock);
+    evpl_mutex_lock(&global->lock);
     list              = listener->pending;
     listener->pending = NULL;
-    pthread_mutex_unlock(&global->lock);
+    evpl_mutex_unlock(&global->lock);
 
     /*
      * The registry lock is released before the callback, and must be: the
@@ -856,12 +867,12 @@ evpl_inproc_listen(
 
     evpl_add_doorbell(evpl, &ib->doorbell, evpl_inproc_accept);
 
-    pthread_mutex_lock(&global->lock);
+    evpl_mutex_lock(&global->lock);
 
     DL_FOREACH(global->listeners, cur)
     {
         if (strcmp(cur->name, listener->name) == 0) {
-            pthread_mutex_unlock(&global->lock);
+            evpl_mutex_unlock(&global->lock);
 
             evpl_remove_doorbell(evpl, &ib->doorbell);
             evpl_free(listener);
@@ -877,7 +888,7 @@ evpl_inproc_listen(
 
     DL_APPEND(global->listeners, listener);
 
-    pthread_mutex_unlock(&global->lock);
+    evpl_mutex_unlock(&global->lock);
 
     return 0;
 } /* evpl_inproc_listen */
@@ -902,7 +913,7 @@ evpl_inproc_connect(
 
     name = evpl_inproc_address_name(bind->remote);
 
-    pthread_mutex_lock(&global->lock);
+    evpl_mutex_lock(&global->lock);
 
     DL_FOREACH(global->listeners, cur)
     {
@@ -913,7 +924,7 @@ evpl_inproc_connect(
     }
 
     if (!listener) {
-        pthread_mutex_unlock(&global->lock);
+        evpl_mutex_unlock(&global->lock);
 
         /* Nobody is listening on that name.  Reported the way a refused TCP
          * connection is -- the bind exists and the application learns of it
@@ -954,7 +965,7 @@ evpl_inproc_connect(
      * it is what guarantees the eventfd is still open. */
     evpl_ring_doorbell(listener->doorbell);
 
-    pthread_mutex_unlock(&global->lock);
+    evpl_mutex_unlock(&global->lock);
 
     evpl_inproc_queue_arm(evpl, &chan->q[0], ib, evpl_inproc_doorbell);
 
@@ -1009,14 +1020,14 @@ evpl_inproc_pending_close(
     if (listener) {
         global = evpl_inproc_global(evpl);
 
-        pthread_mutex_lock(&global->lock);
+        evpl_mutex_lock(&global->lock);
 
         DL_DELETE(global->listeners, listener);
 
         list              = listener->pending;
         listener->pending = NULL;
 
-        pthread_mutex_unlock(&global->lock);
+        evpl_mutex_unlock(&global->lock);
 
         /* Unpublished first, so no connect can still be holding this listener
          * and about to ring a doorbell we are about to close. */
@@ -1044,7 +1055,7 @@ evpl_inproc_pending_close(
     /* Tell the peer, in band behind anything already queued. */
     q = &ib->chan->q[evpl_inproc_peer(ib->end)];
 
-    pthread_mutex_lock(&q->lock);
+    evpl_mutex_lock(&q->lock);
 
     fin             = evpl_dgram_ring_add(&q->dgram);
     fin->dgram_type = EVPL_INPROC_MSG_FIN;
@@ -1053,7 +1064,7 @@ evpl_inproc_pending_close(
 
     evpl_inproc_queue_notify(q);
 
-    pthread_mutex_unlock(&q->lock);
+    evpl_mutex_unlock(&q->lock);
 
     /* Stop taking wakeups.  Anything the peer queues from here on stays in the
      * ring and is released when the channel goes. */
@@ -1085,7 +1096,7 @@ evpl_inproc_init(void)
 {
     struct evpl_inproc_global *global = evpl_zalloc(sizeof(*global));
 
-    pthread_mutex_init(&global->lock, NULL);
+    evpl_mutex_init(&global->lock, NULL);
 
     evpl_rdma_mr_table_init(&global->mr_table);
 
@@ -1099,7 +1110,7 @@ evpl_inproc_cleanup(void *private_data)
 
     evpl_rdma_mr_table_cleanup(&global->mr_table);
 
-    pthread_mutex_destroy(&global->lock);
+    evpl_mutex_destroy(&global->lock);
 
     evpl_free(global);
 } /* evpl_inproc_cleanup */
@@ -1183,19 +1194,20 @@ struct evpl_framework evpl_framework_inproc = {
 };
 
 struct evpl_protocol  evpl_inproc_stream = {
-    .id            = EVPL_STREAM_INPROC,
-    .connected     = 1,
-    .stream        = 1,
-    .rdma          = 0,
-    .endpoint_kind = EVPL_ENDPOINT_INPROC,
-    .name          = "STREAM_INPROC",
-    .framework     = &evpl_framework_inproc,
-    .connect       = evpl_inproc_connect,
-    .listen        = evpl_inproc_listen,
-    .attach        = evpl_inproc_attach,
-    .pending_close = evpl_inproc_pending_close,
-    .close         = evpl_inproc_close,
-    .flush         = evpl_inproc_flush,
+    .id               = EVPL_STREAM_INPROC,
+    .connected        = 1,
+    .stream           = 1,
+    .rdma             = 0,
+    .endpoint_kind    = EVPL_ENDPOINT_INPROC,
+    .name             = "STREAM_INPROC",
+    .framework        = &evpl_framework_inproc,
+    .connect          = evpl_inproc_connect,
+    .listen           = evpl_inproc_listen,
+    .attach           = evpl_inproc_attach,
+    .discard_accepted = evpl_inproc_discard_accepted,
+    .pending_close    = evpl_inproc_pending_close,
+    .close            = evpl_inproc_close,
+    .flush            = evpl_inproc_flush,
 };
 
 /* Message oriented, and the one that carries RDMA -- mirroring the
@@ -1203,17 +1215,18 @@ struct evpl_protocol  evpl_inproc_stream = {
  * its RDMA framing from evpl_bind_is_rdma() and bypasses the segment callback
  * entirely when it is set, so the two are alternatives rather than a pair. */
 struct evpl_protocol  evpl_inproc_datagram = {
-    .id            = EVPL_DATAGRAM_INPROC,
-    .connected     = 1,
-    .stream        = 0,
-    .rdma          = 1,
-    .endpoint_kind = EVPL_ENDPOINT_INPROC,
-    .name          = "DATAGRAM_INPROC",
-    .framework     = &evpl_framework_inproc,
-    .connect       = evpl_inproc_connect,
-    .listen        = evpl_inproc_listen,
-    .attach        = evpl_inproc_attach,
-    .pending_close = evpl_inproc_pending_close,
-    .close         = evpl_inproc_close,
-    .flush         = evpl_inproc_flush,
+    .id               = EVPL_DATAGRAM_INPROC,
+    .connected        = 1,
+    .stream           = 0,
+    .rdma             = 1,
+    .endpoint_kind    = EVPL_ENDPOINT_INPROC,
+    .name             = "DATAGRAM_INPROC",
+    .framework        = &evpl_framework_inproc,
+    .connect          = evpl_inproc_connect,
+    .listen           = evpl_inproc_listen,
+    .attach           = evpl_inproc_attach,
+    .discard_accepted = evpl_inproc_discard_accepted,
+    .pending_close    = evpl_inproc_pending_close,
+    .close            = evpl_inproc_close,
+    .flush            = evpl_inproc_flush,
 };

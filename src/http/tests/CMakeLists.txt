@@ -2,11 +2,13 @@
 #
 # SPDX-License-Identifier: LGPL-2.1-only
 
+find_package(CURL REQUIRED)
+
 unit_test(http basic http_basic.c)
 unit_test(http chunked http_chunked.c)
 
-target_link_libraries(http_basic evpl_http curl)
-target_link_libraries(http_chunked evpl_http curl)
+target_link_libraries(http_basic evpl_http CURL::libcurl)
+target_link_libraries(http_chunked evpl_http CURL::libcurl)
 
 # evpl HTTP/1.1 client <-> evpl server (no nghttp2 required)
 unit_test(http client http1_client.c)
@@ -39,11 +41,15 @@ target_link_libraries(http_trailers evpl_http)
 find_program(QUINT_EXECUTABLE quint)
 find_program(PYTHON3_EXECUTABLE NAMES python3 python)
 
-if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
+if(EVPL_CONFORMANCE_CASES_DIR OR (NOT WIN32 AND QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE))
     set(HTTP_QUINT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/quint)
     set(HTTP_QUINT_WORK_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint)
+    if(EVPL_CONFORMANCE_CASES_DIR)
+        set(HTTP_QUINT_WORK_DIR ${EVPL_CONFORMANCE_CASES_DIR})
+    endif()
     set(HTTP_CASES ${HTTP_QUINT_WORK_DIR}/http_cases.h)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     add_custom_command(
         OUTPUT ${HTTP_CASES}
         COMMAND ${HTTP_QUINT_SRC_DIR}/generate_cases.sh
@@ -54,6 +60,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
                 ${HTTP_QUINT_SRC_DIR}/generate_cases.sh
         COMMENT "Generating HTTP/1.x conformance cases from the Quint model"
         VERBATIM)
+    endif()
 
     add_custom_target(http_conformance_cases DEPENDS ${HTTP_CASES})
 
@@ -88,6 +95,7 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     # deadline to prove no callback arrives.
     set_tests_properties(libevpl/http/conformance_client PROPERTIES TIMEOUT 180)
 
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
     # The model checking itself: scenario tests plus a random-simulation pass
     # against its invariants.  Separate from generation so that a broken
     # specification is a failing test rather than a failing build.
@@ -97,10 +105,11 @@ if(QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)
     set_tests_properties(libevpl/http/quint_model PROPERTIES
                          LABELS "quint" TIMEOUT 360)
 
+    endif()
     message(STATUS "HTTP conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS
-        "HTTP conformance test disabled (needs quint and python3 on PATH)")
+        "HTTP conformance test disabled (supply EVPL_CONFORMANCE_CASES_DIR, or quint and python3 on a Unix host)")
 endif()
 
 if (HAVE_NGHTTP2)
@@ -117,8 +126,8 @@ if (HAVE_NGHTTP2)
 
     # libevpl HTTP/2 server driven by libcurl (reference client)
     unit_test(http h2_basic http2_basic.c)
-    target_link_libraries(http_h2_basic evpl_http curl)
+    target_link_libraries(http_h2_basic evpl_http CURL::libcurl)
 
     unit_test(http h2_tls http2_tls.c)
-    target_link_libraries(http_h2_tls evpl_http curl)
+    target_link_libraries(http_h2_tls evpl_http CURL::libcurl)
 endif()

@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/event.h>
-#include <sys/time.h>
-#include <unistd.h>
+
+
 #include <errno.h>
 
 #include "core/kqueue.h"

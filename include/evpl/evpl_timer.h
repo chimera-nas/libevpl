@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 #include <stdint.h>
-#include <sys/time.h>
+#include <time.h>
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_timer.h directly, include evpl/evpl.h instead"
@@ -29,7 +30,7 @@ struct evpl_timer {
  * until evpl_remove_timer() is called.  The timer is re-armed automatically
  * after each firing, so the callback must not free the timer.
  */
-void
+EVPL_API void
 evpl_add_timer(
     struct evpl          *evpl,
     struct evpl_timer    *timer,
@@ -42,14 +43,14 @@ evpl_add_timer(
  * before its callback runs, so the callback may free the timer or re-arm it.
  * Calling evpl_remove_timer() after it has fired is a harmless no-op.
  */
-void
+EVPL_API void
 evpl_add_oneshot_timer(
     struct evpl          *evpl,
     struct evpl_timer    *timer,
     evpl_timer_callback_t callback,
     uint64_t              delay_us);
 
-void
+EVPL_API void
 evpl_remove_timer(
     struct evpl       *evpl,
     struct evpl_timer *timer);

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * Drives the libevpl HTTP/2 server with libcurl using h2c prior-knowledge
  * (cleartext HTTP/2, no Upgrade).  The server code is identical to the HTTP/1.x
@@ -11,8 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <pthread.h>
+
+#include "evpl/evpl_platform.h"
 #include <curl/curl.h>
 
 #include "evpl/evpl.h"
@@ -21,7 +22,7 @@
 #define TEST_PORT 8081
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     volatile int         run;
     struct evpl_doorbell doorbell;
 };
@@ -100,7 +101,7 @@ server_function(void *ptr)
         exit(1);
     }
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     server_ctx->run = 1;
 
     while (server_ctx->run) {
@@ -138,10 +139,10 @@ main(
     char               url[64];
 
     server.run = 0;
-    pthread_create(&server.thread, NULL, server_function, &server);
+    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
 
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     curl = curl_easy_init();
@@ -171,9 +172,9 @@ main(
     curl_easy_cleanup(curl);
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     return (res == CURLE_OK && http_code == 200 &&
             http_version == CURL_HTTP_VERSION_2_0) ? 0 : 1;

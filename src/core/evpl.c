@@ -1,22 +1,25 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif /* ifndef _GNU_SOURCE */
+#include "core/os.h"
 // SPDX-FileCopyrightText: 2024 - 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
-#define _GNU_SOURCE 1
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <fcntl.h>
 #include <errno.h>
-#include <pthread.h>
+#include "evpl/evpl_platform.h"
 #include <sys/types.h>
-#include <sys/time.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+
+
+
+
+
 #include <utlist.h>
 #include <signal.h>
 
@@ -75,7 +78,7 @@
 #include "tls/tls.h"
 #endif /* ifdef HAVE_TLS */
 
-pthread_once_t      evpl_shared_once = PTHREAD_ONCE_INIT;
+evpl_once_t         evpl_shared_once = EVPL_ONCE_INIT;
 struct evpl_shared *evpl_shared      = NULL;
 
 #ifdef EVPL_IOVEC_PROFILE
@@ -145,9 +148,13 @@ evpl_check_message_size(struct evpl_global_config *config)
 static void
 evpl_shared_init(struct evpl_global_config *config)
 {
+#ifdef _WIN32
+    WSADATA wsa;
+    evpl_core_abort_if(WSAStartup(MAKEWORD(2, 2), &wsa), "WSAStartup failed");
+#endif /* ifdef _WIN32 */
     evpl_shared = evpl_zalloc(sizeof(*evpl_shared));
 
-    pthread_mutex_init(&evpl_shared->lock, NULL);
+    evpl_mutex_init(&evpl_shared->lock, NULL);
 
     if (!config) {
         config = evpl_global_config_init();
@@ -179,7 +186,9 @@ evpl_shared_init(struct evpl_global_config *config)
         }
     }
 
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif /* ifndef _WIN32 */
 #ifdef EVPL_IOVEC_PROFILE
     signal(SIGUSR2, evpl_iovec_profile_signal);
 #endif /* EVPL_IOVEC_PROFILE */
@@ -196,7 +205,7 @@ evpl_shared_init(struct evpl_global_config *config)
      * monotonic time. Captured adjacently so the anchor is tight.
      */
     stopwatch_context_init(&evpl_shared->hf_stopwatch);
-    clock_gettime(CLOCK_MONOTONIC, &evpl_shared->hf_base_time);
+    evpl_clock_gettime(CLOCK_MONOTONIC, &evpl_shared->hf_base_time);
     stopwatch_start(&evpl_shared->hf_stopwatch, &evpl_shared->hf_base_sw);
 
     /* Lifted out of the config so the time path reads one cache line rather
@@ -238,8 +247,10 @@ evpl_shared_init(struct evpl_global_config *config)
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_TCP,
                        &evpl_socket_tcp);
 
+#ifndef _WIN32
     evpl_protocol_init(evpl_shared, EVPL_STREAM_SOCKET_UNIX,
                        &evpl_socket_unix_stream);
+#endif /* ifndef _WIN32 */
 
 #ifdef HAVE_TLS
     evpl_framework_init(evpl_shared, EVPL_FRAMEWORK_TLS,
@@ -254,6 +265,7 @@ evpl_shared_init(struct evpl_global_config *config)
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_TCP_RDMA,
                        &evpl_tcp_rdma_datagram);
+
 
     /* Needs no kernel facility of any kind, so like the socket protocols it is
      * always present rather than gated on a build option. */
@@ -274,6 +286,7 @@ evpl_shared_init(struct evpl_global_config *config)
         evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_PREAD,
                                  &evpl_block_protocol_pread);
     }
+
 
 #ifdef HAVE_IO_URING
     if (config->io_uring_enabled) {
@@ -351,7 +364,7 @@ evpl_shared_init(struct evpl_global_config *config)
 } /* evpl_shared_init */
 
 void
-evpl_cleanup()
+evpl_cleanup(void)
 {
     struct evpl_endpoint *endpoint;
     unsigned int          i;
@@ -410,7 +423,7 @@ evpl_init_once(void)
 void
 __evpl_init(void)
 {
-    pthread_once(&evpl_shared_once, evpl_init_once);
+    evpl_once(&evpl_shared_once, evpl_init_once);
 } /* __evpl_init */
 
 SYMBOL_EXPORT int
@@ -447,52 +460,51 @@ evpl_get_config(void)
 {
     struct evpl_global_config *config;
 
-    pthread_mutex_lock(&evpl_shared->lock);
+    evpl_mutex_lock(&evpl_shared->lock);
     evpl_shared->config->refcnt++;
     config = evpl_shared->config;
-    pthread_mutex_unlock(&evpl_shared->lock);
+    evpl_mutex_unlock(&evpl_shared->lock);
 
     return config;
 } /* evpl_get_config */
 
 static void
 evpl_ipc_callback(
-    struct evpl       *evpl,
-    struct evpl_event *event)
+    struct evpl          *evpl,
+    struct evpl_doorbell *doorbell)
 {
     struct evpl_connect_request *request;
     struct evpl_bind            *new_bind;
 
-    if (evpl_wakeup_drain(event->fd) < 0) {
-        evpl_event_mark_unreadable(evpl, event);
-        return;
-    }
+    (void) doorbell;
 
-    pthread_mutex_lock(&evpl->lock);
-
-    while (evpl->connect_requests) {
-
+    for (;;) {
+        evpl_mutex_lock(&evpl->lock);
         request = evpl->connect_requests;
-        DL_DELETE(evpl->connect_requests, request);
+        if (request) {
+            DL_DELETE(evpl->connect_requests, request);
+        }
+        evpl_mutex_unlock(&evpl->lock);
+        if (!request) {
+            break;
+        }
 
-        new_bind = evpl_bind_prepare(evpl,
-                                     request->protocol,
-                                     request->local_address,
-                                     request->remote_address);
-
-        request->attach_callback(evpl,
-                                 new_bind,
-                                 &new_bind->notify_callback,
-                                 &new_bind->segment_callback,
-                                 &new_bind->private_data,
-                                 request->private_data);
-
-        request->protocol->attach(evpl, new_bind, request->accepted);
-
+        if (request->binding->enabled) {
+            new_bind = evpl_bind_prepare(evpl, request->protocol,
+                                         request->local_address, request->remote_address);
+            request->binding->attach_callback(evpl, new_bind,
+                                              &new_bind->notify_callback,
+                                              &new_bind->segment_callback,
+                                              &new_bind->private_data,
+                                              request->binding->private_data);
+            request->protocol->attach(evpl, new_bind, request->accepted);
+        } else {
+            evpl_listener_discard(evpl, request->protocol,
+                                  request->remote_address, request->accepted);
+        }
+        evpl_listener_binding_release(request->binding);
         evpl_free(request);
     }
-
-    pthread_mutex_unlock(&evpl->lock);
 
 } /* evpl_stop_callback */
 
@@ -505,7 +517,7 @@ evpl_create(struct evpl_thread_config *config)
 
     evpl = evpl_zalloc(sizeof(*evpl));
 
-    pthread_mutex_init(&evpl->lock, NULL);
+    evpl_mutex_init(&evpl->lock, NULL);
 
     evpl->poll     = evpl_calloc(256, sizeof(struct evpl_poll));
     evpl->max_poll = 256;
@@ -543,13 +555,7 @@ evpl_create(struct evpl_thread_config *config)
 
     evpl->running = 1;
 
-    evpl_core_abort_if(evpl_wakeup_open(&evpl->run_wakeup) < 0,
-                       "evpl_create: wakeup open failed");
-
-    evpl_add_event(evpl, &evpl->run_event, evpl->run_wakeup.rfd,
-                   evpl_ipc_callback, NULL, NULL);
-
-    evpl_event_read_interest(evpl, &evpl->run_event);
+    evpl_add_doorbell(evpl, &evpl->run_doorbell, evpl_ipc_callback);
 
     return evpl;
 } /* evpl_init */
@@ -577,6 +583,21 @@ evpl_continue(struct evpl *evpl)
             }
         }
 
+        if (evpl->core.ops->dispatch) {
+            for (i = 0; i < evpl->num_poll; ++i) {
+                poll = &evpl->poll[i];
+                if (poll->prepare_callback) {
+                    poll->prepare_callback(evpl, poll->private_data);
+                }
+            }
+            if (evpl->loop_hooks.pre_wait) {
+                evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
+            }
+            evpl_core_wait(&evpl->core, 0);
+            if (evpl->loop_hooks.post_wait) {
+                evpl->loop_hooks.post_wait(evpl, evpl->loop_hooks.private_data);
+            }
+        }
         evpl->poll_iterations++;
 
     } else {
@@ -665,8 +686,19 @@ evpl_continue(struct evpl *evpl)
         }
 
         if (evpl->poll_mode || (evpl->config.poll_mode && evpl->activity != evpl->last_activity) ||
-            evpl->num_active_events || evpl->num_active_deferrals || evpl->pending_close_binds) {
+            evpl->num_active_events || evpl->num_active_deferrals) {
             msecs = 0;
+        }
+
+        /* A completion callback can retire another bind after its place in
+         * this dispatch's close sweep. Do not block before the next sweep;
+         * binds still waiting on kernel operations do not force a busy loop. */
+        DL_FOREACH(evpl->pending_close_binds, bind)
+        {
+            if (!bind->outstanding && !(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
+                msecs = 0;
+                break;
+            }
         }
 
         /* On the virtual clock, nothing but the application moves time, so a
@@ -687,8 +719,7 @@ evpl_continue(struct evpl *evpl)
                 msecs = 0;
             }
         }
-        if (evpl->num_active_events || evpl->num_active_deferrals ||
-            evpl->pending_close_binds) {
+        if (evpl->num_active_events || evpl->num_active_deferrals) {
             msecs = 0;
         }
 
@@ -696,7 +727,7 @@ evpl_continue(struct evpl *evpl)
             evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
         }
 
-        evpl_core_wait(&evpl->core, msecs);
+        (void) evpl_core_wait(&evpl->core, msecs);
 
         if (evpl->loop_hooks.post_wait) {
             evpl->loop_hooks.post_wait(evpl, evpl->loop_hooks.private_data);
@@ -704,6 +735,10 @@ evpl_continue(struct evpl *evpl)
 
         evpl->poll_iterations = 0;
     } /* evpl_continue */
+
+    if (evpl->core.ops->dispatch) {
+        evpl->core.ops->dispatch(&evpl->core);
+    }
 
     for (i = 0; i < evpl->num_active_events;) {
         event = evpl->active_events[i];
@@ -769,28 +804,6 @@ evpl_continue(struct evpl *evpl)
         }
     }
 
-    /* Dispatch the previous batch before recycling closed binds.  Waiting
-     * for a quiet kernel wait starves teardown when an unrelated descriptor
-     * remains ready.  Run before deferrals so newly queued closes get their
-     * final event-dispatch pass on the next iteration. */
-    if (evpl->pending_close_binds) {
-        struct evpl_bind *next;
-
-        bind = evpl->pending_close_binds;
-        while (bind) {
-            next = bind->next;
-            /* A protocol with an asynchronous teardown (RDMA) keeps the
-             * bind parked here until its disconnect event arrives; do not
-             * finalize it yet or its private state would be freed while
-             * the protocol still references it. */
-            if (!(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
-                bind->protocol->close(evpl, bind);
-                evpl_bind_destroy(evpl, bind);
-            }
-            bind = next;
-        }
-    }
-
     while (evpl->num_active_deferrals) {
         deferral = evpl->active_deferrals[0];
         --evpl->num_active_deferrals;
@@ -802,6 +815,21 @@ evpl_continue(struct evpl *evpl)
         deferral->armed = 0;
 
         deferral->callback(evpl, deferral->private_data);
+    }
+
+    /* Backends unregister readiness before closing, and retain every live
+     * asynchronous operation. Reclamation therefore needs no empty poll batch. */
+    {
+        struct evpl_bind *next;
+        bind = evpl->pending_close_binds;
+        while (bind) {
+            next = bind->next;
+            if (!bind->outstanding && !(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
+                bind->protocol->close(evpl, bind);
+                evpl_bind_destroy(evpl, bind);
+            }
+            bind = next;
+        }
     }
 
     if (evpl->loop_hooks.iteration_end) {
@@ -863,7 +891,7 @@ evpl_get_hf_monotonic_time(
 
         ts->tv_nsec = nsec;
     } else {
-        clock_gettime(CLOCK_MONOTONIC, ts);
+        evpl_clock_gettime(CLOCK_MONOTONIC, ts);
     }
 } /* evpl_get_hf_monotonic_time */
 
@@ -891,22 +919,8 @@ evpl_set_loop_hooks(
 SYMBOL_EXPORT void
 evpl_stop(struct evpl *evpl)
 {
-    ssize_t len;
-    int     err;
-
-    evpl_core_assert(evpl->running);
-
     evpl->running = 0;
-
-    __sync_synchronize();
-
-    len = evpl_wakeup_signal(&evpl->run_wakeup);
-
-    err = errno;
-
-    evpl_core_abort_if(len != sizeof(uint64_t),
-                       "evpl_stop: wakeup signal (fd %d) failed: len=%zd errno=%d (%s)",
-                       evpl->run_wakeup.wfd, len, err, strerror(err));
+    evpl_ring_doorbell(&evpl->run_doorbell);
 } /* evpl_stop */
 
 
@@ -936,6 +950,10 @@ evpl_destroy(struct evpl *evpl)
     struct evpl_buffer    *buffer;
     int                    i;
 
+    while (evpl->listener_bindings) {
+        evpl_listener_detach(evpl, evpl->listener_bindings);
+    }
+    evpl_ipc_callback(evpl, NULL);
     evpl_destroy_close_bind(evpl);
 
     while (evpl->free_binds) {
@@ -992,9 +1010,10 @@ evpl_destroy(struct evpl *evpl)
         evpl->free_shared_buffer_count     = 0;
     }
 
+    evpl_doorbell_destroy_all(evpl);
+
     evpl_core_destroy(&evpl->core);
 
-    evpl_wakeup_close(&evpl->run_wakeup);
 
     evpl_free(evpl->active_events);
     evpl_free(evpl->active_deferrals);

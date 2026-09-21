@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include "core/os.h"
 /*
  * End-to-end transport test: emit a parent + child span through oteltracing-c,
  * ship them with the evpl_otel exporter over h2c to a libevpl HTTP/2 server, and
@@ -16,9 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <arpa/inet.h>
+
+#include "evpl/evpl_platform.h"
+
 
 #include "evpl/evpl.h"
 #include "evpl/evpl_http.h"
@@ -32,7 +33,7 @@
 /* ------------------------------------------------------------------ server */
 
 struct test_server {
-    pthread_t            thread;
+    evpl_native_thread_t thread;
     volatile int         run;
     volatile int         verified;   /* set once the OTLP body checked out */
     volatile int         failed;
@@ -57,34 +58,30 @@ server_wake(
             }                                                          \
 } while (0)
 
-struct grpc_hdr {
-    uint8_t  compressed;
-    uint32_t length;
-} __attribute__((packed));
+#define GRPC_HEADER_SIZE 5
 
 static void
 server_verify_body(void)
 {
     struct test_server *s = g_server;
-    struct grpc_hdr    *hdr;
     uint32_t            plen;
 
-    SCHECK(s->body_len > sizeof(struct grpc_hdr));
-    if (s->body_len <= sizeof(struct grpc_hdr)) {
+    SCHECK(s->body_len > GRPC_HEADER_SIZE);
+    if (s->body_len <= GRPC_HEADER_SIZE) {
         return;
     }
 
-    hdr  = (struct grpc_hdr *) s->body;
-    plen = ntohl(hdr->length);
-    SCHECK(hdr->compressed == 0);
-    SCHECK(plen == s->body_len - sizeof(*hdr));
-    if (plen != s->body_len - sizeof(*hdr)) {
+    memcpy(&plen, s->body + 1, sizeof(plen));
+    plen = ntohl(plen);
+    SCHECK(s->body[0] == 0);
+    SCHECK(plen == s->body_len - GRPC_HEADER_SIZE);
+    if (plen != s->body_len - GRPC_HEADER_SIZE) {
         return;
     }
 
     Opentelemetry__Proto__Collector__Trace__V1__ExportTraceServiceRequest *req =
         opentelemetry__proto__collector__trace__v1__export_trace_service_request__unpack(
-            NULL, plen, s->body + sizeof(*hdr));
+            NULL, plen, s->body + GRPC_HEADER_SIZE);
     SCHECK(req != NULL);
 
     if (req) {
@@ -193,7 +190,7 @@ server_function(void *ptr)
     server   = evpl_http_attach(agent, listener, server_dispatch, NULL);
     evpl_listen(listener, EVPL_STREAM_SOCKET_TCP, endpoint);
 
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     server_ctx->run = 1;
 
     while (server_ctx->run) {
@@ -214,7 +211,7 @@ main(
     int   argc,
     char *argv[])
 {
-    struct test_server         server;
+    static struct test_server  server;
     struct evpl               *evpl;
     struct evpl_global_config *config;
     struct evpl_otel_exporter *exporter;
@@ -227,9 +224,9 @@ main(
     config = evpl_global_config_init();
     evpl_init(config);
 
-    pthread_create(&server.thread, NULL, server_function, &server);
+    evpl_native_thread_create(&server.thread, NULL, server_function, &server);
     while (!server.run) {
-        __sync_synchronize();
+        atomic_thread_fence(memory_order_seq_cst);
     }
 
     evpl = evpl_create(NULL);
@@ -260,9 +257,9 @@ main(
     evpl_destroy(evpl);
 
     server.run = 0;
-    __sync_synchronize();
+    atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
-    pthread_join(server.thread, NULL);
+    evpl_native_thread_join(server.thread, NULL);
 
     if (server.failed || !server.verified) {
         fprintf(stderr, "otel_export: FAILED (verified=%d failed=%d)\n",

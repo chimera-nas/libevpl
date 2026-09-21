@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 struct evpl_protocol;
 struct evpl_framework;
@@ -18,7 +19,7 @@ extern struct evpl_protocol  evpl_socket_tls;
  * HTTP layer calls this to enable "h2" negotiation over TLS.  Passing count==0
  * disables ALPN.
  */
-void
+EVPL_API void
 evpl_tls_set_alpn_protocols(
     const char *const *protocols,
     int                count);
@@ -28,7 +29,7 @@ evpl_tls_set_alpn_protocols(
  * Returns the protocol length, 0 if none was negotiated (or the bind is not a
  * TLS connection that has completed its handshake).
  */
-int
+EVPL_API int
 evpl_tls_get_alpn(
     struct evpl_bind *bind,
     char             *buf,

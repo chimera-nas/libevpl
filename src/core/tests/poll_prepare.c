@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <stdint.h>
-#include <unistd.h>
 #include "core/evpl.h"
 #include "core/test_log.h"
 #include "test_common.h"
@@ -78,7 +77,6 @@ main(void)
     struct evpl_loop_hooks     hooks = { .pre_wait = pre_wait, .post_wait = post_wait };
     unsigned int               i, old;
 
-    alarm(10);
     test_evpl_config();
     config = evpl_thread_config_init();
     evpl_thread_config_set_poll_mode(config, 0);
