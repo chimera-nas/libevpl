@@ -51,10 +51,14 @@
 
 #include "core/test_log.h"
 #include "evpl/evpl.h"
-#include "tests/test_common.h"
+#include "tests/test_mbt.h"
 #include "tests/test_block.h"
 
 #include "core_cases.h"
+#ifdef HAVE_SPDK
+#include "core/spdk/tests/spdk_bdev_test_common.h"
+#endif /* ifdef HAVE_SPDK */
+
 
 /*
  * The delay classes, in microseconds.  These MUST match core.qnt's delayMs():
@@ -492,6 +496,7 @@ static int g_port_seq;
 
 static struct {
     int      programs;
+    int      skipped;
     int      steps;
     int      obligations;
     int      quiesces;
@@ -611,7 +616,7 @@ settle(struct prog_state *ps)
     while (quiet < SETTLE_PASSES) {
         int before = ps->nlog;
 
-        evpl_continue(ps->evpl);
+        test_mbt_continue(ps->evpl);
 
         quiet = (ps->nlog == before) ? quiet + 1 : 0;
 
@@ -1118,7 +1123,7 @@ await_expectations(
     int             passes = 0;
 
     while (!expectations_met(ps, step)) {
-        evpl_continue(ps->evpl);
+        test_mbt_continue(ps->evpl);
 
         if (++passes < AWAIT_SPIN_PASSES) {
             continue;
@@ -1367,7 +1372,7 @@ do_listen(
     ps->listener = evpl_listener_create();
     ps->binding  = evpl_listener_attach(ps->evpl, ps->listener, accept_cb, ps);
 
-    evpl_test_abort_if(evpl_listen(ps->listener, ps->proto, ps->endpoint),
+    evpl_test_abort_if(test_mbt_listen(ps->evpl, ps->listener, ps->proto, ps->endpoint),
                        "failed to listen on '%s'", name);
 } /* do_listen */
 
@@ -1375,7 +1380,7 @@ static void
 do_stop_listen(struct prog_state *ps)
 {
     evpl_listener_detach(ps->evpl, ps->binding);
-    evpl_listener_destroy(ps->listener);
+    test_mbt_listener_destroy(ps->evpl, ps->listener);
     evpl_endpoint_close(ps->endpoint);
 
     ps->binding  = NULL;
@@ -1634,6 +1639,10 @@ block_protocol(void)
         return EVPL_BLOCK_PROTOCOL_PREAD;
     }
 
+    if (strcmp(name, "spdk") == 0) {
+        return EVPL_BLOCK_PROTOCOL_SPDK_BDEV;
+    }
+
     if (strcmp(name, "io_uring") == 0) {
         return EVPL_BLOCK_PROTOCOL_IO_URING;
     }
@@ -1651,7 +1660,8 @@ block_protocol(void)
  * A fresh backing file per program, sized to hold every region.  Named by pid
  * as well as by program so that concurrent instances -- one per core
  * mechanism, and one per network namespace under netns testing -- cannot
- * collide on it.
+ * collide on it. SPDK uses the suite's malloc bdev instead: every program's
+ * model starts with unknown contents and only checks data it has written.
  */
 static void
 block_device_open(
@@ -1660,17 +1670,20 @@ block_device_open(
 {
     int fd;
 
-    snprintf(ps->device_path, sizeof(ps->device_path),
-             "core_conf_block-%d-%d.img", (int) evpl_process_id(), prog);
-
-    fd = evpl_test_open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
-
-    evpl_test_abort_if(fd < 0, "could not create %s", ps->device_path);
-    evpl_test_abort_if(evpl_test_truncate(fd, DEVICE_BYTES) != 0,
-                       "could not size %s", ps->device_path);
-    evpl_test_close(fd);
-
-    ps->bdev = test_block_open(ps->evpl, block_protocol(), ps->device_path);
+    if (block_protocol() == EVPL_BLOCK_PROTOCOL_SPDK_BDEV) {
+        ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
+                                            "Malloc0", test_mbt_continue);
+    } else {
+        snprintf(ps->device_path, sizeof(ps->device_path),
+                 "core_conf_block-%d-%d.img", (int) evpl_process_id(), prog);
+        fd = evpl_test_open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        evpl_test_abort_if(fd < 0, "could not create %s", ps->device_path);
+        evpl_test_abort_if(evpl_test_truncate(fd, DEVICE_BYTES) != 0,
+                           "could not size %s", ps->device_path);
+        evpl_test_close(fd);
+        ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
+                                            ps->device_path, test_mbt_continue);
+    }
 
     evpl_test_abort_if(!ps->bdev, "could not open %s as a block device",
                        ps->device_path);
@@ -1703,7 +1716,7 @@ block_device_close(struct prog_state *ps)
     }
 
     if (ps->bdev) {
-        test_block_close(ps->evpl, ps->bdev);
+        test_block_close_progress(ps->evpl, ps->bdev, test_mbt_continue);
         ps->bdev = NULL;
     }
 
@@ -2175,7 +2188,7 @@ teardown_program(struct prog_state *ps)
         }
     }
 
-    evpl_destroy(ps->evpl);
+    test_mbt_destroy(ps->evpl);
 } /* teardown_program */
 
 static int
@@ -2227,12 +2240,12 @@ run_program(
      * No wait_ms: on the virtual clock the core wait is already non-blocking,
      * because nothing can become due while the loop is inside it.
      *
-     * evpl_create() takes ownership of the config and releases it itself.
+     * test_mbt_create() takes ownership of the config and releases it itself.
      */
     tcfg = evpl_thread_config_init();
     evpl_thread_config_set_poll_mode(tcfg, 1);
     evpl_thread_config_set_poll_iterations(tcfg, POLL_ITERATIONS);
-    ps->evpl = evpl_create(tcfg);
+    ps->evpl = test_mbt_create(tcfg);
 
     /* Every step of a program carries the same transport, so the first one
      * settles it. */
@@ -2244,13 +2257,18 @@ run_program(
             ps->proto = EVPL_DATAGRAM_INPROC;
             break;
         case CTR_TSTREAMTCP:
-            ps->proto = EVPL_STREAM_SOCKET_TCP;
+            ps->proto = test_mbt_stream_protocol();
             break;
         case CTR_TSTREAMUNIX:
             ps->proto = EVPL_STREAM_SOCKET_UNIX;
             break;
         case CTR_TDATAGRAMUDP:
             ps->proto = EVPL_DATAGRAM_SOCKET_UDP;
+            if (getenv("EVPL_TEST_DATAGRAM_PROTOCOL")) {
+                evpl_test_abort_if(evpl_protocol_lookup(&ps->proto,
+                                                        getenv("EVPL_TEST_DATAGRAM_PROTOCOL")),
+                                   "unknown datagram protocol");
+            }
             break;
         default:
             evpl_test_abort("program %d names a transport the driver has no "
@@ -2362,7 +2380,7 @@ check_static_facts(void)
      * virtual clock -- it is anchored to CLOCK_MONOTONIC at init and reports
      * real time, so this is the one thing here that a stopped clock does not
      * stop. */
-    evpl = evpl_create(NULL);
+    evpl = test_mbt_create(NULL);
 
     evpl_get_hf_monotonic_time(evpl, &t0);
     evpl_get_hf_monotonic_time(evpl, &t1);
@@ -2371,7 +2389,7 @@ check_static_facts(void)
                        (t1.tv_sec == t0.tv_sec && t1.tv_nsec < t0.tv_nsec),
                        "the high-frequency clock went backwards");
 
-    evpl_destroy(evpl);
+    test_mbt_destroy(evpl);
 
     evpl_test_abort_if(evpl_get_slab_size() == 0, "the slab size is zero");
 
@@ -2429,6 +2447,15 @@ core_conformance_init(void)
      * environment. */
     test_evpl_set_core_mech(config);
 
+#ifdef HAVE_SPDK
+    if (block_protocol() == EVPL_BLOCK_PROTOCOL_SPDK_BDEV) {
+        evpl_test_abort_if(!test_mbt_spdk(), "SPDK bdev requires an SPDK host");
+        evpl_spdk_bdev_test_up(
+            "{\"subsystems\":[{\"subsystem\":\"bdev\",\"config\":["
+            "{\"method\":\"bdev_malloc_create\",\"params\":"
+            "{\"name\":\"Malloc0\",\"num_blocks\":16,\"block_size\":4096}}]}]}");
+    }
+#endif /* ifdef HAVE_SPDK */
     evpl_init(config);
 } /* core_conformance_init */
 
@@ -2447,8 +2474,6 @@ main(
 
     g_trace = getenv("CORE_TRACE") != NULL;
 
-    g_trace = getenv("CORE_TRACE") != NULL;
-
     core_conformance_init();
 
     check_static_facts();
@@ -2458,10 +2483,35 @@ main(
                    (unsigned int) (sizeof(core_steps) / sizeof(core_steps[0])));
 
     for (i = 0; i < CORE_NUM_PROGRAMS; i++) {
+        /* The poll oracle assumes that only OpActivity reports activity and
+         * that the native spin grace applies. Providers report I/O activity
+         * themselves; SPDK deliberately has no native spin grace. Keep those
+         * programs in the native matrix, and replay the remaining programs
+         * with their complete, unchanged obligations on optional backends. */
+        if (test_mbt_spdk() || getenv("EVPL_TEST_DATAGRAM_PROTOCOL")) {
+            const struct core_program *p = &core_programs[i];
+            int                        j;
+            for (j = 0; j < p->nsteps; j++) {
+                if (core_steps[p->first_step + j].op == COP_OPADDPOLL) {
+                    break;
+                }
+            }
+            if (j < p->nsteps) {
+                g_results.skipped++;
+                continue;
+            }
+        }
         failures += run_program(&core_programs[i], (int) i);
         g_results.programs++;
     }
 
+#ifdef HAVE_SPDK
+    if (block_protocol() == EVPL_BLOCK_PROTOCOL_SPDK_BDEV) {
+        evpl_spdk_bdev_test_down();
+    }
+#endif /* ifdef HAVE_SPDK */
+    evpl_test_abort_if(!g_results.programs, "no applicable core programs");
+    printf("native poll-mode programs omitted from this backend: %d\n", g_results.skipped);
     g_results.failed = failures;
 
     printf("core programs: %d run, %d steps, %d quiesces, %d obligations "

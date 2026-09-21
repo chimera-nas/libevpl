@@ -469,7 +469,7 @@ endif()
 # The SPDK mechanism delegates its fd handling to the epoll backend.  SPDK is
 # deliberately NOT appended to EVPL_MECHANISMS: that list replicates generic
 # tests which pump evpl from a plain pthread and cannot run in guest mode;
-# SPDK coverage comes from dedicated tests under src/core/spdk/tests.
+# SPDK coverage comes from dedicated tests and host-driven MBT variants.
 if(HAVE_SPDK AND NOT EVPL_HAVE_EPOLL)
     message(FATAL_ERROR "SPDK support requires the epoll core mechanism")
 endif()

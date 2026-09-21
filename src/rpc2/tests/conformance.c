@@ -69,7 +69,7 @@
 #include "rpcrdma1_xdr.h"
 
 #include "core/test_log.h"
-#include "test_common.h"
+#include "test_mbt.h"
 
 #include "gss_stub.h"
 #include "krb5_local.h"
@@ -1212,7 +1212,7 @@ wait_for_reply(
     int spins = 0;
 
     while (!st->done) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
         if (++spins > 100000000) {
             return -1;
         }
@@ -1432,7 +1432,7 @@ check_rdma_version_mismatch(
     evpl_sendv(evpl, bind, &iov, 1, len, EVPL_SEND_FLAG_TAKE_REF);
 
     while (!vp.done && ++spins < 100000000) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
     }
 
     evpl_test_abort_if(!vp.done, "version probe: no answer to a bad version");
@@ -2215,7 +2215,7 @@ send_all(
          * deadline below still bounds the wait. */
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
                       errno == ENOTCONN)) {
-            evpl_continue(evpl);
+            test_mbt_continue(evpl);
             if (now_ms() > deadline) {
                 return -1;
             }
@@ -2289,7 +2289,7 @@ read_outcome_full(
                 errno != ENOTCONN) {
                 return EXP_CLOSED;
             }
-            evpl_continue(evpl);
+            test_mbt_continue(evpl);
             if (now_ms() > deadline) {
                 return ACT_STALLED;
             }
@@ -2317,7 +2317,7 @@ read_outcome_full(
                 errno != ENOTCONN) {
                 return EXP_CLOSED;
             }
-            evpl_continue(evpl);
+            test_mbt_continue(evpl);
             if (now_ms() > deadline) {
                 return ACT_STALLED;
             }
@@ -4330,11 +4330,10 @@ main(
      * cases that expect no reply at all would never come back to check their
      * deadline.
      *
-     * evpl_create() takes ownership of the config and releases it itself.
+     * test_mbt_create() takes ownership of the config and releases it itself.
      */
     tcfg = evpl_thread_config_init();
     evpl_thread_config_set_wait_ms(tcfg, 1);
-    evpl = evpl_create(tcfg);
 
     conformance_program_init(&ctx);
     programs[0] = &ctx.prog.rpc2;
@@ -4347,7 +4346,9 @@ main(
      * lock -- the name is what has to be unique, not the port. */
     g_address = test_address(proto, "127.0.0.1", argv[0]);
     endpoint  = evpl_endpoint_create(g_address, port);
-    evpl_rpc2_server_start(server, proto, endpoint);
+    evpl_test_abort_if(evpl_rpc2_server_start(server, proto, endpoint),
+                       "failed to start RPC2 listener");
+    evpl = test_mbt_create(tcfg);
 
     /* Two distinct private-data values, so that a notification reporting the
      * wrong one is visible rather than indistinguishable -- see
@@ -4400,7 +4401,8 @@ main(
      * its own onto: TCP or AF_UNIX.  RDMA carries no record marks, so the
      * framing defects are not expressible there, and inproc has no descriptor
      * to write to at all. */
-    if (proto == EVPL_STREAM_SOCKET_TCP || evpl_protocol_is_local(proto)) {
+    if (proto == EVPL_STREAM_SOCKET_TCP || proto == EVPL_STREAM_SPDK_TCP ||
+        evpl_protocol_is_local(proto)) {
         evpl_test_info("running %u defect cases",
                        (unsigned int) CONF_NUM_DEFECT_CASES);
         run_defect_phase(evpl);
@@ -4416,10 +4418,19 @@ main(
      */
     drain_deadline = now_ms() + 200;
     while (now_ms() < drain_deadline) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
     }
 
+    /* This is host-side teardown, outside a poll callback. Join the listener
+     * before exiting; the convenience stop is asynchronous on an SPDK thread. */
+#ifdef HAVE_SPDK
+    struct spdk_thread *owner = spdk_get_thread();
+    spdk_set_thread(NULL);
+#endif /* ifdef HAVE_SPDK */
     evpl_rpc2_server_stop(server);
+#ifdef HAVE_SPDK
+    spdk_set_thread(owner);
+#endif /* ifdef HAVE_SPDK */
     evpl_rpc2_client_disconnect(g_thread, conn);
     evpl_rpc2_server_detach(g_thread, server);
     evpl_rpc2_thread_destroy(g_thread);
@@ -4438,7 +4449,7 @@ main(
                  (void *) g_notify.client_conn, (void *) conn);
 
     evpl_rpc2_server_destroy(server);
-    evpl_destroy(evpl);
+    test_mbt_destroy(evpl);
 
     printf("value cases:  %d run, %d failed (%d requesting chunks, placed %s)\n",
            g_results.value_run, g_results.value_failed, g_results.value_chunked,

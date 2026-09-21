@@ -81,12 +81,13 @@ raw_socket_prepare(test_socket_t fd)
 #include "krb5_local.h"
 
 #include "core/test_log.h"
-#include "test_common.h"
+#include "test_mbt.h"
 
 #include "conformance_client_xdr.h"
 #include "client_cases.h"
 
-static int port = 8000;
+static int                   port  = 8000;
+static enum evpl_protocol_id proto = EVPL_STREAM_SOCKET_TCP;
 
 /* RPC envelope constants (RFC 5531 section 9), spelled out here rather than
  * pulled from the generated rpc2 header: this file must be able to encode
@@ -748,7 +749,7 @@ accept_peer(struct evpl *evpl)
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             return -1;
         }
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
         if (now_ms() > deadline) {
             return -1;
         }
@@ -773,7 +774,7 @@ send_all(
             continue;
         }
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            evpl_continue(evpl);
+            test_mbt_continue(evpl);
             if (now_ms() > deadline) {
                 return -1;
             }
@@ -807,7 +808,7 @@ read_exact(
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 return READ_EOF;
             }
-            evpl_continue(evpl);
+            test_mbt_continue(evpl);
             if (now_ms() > deadline) {
                 return READ_TIMEOUT;
             }
@@ -967,8 +968,8 @@ deliver(
             /* Let the client observe the partial record before the rest
              * arrives; without this the kernel usually coalesces the two
              * writes and the split never happens. */
-            evpl_continue(evpl);
-            evpl_continue(evpl);
+            test_mbt_continue(evpl);
+            test_mbt_continue(evpl);
             return send_all(evpl, rec + half, total - half);
 
         case CDLV_DRIBBLE:
@@ -976,7 +977,7 @@ deliver(
                 if (send_all(evpl, rec + i, 1)) {
                     return -1;
                 }
-                evpl_continue(evpl);
+                test_mbt_continue(evpl);
             }
             return 0;
 
@@ -1023,7 +1024,7 @@ deliver_fragmented(
             return -1;
         }
 
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
         off += this_len;
     }
 
@@ -1049,7 +1050,7 @@ ensure_conn(struct evpl *evpl)
         g_peer_fd = -1;
     }
 
-    g_conn = evpl_rpc2_client_connect(g_thread, EVPL_STREAM_SOCKET_TCP,
+    g_conn = evpl_rpc2_client_connect(g_thread, proto,
                                       g_endpoint, NULL, 0, NULL);
     if (!g_conn) {
         return -1;
@@ -1076,7 +1077,7 @@ pump_until_fired(
     uint64_t deadline = now_ms() + REPLY_TIMEOUT_MS;
 
     while (!cs->fired && g_conn_alive && now_ms() < deadline) {
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
     }
 } /* pump_until_fired */
 
@@ -1318,8 +1319,8 @@ gss_establish(
             return -1;
         }
 
-        evpl_continue(evpl);
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
+        test_mbt_continue(evpl);
     }
 
     return g_gss_ready ? 0 : -1;
@@ -1829,8 +1830,8 @@ run_case(
         rc = deliver(evpl, c, &msg);
         evpl_test_abort_if(rc, "case %s: failed to write the duplicate",
                            defect_name(c->defect));
-        evpl_continue(evpl);
-        evpl_continue(evpl);
+        test_mbt_continue(evpl);
+        test_mbt_continue(evpl);
     }
 
     /* Classify what the client did.  Note the ordering: a second completion
@@ -1916,7 +1917,6 @@ main(
     struct evpl               *evpl;
     struct evpl_rpc2_program  *programs[1];
     struct evpl_thread_config *tcfg;
-    enum evpl_protocol_id      proto    = EVPL_STREAM_SOCKET_TCP;
     const char                *krb5_why = NULL;
     unsigned int               i;
     int                        opt, rc, failed;
@@ -1942,7 +1942,7 @@ main(
 
     /* The harness is hand-built record-marked bytes, which is a stream-only
      * concept; there is no way to express these defects over RDMA. */
-    if (proto != EVPL_STREAM_SOCKET_TCP) {
+    if (proto != EVPL_STREAM_SOCKET_TCP && proto != EVPL_STREAM_SPDK_TCP) {
         printf("skipping: raw record marking requires a stream transport\n");
         printf("Test PASSED\n");
         return 0;
@@ -1955,13 +1955,13 @@ main(
      * evpl_continue in the poller until something happens, and the cases that
      * expect no callback at all would never come back to check their deadline.
      *
-     * evpl_create() takes ownership of the config and releases it itself.
+     * test_mbt_create() takes ownership of the config and releases it itself.
      * Exactly one evpl is created for the whole run -- a second create/destroy
      * cycle wedges process exit.
      */
     tcfg = evpl_thread_config_init();
     evpl_thread_config_set_wait_ms(tcfg, 1);
-    evpl = evpl_create(tcfg);
+    evpl = test_mbt_create(tcfg);
 
     HELLO_V1_init(&g_prog);
     programs[0] = &g_prog.rpc2;
@@ -2024,12 +2024,12 @@ main(
         uint64_t drain_deadline = now_ms() + 200;
 
         while (now_ms() < drain_deadline) {
-            evpl_continue(evpl);
+            test_mbt_continue(evpl);
         }
     }
 
     evpl_rpc2_thread_destroy(g_thread);
-    evpl_destroy(evpl);
+    test_mbt_destroy(evpl);
 
     /* Only now, once no callback can run again, is the call state unreachable. */
     call_states_release();
