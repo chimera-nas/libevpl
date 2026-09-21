@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include "evpl/evpl_export.h"
 
 /*
  * Optional libfabric integration points.
@@ -40,7 +41,7 @@ struct fi_info;
  *    from a high range (0x80000000 up) to reduce the chance of colliding
  *    with keys the application chose on the same domain.
  */
-void evpl_global_config_set_libfabric_external_domain(
+EVPL_API void evpl_global_config_set_libfabric_external_domain(
     struct evpl_global_config *config,
     struct fid_fabric         *fabric,
     struct fid_domain         *domain,

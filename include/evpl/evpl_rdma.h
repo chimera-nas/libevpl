@@ -27,7 +27,7 @@ EVPL_API void evpl_rdma_read(
     uint64_t           remote_address,
     struct evpl_iovec *iov,
     int                niov,
-    void            ( *callback )(
+    void (            *callback )(
         int   status,
         void *private_data),
     void              *private_data);
@@ -40,7 +40,7 @@ EVPL_API void evpl_rdma_write(
     struct evpl_iovec *iov,
     int                niov,
     unsigned int       flags,
-    void            ( *callback )(
+    void (            *callback )(
         int   status,
         void *private_data),
     void              *private_data);

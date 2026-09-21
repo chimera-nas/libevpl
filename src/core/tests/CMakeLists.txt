@@ -173,5 +173,12 @@ endforeach()
 unit_test_all_mechs(core poll_prepare poll_prepare.c)
 target_include_directories(core_poll_prepare PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
 
-unit_test_all_mechs(core close_ready close_ready.c)
-target_include_directories(core_close_ready PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
+foreach(mech ${EVPL_MECHANISMS})
+    set_tests_properties(libevpl/core/poll_prepare_${mech} PROPERTIES TIMEOUT 10)
+endforeach()
+
+# This regression exercises POSIX descriptor readiness, unavailable with IOCP.
+if(NOT WIN32)
+    unit_test_all_mechs(core close_ready close_ready.c)
+    target_include_directories(core_close_ready PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
+endif()

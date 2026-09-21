@@ -649,7 +649,7 @@ evpl_global_config_set_libfabric_provider(
         evpl_free(config->libfabric_provider);
     }
 
-    config->libfabric_provider = provider ? strdup(provider) : NULL;
+    config->libfabric_provider = provider ? evpl_strdup(provider) : NULL;
 } /* evpl_global_config_set_libfabric_provider */
 
 SYMBOL_EXPORT void

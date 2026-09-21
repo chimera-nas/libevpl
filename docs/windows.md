@@ -93,8 +93,8 @@ file beyond 4 GiB. It currently uses the file service thread rather than
 submitting file operations directly to IOCP.
 
 AF_UNIX transports, POSIX file-descriptor readiness events, retained-iovec stack
-profiling, and Linux-specific accelerated backends (io_uring, libaio, VFIO,
-RDMA CM/verbs, XLIO) are not implemented on Windows. Selecting an unavailable
+profiling, the libfabric backend, and Linux-specific accelerated backends
+(io_uring, libaio, VFIO, RDMA CM/verbs, XLIO) are not implemented on Windows. Selecting an unavailable
 protocol does not make it available through emulation. The native dependency
 manifest does not include a GSS/Kerberos provider; protected RPC conformance
 cases report themselves skipped when that provider is absent.

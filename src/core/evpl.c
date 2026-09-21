@@ -584,6 +584,12 @@ evpl_continue(struct evpl *evpl)
         }
 
         if (evpl->core.ops->dispatch) {
+            for (i = 0; i < evpl->num_poll; ++i) {
+                poll = &evpl->poll[i];
+                if (poll->prepare_callback) {
+                    poll->prepare_callback(evpl, poll->private_data);
+                }
+            }
             if (evpl->loop_hooks.pre_wait) {
                 evpl->loop_hooks.pre_wait(evpl, evpl->loop_hooks.private_data);
             }
@@ -713,8 +719,7 @@ evpl_continue(struct evpl *evpl)
                 msecs = 0;
             }
         }
-        if (evpl->num_active_events || evpl->num_active_deferrals ||
-            evpl->pending_close_binds) {
+        if (evpl->num_active_events || evpl->num_active_deferrals) {
             msecs = 0;
         }
 
@@ -796,28 +801,6 @@ evpl_continue(struct evpl *evpl)
             --evpl->num_active_events;
         } else {
             i++;
-        }
-    }
-
-    /* Dispatch the previous batch before recycling closed binds.  Waiting
-     * for a quiet kernel wait starves teardown when an unrelated descriptor
-     * remains ready.  Run before deferrals so newly queued closes get their
-     * final event-dispatch pass on the next iteration. */
-    if (evpl->pending_close_binds) {
-        struct evpl_bind *next;
-
-        bind = evpl->pending_close_binds;
-        while (bind) {
-            next = bind->next;
-            /* A protocol with an asynchronous teardown (RDMA) keeps the
-             * bind parked here until its disconnect event arrives; do not
-             * finalize it yet or its private state would be freed while
-             * the protocol still references it. */
-            if (!(bind->flags & EVPL_BIND_CLOSE_DEFERRED)) {
-                bind->protocol->close(evpl, bind);
-                evpl_bind_destroy(evpl, bind);
-            }
-            bind = next;
         }
     }
 
