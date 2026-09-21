@@ -14,25 +14,46 @@ async function run(overrides = {}) {
   const calls = [];
   const files = {'coverage/pr-number.txt': '123\n', 'coverage/coverage-report.md': marker + '\nreport', ...overrides.files};
   const context = {repo: {owner: 'chimera-nas', repo: 'libevpl'}, payload: {workflow_run: {
-    id: 20, run_attempt: 2, head_sha: 'abc123', head_branch: 'topic', html_url: 'https://github.com/run/20'}}};
+    id: 20, run_attempt: 2, head_sha: 'abc123', head_branch: 'topic', html_url: 'https://github.com/run/20',
+    head_repository: {id: 200}, repository: {id: 100}, ...overrides.workflow_run}}};
   const rest = {
-    pulls: {get: async () => ({data: {state: 'open', head: {sha: 'abc123', ref: 'topic'}, ...overrides.pr}})},
-    repos: {listPullRequestsAssociatedWithCommit: 'associated'},
+    pulls: {get: async () => ({data: {state: 'open', head: {sha: 'abc123', ref: 'topic', repo: {id: 200}},
+      base: {repo: {id: 100}}, ...overrides.pr}})},
     issues: {listComments: 'comments',
       createComment: async value => calls.push(['create', value]),
       updateComment: async value => calls.push(['update', value])}
   };
   await execute(() => ({existsSync: p => files[p] !== undefined, readFileSync: p => files[p]}), context,
-    {rest, paginate: async method => method === 'associated' ? (overrides.associated ?? [{number: 123}]) : (overrides.comments ?? [])},
+    {rest, paginate: async method => {
+      assert.equal(method, 'comments');
+      return overrides.comments ?? [];
+    }},
     {notice: () => {}});
   return calls;
 }
 
-test('create a comment bound to current PR and run', async () => {
+test('create a fork PR comment without a base-repository commit association', async () => {
   const calls = await run();
   assert.equal(calls[0][0], 'create');
   assert.equal(calls[0][1].issue_number, 123);
   assert.ok(calls[0][1].body.includes('<!-- mbt-run:20:2 -->'));
+});
+test('create a comment for a same-repository PR', async () => {
+  const calls = await run({workflow_run: {head_repository: {id: 100}},
+    pr: {head: {sha: 'abc123', ref: 'topic', repo: {id: 100}}}});
+  assert.equal(calls[0][0], 'create');
+});
+test('reject a matching branch and commit from another source or target repository', async () => {
+  for (const pr of [
+    {head: {sha: 'abc123', ref: 'topic', repo: {id: 201}}},
+    {base: {repo: {id: 101}}},
+    {head: {sha: 'abc123', ref: 'topic', repo: null}}
+  ]) {
+    await assert.rejects(run({pr}), /repositories do not match/);
+  }
+  for (const workflow_run of [{head_repository: null}, {repository: null}]) {
+    await assert.rejects(run({workflow_run}), /repositories do not match/);
+  }
 });
 test('update only our bot comment', async () => {
   const calls = await run({comments: [
@@ -48,7 +69,6 @@ test('skip stale heads, different branches and closed PRs', async () => {
 });
 test('reject malformed or redirected report metadata', async () => {
   await assert.rejects(run({files: {'coverage/pr-number.txt': '123;echo bad'}}), /Invalid PR/);
-  await assert.rejects(run({associated: [{number: 124}]}), /not associated/);
   await assert.rejects(run({files: {'coverage/coverage-report.md': 'bad'}}), /marker/);
 });
 test('ignore missing reports and newer existing reports', async () => {

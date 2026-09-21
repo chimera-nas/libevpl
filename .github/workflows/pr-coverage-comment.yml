@@ -47,9 +47,14 @@ jobs:
               core.notice('Report no longer matches an open PR head');
               return;
             }
-            const associated = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit,
-              {...context.repo, commit_sha: run.head_sha, per_page: 100});
-            if (!associated.some(p => p.number === issue_number)) throw new Error('PR not associated with run commit');
+            // Fork commits can have no associated PRs in the base repository's
+            // commit API. Bind the report to the run's source and target repos
+            // directly, in addition to the branch and commit checked above.
+            if (!run.head_repository?.id || !run.repository?.id ||
+                pr.head.repo?.id !== run.head_repository.id ||
+                pr.base.repo?.id !== run.repository.id) {
+              throw new Error('PR repositories do not match workflow run');
+            }
             const marker = '<!-- mbt-coverage-report -->';
             let body = fs.readFileSync('coverage/coverage-report.md', 'utf8');
             if (!body.startsWith(marker)) throw new Error('Invalid report marker');
