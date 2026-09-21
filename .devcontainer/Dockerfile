@@ -106,6 +106,10 @@ COPY --from=ccache /ccache /usr/local/bin/ccache
 # hugepages via spdk_env_opts.no_huge.  The sed repoints the stale DPDK
 # build-tree -L path in the generated .pc files at the install prefix, since
 # the source tree is deleted after install.
+# Cached images run on different CPUs from the builder. SPDK defaults to
+# -march=native and passes that target to DPDK, which can then fault in a
+# shared-library constructor before main. Use portable architecture baselines
+# and DPDK's generic platform (also disables native ARM SoC detection).
 ARG SPDK_VERSION=v25.09
 RUN apt-get -y --no-install-recommends install \
         python3 python3-pip python3-pyelftools python3-setuptools \
@@ -113,10 +117,16 @@ RUN apt-get -y --no-install-recommends install \
     git clone --depth 1 --branch ${SPDK_VERSION} --recurse-submodules \
         --shallow-submodules https://github.com/spdk/spdk.git /tmp/spdk && \
     cd /tmp/spdk && \
+    case "$(uname -m)" in \
+        x86_64) spdk_arch=x86-64-v2 ;; \
+        aarch64) spdk_arch=armv8-a ;; \
+        *) echo "Unsupported SPDK architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
     ./configure --prefix=/usr/local --with-shared \
+        --target-arch="$spdk_arch" \
         --disable-tests --disable-unit-tests --disable-examples \
         --disable-apps --without-nvme-cuse && \
-    make -j$(nproc) && \
+    make -j$(nproc) DPDKBUILD_FLAGS=-Dplatform=generic && \
     make install && \
     sed -i "s|-L/tmp/spdk/dpdk/build/lib|-L/usr/local/lib|g" \
         /usr/local/lib/pkgconfig/*.pc && \
