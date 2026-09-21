@@ -68,6 +68,10 @@ target_link_libraries(spdk_app_host PkgConfig::SPDK_EVENT ${SPDK_TEST_LINK_TARGE
 add_test(NAME libevpl/spdk/app_host_interrupt COMMAND $<TARGET_FILE:spdk_app_host>)
 set_tests_properties(libevpl/spdk/app_host_interrupt PROPERTIES TIMEOUT 30
     ENVIRONMENT "EVPL_TEST_INTERRUPT=1;ASAN_OPTIONS=detect_leaks=1")
+# Both variants call spdk_app_start with reactor_mask=0x1. SPDK's core claim
+# lock is shared across network namespaces, so these cannot run concurrently.
+set_property(TEST libevpl/spdk/app_host libevpl/spdk/app_host_interrupt
+    APPEND PROPERTY RESOURCE_LOCK evpl_spdk_app_core)
 add_test(NAME libevpl/spdk/lifecycle_interrupt COMMAND $<TARGET_FILE:spdk_lifecycle>)
 set_tests_properties(libevpl/spdk/lifecycle_interrupt PROPERTIES TIMEOUT 30
     ENVIRONMENT "EVPL_TEST_INTERRUPT=1;ASAN_OPTIONS=detect_leaks=1")
