@@ -17,7 +17,7 @@ on:
       platform:
         description: Platforms to exercise during development
         type: choice
-        options: [all, windows, mbt]
+        options: [all, windows, tls, mbt]
         default: all
 
 # One phase, not two.  Each cell builds the container image it needs and loads
@@ -48,7 +48,7 @@ on:
 # Cancel superseded runs on a branch: a PR that is pushed to twice does not
 # need the first matrix to finish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.platform || 'all' }}
   cancel-in-progress: true
 
 env:
@@ -477,6 +477,7 @@ jobs:
               allowed_skips = {
                   'all': {'mbt-coverage'},
                   'windows': {'test', 'static-analysis', 'macos', 'mbt-coverage'},
+                  'tls': {'test', 'static-analysis', 'macos', 'mbt-coverage'},
                   'mbt': {'test', 'static-analysis', 'macos', 'native'},
               }[os.environ['PLATFORM']]
           for name, job in json.loads(os.environ['JOB_RESULTS']).items():
@@ -487,6 +488,7 @@ jobs:
           PYCODE
 
   conformance-corpus:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'tls'
     name: Generate native conformance cases
     runs-on: ubuntu-24.04
     permissions:
@@ -523,6 +525,7 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
       - uses: actions/download-artifact@v6
+        if: inputs.platform != 'tls'
         with:
           name: native-conformance-corpus
           path: corpus
@@ -589,7 +592,7 @@ jobs:
           if-no-files-found: error
 
   native:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'mbt'
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.platform != 'mbt') && (needs.conformance-corpus.result == 'success' || inputs.platform == 'tls') }}
     needs: conformance-corpus
     name: MSVC ${{ matrix.arch }} ${{ matrix.config }}
     runs-on: ${{ matrix.runner }}
@@ -599,10 +602,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {runner: windows-2022, arch: x64, config: Debug}
-          - {runner: windows-2022, arch: x64, config: Release}
-          - {runner: windows-11-arm, arch: ARM64, config: Debug}
-          - {runner: windows-11-arm, arch: ARM64, config: Release}
+          - {runner: windows-2022, arch: x64, generator: "Visual Studio 17 2022", config: Debug}
+          - {runner: windows-2022, arch: x64, generator: "Visual Studio 17 2022", config: Release}
+          - {runner: windows-11-vs2026-arm, arch: ARM64, generator: "Visual Studio 18 2026", config: Debug}
+          - {runner: windows-11-vs2026-arm, arch: ARM64, generator: "Visual Studio 18 2026", config: Release}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -616,9 +619,13 @@ jobs:
         id: vcpkg-cache
         with:
           path: ~/AppData/Local/vcpkg/archives
-          key: vcpkg-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-${{ matrix.arch }}-
+          key: vcpkg-${{ matrix.runner }}-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-${{ matrix.runner }}-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-${{ matrix.runner }}-${{ matrix.arch }}-
+            vcpkg-${{ matrix.arch }}-
       - uses: actions/download-artifact@v6
+        if: inputs.platform != 'tls'
         with:
           name: native-conformance-corpus
           path: corpus
@@ -635,24 +642,38 @@ jobs:
           & ./_vcpkg/bootstrap-vcpkg.bat -disableMetrics
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $triplet = '${{ matrix.arch }}'.ToLower() + '-windows'
-          cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.arch }} "-DCMAKE_TOOLCHAIN_FILE=$pwd/_vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=$triplet" "-DVCPKG_HOST_TRIPLET=$triplet" "-DFLEX_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_flex.exe" "-DBISON_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_bison.exe" -DOTEL_SQLITE=ON "-DEVPL_CONFORMANCE_CASES_DIR=$pwd/corpus"
+          $corpus = if (Test-Path corpus) { "$pwd/corpus" } else { "" }
+          cmake -S . -B build -G "${{ matrix.generator }}" -A ${{ matrix.arch }} "-DCMAKE_TOOLCHAIN_FILE=$pwd/_vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=$triplet" "-DVCPKG_HOST_TRIPLET=$triplet" "-DFLEX_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_flex.exe" "-DBISON_EXECUTABLE=$env:RUNNER_TEMP/winflexbison/win_bison.exe" -DOTEL_SQLITE=ON "-DEVPL_CONFORMANCE_CASES_DIR=$corpus"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/cache/save@v4
-        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: success() && steps.vcpkg-cache.outputs.cache-hit != 'true'
         with:
           path: ~/AppData/Local/vcpkg/archives
-          key: vcpkg-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ matrix.runner }}-${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
       - name: Build
         run: cmake --build build --config ${{ matrix.config }} --parallel 4
+      - name: Verify native TLS has no OpenSSL dependency
+        shell: pwsh
+        run: |
+          $triplet = '${{ matrix.arch }}'.ToLower() + '-windows'
+          $installed = Get-Content build/vcpkg_installed/vcpkg/status -Raw
+          if ($installed -match '(?m)^Package: openssl\r?$') { throw 'OpenSSL was installed in the native dependency tree' }
+          $dlls = Get-ChildItem build -Recurse -File | Where-Object { $_.Name -match '^(libssl|libcrypto).*\.dll$' }
+          if ($dlls) { throw "Unexpected OpenSSL DLLs: $dlls" }
+      - name: Test TLS before the full suite
+        run: ctest --test-dir build -C ${{ matrix.config }} -R 'tls|https' --stop-on-failure --output-on-failure --no-tests=error --timeout 60
       - name: Test native backends
+        if: inputs.platform != 'tls'
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error --timeout 300 --output-junit results.xml
+      - name: Verify temporary TLS keys were deleted
+        run: ./build/bin/${{ matrix.config }}/tls_key_cleanup.exe
       - name: Install and consume native DLLs
         shell: pwsh
         run: |
           $prefix = "$env:RUNNER_TEMP/evpl-install"
           cmake --install build --config ${{ matrix.config }} --prefix $prefix
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake -S tests/installed -B consumer -G "Visual Studio 17 2022" -A ${{ matrix.arch }} "-DCMAKE_PREFIX_PATH=$prefix"
+          cmake -S tests/installed -B consumer -G "${{ matrix.generator }}" -A ${{ matrix.arch }} "-DCMAKE_PREFIX_PATH=$prefix"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build consumer --config ${{ matrix.config }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

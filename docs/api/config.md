@@ -698,7 +698,9 @@ void evpl_global_config_set_tls_cipher_list(
     const char                *cipher_list);
 ```
 
-Set the TLS cipher suite list.
+Set the TLS cipher suite list using OpenSSL syntax on Linux/macOS. Windows
+Schannel uses Windows TLS policy; a non-NULL value is rejected when TLS
+credentials are created. See [Windows TLS configuration](../windows.md).
 
 **Parameters:**
 - `config` - Configuration object
