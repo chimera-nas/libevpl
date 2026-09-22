@@ -183,6 +183,7 @@ main(
     atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
     evpl_native_thread_join(server.thread, NULL);
+    evpl_cleanup();
 
     return (res == CURLE_OK && http_code == 200 &&
             http_version == CURL_HTTP_VERSION_2_0) ? 0 : 1;

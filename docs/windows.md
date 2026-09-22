@@ -14,14 +14,15 @@ file APIs. No Cygwin, MSYS runtime, or POSIX emulation layer is required.
 
 ## Build and test
 
-Install Visual Studio 2022 (or its Build Tools) with the Desktop development
+Install Visual Studio 2022 or newer (or its Build Tools) with the Desktop development
 with C++ workload, a Windows SDK, and CMake. Select the ARM64 compiler tools
 when building on Windows ARM64. Use a recent MSVC toolset supporting C11 atomics;
 the build enables `/experimental:c11atomics`.
 
 Clone recursively, then run these commands from the repository in PowerShell.
-The vcpkg manifest builds dependencies with MSVC, including OpenSSL, nghttp2,
-protobuf-c, and SQLite. The pinned vcpkg revision matches CI.
+The vcpkg manifest builds dependencies with MSVC, including nghttp2, protobuf-c, and SQLite.
+OpenSSL is neither built nor linked on Windows. PowerShell 7 (`pwsh`) generates
+the test certificates using .NET cryptography. The pinned vcpkg revision matches CI.
 
 ```powershell
 git submodule update --init --recursive
@@ -73,7 +74,7 @@ on Windows. Case generation does not require a Unix shell in the Windows VM.
 | --- | --- |
 | Event loop | IOCP, selected automatically; `iocp` is the explicit mechanism name |
 | TCP and UDP | Native overlapped Winsock, retaining the existing socket protocol IDs |
-| TLS | OpenSSL memory BIOs over the native TCP transport |
+| TLS | Windows Schannel over the native TCP transport |
 | TCP_RDMA | Existing software framing protocol over the portable TCP transport |
 | In-process messaging | Existing datagram and stream protocols with native synchronization |
 | Doorbells | IOCP packets with independently owned, revocable sender handles |
@@ -81,11 +82,44 @@ on Windows. Case generation does not require a Unix shell in the Windows VM.
 | HTTP and RPC | HTTP/1.x, HTTP/2, and ONC RPC2 over supported transports |
 | Observability | Prometheus and OpenTelemetry, including optional SQLite support |
 
-Windows TLS uses the same OpenSSL certificate and cipher configuration as the
-Unix implementation. Schannel and Windows certificate-store integration are
-not implemented. The portable TLS engine is selected automatically on Windows;
-on Linux or macOS it can be selected with `-DEVPL_TLS_MEMORY_BIO=ON`. Unix builds
-retain their existing socket TLS/kTLS path by default.
+Windows TLS uses Schannel (SSPI), CNG key management, and Crypt32 certificate
+APIs. TLS 1.2 and TLS 1.3 are available on Windows 11 and Server 2022 or later.
+ALPN supports HTTP/2. Windows manages the enabled cipher suites; a non-null
+OpenSSL cipher-list setting is rejected when credentials are created, rather
+than silently ignored. The kTLS setting has no effect on Windows.
+
+The existing certificate/key file settings accept PEM X.509 certificates and
+unencrypted PKCS#8 private keys (RSA or EC), plus traditional PKCS#1 RSA PEM
+keys. The leaf must match the private key. Schannel constructs the chain it
+sends using the Windows intermediate-certificate cache; supplying a PEM bundle
+alone does not install intermediates in that cache. Encrypted PEM and traditional SEC1 EC keys are not supported;
+use an unencrypted PKCS#8 key with appropriate filesystem access restrictions.
+Without configured certificate/key files, libevpl generates a self-signed
+certificate and RSA key through Windows APIs. Schannel requires named CNG keys
+on some supported Windows versions, so generated/imported private keys use
+randomly named, user-scoped CNG containers that are deleted at library cleanup.
+Call `evpl_cleanup()` after destroying all contexts and releasing application-held
+buffers, before returning from `main` or unloading libevpl. Windows DLL `atexit`
+callbacks run during DLL teardown, too late to use the RPC support CNG needs for
+key deletion; libevpl therefore does not register its own `atexit` on Windows.
+An executable can instead register `atexit(evpl_cleanup)` itself, provided its
+contexts and threads are already shut down when the callback runs. Skipping
+cleanup or forcibly terminating the process can leave a container behind. Certificates are
+not installed in the system trust store.
+
+Peer verification checks the certificate chain, validity, and TLS usage. A
+configured PEM CA bundle supplies an exclusive trust store; otherwise the
+Windows trust store is used. Server-side peer verification requires a client
+certificate. Configured certificate/key files also supply the client identity
+on Windows. Chain building uses local/supplied intermediates and does not fetch
+certificates or revocation information over the network from the event loop.
+As with the existing OpenSSL backend, the current API has no expected-peer-name
+setting and does not provide hostname verification.
+
+Linux and macOS retain OpenSSL and their existing socket TLS/kTLS path. The
+shared byte-stream transport can be tested there with
+`-DEVPL_TLS_MEMORY_BIO=ON`; only the crypto engine changes between OpenSSL and
+Schannel.
 
 The ordinary-file backend accepts UTF-8 paths and converts them to UTF-16 for
 Windows. It supports 64-bit offsets; tests cover Unicode filenames and a sparse
@@ -134,3 +168,14 @@ smoke test. New jobs limit their GitHub token to `contents: read`. Existing
 Linux and macOS build/test jobs and Linux static-analysis jobs remain required.
 Use the workflow's `platform=windows` dispatch input for a focused development
 run; the default runs all platforms.
+
+Windows CI additionally checks RSA PKCS#1/PKCS#8 and EC PKCS#8 identities,
+mutual certificate authentication, ALPN, and rejection of untrusted and expired
+certificates, plus TLS 1.2/1.3 interoperability with .NET SslStream. It checks
+that application cleanup deletes temporary CNG key containers, and fails if
+the dependency tree installs OpenSSL or the build contains OpenSSL DLLs. ARM64 CI uses Visual Studio 2026; select the corresponding
+CMake generator (`Visual Studio 18 2026`) when using that installation locally.
+
+For backend development, `platform=tls` skips model-corpus generation and runs
+the native TLS tests plus the installed-DLL consumer on all four MSVC jobs.
+Pull requests still run the complete matrix and model-conformance suites.

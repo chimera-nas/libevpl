@@ -414,13 +414,14 @@ else()
     message(STATUS "SPDK disabled")
 endif()
 
-# OpenSSL backs the TLS protocol.  macOS ships no OpenSSL/LibreSSL headers or
-# linkable stubs in the SDK, so this resolves to a Homebrew openssl@3 (found
-# via the prefixes added above) -- find_package is used rather than a bare
-# -lssl because that formula is keg-only and lives outside the default paths.
-find_package(OpenSSL REQUIRED)
-
-message(STATUS "OpenSSL ${OPENSSL_VERSION}: ${OPENSSL_SSL_LIBRARY}")
+# Windows uses the operating system TLS implementation; Unix retains OpenSSL.
+if(WIN32)
+    set(EVPL_TLS_MEMORY_BIO ON)
+    message(STATUS "TLS backend: Windows Schannel")
+else()
+    find_package(OpenSSL REQUIRED)
+    message(STATUS "OpenSSL ${OPENSSL_VERSION}: ${OPENSSL_SSL_LIBRARY}")
+endif()
 
 set(HAVE_TLS 1)
 add_definitions(-DHAVE_TLS)

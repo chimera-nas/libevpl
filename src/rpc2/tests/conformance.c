@@ -155,6 +155,9 @@ conformance_evpl_config(void)
     mbt_fabric_setup(config);
 #endif /* ifdef HAVE_LIBFABRIC */
     evpl_init(config);
+#ifdef _WIN32
+    atexit(evpl_cleanup);
+#endif /* ifdef _WIN32 */
 } /* conformance_evpl_config */
 
 /* ------------------------------------------------------------------ *

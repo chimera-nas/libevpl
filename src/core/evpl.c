@@ -441,7 +441,11 @@ evpl_init(struct evpl_global_config *config)
     evpl_core_abort_if(evpl_shared, "evpl_init: evpl_shared already initialized");
 
     evpl_shared_init(config);
+    /* A Windows DLL's atexit runs under loader teardown, too late for CNG
+     * and RPC. Windows applications must call evpl_cleanup before exiting. */
+#ifndef _WIN32
     atexit(evpl_cleanup);
+#endif /* ifndef _WIN32 */
 } /* evpl_init_auto */
 
 static void
@@ -450,11 +454,13 @@ evpl_init_once(void)
     if (!evpl_shared) {
         /*
          *  User has not called evpl_init() before evpl_create(),
-         * so we will initialize ourselves and cleanup atexit()
+         * so initialize automatically. Windows callers own final cleanup.
          */
 
         evpl_shared_init(NULL);
+#ifndef _WIN32
         atexit(evpl_cleanup);
+#endif /* ifndef _WIN32 */
     }
 } /* evpl_init_once */
 

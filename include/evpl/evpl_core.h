@@ -62,7 +62,10 @@ struct evpl_thread_config;
 
 /* Final process cleanup, after all contexts and application-held buffers
  * have been released and before host SPDK environment teardown. Idempotent;
- * do not use libevpl again afterward. Host must serialize this with all users. */
+ * do not use libevpl again afterward. Host must serialize this with all users.
+ * Required before process exit / DLL unload on Windows: DLL atexit callbacks
+ * run too late for CNG/RPC cleanup. An application may register this callback
+ * with its own atexit, provided all contexts are destroyed before it runs. */
 EVPL_API void evpl_cleanup(
     void);
 

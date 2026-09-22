@@ -50,7 +50,9 @@
 #include "tests/test_mbt.h"
 #ifdef HAVE_TLS
 #include "core/tls/tls.h"
+#ifndef _WIN32
 #include <openssl/err.h>
+#endif /* ifndef _WIN32 */
 #endif /* ifdef HAVE_TLS */
 #include "tests/test_block.h"
 
@@ -60,14 +62,14 @@
 #endif /* ifdef HAVE_SPDK */
 
 
-#ifdef HAVE_TLS
+#if defined(HAVE_TLS) && !defined(_WIN32)
 static int tls_error_queue;
 #endif /* ifdef HAVE_TLS */
 
 static int
 core_continue(struct evpl *evpl)
 {
-#ifdef HAVE_TLS
+#if defined(HAVE_TLS) && !defined(_WIN32)
     if (tls_error_queue) {
         /* Model an unrelated OpenSSL operation failing on this reactor thread.
          * This must not change this connection's bytes or callback obligations. */
@@ -2431,7 +2433,9 @@ core_conformance_init(void)
     test_mbt_tls_config(config);
 #ifdef HAVE_TLS
     const char                *alpn = getenv("EVPL_TEST_ALPN");
+#ifndef _WIN32
     tls_error_queue = getenv("EVPL_TEST_TLS_ERROR_QUEUE") != NULL;
+#endif /* ifndef _WIN32 */
     if (alpn) {
         const char *offers[] = { alpn, "mbt-fallback" };
         evpl_tls_set_alpn_protocols(offers, 2);
@@ -2497,6 +2501,9 @@ core_conformance_init(void)
     }
 #endif /* ifdef HAVE_SPDK */
     evpl_init(config);
+#ifdef _WIN32
+    atexit(evpl_cleanup);
+#endif /* ifdef _WIN32 */
 } /* core_conformance_init */
 
 int

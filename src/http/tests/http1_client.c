@@ -359,6 +359,7 @@ main(
     atomic_thread_fence(memory_order_seq_cst);
     evpl_ring_doorbell(&server.doorbell);
     evpl_native_thread_join(server.thread, NULL);
+    evpl_cleanup();
 
     if (rc == 0) {
         fprintf(stderr, "all requests ok\n");

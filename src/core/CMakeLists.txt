@@ -69,15 +69,17 @@ add_subdirectory(inproc)
 set(CORE_SRC ${CORE_SRC} pread/pread_block.c pread/pread.h)
 add_subdirectory(pread)
 
-# TLS is available wherever OpenSSL is (HAVE_TLS is set at the top level).  Its
-# kTLS zero-copy path is Linux-only; on other platforms BIO_get_ktls_*() simply
-# reports unavailable and the normal SSL_read/SSL_write path is used.
+# Both crypto backends share transport and asynchronous buffer ownership.
 if (HAVE_TLS)
-    set(CORE_SRC ${CORE_SRC} tls/openssl.c tls/openssl.h tls/tls.h)
-    if(EVPL_TLS_MEMORY_BIO)
-        list(APPEND CORE_SRC tls/stream_tls.c)
+    if(WIN32)
+        list(APPEND CORE_SRC tls/schannel.c tls/schannel_credentials.c tls/stream_tls.c)
     else()
-        list(APPEND CORE_SRC tls/tls.c)
+        list(APPEND CORE_SRC tls/openssl.c)
+        if(EVPL_TLS_MEMORY_BIO)
+            list(APPEND CORE_SRC tls/stream_tls.c tls/stream_openssl.c)
+        else()
+            list(APPEND CORE_SRC tls/tls.c)
+        endif()
     endif()
     add_subdirectory(tls)
 endif()
@@ -162,12 +164,12 @@ endif()
 # OpenSSL is only needed when TLS is compiled in.  Use the imported targets so
 # the include and library paths of a non-standard prefix (Homebrew's keg-only
 # openssl@3) come along automatically.
-if (HAVE_TLS)
+if (HAVE_TLS AND NOT WIN32)
     set(EVPL_LIBDEPS ${EVPL_LIBDEPS} OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 if(WIN32)
-    list(APPEND EVPL_LIBDEPS ws2_32)
+    list(APPEND EVPL_LIBDEPS ws2_32 secur32 crypt32 ncrypt bcrypt)
 endif()
 target_link_libraries(evpl ${EVPL_LIBDEPS})
 
