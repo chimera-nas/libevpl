@@ -17,6 +17,13 @@ struct holder {
     struct evpl_iovec           iov;
 };
 
+static struct evpl_iovec *
+owned(struct evpl_iovec *iov)
+{
+    evpl_test_abort_if(!iov || !iov->data || !iov->ref, "model expected an owned view");
+    return iov;
+} /* owned */
+
 static void
 check_view(
     struct evpl_iovec *iov,
@@ -25,7 +32,7 @@ check_view(
     unsigned int       refs,
     unsigned int       allocator_refs)
 {
-    struct evpl_iovec_ref *ref = evpl_iovec_get_ref(iov);
+    struct evpl_iovec_ref *ref = evpl_iovec_get_ref(owned(iov));
     unsigned int           actual;
 
     if (ref->flags & EVPL_IOVEC_FLAG_SHARED) {
@@ -51,7 +58,7 @@ main(void)
     test_evpl_set_core_mech(config);
     evpl_init(config);
     struct evpl                 *evpl = test_mbt_create(NULL);
-    struct evpl_iovec            a, b, c;
+    struct evpl_iovec            a = { 0 }, b = { 0 }, c = { 0 };
     struct holder               *request        = NULL;
     const struct ownership_step *previous       = NULL;
     unsigned int                 allocator_refs = 0;
@@ -61,17 +68,17 @@ main(void)
         switch (s->op) {
             case ownership_Reset:
                 if (previous && previous->a) {
-                    evpl_iovec_release(evpl, &a);
+                    evpl_iovec_release(evpl, owned(&a));
                 }
                 if (previous && previous->b) {
-                    evpl_iovec_release(evpl, &b);
+                    evpl_iovec_release(evpl, owned(&b));
                 }
                 if (previous && previous->c) {
-                    evpl_iovec_release(evpl, &c);
+                    evpl_iovec_release(evpl, owned(&c));
                 }
                 if (request) {
                     if (request->chunk.niov) {
-                        evpl_iovec_release(evpl, &request->iov);
+                        evpl_iovec_release(evpl, owned(&request->iov));
                     }
                     free(request);
                     request = NULL;
@@ -86,30 +93,32 @@ main(void)
                 }
                 break;
             }
-            case ownership_Clone: evpl_iovec_clone(&b, &a); break;
-            case ownership_Move: evpl_iovec_move(&c, &a); break;
-            case ownership_Slice: evpl_iovec_move_segment(&c, &a, s->offset, s->length); break;
-            case ownership_ReleaseA: evpl_iovec_release(evpl, &a); break;
-            case ownership_ReleaseB: evpl_iovec_release(evpl, &b); break;
-            case ownership_ReleaseC: evpl_iovec_release(evpl, &c); break;
+            case ownership_Clone: evpl_iovec_clone(&b, owned(&a)); break;
+            case ownership_Move: evpl_iovec_move(&c, owned(&a)); break;
+            case ownership_Slice: evpl_iovec_move_segment(&c, owned(&a), s->offset, s->length); break;
+            case ownership_ReleaseA: evpl_iovec_release(evpl, owned(&a)); break;
+            case ownership_ReleaseB: evpl_iovec_release(evpl, owned(&b)); break;
+            case ownership_ReleaseC: evpl_iovec_release(evpl, owned(&c)); break;
             case ownership_Request:
                 request = calloc(1, sizeof(*request));
                 evpl_test_abort_if(!request, "allocate holder failed");
-                evpl_iovec_move(&request->iov, &a);
+                evpl_iovec_move(&request->iov, owned(&a));
                 request->chunk.iov            = &request->iov;
                 request->chunk.niov           = 1;
                 request->encoding.write_chunk = &request->chunk;
                 break;
             case ownership_Take: {
+                evpl_test_abort_if(!request, "take requires a live encoding holder");
                 struct evpl_iovec *iov;
                 int                niov;
                 evpl_rpc2_encoding_take_write_chunk(&request->encoding, &iov, &niov);
                 evpl_test_abort_if(niov != 1 || iov != &request->iov || request->chunk.niov,
                                    "write chunk ownership not transferred");
-                evpl_iovec_move(&a, iov);
+                evpl_iovec_move(&a, owned(iov));
                 break;
             }
             case ownership_TakeEmpty: {
+                evpl_test_abort_if(!request, "empty take requires a live encoding holder");
                 int niov = -1;
                 evpl_rpc2_encoding_take_write_chunk(&request->encoding, NULL, &niov);
                 evpl_test_abort_if(niov, "write chunk transferred twice");
@@ -117,8 +126,9 @@ main(void)
                 break;
             }
             case ownership_Destroy:
+                evpl_test_abort_if(!request, "destroy requires a live encoding holder");
                 if (request->chunk.niov) {
-                    evpl_iovec_release(evpl, &request->iov);
+                    evpl_iovec_release(evpl, owned(&request->iov));
                 }
                 free(request);
                 request = NULL;
@@ -138,22 +148,23 @@ main(void)
             check_view(&c, s->offset, s->length, s->refs, allocator_refs);
         }
         if (s->r) {
+            evpl_test_abort_if(!request, "model expected a live encoding holder");
             check_view(&request->iov, 0, 64, s->refs, allocator_refs);
         }
         previous = s;
     }
     if (previous->a) {
-        evpl_iovec_release(evpl, &a);
+        evpl_iovec_release(evpl, owned(&a));
     }
     if (previous->b) {
-        evpl_iovec_release(evpl, &b);
+        evpl_iovec_release(evpl, owned(&b));
     }
     if (previous->c) {
-        evpl_iovec_release(evpl, &c);
+        evpl_iovec_release(evpl, owned(&c));
     }
     if (request) {
         if (request->chunk.niov) {
-            evpl_iovec_release(evpl, &request->iov);
+            evpl_iovec_release(evpl, owned(&request->iov));
         }
         free(request);
     }
