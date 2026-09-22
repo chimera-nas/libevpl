@@ -21,6 +21,7 @@ an operation entirely and leave a smaller suite that still looks green; an op
 the model declares but no program exercises fails generation instead.
 """
 
+import collections
 import json
 import sys
 
@@ -63,15 +64,15 @@ OPS = [
     "OpBlockWriteZeroesAll",
     "OpBlockDiscard",
     "OpQuiesce",
+    "OpProgress",
 ]
 
 TIMER_KINDS = ["TOneshot", "TPeriodic", "TRearm"]
 DELAYS = ["DFast", "DSlow"]
 BUDGETS = ["QShort", "QLong"]
-SIZES = ["SzTiny", "SzSmall", "SzMedium", "SzLarge", "SzUdMtu"]
+SIZES = ["SzTiny", "SzSmall", "SzMedium", "SzLarge", "SzLimit"]
 DRAINS = ["DrainRecv", "DrainRecvV", "DrainPeek", "DrainPeekV"]
-TRANSPORTS = ["TStreamInproc", "TDatagramInproc", "TStreamTcp", "TStreamUnix",
-              "TDatagramUdp", "TDatagramRdmaUd"]
+TRANSPORTS = ["TStream", "TMessage", "TDatagram"]
 SENDS = ["SendBuf", "SendV", "SendVTakeRef", "SendToEp", "SendToEpV",
          "SendReserveCommit", "SendGlobal"]
 SEGS = ["BSeg1", "BSeg4", "BSeg16"]
@@ -84,9 +85,6 @@ MULTS = ["MExactly", "MAtLeast"]
 # OpReset is the program delimiter, not something the driver runs, so it is
 # excluded from the coverage requirement below along with nothing else: every
 # other op must be reached by some program.
-# SendToEp/SendToEpV are declared by the model but deliberately not generated
-# (see SendMode in core.qnt), so send-mode coverage is not required the way op
-# coverage is.
 COVERAGE_EXEMPT = {"OpReset"}
 
 
@@ -169,6 +167,7 @@ def read_step(state):
             index_of(SEGS, tag_of(cur["segs"]), "segment class"),
             itf_int(cur["pattern"]),
             itf_int(cur["atMs"]),
+            itf_int(cur["length"]), itf_int(cur["maxDatagram"]), int(cur["nativePoll"]),
             tuple(read_expects(state)),
             tuple(read_orders(state)))
 
@@ -177,9 +176,8 @@ def collect(paths):
     """Split the traces into programs, de-duplicated structurally.
 
     A program is everything between one OpReset and the next.  Trailing steps
-    after the last reset are kept: the model forces a long quiesce as the last
-    op of every program, so a truncated tail is still a program that ends
-    discharged.
+    after the last reset are kept only when they end at a quiesce;
+    truncated tails with unchecked obligations are discarded.
     """
     seen, programs = set(), []
 
@@ -200,13 +198,66 @@ def collect(paths):
             else:
                 current.append(step)
 
-        if current:
+        if current and current[-1][0] == "OpQuiesce":
             key = tuple(current)
             if key not in seen:
                 seen.add(key)
                 programs.append(current)
 
     return programs
+
+
+# Witnesses describe relationships between API operations, not implementation
+# branches. They are checked both at generation and after actual replay.
+WITNESSES = ["send_burst", "bidirectional", "send_progress_send",
+             "finish_pending", "parallel_block", "cross_queue_read",
+             "read_known_data", "queue_reopen", "connection_reuse"]
+
+
+def witnesses(program):
+    reached = set()
+    sends, progressed, queues = {}, False, set()
+    writes, opened, connected = {}, set(), set()
+    for step in program:
+        op, conn, side, q, region, pattern = step[0], step[6], step[7], step[12], step[13], step[15]
+        if op == 'OpQuiesce':
+            sends, progressed, queues = {}, False, set()
+        elif op == 'OpProgress' and sends:
+            progressed = True
+        elif op == 'OpSend':
+            key = (conn, side)
+            if sends.get(key, 0):
+                reached.add('send_burst')
+            if sends.get((conn, 1 - side), 0):
+                reached.add('bidirectional')
+            if progressed:
+                reached.add('send_progress_send')
+            sends[key] = sends.get(key, 0) + 1
+        elif op == 'OpFinish' and sends.get((conn, side), 0):
+            reached.add('finish_pending')
+        elif op == 'OpOpenQueue':
+            if q in opened:
+                reached.add('queue_reopen')
+            opened.add(q)
+        elif op == 'OpConnect':
+            if conn in connected:
+                reached.add('connection_reuse')
+            connected.add(conn)
+        if op.startswith('OpBlock'):
+            queues.add(q)
+            if len(queues) > 1:
+                reached.add('parallel_block')
+            if op in ('OpBlockWrite', 'OpBlockWriteSync', 'OpBlockWriteZeroes'):
+                writes[region] = q
+            elif op == 'OpBlockWriteZeroesAll':
+                writes = {r: q for r in range(4)}
+            elif op == 'OpBlockDiscard':
+                writes.pop(region, None)
+            elif op == 'OpBlockRead' and pattern >= 0:
+                reached.add('read_known_data')
+                if region in writes and writes[region] != q:
+                    reached.add('cross_queue_read')
+    return sum(1 << WITNESSES.index(name) for name in reached)
 
 
 def emit_enum(out, name, prefix, tags):
@@ -251,15 +302,22 @@ def main():
     for prog in programs:
         first_step = len(steps)
         for (op_tag, op, slot, tk, delay, budget, conn, side, transport, size,
-             send, drain, queue, region, segs, pattern, at_ms,
+             send, drain, queue, region, segs, pattern, at_ms, length, limit, poll,
              exps, ords) in prog:
             reached.add(op_tag)
             ef, ec = intern(expect_rows, expect_index, exps)
             of, oc = intern(order_rows, order_index, ords)
             steps.append((op, slot, tk, delay, budget, conn, side, transport,
                           size, send, drain, queue, region, segs, pattern,
-                          at_ms, ef, ec, of, oc))
-        prog_rows.append((first_step, len(steps) - first_step))
+                          at_ms, length, limit, poll, ef, ec, of, oc))
+        prog_rows.append((first_step, len(steps) - first_step, witnesses(prog)))
+
+    observed = collections.Counter(name for _, _, mask in prog_rows
+                                   for i, name in enumerate(WITNESSES) if mask & (1 << i))
+    missing_witnesses = set(WITNESSES) - observed.keys()
+    if missing_witnesses:
+        raise TagError('No generated witness for: ' + ', '.join(sorted(missing_witnesses)))
+    print('Behavior witnesses (program counts): ' + json.dumps(observed, sort_keys=True))
 
     missing = sorted(set(OPS) - COVERAGE_EXEMPT - reached)
     if missing:
@@ -339,7 +397,7 @@ def main():
     o.append("    uint8_t  budget;      /* OpQuiesce only, for reporting  */")
     o.append("    uint8_t  conn;        /* transport ops only */")
     o.append("    uint8_t  side;        /* transport ops only */")
-    o.append("    /* Which in-process transport this program runs over; the")
+    o.append("    /* Which transport contract this program requires; the")
     o.append("     * same on every step of a program. */")
     o.append("    uint8_t  transport;")
     o.append("    uint8_t  size;        /* OpSend only    */")
@@ -357,6 +415,8 @@ def main():
     o.append("     * to this as an ABSOLUTE deadline, so real and model time")
     o.append("     * cannot drift apart cumulatively over a program. */")
     o.append("    uint32_t at_ms;")
+    o.append("    uint32_t length, max_datagram;")
+    o.append("    uint8_t native_poll;")
     o.append("    uint16_t expect_first;")
     o.append("    uint16_t expect_count;")
     o.append("    uint16_t order_first;")
@@ -367,6 +427,7 @@ def main():
     o.append("struct core_program {")
     o.append("    uint16_t first_step;")
     o.append("    uint16_t nsteps;")
+    o.append("    uint32_t witnesses;")
     o.append("};")
     o.append("")
 
@@ -388,24 +449,28 @@ def main():
 
     o.append("static const struct core_step core_steps[] = {")
     for (op, slot, tk, delay, budget, conn, side, transport, size, send, drain,
-         queue, region, segs, pattern, at_ms, ef, ec, of, oc) in steps:
+         queue, region, segs, pattern, at_ms, length, limit, poll, ef, ec, of, oc) in steps:
         o.append("    { %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, "
-                 "%d, %d, %d, %d, %d, %d, %d, %d, %d },"
+                 "%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d },"
                  % (op, slot, tk, delay, budget, conn, side, transport, size,
                     send, drain, queue, region, segs, pattern, at_ms,
-                    ef, ec, of, oc))
+                    length, limit, poll, ef, ec, of, oc))
     o.append("};")
     o.append("")
 
     o.append("static const struct core_program core_programs[] = {")
-    for first, n in prog_rows:
-        o.append("    { %d, %d }," % (first, n))
+    for first, n, mask in prog_rows:
+        o.append("    { %d, %d, %d }," % (first, n, mask))
     o.append("};")
     o.append("")
     o.append("#define CORE_NUM_PROGRAMS "
              "(sizeof(core_programs) / sizeof(core_programs[0]))")
     o.append("")
 
+    o.append("#define CORE_NUM_WITNESSES %d" % len(WITNESSES))
+    o.append("static const char *core_witness_names[] = {")
+    o.extend('    "' + name + '",' for name in WITNESSES)
+    o.append("};")
     with open(out_path, "w") as f:
         f.write("\n".join(o))
 

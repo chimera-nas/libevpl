@@ -4,7 +4,7 @@
 # Run the already-built Coverage binaries in the same container image, inside
 # a KVM guest whose kernel supplies Soft-RoCE. No host RDMA modules are needed.
 set -euo pipefail
-image=${1:?usage: run_rdma_vm.sh CONTAINER_IMAGE}
+image=${1:?usage: run_mbt_vm.sh CONTAINER_IMAGE}
 root=$PWD
 out=$root/coverage-output
 vm=$(mktemp -d)
@@ -18,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$out"
-test -c /dev/kvm || { echo 'KVM is required for the RDMA coverage lane' >&2; exit 1; }
+test -c /dev/kvm || { echo 'KVM is required for the hardware coverage lane' >&2; exit 1; }
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
 sudo chmod a+rw /dev/kvm
@@ -40,10 +40,16 @@ packages:
   - ibverbs-providers
   - ibverbs-utils
   - rdmacm-utils
+  - pciutils
+write_files:
+  - path: /etc/default/grub.d/99-iommu.cfg
+    content: |
+      GRUB_CMDLINE_LINUX="intel_iommu=on"
 runcmd:
   - [systemctl, enable, --now, docker]
+  - [update-grub]
 CLOUD
-printf 'instance-id: evpl-rdma\nlocal-hostname: evpl-rdma\n' > "$vm/meta-data"
+printf 'instance-id: evpl-mbt\nlocal-hostname: evpl-mbt\n' > "$vm/meta-data"
 cloud-localds "$vm/seed.img" "$vm/user-data" "$vm/meta-data"
 base=https://cloud-images.ubuntu.com/noble/current
 curl --fail --location --retry 3 "$base/SHA256SUMS" -o "$vm/SHA256SUMS"
@@ -53,12 +59,20 @@ qemu-img resize "$vm/noble-server-cloudimg-amd64.img" 24G
 # QEMU accesses shared files as the runner user, including profiles written by
 # root in the build container. Preserve that ownership across guest writes.
 sudo chown -R "$(id -u):$(id -g)" coverage-build coverage-output
-qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m 6144 -nographic \
+# Only disposable test images are exposed as NVMe; the root disk stays virtio.
+qemu-img create -f raw "$vm/nvme.img" 64M
+qemu-img create -f raw "$vm/kernel-nvme.img" 64M
+qemu-system-x86_64 -enable-kvm -machine q35,kernel_irqchip=split -cpu host -smp 4 -m 6144 -nographic \
+    -device intel-iommu,intremap=on,caching-mode=on \
+    -drive "file=$vm/nvme.img,if=none,id=nvme,format=raw" \
+    -device nvme,drive=nvme,serial=EVPL_MBT_NVME,addr=04.0 \
+    -drive "file=$vm/kernel-nvme.img,if=none,id=kernel_nvme,format=raw" \
+    -device nvme,drive=kernel_nvme,serial=EVPL_MBT_KERNEL,addr=05.0 \
     -drive "file=$vm/noble-server-cloudimg-amd64.img,if=virtio,format=qcow2" \
     -drive "file=$vm/seed.img,if=virtio,format=raw" \
     -netdev user,id=net,hostfwd=tcp:127.0.0.1:2222-:22 -device virtio-net-pci,netdev=net \
     -virtfs "local,path=$root,mount_tag=workspace,security_model=none,id=workspace" \
-    > "$out/rdma-vm-console.log" 2>&1 &
+    > "$out/mbt-vm-console.log" 2>&1 &
 qemu_pid=$!
 ssh_vm() {
     ssh -i "$vm/key" -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -107,9 +121,24 @@ sleep 1
 timeout 30 rping -c -a 192.0.2.1 -p 7471 -C 8 -v
 mkdir -p /workspace
 mount -t 9p -o trans=virtio,version=9p2000.L workspace /workspace
+# Bind only the emulator at the address assigned above. Require a real vIOMMU
+# group; no no-IOMMU mode or ACS override is used.
+# Resolve controller identities by PCI address, not probe order.
+test "$(cat /sys/bus/pci/devices/0000:00:04.0/nvme/nvme*/serial | xargs)" = EVPL_MBT_NVME
+test "$(cat /sys/bus/pci/devices/0000:00:05.0/nvme/nvme*/serial | xargs)" = EVPL_MBT_KERNEL
+kernel_ns=$(basename /sys/bus/pci/devices/0000:00:05.0/nvme/nvme*/nvme*n1)
+test -b "/dev/$kernel_ns"
+printf '%s\n' "/dev/$kernel_ns" > /workspace/coverage-output/kernel-nvme-device
+test -d /sys/bus/pci/devices/0000:00:04.0/iommu_group
+modprobe vfio-pci
+echo vfio-pci > /sys/bus/pci/devices/0000:00:04.0/driver_override
+echo 0000:00:04.0 > /sys/bus/pci/devices/0000:00:04.0/driver/unbind
+echo 0000:00:04.0 > /sys/bus/pci/drivers_probe
+lspci -nnk -s 00:04.0
+test "$(basename "$(readlink /sys/bus/pci/devices/0000:00:04.0/driver)")" = vfio-pci
 GUEST
 # Reuse the exact userspace and executable build, not a second compilation.
 docker save "$image" | ssh_vm sudo docker load
 ssh_vm sudo docker run --rm --privileged --network=host --ulimit memlock=-1:-1 \
     -e FI_PROVIDER=tcp -v /workspace:/workspace -v /workspace/coverage-build:/build -w /workspace \
-    "$image" bash scripts/run_rdma_tests.sh
+    "$image" bash scripts/run_guest_tests.sh

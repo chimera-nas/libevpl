@@ -14,6 +14,8 @@ set_property(CACHE LIBFABRIC_ENABLED PROPERTY STRINGS AUTO ON OFF)
 set(SPDK_ENABLED "" CACHE STRING "Enable SPDK support (empty=autodetect, YES=required, NO=disabled)")
 option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
+option(EVPL_STORAGE_TESTS "Register guest storage model tests" OFF)
+
 project(libevpl LANGUAGES C)
 option(EVPL_TLS_MEMORY_BIO "Run TLS over the portable byte-stream backend" ${WIN32})
 set(CMAKE_C_STANDARD 11)

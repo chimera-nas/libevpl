@@ -7,7 +7,7 @@
  *
  * The RPC2 models (src/rpc2/tests/quint) enumerate independent cases: each
  * trace state is one defective message and the verdict on it, and the trace is
- * only a sampling device.  That works because an RPC exchange is memoryless.
+ * only a sampling device.  Those suites sample message conformance, not full RPC session behavior.
  *
  * Nothing about the core API is memoryless.  A one-shot fires once and then
  * must not fire again; a deferral armed twice runs once; a doorbell retired
@@ -93,12 +93,6 @@ module evpl_core {
     /// this read return" answerable without modelling a byte map.
     pure val NUM_REGION = 4
     pure val REGION_SLOTS = 0.to(NUM_REGION - 1)
-
-    /// Ops per program, not counting the OpReset that opens it.  Short on
-    /// purpose: a failure at step 380 of a 400-step program is not
-    /// debuggable, so this buys coverage with many short programs rather than
-    /// a few long ones.
-    pure val PROGRAM_LEN = 12
 
     // ------------------------------------------------------------------
     // Model time
@@ -218,7 +212,7 @@ module evpl_core {
          * behaviour to state. */
         | OpListen
         | OpStopListen
-        /* Bind both ends of a UDP pair.  One op rather than two because an
+        /* Bind both ends of a connectionless pair.  One op rather than two because an
          * unconnected bind has no peer and no handshake: the pair exists as
          * soon as both ends do, and nothing is notified about it.  Modelling
          * each bind separately would add a state with no observable
@@ -298,6 +292,7 @@ module evpl_core {
         | OpBlockDiscard
 
         /* --- the loop -------------------------------------------------- */
+        | OpProgress
         | OpQuiesce
 
     /// A one-shot fires once; a periodic keeps firing until removed; a
@@ -316,16 +311,16 @@ module evpl_core {
     /// paths have to gather and scatter rather than hand over a single iovec.
     ///
     /// The driver maps these to 1, 100, 8192 and 131072 bytes, plus
-    /// a separate 4096-byte UD MTU class.
-    type SizeCls = | SzTiny | SzSmall | SzMedium | SzLarge | SzUdMtu
+    /// a boundary class supplied by the datagram capability profile.
+    type SizeCls = | SzTiny | SzSmall | SzMedium | SzLarge | SzLimit
 
-    pure def sizeBytes(s: SizeCls): int =
+    def sizeBytes(s: SizeCls): int =
         match s {
             | SzTiny => 1
             | SzSmall => 100
             | SzMedium => 8192
             | SzLarge => 131072
-            | SzUdMtu => 4096
+            | SzLimit => maxDatagram
         }
 
     /// How the sending end hands its bytes over.  All five must put the same
@@ -342,19 +337,7 @@ module evpl_core {
         | SendBuf        /* evpl_send: the library bounces the bytes      */
         | SendV          /* evpl_sendv, caller keeps its references       */
         | SendVTakeRef   /* evpl_sendv, references handed over            */
-        /* Addressed by endpoint rather than by the bind's peer.  Declared
-         * but NOT generated: evpl_sendtoep and evpl_sendtoepv resolve the
-         * endpoint for a +1 reference and hand it to evpl_sendto/evpl_sendtov,
-         * which treat the address as borrowed and keep the pointer in the
-         * queued dgram until the flush -- so nobody releases it and every call
-         * leaks a reference.  Releasing it in the wrapper is not the fix: on
-         * an INET endpoint the cache is re-resolved on a timer and the old
-         * address freed, so the queued dgram would be left pointing at freed
-         * memory (confirmed -- it turns the UDP tests into use-after-free).
-         * The fix is for the send path to take a reference of its own and
-         * every transport to release it on completion, which is a change
-         * across all of them; until then generating these would only mean
-         * choosing which failure to have. */
+        /* Address the peer explicitly on a connectionless endpoint. */
         | SendToEp
         | SendToEpV
         /* evpl_iovec_reserve + evpl_iovec_commit: take space, fill it, then
@@ -391,7 +374,7 @@ module evpl_core {
     /// does not exist yet.
     type ConnSt = | CFree | CConnecting | CUp | CClosing
 
-    /// Which in-process transport a program runs over.  Chosen per program
+    /// Which transport contract a program requires.  Chosen per program
     /// rather than per connection, because it is fixed at listen and connect
     /// and the two ends must agree.
     ///
@@ -400,27 +383,15 @@ module evpl_core {
     /// deliver what was sent in any number of pieces, so only the byte total
     /// is owed; a datagram owes exactly one delivery per send, which is the
     /// whole point of it and the only thing that distinguishes the two.
-    type TransportKind =
-        | TStreamInproc
-        | TDatagramInproc
-        | TStreamTcp
-        | TStreamUnix
-        | TDatagramUdp
-        | TDatagramRdmaUd
+    type TransportKind = | TStream | TMessage | TDatagram
 
-    /// What the transport owes: bytes, or whole messages.
-    pure def isDatagram(k: TransportKind): bool =
-        k == TDatagramInproc or k == TDatagramUdp or k == TDatagramRdmaUd
+    pure def isDatagram(k: TransportKind): bool = k != TStream
+    pure def isConnected(k: TransportKind): bool = k != TDatagram
 
-    /// Whether it has a connection at all.  UDP does not: it is bind-only --
-    /// no listen, no connect, no CONNECTED -- so it needs a lifecycle of its
-    /// own rather than a variation on the connected one.
-    pure def isConnected(k: TransportKind): bool = k != TDatagramUdp and k != TDatagramRdmaUd
-
-    /// Addressed by a filesystem path rather than a port or a private name.
-    /// The driver has to supply one; libevpl owns it from there, including
-    /// removing it at teardown and stepping over a stale predecessor.
-    pure def isLocal(k: TransportKind): bool = k == TStreamUnix
+    // Capabilities are supplied by generation profiles and checked by adapters.
+    // They constrain legal input, never weaken an expected result.
+    var maxDatagram: int
+    var nativePoll: bool
 
     /// How many iovecs a block request is scattered across.  One is the
     /// contiguous case; the others make the backend walk a list, and 16 is
@@ -464,16 +435,19 @@ module evpl_core {
         /* Model time at the END of this step.  Only a quiesce advances it;
          * the driver uses it as the absolute deadline to run that quiesce
          * to. */
-        atMs: int
+        atMs: int,
+        length: int,
+        maxDatagram: int,
+        nativePoll: bool
     }
 
     pure val NOP_STEP: Step = {
         op: OpReset, slot: 0, timerKind: TOneshot, delay: DFast,
-        budget: QShort, conn: 0, side: SIDE_CLIENT, transport: TStreamInproc,
+        budget: QShort, conn: 0, side: SIDE_CLIENT, transport: TStream,
         size: SzTiny,
         send: SendBuf, drain: DrainRecv,
         queue: 0, region: 0, segs: BSeg1, pattern: CONTENT_UNKNOWN,
-        atMs: 0
+        atMs: 0, length: 0, maxDatagram: 8192, nativePoll: false
     }
 
     // ------------------------------------------------------------------
@@ -578,30 +552,6 @@ module evpl_core {
     /// Rung and awaiting its callback; the count is not tracked because a
     /// doorbell's obligation is "at least one", never a number.
     var doorbellRung: int -> bool
-
-    /// Which prologue this program opens with; see `step`.
-    type Shape =
-        | ShapeMixed
-        | ShapeTransport
-        /* As ShapeTransport, but asks for send notifications before sending.
-         * A separate shape rather than a coin flip inside one, so that both
-         * "nothing is notified until asked" and "everything is once asked"
-         * are generated rather than one crowding out the other. */
-        | ShapeTransportNotify
-        /* UDP: two unconnected binds sending to each other by endpoint.  A
-         * shape of its own because none of listen, connect, close or finish
-         * applies to it. */
-        | ShapeUdp
-        | ShapeTimers
-        /* Opens a queue and writes a region, then reads it back in a later
-         * window.  A shape for the same reason ShapeTransport is one: the
-         * read-back property needs a write, a quiesce and a read in that
-         * order on the same region, and a uniform walk over thirty-odd
-         * enabled actions inside a twelve-op program draws that sequence
-         * about as often as it draws a live connection. */
-        | ShapeBlock
-
-    var shape: Shape
 
     /// spin_ns as the driver configures it, in milliseconds.  The loop leaves
     /// poll mode once this much time has passed with no activity, so with
@@ -759,12 +709,9 @@ module evpl_core {
     /// has asked to be told.  An end that never asked is owed nothing, so
     /// rule 2 turns a notification it did not ask for into a failure.
     ///
-    /// Whether it asked is read at the point the queue is FLUSHED, not at the
-    /// point of the send -- and since no op runs the loop, everything queued
-    /// between two quiesces is flushed together, after all of them.  So the
-    /// order of a send and a request inside one window does not matter, which
-    /// is why this takes the flag as it stands at the end of the window
-    /// rather than as it stood at each send.
+    /// Notification opt-in is read when queued sends complete. Progress only
+    /// runs unnotified connected endpoints when they have no pending sends,
+    /// so opt-in cannot retroactively claim already completed bytes.
     pure def sentExpect(e: int, notified: bool, bytes: int): Set[Expect] =
         if (not(notified) or bytes == 0) Set()
         else Set({ kind: EvSent, slot: e, mult: MExactly, count: bytes })
@@ -810,8 +757,9 @@ module evpl_core {
     // the heap twice, which is a bug in the caller and not in libevpl.
     // ------------------------------------------------------------------
 
-    action doReset(sh: Shape, k: TransportKind): bool = all {
-        shape' = sh,
+    action doReset(k: TransportKind, limit: int, poll: bool): bool = all {
+        maxDatagram' = limit,
+        nativePoll' = poll,
         current' = NOP_STEP.with("op", OpReset),
         expects' = Set(),
         orders' = Set(),
@@ -892,12 +840,14 @@ module evpl_core {
     /// the block state themselves, can reuse it without assigning those vars
     /// twice.  Every other op wants `emit`.
     action emitCore(s: Step): bool = all {
-        current' = s.with("atMs", elapsedMs).with("transport", transport),
+        current' = s.with("atMs", elapsedMs).with("transport", transport)
+                    .with("maxDatagram", maxDatagram).with("nativePoll", nativePoll),
         expects' = Set(),
         orders' = Set(),
         programStep' = programStep + 1,
         elapsedMs' = elapsedMs,
-        shape' = shape,
+        maxDatagram' = maxDatagram,
+        nativePoll' = nativePoll,
         transport' = transport,
     }
 
@@ -1162,11 +1112,8 @@ module evpl_core {
     // ------------------------------------------------------------------
     // Transport ops
     //
-    // Everything here is over the in-process transport.  It is addressed by a
-    // name private to the process and needs no kernel transport at all, which
-    // is what makes a whole connection lifecycle -- both ends of it --
-    // reachable from a single evpl and a single thread, with no port to
-    // collide on and nothing left behind by a crash.
+    // The adapter chooses concrete endpoints and protocols. These actions
+    // describe only connection lifecycle and byte/message delivery obligations.
     // ------------------------------------------------------------------
 
     action listen = all {
@@ -1242,7 +1189,8 @@ module evpl_core {
         connSt' = connSt.set(c, CConnecting),
         listening' = listening,
         pendingBytes' = pendingBytes,
-        sentNotify' = sentNotify,
+        sentNotify' = sentNotify.set(sideSlot(c, SIDE_CLIENT), false)
+                                .set(sideSlot(c, SIDE_SERVER), false),
         pendingSent' = pendingSent,
         pendingMsgs' = pendingMsgs,
         keepTimers,
@@ -1252,8 +1200,7 @@ module evpl_core {
         keepPolls,
     }
 
-    /// Ask to be told what this end sends.  Sends made before it are not
-    /// notified; sends after it are.
+    /// Ask for notifications on sends that complete after this operation.
     action requestSendNotify(c: int, side: int): bool = all {
         isConnected(transport),
         connSt.get(c) == CUp,
@@ -1290,19 +1237,16 @@ module evpl_core {
          * max_datagram_size; the driver leaves that at its default, which the
          * largest payload class exceeds. */
         isDatagram(transport) implies sz != SzLarge,
-        // UD does not fragment: its payload must fit the configured 4096-byte MTU.
-        transport == TDatagramRdmaUd implies sizeBytes(sz) <= 4096,
-        /* An unconnected bind has no peer to send to, so it must name one;
-         * a connected one has no endpoint the model tracks, and the
-         * endpoint-addressed calls leak on every transport that does not
-         * release the address they hand over -- which today is all of them
-         * bar UDP.  So the two forms are exactly complementary. */
+        // A connectionless payload must fit the adapter capability profile.
+        not(isConnected(transport)) implies sizeBytes(sz) <= maxDatagram,
+        /* Connectionless sends name their peer; connected sends use the
+         * peer established by connect. */
         isConnected(transport) implies
             (mode != SendToEp and mode != SendToEpV),
         not(isConnected(transport)) implies
             (mode == SendToEp or mode == SendToEpV),
         emit(NOP_STEP.with("op", OpSend).with("conn", c).with("side", side)
-                 .with("size", sz).with("send", mode)),
+                 .with("size", sz).with("send", mode).with("length", sizeBytes(sz))),
         pendingBytes' = pendingBytes.set(sideSlot(c, peer(side)),
                                          pendingBytes.get(sideSlot(c, peer(side)))
                                              + sizeBytes(sz)),
@@ -1596,12 +1540,14 @@ module evpl_core {
 
         all {
             current' = NOP_STEP.with("op", OpQuiesce).with("budget", b)
-                           .with("atMs", windowEnd),
+                           .with("atMs", windowEnd).with("transport", transport)
+                           .with("maxDatagram", maxDatagram).with("nativePoll", nativePoll),
             expects' = exp,
             orders' = orderPairs(exp, timerKindOf, timerDueAt),
             programStep' = programStep + 1,
             elapsedMs' = windowEnd,
-            shape' = shape,
+            maxDatagram' = maxDatagram,
+            nativePoll' = nativePoll,
 
             /* A one-shot whose deadline was in this window has fired and is
              * gone; a periodic stays armed; one whose deadline is still ahead
@@ -1671,209 +1617,25 @@ module evpl_core {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Program generation
-    // ------------------------------------------------------------------
-
-    action pickOp = {
-        nondet ts = TIMER_SLOTS.oneOf()
-        nondet tk = Set(TOneshot, TPeriodic, TRearm).oneOf()
-        nondet td = Set(DFast, DSlow).oneOf()
-        nondet ds = DEFERRAL_SLOTS.oneOf()
-        nondet bs = DOORBELL_SLOTS.oneOf()
-        nondet b = Set(QShort, QLong).oneOf()
-        nondet cs = CONN_SLOTS.oneOf()
-        nondet sd = SIDES.oneOf()
-        nondet sz = Set(SzTiny, SzSmall, SzMedium, SzLarge).oneOf()
-        nondet dm = Set(DrainRecv, DrainRecvV, DrainPeek, DrainPeekV).oneOf()
-        /* SendToEp and SendToEpV are deliberately not generated; see
-         * SendMode.  They are declared because the model should say what the
-         * API offers, and excluded because exercising them leaks. */
-        nondet sm = Set(SendBuf, SendV, SendVTakeRef, SendReserveCommit,
-                        SendGlobal).oneOf()
-        nondet bq = BLOCK_QUEUE_SLOTS.oneOf()
-        nondet br = REGION_SLOTS.oneOf()
-        nondet bg = Set(BSeg1, BSeg4, BSeg16).oneOf()
-        any {
-            addTimer(ts, tk, td),
-            removeTimer(ts),
-            defer(ds, OpDefer, 1),
-            defer(ds, OpDeferTwice, 1),
-            defer(ds, OpDeferReentrant, 2),
-            addDoorbell(bs),
-            ringDoorbell(bs, OpRingDoorbell),
-            ringDoorbell(bs, OpRingDoorbellTwice),
-            removeDoorbell(bs),
-            removeDoorbellInCallback(bs),
-            bindPair(cs),
-            send(cs, sd, sz, SendToEp),
-            send(cs, sd, sz, SendToEpV),
-            requestSendNotify(cs, sd),
-            setLoopHooks,
-            clearLoopHooks,
-            removeDeferral(ds),
-            removeDeferralIdle(ds),
-            addPoll,
-            removePoll,
-            activity,
-            pollPin,
-            pollUnpin,
-            listen,
-            stopListen,
-            connect(cs, dm),
-            send(cs, sd, sz, sm),
-            close(cs, sd),
-            finish(cs, sd),
-            openQueue(bq),
-            closeQueue(bq),
-            blockRead(bq, br, bg),
-            blockWrite(bq, br, bg, OpBlockWrite),
-            blockWrite(bq, br, bg, OpBlockWriteSync),
-            blockWriteZeroes(bq, br),
-            blockWriteZeroesAll(bq),
-            blockDiscard(bq, br),
-            blockFlush(bq),
-            quiesce(b),
-        }
+    // Progress permits completions between API calls without assuming which
+    // subset completed. Obligations remain cumulative until quiesce. Restrict
+    // this action to I/O: coalescing deferrals and timers need their own
+    // observation transitions before they can safely interleave with progress.
+    action progress = all {
+        TIMER_SLOTS.forall(t => timerSt.get(t) != TArmed),
+        DEFERRAL_SLOTS.forall(d => deferralOwes.get(d) == 0),
+        DOORBELL_SLOTS.forall(d => not(doorbellRung.get(d))),
+        not(hooksInstalled), pollSt == PAbsent,
+        // Before opting in, the exact set of sends completed by partial
+        // progress is unobservable. Keep opt-in at an observed boundary.
+        isConnected(transport) implies END_SLOTS.forall(e =>
+            sentNotify.get(e) or pendingSent.get(e) == 0),
+        emit(NOP_STEP.with("op", OpProgress)),
+        keepTransport, keepTimers, keepDeferrals, keepDoorbells, keepHooks, keepPolls,
     }
 
-    /// Any legal send on the prologue's connection.
-    action sendAny = {
-        nondet sz = Set(SzTiny, SzSmall, SzMedium, SzLarge).oneOf()
-        nondet sd = SIDES.oneOf()
-        nondet sm = Set(SendBuf, SendV, SendVTakeRef, SendReserveCommit,
-                        SendGlobal).oneOf()
-        send(0, sd, sz, sm)
-    }
-
-    /// The UDP form: addressed by endpoint, because there is no connection.
-    action sendAnyEp = {
-        nondet sz = (if (transport == TDatagramRdmaUd)
-                        Set(SzTiny, SzSmall, SzUdMtu)
-                     else Set(SzTiny, SzSmall, SzMedium)).oneOf()
-        nondet sd = SIDES.oneOf()
-        nondet sm = Set(SendToEp, SendToEpV).oneOf()
-        send(0, sd, sz, sm)
-    }
-
-    action requestSendNotifyAny = {
-        nondet sd = SIDES.oneOf()
-        requestSendNotify(0, sd)
-    }
-
-    action connectAny = {
-        nondet d = Set(DrainRecv, DrainRecvV, DrainPeek, DrainPeekV).oneOf()
-        connect(0, d)
-    }
-
-    /// Fill region 0 on the prologue's queue, scattered any way the model
-    /// allows -- including across more segments than a backend is likely to
-    /// keep inline.
-    action blockWriteAny = {
-        nondet g = Set(BSeg1, BSeg4, BSeg16).oneOf()
-        nondet k = Set(OpBlockWrite, OpBlockWriteSync).oneOf()
-        blockWrite(0, 0, g, k)
-    }
-
-    /// And read it back.  The gather on the way out and the scatter on the
-    /// way in are chosen independently, since a backend has no business
-    /// requiring them to match.
-    action blockReadAny = {
-        nondet g = Set(BSeg1, BSeg4, BSeg16).oneOf()
-        blockRead(0, 0, g)
-    }
-
-    action resetUdp = doReset(ShapeUdp, TDatagramUdp)
-
-    // Separate traces preserve the existing UDP corpus and its 8 KiB payloads.
-    action initRdmaUd = doReset(ShapeUdp, TDatagramRdmaUd)
-    action stepRdmaUd = if (programStep >= PROGRAM_LEN) initRdmaUd else step
-
-    action resetAny = {
-        nondet sh = Set(ShapeMixed, ShapeTransport, ShapeTransportNotify,
-                        ShapeTimers, ShapeBlock).oneOf()
-        nondet k = Set(TStreamInproc, TDatagramInproc, TStreamTcp,
-                       TStreamUnix).oneOf()
-        doReset(if (sh == ShapeUdp) ShapeMixed else sh, k)
-    }
-
-    /// Arm one timer, any kind and delay the model allows.
-    action addTimerAny(s: int): bool = {
-        nondet k = Set(TOneshot, TPeriodic, TRearm).oneOf()
-        nondet d = Set(DFast, DSlow).oneOf()
-        addTimer(s, k, d)
-    }
-
-    /// Deterministic on purpose, where `step`'s resets are not: quint samples
-    /// a nondeterministic init on every scenario test, which turns each of
-    /// the runs below into ten thousand and the model's own test suite from a
-    /// tenth of a second into eleven.  Generation loses nothing by it -- only
-    /// the very first program of a trace is pinned, and every reset after it
-    /// still chooses.
-    action init = doReset(ShapeMixed, TStreamInproc)
-
-    /*
-     * Program shape.
-     *
-     * Half the programs open with a three-op prologue that leaves a live
-     * connection, because a uniform random walk over the op set almost never
-     * builds one: send, close and finish all need a connection that is up,
-     * which takes listen, connect and a quiesce to reach, and the odds of
-     * drawing that sequence out of seventeen enabled actions inside a
-     * twelve-op program are negligible.  The converter's op-coverage check
-     * fails generation outright when that happens, which is how this was
-     * found -- but the fix belongs here, in what the model generates, rather
-     * than in ever-longer traces.
-     *
-     * A third opens by arming three timers, for the same reason in the other
-     * direction: the timer set is a binary heap, and its sift-down only runs
-     * once the heap is deeper than a pair.  A uniform walk over twenty-five
-     * enabled actions arms three timers at once about as often as it builds a
-     * connection, which is to say almost never -- and unlike a missing op,
-     * a heap that never sifts does not fail generation, it just quietly stops
-     * being tested.  This is what the coverage report is for.
-     *
-     * The rest exercise the event-loop primitives with neither in the way, and
-     * can still reach any of it on their own.
-     *
-     * Every program ends with a long quiesce, so that none leaves an
-     * obligation for the next to inherit and every teardown runs from a
-     * settled loop.
-     */
-    /// The closing quiesce is only as long as it needs to be.  Every program
-    /// has one, so making it unconditionally long would put the suite's
-    /// wall-clock floor at one long window per program for the sake of the
-    /// minority that have a slow timer still outstanding.
-    action finalQuiesce =
-        if (TIMER_SLOTS.exists(s => timerSt.get(s) == TArmed and
-                                    timerDueAt.get(s) >= elapsedMs + budgetMs(QShort)))
-            quiesce(QLong)
-        else quiesce(QShort)
-
-    val isTransportShape = shape == ShapeTransport or shape == ShapeTransportNotify
-
-    action step =
-        if (programStep >= PROGRAM_LEN) any { resetAny, resetUdp }
-        else if (programStep == PROGRAM_LEN - 1) finalQuiesce
-        else if (isTransportShape and programStep == 0) listen
-        else if (isTransportShape and programStep == 1) connectAny
-        else if (isTransportShape and programStep == 2) quiesce(QShort)
-        else if (shape == ShapeTransportNotify and programStep == 3)
-            requestSendNotifyAny
-        else if (shape == ShapeTransportNotify and programStep == 4) sendAny
-        else if (shape == ShapeTransportNotify and programStep == 5) quiesce(QShort)
-        else if (shape == ShapeTransport and programStep == 3) sendAny
-        else if (shape == ShapeTransport and programStep == 4) quiesce(QShort)
-        else if (shape == ShapeUdp and programStep == 0) bindPair(0)
-        else if (shape == ShapeUdp and programStep == 1) sendAnyEp
-        else if (shape == ShapeUdp and programStep == 2) quiesce(QShort)
-        else if (shape == ShapeTimers and programStep < 3) addTimerAny(programStep)
-        else if (shape == ShapeBlock and programStep == 0) openQueue(0)
-        else if (shape == ShapeBlock and programStep == 1) blockWriteAny
-        else if (shape == ShapeBlock and programStep == 2) quiesce(QShort)
-        else if (shape == ShapeBlock and programStep == 3) blockReadAny
-        else if (shape == ShapeBlock and programStep == 4) quiesce(QShort)
-        else pickOp
+    action init = doReset(TStream, 8192, true)
+    action resetUdp = doReset(TDatagram, 8192, false)
 
     // ------------------------------------------------------------------
     // Invariants
@@ -1920,6 +1682,7 @@ module evpl_core {
         | OpBlockWriteZeroes => true
         | OpBlockWriteZeroesAll => true
         | OpBlockDiscard => true
+        | OpProgress => true
         | OpQuiesce => true
     }
 
@@ -2298,7 +2061,7 @@ module evpl_core {
     /// across two, both keep the total and both are failures.
     run datagramPreservesMessageBoundariesTest =
         init
-            .then(doReset(ShapeMixed, TDatagramInproc))
+            .then(doReset(TMessage, 8192, false))
             .then(listen)
             .then(connect(0, DrainRecv))
             .then(quiesce(QShort))
@@ -2327,14 +2090,14 @@ module evpl_core {
                 { kind: EvRecv, slot: sideSlot(0, SIDE_SERVER),
                   mult: MExactly, count: 1 + 100 + 8192 }))
 
-    /// UDP has no connection: both ends are bound and address each other by
+    /// A connectionless endpoint needs no handshake: both ends are bound and address each other by
     /// endpoint.  Nothing is notified about the pair coming up, which is what
     /// distinguishes this from connect -- and the message-boundary obligation
     /// is the same as any other datagram's.
-    run rdmaUdMtuTest =
-        initRdmaUd
+    run datagramLimitTest =
+        doReset(TDatagram, 4096, false)
             .then(bindPair(0))
-            .then(send(0, SIDE_CLIENT, SzUdMtu, SendToEp))
+            .then(send(0, SIDE_CLIENT, SzLimit, SendToEp))
             .then(quiesce(QShort))
             .expect(expects == Set(
                 { kind: EvRecv, slot: sideSlot(0, SIDE_SERVER), mult: MExactly, count: 4096 },
@@ -2422,4 +2185,15 @@ module evpl_core {
             .then(closeQueue(0))
             .then(quiesce(QShort))
             .expect(expects == Set())
+    run reusedConnectionStartsWithoutNotificationsTest =
+        init
+            .then(listen)
+            .then(connect(0, DrainRecv))
+            .then(quiesce(QShort))
+            .then(requestSendNotify(0, SIDE_CLIENT))
+            .then(close(0, SIDE_CLIENT))
+            .then(quiesce(QShort))
+            .then(connect(0, DrainRecv))
+            .expect(not(sentNotify.get(sideSlot(0, SIDE_CLIENT))))
+
 }

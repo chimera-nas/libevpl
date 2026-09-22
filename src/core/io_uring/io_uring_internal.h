@@ -104,6 +104,9 @@ struct evpl_io_uring_queue {
     struct io_uring_sqe          *pending_sqe;
 };
 
+void evpl_io_uring_init_recv_ring(
+    struct evpl_io_uring_context *ctx);
+
 static inline int
 evpl_io_uring_fill_recv_ring(
     struct evpl                  *evpl,

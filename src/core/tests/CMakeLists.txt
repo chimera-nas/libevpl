@@ -106,6 +106,7 @@ if(EVPL_CONFORMANCE_CASES_DIR OR (NOT WIN32 AND QUINT_EXECUTABLE AND PYTHON3_EXE
                 ${QUINT_EXECUTABLE} ${PYTHON3_EXECUTABLE}
                 ${CORE_QUINT_SRC_DIR} ${CORE_QUINT_WORK_DIR} ${CORE_CASES}
         DEPENDS ${CORE_QUINT_SRC_DIR}/core.qnt
+                ${CORE_QUINT_SRC_DIR}/core_generation.qnt
                 ${CORE_QUINT_SRC_DIR}/itf_to_core_cases.py
                 ${CORE_QUINT_SRC_DIR}/generate_core_cases.sh
         COMMENT "Generating core conformance programs from the Quint model"
@@ -179,26 +180,77 @@ endforeach()
 
 # This regression exercises POSIX descriptor readiness, unavailable with IOCP.
 if(NOT WIN32)
+    unit_test_all_mechs(core fd_reuse fd_reuse.c)
+    foreach(mech ${EVPL_MECHANISMS})
+        set_tests_properties(libevpl/core/fd_reuse_${mech} PROPERTIES TIMEOUT 10)
+    endforeach()
     unit_test_all_mechs(core close_ready close_ready.c)
     target_include_directories(core_close_ready PRIVATE ${LIBEVPL_SOURCE_DIR}/src/tests)
 endif()
 
 if(TARGET core_core_conformance)
+    foreach(mech ${EVPL_MECHANISMS})
+        unit_test_mbt_variant(core core_conformance_inproc_${mech}
+            core_core_conformance ${mech} TIMEOUT 120 ENVIRONMENT
+            EVPL_TEST_STREAM_PROTOCOL=STREAM_INPROC
+            EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        if(NOT WIN32)
+            unit_test_mbt_variant(core core_conformance_unix_${mech}
+                core_core_conformance ${mech} TIMEOUT 120 ENVIRONMENT
+                EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_UNIX
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        endif()
+    endforeach()
+    # The guest supplies unrestricted kernel I/O and a disposable NVMe device.
+    # Keep hardware-dependent registrations explicit on ordinary developer hosts.
+    if(EVPL_STORAGE_TESTS)
+        foreach(backend libaio io_uring vfio)
+            string(TOUPPER "${backend}" feature)
+            if(NOT HAVE_${feature})
+                message(FATAL_ERROR "Storage MBT requires ${backend}")
+            endif()
+            foreach(mech ${EVPL_MECHANISMS})
+                unit_test_mbt_variant(core core_conformance_${backend}_${mech}
+                    core_core_conformance ${mech} GUEST TIMEOUT 300 ENVIRONMENT
+                    EVPL_TEST_PORTABLE_ONLY=1 EVPL_TEST_BLOCK_PROTOCOL=${backend}
+                    EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+                set_property(TEST libevpl/core/core_conformance_${backend}_${mech}
+                    APPEND PROPERTY LABELS mbt_storage)
+            endforeach()
+        endforeach()
+    endif()
     if(HAVE_RDMACM AND EVPL_RDMA_TEST_IP)
         foreach(mech ${EVPL_MECHANISMS})
             unit_test_mbt_variant(core core_conformance_rdma_${mech}
                 core_core_conformance ${mech} RDMA TIMEOUT 300 ENVIRONMENT
-                CORE_TRACE=1 EVPL_TEST_STREAM_PROTOCOL=STREAM_RDMACM_RC
+                EVPL_TEST_PORTABLE_ONLY=1 EVPL_TEST_MAX_DATAGRAM=4096
+                EVPL_TEST_DATAGRAM_PROTOCOL=DATAGRAM_RDMACM_UD
+                EVPL_TEST_MESSAGE_PROTOCOL=DATAGRAM_RDMACM_RC
+                EVPL_TEST_STREAM_PROTOCOL=STREAM_RDMACM_RC
                 EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
         endforeach()
     endif()
     if(HAVE_LIBFABRIC)
+        # Provider policy belongs to the adapter. Native TCP RDM in libfabric
+        # 2.1 loops on simultaneous connects; 2.x also leaks rejection data.
+        # RxM runs the same programs with assertions and sanitizers intact.
+        set(EVPL_MBT_LIBFABRIC_RDM_PROVIDER "tcp;ofi_rxm" CACHE STRING
+            "Provider for RDM model replay (tcp selects native TCP RDM)")
+        string(REPLACE ";" "\\;" _rdm_provider "${EVPL_MBT_LIBFABRIC_RDM_PROVIDER}")
         foreach(mech ${EVPL_MECHANISMS})
             unit_test_mbt_variant(core core_conformance_libfabric_${mech}
                 core_core_conformance ${mech} TIMEOUT 120 ENVIRONMENT
-                FI_PROVIDER=tcp EVPL_TEST_STREAM_PROTOCOL=STREAM_LIBFABRIC_MSG
+                EVPL_TEST_PORTABLE_ONLY=1 FI_PROVIDER=tcp
+                EVPL_TEST_MESSAGE_PROTOCOL=DATAGRAM_LIBFABRIC_MSG
+                EVPL_TEST_STREAM_PROTOCOL=STREAM_LIBFABRIC_MSG
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+            unit_test_mbt_variant(core core_conformance_libfabric_rdm_${mech}
+                core_core_conformance ${mech} TIMEOUT 120 ENVIRONMENT
+                EVPL_TEST_PORTABLE_ONLY=1
                 EVPL_TEST_DATAGRAM_PROTOCOL=DATAGRAM_LIBFABRIC_RDM
                 EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+            set_property(TEST libevpl/core/core_conformance_libfabric_rdm_${mech}
+                APPEND PROPERTY ENVIRONMENT "FI_PROVIDER=${_rdm_provider}")
         endforeach()
     endif()
     if(HAVE_SPDK)
@@ -207,14 +259,22 @@ if(TARGET core_core_conformance)
         # real-time HTTP/RPC models instead of sleeping on virtual deadlines.
         unit_test_mbt_variant(core core_conformance_spdk core_core_conformance
             spdk TIMEOUT 120 ENVIRONMENT ASAN_OPTIONS=detect_leaks=1
+            EVPL_TEST_PORTABLE_ONLY=1
             EVPL_TEST_BLOCK_PROTOCOL=spdk EVPL_TEST_STREAM_PROTOCOL=STREAM_SPDK_TCP
             EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
         if(HAVE_LIBFABRIC)
             unit_test_mbt_variant(core core_conformance_libfabric_spdk core_core_conformance
                 spdk TIMEOUT 120 ENVIRONMENT ASAN_OPTIONS=detect_leaks=1 FI_PROVIDER=tcp
+                EVPL_TEST_PORTABLE_ONLY=1 EVPL_TEST_MESSAGE_PROTOCOL=DATAGRAM_LIBFABRIC_MSG
                 EVPL_TEST_BLOCK_PROTOCOL=spdk EVPL_TEST_STREAM_PROTOCOL=STREAM_LIBFABRIC_MSG
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+            unit_test_mbt_variant(core core_conformance_libfabric_rdm_spdk core_core_conformance
+                spdk TIMEOUT 120 ENVIRONMENT ASAN_OPTIONS=detect_leaks=1
+                EVPL_TEST_PORTABLE_ONLY=1 EVPL_TEST_BLOCK_PROTOCOL=spdk
                 EVPL_TEST_DATAGRAM_PROTOCOL=DATAGRAM_LIBFABRIC_RDM
                 EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+            set_property(TEST libevpl/core/core_conformance_libfabric_rdm_spdk
+                APPEND PROPERTY ENVIRONMENT "FI_PROVIDER=${_rdm_provider}")
         endif()
     endif()
 endif()

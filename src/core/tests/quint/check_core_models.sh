@@ -47,15 +47,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # match the filename (evpl_core, xdr_values, rpc2_defects), so quint resolves it
 # as the file's default module -- which is what the CLI invocations relied on by
 # passing no --main.  Naming one explicitly would have to name it correctly.
-MODEL="${SRC_DIR}/core.qnt"
 "${NODE}" "${SCRIPT_DIR}/../../../../scripts/quint_batch.js" "${QUINT}" <<SPEC
 {
-  "model": "${MODEL}",
+  "model": "${SRC_DIR}/core_generation.qnt",
   "backend": "typescript",
   "tests": [ {} ],
   "runs": [
-    { "invariant": "safety", "maxSamples": 500, "maxSteps": 60 },
-    { "init": "initRdmaUd", "step": "stepRdmaUd", "invariant": "safety", "maxSamples": 100, "maxSteps": 60 }
+    { "init": "initStream", "step": "stepMixed", "invariant": "safety", "maxSamples": 200, "maxSteps": 65 },
+    { "init": "initSmallDatagram", "step": "stepTransport", "invariant": "safety", "maxSamples": 100, "maxSteps": 65 },
+    { "init": "initStream", "step": "stepBlock", "invariant": "safety", "maxSamples": 100, "maxSteps": 65 }
   ]
 }
 SPEC

@@ -558,22 +558,22 @@ jobs:
               cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Coverage -DCMAKE_C_FLAGS=-g \
                 -DCMAKE_C_COMPILER=clang -DREQUIRE_NETNS_TESTS=ON \
                 -DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON \
-                -DEVPL_CONFORMANCE_CASES_DIR=/workspace/corpus -DEVPL_RDMA_TEST_IP=192.0.2.1
+                -DEVPL_CONFORMANCE_CASES_DIR=/workspace/corpus -DEVPL_RDMA_TEST_IP=192.0.2.1 -DEVPL_STORAGE_TESTS=ON
               cmake --build /build --parallel "$(nproc)"
               MBT_COVERAGE_PHASE=run bash scripts/run_mbt_coverage.sh /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk
             '
-      - name: Run RDMA integration and model tests in KVM
-        run: bash scripts/run_rdma_vm.sh libevpl-coverage:ci
-      - name: Merge native and RDMA model coverage
+      - name: Run RDMA and storage model tests in KVM
+        run: bash scripts/run_mbt_vm.sh libevpl-coverage:ci
+      - name: Merge native and guest model coverage
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_REPO: ${{ github.repository }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           docker run --rm -v "$PWD:/workspace" -v "$PWD/coverage-build:/build" -w /workspace \
-            -e RUN_URL -e GH_REPO -e SOURCE_SHA -e MBT_COVERAGE_PHASE=report -e MBT_RDMA_COVERAGE=1 \
+            -e RUN_URL -e GH_REPO -e SOURCE_SHA -e MBT_COVERAGE_PHASE=report -e MBT_RDMA_COVERAGE=1 -e MBT_STORAGE_COVERAGE=1 \
             libevpl-coverage:ci bash scripts/run_mbt_coverage.sh \
-            /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk rdma
+            /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk rdma libaio io_uring vfio
       - name: Add job summary
         run: cat coverage-output/coverage-report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Record pull request

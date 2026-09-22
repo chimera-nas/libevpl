@@ -159,6 +159,7 @@ evpl_core_kqueue_wait(
 
 const struct evpl_core_ops evpl_core_kqueue_ops = {
     .name    = "kqueue",
+    .flags   = EVPL_CORE_OPS_FD_REGISTRY,
     .init    = evpl_core_kqueue_init,
     .destroy = evpl_core_kqueue_destroy,
     .add     = evpl_core_kqueue_add,

@@ -226,8 +226,14 @@ evpl_socket_udp_write(
     dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
     if (!dgram) {
-        res = -1;
-        goto out;
+        /* A deferred flush can re-arm write interest after this pass already
+         * sent the queue. No syscall returned EAGAIN: preserve the writable
+         * latch, or an edge-triggered loop may never send the next datagram. */
+        evpl_event_write_disinterest(evpl, event);
+        if (bind->flags & EVPL_BIND_FINISH) {
+            evpl_close(evpl, bind);
+        }
+        return;
     }
 
     msgvec = alloca(sizeof(struct mmsghdr) * maxmsg);

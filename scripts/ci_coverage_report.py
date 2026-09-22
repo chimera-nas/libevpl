@@ -102,6 +102,11 @@ def main():
             "unbuilt code are not measured. This is code coverage, not model "
             "state/transition coverage.", ""]
 
+    if os.environ.get('MBT_STORAGE_COVERAGE') == '1':
+        out += ["Includes libaio and io_uring replays on a disposable emulated NVMe "
+                "namespace, and VFIO replays on a second NVMe controller behind "
+                "the guest IOMMU. Their model profiles enter the same union.", ""]
+
     if os.environ.get('MBT_RDMA_COVERAGE') == '1':
         out += ["Includes native RDMA model replays in a Soft-RoCE KVM guest "
                 "running the same container and instrumented binaries. Native "
