@@ -149,6 +149,9 @@ conformance_evpl_config(void)
     test_evpl_set_core_mech(config);
 
     evpl_init(config);
+#ifdef _WIN32
+    atexit(evpl_cleanup);
+#endif /* ifdef _WIN32 */
 } /* conformance_evpl_config */
 
 /* ------------------------------------------------------------------ *

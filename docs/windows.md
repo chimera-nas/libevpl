@@ -98,7 +98,13 @@ Without configured certificate/key files, libevpl generates a self-signed
 certificate and RSA key through Windows APIs. Schannel requires named CNG keys
 on some supported Windows versions, so generated/imported private keys use
 randomly named, user-scoped CNG containers that are deleted at library cleanup.
-A forcibly terminated process can leave a container behind. Certificates are
+Call `evpl_cleanup()` after destroying all contexts and releasing application-held
+buffers, before returning from `main` or unloading libevpl. Windows DLL `atexit`
+callbacks run during DLL teardown, too late to use the RPC support CNG needs for
+key deletion; libevpl therefore does not register its own `atexit` on Windows.
+An executable can instead register `atexit(evpl_cleanup)` itself, provided its
+contexts and threads are already shut down when the callback runs. Skipping
+cleanup or forcibly terminating the process can leave a container behind. Certificates are
 not installed in the system trust store.
 
 Peer verification checks the certificate chain, validity, and TLS usage. A
@@ -166,7 +172,7 @@ run; the default runs all platforms.
 Windows CI additionally checks RSA PKCS#1/PKCS#8 and EC PKCS#8 identities,
 mutual certificate authentication, ALPN, and rejection of untrusted and expired
 certificates, plus TLS 1.2/1.3 interoperability with .NET SslStream. It checks
-that normal process exit deletes temporary CNG key containers, and fails if
+that application cleanup deletes temporary CNG key containers, and fails if
 the dependency tree installs OpenSSL or the build contains OpenSSL DLLs. ARM64 CI uses Visual Studio 2026; select the corresponding
 CMake generator (`Visual Studio 18 2026`) when using that installation locally.
 

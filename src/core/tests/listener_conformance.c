@@ -92,6 +92,9 @@ main(void)
     test_mbt_tls_config(config);
     test_evpl_set_core_mech(config);
     evpl_init(config);
+#ifdef _WIN32
+    atexit(evpl_cleanup);
+#endif /* ifdef _WIN32 */
     for (size_t i = 0; i < sizeof(listener_steps) / sizeof(listener_steps[0]); i++) {
         const struct listener_step *s = &listener_steps[i];
         switch (s->op) {

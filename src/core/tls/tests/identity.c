@@ -112,6 +112,7 @@ main(
     evpl_listener_detach(evpl, binding);
     evpl_listener_destroy(listener);
     evpl_destroy(evpl);
+    evpl_cleanup();
     if (success == 2) {
         return server.connected != 1 || server.received != 1;
     }

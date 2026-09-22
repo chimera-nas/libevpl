@@ -77,6 +77,10 @@ test_evpl_config(void)
     test_evpl_set_core_mech(config);
 
     evpl_init(config);
+#ifdef _WIN32
+    /* Register in the executable, before Windows begins DLL teardown. */
+    atexit(evpl_cleanup);
+#endif /* ifdef _WIN32 */
 } // test_setup_tls_config
 
 /*

@@ -2501,6 +2501,9 @@ core_conformance_init(void)
     }
 #endif /* ifdef HAVE_SPDK */
     evpl_init(config);
+#ifdef _WIN32
+    atexit(evpl_cleanup);
+#endif /* ifdef _WIN32 */
 } /* core_conformance_init */
 
 int

@@ -177,3 +177,15 @@ allowing its host to drain completions. A borrowed SPDK thread remains alive.
 Call `evpl_cleanup()` after every context and application-held buffer is released,
 before the host finalizes SPDK. Cleanup is final and idempotent. See
 [SPDK embedding](/api/spdk) for the ownership and completion contracts.
+
+### Final process cleanup
+
+Call `evpl_cleanup()` after all contexts, worker threads, and application-held
+buffers have been released. Cleanup is final and idempotent; do not use libevpl
+again afterward.
+
+On Windows this call is required before process exit or unloading libevpl. DLL
+`atexit` callbacks run too late for native CNG/RPC cleanup, so libevpl does not
+register one on Windows. An executable may register `atexit(evpl_cleanup)` itself
+if it has already shut down its contexts and worker threads before that callback
+runs. Linux and macOS retain automatic cleanup as a fallback.

@@ -661,7 +661,7 @@ jobs:
           $dlls = Get-ChildItem build -Recurse -File | Where-Object { $_.Name -match '^(libssl|libcrypto).*\.dll$' }
           if ($dlls) { throw "Unexpected OpenSSL DLLs: $dlls" }
       - name: Test TLS before the full suite
-        run: ctest --test-dir build -C ${{ matrix.config }} -R 'tls|https' --stop-on-failure --output-on-failure --no-tests=error --timeout 60
+        run: ctest --test-dir build -C ${{ matrix.config }} -R 'tls|TLS|https' --stop-on-failure --output-on-failure --no-tests=error --timeout 60
       - name: Test native backends
         if: inputs.platform != 'tls'
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error --timeout 300 --output-junit results.xml

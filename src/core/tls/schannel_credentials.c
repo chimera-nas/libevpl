@@ -334,8 +334,8 @@ evpl_schannel_cleanup(void *data)
             NCryptFreeObject(shared->key);
         }
     }
-    /* The CNG provider must outlive its key handles. Closing it during
-     * certificate setup invalidates later key deletion on some providers. */
+    /* Release the provider after its key handles. This cleanup must run
+     * before DLL teardown, while CNG's RPC bindings are still available. */
     NCryptFreeObject(shared->provider);
     if (shared->chain_engine) {
         CertFreeCertificateChainEngine(shared->chain_engine);
