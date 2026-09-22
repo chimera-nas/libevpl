@@ -73,10 +73,16 @@ test_mbt_continue(struct evpl *evpl)
     return evpl_continue(evpl);
 } // test_mbt_continue
 
+/* Pass a context object through void *, rather than implicitly dropping the
+ * _Atomic qualifier on a flag pointer (MSVC C4090). */
+struct test_mbt_completion { atomic_int done; };
+
 static void
 test_mbt_done(void *arg)
 {
-    atomic_store((atomic_int *) arg, 1);
+    struct test_mbt_completion *completion = arg;
+
+    atomic_store(&completion->done, 1);
 } // test_mbt_done
 
 static void
@@ -84,10 +90,10 @@ test_mbt_destroy(struct evpl *evpl)
 {
 #ifdef HAVE_SPDK
     if (test_mbt_spdk()) {
-        struct spdk_thread *thread = spdk_get_thread();
-        atomic_int          done   = 0;
-        evpl_destroy_async(evpl, test_mbt_done, &done);
-        while (!atomic_load(&done)) {
+        struct spdk_thread        *thread     = spdk_get_thread();
+        struct test_mbt_completion completion = { 0 };
+        evpl_destroy_async(evpl, test_mbt_done, &completion);
+        while (!atomic_load(&completion.done)) {
             spdk_thread_poll(thread, 0, 0);
         }
         spdk_thread_exit(thread);
@@ -167,9 +173,9 @@ test_mbt_listener_destroy(
     spdk_set_thread(NULL);
 #endif // ifdef HAVE_SPDK
     if (getenv("EVPL_TEST_ASYNC_LISTENER")) {
-        atomic_int done = 0;
-        evpl_listener_destroy_async(listener, test_mbt_done, &done);
-        test_mbt_wait_completion(&done);
+        struct test_mbt_completion completion = { 0 };
+        evpl_listener_destroy_async(listener, test_mbt_done, &completion);
+        test_mbt_wait_completion(&completion.done);
     } else {
         evpl_listener_destroy(listener);
     }
