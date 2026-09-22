@@ -511,8 +511,15 @@ if(TARGET evpl_rpc2_conformance)
         endforeach()
     endif()
     if(HAVE_LIBFABRIC)
+        target_link_libraries(evpl_rpc2_conformance fabric)
         foreach(mech ${EVPL_MECHANISMS})
             foreach(proto STREAM_LIBFABRIC_MSG DATAGRAM_LIBFABRIC_MSG)
+                foreach(wait fd pollfd none)
+                    unit_test_mbt_variant(rpc2 conformance_libfabric_external_${proto}_${wait}_${mech}
+                        evpl_rpc2_conformance ${mech} TIMEOUT 120
+                        ARGS -r ${proto} -p 8104 ENVIRONMENT
+                        FI_PROVIDER=tcp EVPL_TEST_MBT_FABRIC_WAIT=${wait})
+                endforeach()
                 unit_test_mbt_variant(rpc2 conformance_${proto}_${mech}
                     evpl_rpc2_conformance ${mech} TIMEOUT 120
                     ARGS -r ${proto} -p 8104 ENVIRONMENT FI_PROVIDER=tcp)

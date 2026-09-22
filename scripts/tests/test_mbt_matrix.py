@@ -89,6 +89,12 @@ class MatrixTests(unittest.TestCase):
                  'core/core_conformance_libfabric_spdk',
                  'core/core_conformance_libfabric_rdm_epoll',
                  'core/core_conformance_libfabric_rdm_spdk']
+        names.append('core/block_retry_conformance_spdk')
+        for mech in ('epoll', 'select'):
+            names.extend((f'core/ownership_conformance_{mech}', f'core/ownership_conformance_shared_{mech}'))
+            for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
+                for mode in ('fd', 'pollfd', 'none'):
+                    names.append(f'rpc2/conformance_libfabric_external_{proto}_{mode}_{mech}')
         for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
             names.append(f'rpc2/conformance_{proto}_epoll')
         for mode in ('polling', 'interrupt'):
@@ -112,6 +118,14 @@ class MatrixTests(unittest.TestCase):
             tests = [t for t in self.data['tests'] if t['name'] != 'libevpl/' + name]
             with self.assertRaisesRegex(ValueError, 'libfabric_rdm'):
                 check_tests({'tests': tests}, ['libfabric', 'spdk'])
+
+    def test_ownership_retry_and_external_modes_cannot_disappear(self):
+        targets = [t['name'] for t in self.data['tests']
+                   if any(s in t['name'] for s in ('ownership_conformance', 'block_retry', 'libfabric_external'))]
+        for name in targets:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
+                check_tests({'tests': [t for t in self.data['tests'] if t['name'] != name]},
+                            ['libfabric', 'spdk'])
 
     def test_native_only_still_supported_but_ci_requires_backends(self):
         self.data['tests'] = [t for t in self.data['tests'] if not any(b in t['name'] for b in ('libfabric', 'spdk'))]

@@ -70,6 +70,9 @@
 
 #include "core/test_log.h"
 #include "test_mbt.h"
+#ifdef HAVE_LIBFABRIC
+#include "tests/test_mbt_libfabric.h"
+#endif /* ifdef HAVE_LIBFABRIC */
 
 #include "gss_stub.h"
 #include "krb5_local.h"
@@ -148,6 +151,9 @@ conformance_evpl_config(void)
 
     test_evpl_set_core_mech(config);
 
+#ifdef HAVE_LIBFABRIC
+    mbt_fabric_setup(config);
+#endif /* ifdef HAVE_LIBFABRIC */
     evpl_init(config);
 } /* conformance_evpl_config */
 
@@ -1081,13 +1087,15 @@ nested_equal(
 * ------------------------------------------------------------------ */
 
 struct value_state {
-    volatile int done;
-    int          matched;
-    int          status;
-    const void  *expect;
-    uint32_t     zbytes_len;
-    uint32_t     zbytes_tail;
-    int          owns_reply_payload;
+    volatile int  done;
+    int           matched;
+    int           status;
+    const void   *expect;
+    uint32_t      zbytes_len;
+    uint32_t      zbytes_tail;
+    int           owns_reply_payload;
+    int           retain;
+    struct zbytes retained;
 };
 
 #define REPLY_CALLBACK(NAME, TYPE, CMP)                                      \
@@ -1199,7 +1207,19 @@ client_reply_zbytes(
      * the decoder cloned them and they are ours to release.  Releasing in the
      * borrowed case corrupts the allocator free list into a cycle, which
      * surfaces as a hang in evpl_allocator_destroy at exit. */
-    if (reply && st->owns_reply_payload) {
+    if (reply && st->retain) {
+        st->retained       = *reply;
+        st->retained.z.iov = calloc(reply->z.niov ? reply->z.niov : 1, sizeof(*reply->z.iov));
+        evpl_test_abort_if(!st->retained.z.iov, "allocate retained reply descriptors");
+        for (i = 0; i < reply->z.niov; i++) {
+            if (st->owns_reply_payload) {
+                evpl_iovec_move(&st->retained.z.iov[i], &reply->z.iov[i]);
+            } else {
+                /* The read-into caller keeps its own reference until return. */
+                evpl_iovec_clone(&st->retained.z.iov[i], &reply->z.iov[i]);
+            }
+        }
+    } else if (reply && st->owns_reply_payload) {
         for (i = 0; i < reply->z.niov; i++) {
             evpl_iovec_release(evpl, &reply->z.iov[i]);
         }
@@ -1588,6 +1608,7 @@ run_value_case(
     * the callback corrupts the allocator free list into a cycle, which
     * surfaces as a hang in evpl_allocator_destroy at exit. */
     st.owns_reply_payload = !(c->chunk == CLS_CHUNKREADINTO && conn->rdma);
+    st.retain             = c->retain == CLS_RETAINAFTERCALLBACK;
 
     switch (c->proc) {
         case CLS_ECHOSCALARS: {
@@ -1788,6 +1809,21 @@ run_value_case(
     rc = wait_for_reply(evpl, &st);
 
     chunk_params_release(evpl);
+
+    if (st.retained.z.iov) {
+        /* wait_for_reply returned from dispatch, so the RPC request and its
+         * descriptor arena are gone. Also release the read-into owner's
+         * reference above before checking the callback's retained view. */
+        for (int pump = 0; pump < 8; pump++) {
+            test_mbt_continue(evpl);
+        }
+        evpl_test_abort_if(!zpayload_matches(&st.retained, st.zbytes_len),
+                           "reply bytes did not survive request cleanup");
+        for (int j = 0; j < st.retained.z.niov; j++) {
+            evpl_iovec_release(evpl, &st.retained.z.iov[j]);
+        }
+        free(st.retained.z.iov);
+    }
 
     if (rc) {
         evpl_test_error("value case proc=%u: no reply", c->proc);

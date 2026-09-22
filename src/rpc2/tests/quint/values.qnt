@@ -66,6 +66,7 @@ module xdr_values {
         | LLarge
 
     type OptCls = | OptAbsent | OptPresent
+    type RetainCls = | ReleaseInCallback | RetainAfterCallback
     type ArmCls = | ArmNone | ArmInt | ArmStr | ArmPt
 
     /// How the call negotiates RPC-over-RDMA data placement.  These map onto
@@ -109,7 +110,8 @@ module xdr_values {
         optPresent: OptCls,
         arm: ArmCls,
         depth: LenCls,
-        chunk: ChunkCls
+        chunk: ChunkCls,
+        retain: RetainCls
     }
 
     pure val DEFAULT_CASE: Case = {
@@ -118,7 +120,7 @@ module xdr_values {
         f: FZero, b: BFalse, col: ColRed,
         strLen: LEmpty, opaqueLen: LEmpty, boundedLen: LEmpty,
         arrLen: LEmpty, optPresent: OptAbsent, arm: ArmNone, depth: LEmpty,
-        chunk: ChunkNone
+        chunk: ChunkNone, retain: ReleaseInCallback
     }
 
     var current: Case
@@ -190,10 +192,12 @@ module xdr_values {
         nondet vdepth = LEN_CLASSES.oneOf()
         nondet vchunk = (if (p == EchoZbytes) CHUNK_CLASSES_ZEROCOPY
                          else CHUNK_CLASSES).oneOf()
+        nondet vretain = (if (p == EchoZbytes) Set(ReleaseInCallback, RetainAfterCallback)
+                          else Set(ReleaseInCallback)).oneOf()
         current' = {
             proc: p, i: vi, u: vu, l: vl, ul: vul, f: vf, b: vb, col: vcol,
             strLen: vstr, opaqueLen: vopq, boundedLen: vbnd, arrLen: varr,
-            optPresent: vopt, arm: varm, depth: vdepth, chunk: vchunk
+            optPresent: vopt, arm: varm, depth: vdepth, chunk: vchunk, retain: vretain
         }
     }
 
@@ -216,7 +220,8 @@ module xdr_values {
     val writeChunkOnlyWhereItApplies =
         WRITE_CHUNK_CLASSES.contains(current.chunk) implies current.proc == EchoZbytes
 
-    val wellFormed = boundedWithinBound and writeChunkOnlyWhereItApplies
+    val wellFormed = boundedWithinBound and writeChunkOnlyWhereItApplies and
+        (current.retain == RetainAfterCallback implies current.proc == EchoZbytes)
 
     // ------------------------------------------------------------------
     // Scenario tests

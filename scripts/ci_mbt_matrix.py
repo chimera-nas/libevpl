@@ -43,6 +43,9 @@ def check_tests(data, backends):
                 r'libevpl/core/core_conformance_', r'libevpl/http/conformance$',
                 r'libevpl/http/conformance_client', r'libevpl/rpc2/conformance_STREAM_',
                 r'libevpl/rpc2/conformance_client_']
+    for mech in ('epoll', 'select'):
+        required.append(f'libevpl/core/ownership_conformance_{mech}$')
+        required.append(f'libevpl/core/ownership_conformance_shared_{mech}$')
     if 'tls' in backends:
         for mech in ('epoll', 'select'):
             required.append(f'libevpl/core/core_conformance_alpn_{mech}$')
@@ -55,6 +58,10 @@ def check_tests(data, backends):
             for mode in ('polling', 'interrupt'):
                 required.append(f'libevpl/rpc2/conformance_STREAM_SOCKET_TLS_spdk_{mode}$')
     if 'libfabric' in backends:
+        for mech in ('epoll', 'select'):
+            for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
+                for mode in ('fd', 'pollfd', 'none'):
+                    required.append(f'libevpl/rpc2/conformance_libfabric_external_{proto}_{mode}_{mech}$')
         required.append(r'libevpl/core/core_conformance_libfabric_(?:epoll|select)$')
         required.append(r'libevpl/core/core_conformance_libfabric_rdm_(?:epoll|select)$')
         for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
@@ -63,6 +70,7 @@ def check_tests(data, backends):
         required.append(r'libevpl/core/core_conformance_spdk$')
         required.append(r'libevpl/core/lifecycle_conformance_spdk$')
         required.append(r'libevpl/core/block_lifecycle_conformance_spdk$')
+        required.append(r'libevpl/core/block_retry_conformance_spdk$')
         if 'libfabric' in backends:
             required.append(r'libevpl/core/core_conformance_libfabric_spdk$')
             required.append(r'libevpl/core/core_conformance_libfabric_rdm_spdk$')
@@ -119,11 +127,16 @@ def check_functions(rows, backends):
         'evpl_http_request_add_trailer', 'evpl_http_request_trailer',
         'evpl_http_request_trailer_iterate', 'evpl_http_request_protocol',
         'evpl_rpc2_conn_get_next_xid', 'evpl_rpc2_conn_set_next_xid',
+        'evpl_iovec_move_segment', 'evpl_rpc2_encoding_take_write_chunk',
     }
     if 'tls' in backends:
         required.add('evpl_tls_get_alpn')
     if 'spdk' in backends:
         required.update(('evpl_thread_destroy_async_spdk', 'evpl_block_set_event_callback'))
+        required.add('evpl_spdk_bdev_io_wait_retry')
+    if 'libfabric' in backends:
+        required.update(('evpl_global_config_set_libfabric_external_domain',
+                         'evpl_libfabric_init_external', 'evpl_libfabric_tick'))
     if 'io_uring' in backends:
         required.update(('evpl_io_uring_tcp_recv_callback', 'evpl_io_uring_tcp_send_callback',
                          'evpl_io_uring_attach_discard'))
