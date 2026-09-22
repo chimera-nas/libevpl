@@ -128,7 +128,8 @@ evpl_io_uring_fill_recv_ring(
                 continue;
             }
 
-            evpl_iovec_alloc(evpl, ctx->recv_buffer_size, 4096, 1, 0, &ctx->recv_ring_iov[k]);
+            int niov = evpl_iovec_alloc(evpl, ctx->recv_buffer_size, 4096, 1, 0, &ctx->recv_ring_iov[k]);
+            evpl_io_uring_abort_if(niov != 1, "cannot allocate a provided receive buffer");
 
             io_uring_buf_ring_add(
                 ctx->recv_ring,
