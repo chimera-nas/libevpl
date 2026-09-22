@@ -57,6 +57,16 @@ module core_generation {
     action pollOp = any { addPoll, removePoll, activity, pollPin, pollUnpin,
                           quiesce(QShort), quiesce(QLong) }
 
+    // Configuration pressure: sample large sends without prescribing a burst
+    // length or operation order. The converter requires a queued-byte witness.
+    action pressureOp = {
+        nondet c = CONN_SLOTS.oneOf()
+        nondet side = SIDES.oneOf()
+        nondet mode = Set(SendV, SendVTakeRef).oneOf()
+        any { listen, connect(c, DrainRecvV), send(c, side, SzLarge, mode),
+              requestSendNotify(c, side), progress, quiesce(QShort) }
+    }
+
     // Only program boundaries are prescribed. All interior steps select from
     // currently legal transitions. Focus changes sampling, not legality.
     action boundary = if (programStep >= PROGRAM_LEN)
@@ -68,4 +78,5 @@ module core_generation {
     action stepEvents = if (atBoundary) boundary else eventOp
     action stepPoll = if (atBoundary) boundary else pollOp
     action stepMixed = if (atBoundary) boundary else any { transportOp, blockOp, eventOp }
+    action stepPressure = if (atBoundary) boundary else pressureOp
 }

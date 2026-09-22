@@ -29,7 +29,7 @@ ctest -R libevpl/core/core_conformance --output-on-failure
 ctest -R libevpl/core/quint_core_model --output-on-failure   # the model's own tests
 ```
 
-Nothing generated is checked in. The ITF traces and the program table are build
+The generated model traces and program table are not checked in. They are build
 artifacts under `<build>/src/core/tests/quint/`, regenerated whenever the model,
 the converter or the generator script changes. Seeds are fixed, so a given
 quint release always yields the same programs.
@@ -435,3 +435,51 @@ by source function and retaining zero-hit functions. The matrix gate checks
 selected function witnesses as well as test registration and backend execution.
 Diagnostic/fatal helpers and unsupported hardware are not counted as covered
 merely by calling them from the replay adapter.
+
+## Configuration variation
+
+`config_profiles.json` defines eight startup factors: buffer/slab size, iovec,
+datagram and RDMA request ring sizes, datagram batch size, poll descriptor batch
+size, and allocator preallocation threads. `scripts/mbt_configurations.py` chooses
+nine deterministic rows covering all 125 feasible pairs of the selected values.
+It also preserves an explicit pressure row. The replay constraints require
+power-of-two rings, buffers of at least 32 KiB (the largest `evpl_send` must fit
+four iovecs), and slabs containing at least four whole buffers. These are replay
+constraints, not a claim that libevpl rejects every other combination.
+
+The generated header and CMake list are checked in so all platforms, including
+Windows without Quint, run identical configurations. Regenerate with
+`python3 scripts/mbt_configurations.py`; `--check` and the Python CI tests detect
+stale output and independently verify pair coverage. Each row runs in a fresh
+process on every native event-loop mechanism, preserving all baseline profiles.
+The existing small-capacity baseline remains for continuity with earlier reports.
+
+These factors preserve the model's observable contract. Spin duration, poll
+iterations, virtual time, and message limits remain fixed; changing them requires
+corresponding model parameters. Hardware/provider-specific configuration spaces
+are not part of this first pairwise matrix. Pair coverage says nothing about
+higher-order combinations, and does not imply backend settings were exercised.
+
+The same byte, completion, ordering, and lifetime oracles run under every row.
+A pressure-focused Quint generator samples large sends, connections and progress
+operations; conversion requires at least 256 KiB queued on one connection side
+without progress. Each configuration replay additionally requires actual
+multi-buffer payloads and growth of each ring configured with four slots.
+Logs identify the configuration and every selected value, program index and
+behavior witnesses. Core generation uses fixed seeds 225 through 233.
+
+`config_accessors.h` separately checks the configuration API during these MBT
+processes: every scalar setter receives its default, string setters must copy and
+replace their inputs, optional strings must reset, and all three exported readers
+must return the configured/derived values. Certificate/provider strings are tested
+on a disposable configuration that is never initialized. This is explicit API
+smoke coverage, not evidence that each option affects the backend correctly.
+The libfabric external-domain setter is conditional on that backend being built;
+the external-domain RPC profiles separately exercise real borrowed objects.
+The unused private static `evpl_get_config` helper is not an exported accessor.
+
+Coverage CI discovers configuration setter/getter declarations in the headers
+and requires an execution count for every available accessor. A new accessor or
+missing configuration replay fails the guard. Adding a factor requires checking
+its interaction with the model oracle and the corresponding workload, rather
+than merely adding another setter call.

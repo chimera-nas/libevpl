@@ -46,6 +46,7 @@
 
 
 #include "core/test_log.h"
+#include "core/evpl.h"
 #include "evpl/evpl.h"
 #include "tests/test_mbt.h"
 #ifdef HAVE_TLS
@@ -55,6 +56,12 @@
 #endif /* ifndef _WIN32 */
 #endif /* ifdef HAVE_TLS */
 #include "tests/test_block.h"
+#include "core/bind.h"
+#include "config_accessors.h"
+#include "config_profiles.h"
+
+static const struct mbt_config_profile *configuration;
+static unsigned int                     config_iovec_growth, config_dgram_growth, config_multibuffer;
 
 #include "core_cases.h"
 #ifdef HAVE_SPDK
@@ -1468,6 +1475,11 @@ alloc_and_fill(
 
     fill_iovecs(off, iov, niov, len);
 
+    if (configuration && len > (int) configuration->buffer_size) {
+        evpl_test_abort_if(niov < 2, "large payload did not span configured buffers");
+        config_multibuffer++;
+    }
+
     return niov;
 } /* alloc_and_fill */
 
@@ -1624,6 +1636,10 @@ do_send(
     } /* switch */
 
     cs->tx_off[dest] += len;
+    if (configuration) {
+        config_iovec_growth += bind->iovec_send.size > (int) configuration->iovec_ring_size;
+        config_dgram_growth += bind->dgram_send.size > (int) configuration->dgram_ring_size;
+    }
 } /* do_send */
 
 
@@ -2430,9 +2446,21 @@ core_conformance_init(void)
 {
     struct evpl_global_config *config = evpl_global_config_init();
 
+    const char                *profile_name = getenv("EVPL_TEST_CONFIG_PROFILE");
+
+    if (profile_name) {
+        for (size_t i = 0; i < sizeof(mbt_config_profiles) / sizeof(mbt_config_profiles[0]); i++) {
+            if (!strcmp(profile_name, mbt_config_profiles[i].name)) {
+                configuration = &mbt_config_profiles[i];
+            }
+        }
+        evpl_test_abort_if(!configuration, "unknown configuration profile: %s", profile_name);
+        mbt_config_defaults(config);
+    }
+
     test_mbt_tls_config(config);
 #ifdef HAVE_TLS
-    const char                *alpn = getenv("EVPL_TEST_ALPN");
+    const char *alpn = getenv("EVPL_TEST_ALPN");
 #ifndef _WIN32
     tls_error_queue = getenv("EVPL_TEST_TLS_ERROR_QUEUE") != NULL;
 #endif /* ifndef _WIN32 */
@@ -2491,6 +2519,23 @@ core_conformance_init(void)
      * environment. */
     test_evpl_set_core_mech(config);
 
+    if (configuration) {
+        const struct mbt_config_profile *p = configuration;
+        evpl_global_config_set_buffer_size(config, p->buffer_size);
+        evpl_global_config_set_slab_size(config, p->slab_size);
+        evpl_global_config_set_iovec_ring_size(config, p->iovec_ring_size);
+        evpl_global_config_set_dgram_ring_size(config, p->dgram_ring_size);
+        evpl_global_config_set_rdma_request_ring_size(config, p->rdma_request_ring_size);
+        evpl_global_config_set_max_datagram_batch(config, p->max_datagram_batch);
+        evpl_global_config_set_max_poll_fd(config, p->max_poll_fd);
+        evpl_global_config_set_preallocate_slabs(config, p->preallocate_threads ? 1 : 0);
+        evpl_global_config_set_preallocate_threads(config, p->preallocate_threads);
+        printf(
+            "configuration %s: buffer=%u slab=%u iovec_ring=%u dgram_ring=%u rdma_ring=%u batch=%u poll_fd=%u prealloc_threads=%u\n",
+            p->name, p->buffer_size, p->slab_size, p->iovec_ring_size, p->dgram_ring_size,
+            p->rdma_request_ring_size, p->max_datagram_batch, p->max_poll_fd, p->preallocate_threads);
+    }
+
 #ifdef HAVE_SPDK
     if (block_protocol() == EVPL_BLOCK_PROTOCOL_SPDK_BDEV) {
         evpl_test_abort_if(!test_mbt_spdk(), "SPDK bdev requires an SPDK host");
@@ -2504,6 +2549,9 @@ core_conformance_init(void)
 #ifdef _WIN32
     atexit(evpl_cleanup);
 #endif /* ifdef _WIN32 */
+    if (configuration) {
+        mbt_config_readers(config);
+    }
 } /* core_conformance_init */
 
 int
@@ -2560,6 +2608,16 @@ main(
         evpl_test_abort_if(!witness_counts[w], "missing replayed behavior: %s", core_witness_names[w]);
     }
     g_results.failed = failures;
+
+    if (configuration) {
+        printf("configuration witnesses: multibuffer=%u iovec_growth=%u dgram_growth=%u\n",
+               config_multibuffer, config_iovec_growth, config_dgram_growth);
+        evpl_test_abort_if(!config_multibuffer, "configuration never exercised multiple buffers");
+        evpl_test_abort_if(configuration->iovec_ring_size == 4 && !config_iovec_growth,
+                           "small iovec ring never grew");
+        evpl_test_abort_if(configuration->dgram_ring_size == 4 && !config_dgram_growth,
+                           "small datagram ring never grew");
+    }
 
     printf("core programs: %d run, %d steps, %d quiesces, %d obligations "
            "checked, %llu payload bytes verified, %d known divergences, "
