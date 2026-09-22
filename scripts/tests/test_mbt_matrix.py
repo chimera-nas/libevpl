@@ -9,6 +9,34 @@ from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests, check_
 
 
 class MatrixTests(unittest.TestCase):
+    def test_tls_matrix_requires_both_modes_and_spdk(self):
+        names = []
+        for mech in ('epoll', 'select'):
+            names.extend(f'core/core_conformance_tls_{mode}_{mech}'
+                         for mode in ('software', 'auto'))
+            names.append(f'rpc2/conformance_STREAM_SOCKET_TLS_{mech}')
+        names.append('core/core_conformance_tls_software_spdk')
+        names.extend(f'rpc2/conformance_STREAM_SOCKET_TLS_spdk_{mode}'
+                     for mode in ('polling', 'interrupt'))
+        base = self.data['tests']
+        tests = base + [{'name': 'libevpl/' + n} for n in names]
+        check_tests({'tests': tests}, ['tls', 'spdk'])
+        for name in names:
+            with self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
+                check_tests({'tests': [t for t in tests if t['name'] != 'libevpl/' + name]},
+                            ['tls', 'spdk'])
+
+    def test_tls_requires_openssl_and_transport_execution(self):
+        for transport in ('tls.c', 'stream_tls.c'):
+            files = [{'filename': '/repo/src/core/tls/' + name,
+                      'summary': {'lines': {'covered': 1}}}
+                     for name in ('openssl.c', transport)]
+            check_execution({'data': [{'files': files}]}, '/repo', ['tls'])
+            for missing in range(2):
+                with self.assertRaisesRegex(ValueError, 'no executed lines'):
+                    check_execution({'data': [{'files': files[:missing] + files[missing + 1:]}]},
+                                    '/repo', ['tls'])
+
     def test_rdma_requires_all_transports_and_mechanisms(self):
         names = []
         for mech in ('epoll', 'select'):

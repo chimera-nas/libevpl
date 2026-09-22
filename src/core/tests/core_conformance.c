@@ -2397,6 +2397,8 @@ core_conformance_init(void)
 {
     struct evpl_global_config *config = evpl_global_config_init();
 
+    test_mbt_tls_config(config);
+
     evpl_global_config_set_virtual_clock(config, 1);
 
     /* A buffer well under the largest payload class, so payloads actually
