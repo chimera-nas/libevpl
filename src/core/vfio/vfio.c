@@ -2,6 +2,7 @@
 #define _GNU_SOURCE 1
 #endif /* ifndef _GNU_SOURCE */
 #include "core/os.h"
+#include "core/evpl_shared.h"
 // SPDX-FileCopyrightText: 2025 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
@@ -1270,8 +1271,69 @@ evpl_vfio_prepare_prplist(
     cmd->nlb = (total_len >> device->sector_shift) - 1;
 } /* evpl_vfio_prepare_prplist */
 
+struct evpl_vfio_bounce {
+    evpl_block_callback_t callback;
+    void                 *private_data;
+    int                   read, niov, nbounce;
+    struct evpl_iovec    *original, *bounce;
+};
+
+static void
+evpl_vfio_bounce_copy(
+    struct evpl_vfio_bounce *b,
+    int                      to_original)
+{
+    int          j      = 0;
+    unsigned int offset = 0;
+
+    for (int i = 0; i < b->niov; i++) {
+        unsigned int copied = 0;
+        while (copied < b->original[i].length) {
+            unsigned int n = b->bounce[j].length - offset;
+            if (n > b->original[i].length - copied) {
+                n = b->original[i].length - copied;
+            }
+            void        *original = (char *) b->original[i].data + copied;
+            void        *bounce   = (char *) b->bounce[j].data + offset;
+            if (to_original) {
+                memcpy(original, bounce, n);
+            } else {
+                memcpy(bounce, original, n);
+            }
+            copied += n;
+            offset += n;
+            if (offset == b->bounce[j].length) {
+                j++; offset = 0;
+            }
+        }
+    }
+} /* evpl_vfio_bounce_copy */
+
+static void
+evpl_vfio_bounce_done(
+    struct evpl *evpl,
+    int          status,
+    void        *arg)
+{
+    struct evpl_vfio_bounce *b            = arg;
+    evpl_block_callback_t    callback     = b->callback;
+    void                    *private_data = b->private_data;
+
+    if (!status && b->read) {
+        evpl_vfio_bounce_copy(b, 1);
+    }
+    evpl_iovecs_release_internal(evpl, b->bounce, b->nbounce);
+    evpl_free(b->original);
+    evpl_free(b->bounce);
+    evpl_free(b);
+    if (callback) {
+        callback(evpl, status, private_data);
+    }
+} /* evpl_vfio_bounce_done */
+
 static inline void
 evpl_vfio_prepare_payload(
+    struct evpl             *evpl,
     struct evpl_vfio_device *device,
     struct evpl_vfio_queue  *queue,
     uint32_t                 cid,
@@ -1279,10 +1341,41 @@ evpl_vfio_prepare_payload(
     const struct evpl_iovec *iov,
     int                      niov)
 {
-    if (device->sgl_supported) {
+    if (device->sgl_supported && evpl_shared->config->vfio_sgl_enabled) {
         evpl_vfio_prepare_sgls(device, queue, cid, cmd, iov, niov);
     } else {
-        evpl_vfio_prepare_prplist(device, queue, cid, cmd, iov, niov);
+        uint64_t total  = 0;
+        int      bounce = 0;
+        for (int i = 0; i < niov; i++) {
+            total += iov[i].length;
+            /* PRPs describe pages, not arbitrary scatter/gather elements.
+             * Only the first and last page may be partial. */
+            if ((i && ((uintptr_t) iov[i].data & 4095)) ||
+                (i + 1 < niov && (((uintptr_t) iov[i].data + iov[i].length) & 4095))) {
+                bounce = 1;
+            }
+        }
+        if (bounce) {
+            struct evpl_vfio_bounce *b        = evpl_zalloc(sizeof(*b));
+            int                      capacity = total / evpl_shared->config->buffer_size + 2;
+            b->callback     = queue->callbacks[cid].fn;
+            b->private_data = queue->callbacks[cid].arg;
+            b->read         = cmd->common.opc == NVME_CMD_READ;
+            b->niov         = niov;
+            b->original     = evpl_zalloc(sizeof(*iov) * niov);
+            memcpy(b->original, iov, sizeof(*iov) * niov);
+            b->bounce  = evpl_zalloc(sizeof(*iov) * capacity);
+            b->nbounce = evpl_iovec_alloc(evpl, total, 4096, capacity, 0, b->bounce);
+            evpl_vfio_abort_if(b->nbounce < 1, "cannot allocate PRP bounce buffers");
+            if (!b->read) {
+                evpl_vfio_bounce_copy(b, 0);
+            }
+            queue->callbacks[cid].fn  = evpl_vfio_bounce_done;
+            queue->callbacks[cid].arg = b;
+            evpl_vfio_prepare_prplist(device, queue, cid, cmd, b->bounce, b->nbounce);
+        } else {
+            evpl_vfio_prepare_prplist(device, queue, cid, cmd, iov, niov);
+        }
     }
 } /* evpl_vfio_prepare_payload */
 
@@ -1332,7 +1425,7 @@ evpl_vfio_read(
     cmd->elbat         = 0;
     cmd->elbatm        = 0;
 
-    evpl_vfio_prepare_payload(device, queue, cid, cmd, iov, niov);
+    evpl_vfio_prepare_payload(evpl, device, queue, cid, cmd, iov, niov);
 
     evpl_defer(evpl, &queue->ring_sq);
 } /* evpl_vfio_read */
@@ -1384,7 +1477,7 @@ evpl_vfio_write(
     cmd->elbat         = 0;
     cmd->elbatm        = 0;
 
-    evpl_vfio_prepare_payload(device, queue, cid, cmd, iov, niov);
+    evpl_vfio_prepare_payload(evpl, device, queue, cid, cmd, iov, niov);
 
     evpl_defer(evpl, &queue->ring_sq);
 

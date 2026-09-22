@@ -371,3 +371,9 @@ EVPL_API void evpl_global_config_set_preallocate_slabs(
 EVPL_API void evpl_global_config_set_preallocate_threads(
     struct evpl_global_config *config,
     unsigned int               threads);
+
+/* Prefer SGLs on capable VFIO NVMe controllers (default 1). Setting 0 uses
+ * the mandatory PRP format, useful when qualifying either DMA representation. */
+EVPL_API void evpl_global_config_set_vfio_sgl_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);

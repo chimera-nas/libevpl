@@ -109,6 +109,7 @@ struct evpl_global_config {
     const void               *libfabric_external_info;
 
     unsigned int              vfio_enabled;
+    unsigned int              vfio_sgl_enabled;
 
     unsigned int              libaio_enabled;
     unsigned int              libaio_max_pending;

@@ -155,7 +155,8 @@ evpl_global_config_init(void)
     config->libfabric_inject_max             = 0;
     config->libfabric_datagram_size_override = 0;
 
-    config->vfio_enabled = 1;
+    config->vfio_enabled     = 1;
+    config->vfio_sgl_enabled = 1;
 
     config->libaio_enabled     = 1;
     config->libaio_max_pending = 256;
@@ -840,3 +841,10 @@ evpl_global_config_set_spdk_sock_impl(
     config->spdk_sock_impl = impl_name ? evpl_strdup(impl_name) : NULL;
 } /* evpl_global_config_set_spdk_sock_impl */
 
+SYMBOL_EXPORT void
+evpl_global_config_set_vfio_sgl_enabled(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->vfio_sgl_enabled = !!enabled;
+} /* evpl_global_config_set_vfio_sgl_enabled */
