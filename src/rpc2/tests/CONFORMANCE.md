@@ -241,6 +241,22 @@ also exposed a latent fault in the client harness itself -- it kept per-call
 state on the stack frame of the case that started the call, which is only safe
 while abandoned calls never complete.  That state is now heap-allocated.
 
+The value model also chooses whether a zero-copy reply is released inside its
+callback or retained after callback return. Retained descriptors are moved out
+of the request arena (or cloned for caller-owned read-into buffers). The replay
+releases the original read-into reference, advances progress after request
+cleanup, verifies every retained byte, then releases the retained references.
+Generation requires nonempty retained replies for every chunk-placement class.
+
+External-libfabric replay profiles run both stream and RDMA-capable message
+RPC over a caller-owned tcp-provider domain, forcing `FI_WAIT_FD`,
+`FI_WAIT_POLLFD`, and `FI_WAIT_NONE` on epoll and select. Successful queue-open
+witnesses prove negotiation reached the requested mode. Closing the borrowed
+domain after libevpl cleanup checks that no child objects leaked and that
+libevpl did not destroy caller-owned objects. These profiles use the RPC
+model's real-time progress: timer-driven provider progress cannot use the core
+model's clock while that clock is frozen waiting for asynchronous obligations.
+
 ## Open items parked along the way
 
 Recorded here rather than fixed, so they are not lost.  Nothing in this list

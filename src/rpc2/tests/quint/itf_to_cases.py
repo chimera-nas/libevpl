@@ -42,19 +42,20 @@ VALUE_FIELDS = {
     "depth": ["LEmpty", "LOne", "LUnaligned", "LAligned", "LAtBound", "LLarge"],
     "chunk": ["ChunkNone", "ChunkDdp", "ChunkReply", "ChunkReadInto",
               "ChunkWriteAlloc", "ChunkWriteExact"],
+    "retain": ["ReleaseInCallback", "RetainAfterCallback"],
 }
 
 # Field order in struct conf_value_case; also the C member names.
 VALUE_ORDER = ["proc", "i", "u", "l", "ul", "f", "b", "col", "strLen",
                "opaqueLen", "boundedLen", "arrLen", "optPresent", "arm", "depth",
-               "chunk"]
+               "chunk", "retain"]
 
 VALUE_MEMBER = {
     "proc": "proc", "i": "i", "u": "u", "l": "l", "ul": "ul", "f": "f",
     "b": "b", "col": "col", "strLen": "str_len", "opaqueLen": "opaque_len",
     "boundedLen": "bounded_len", "arrLen": "arr_len",
     "optPresent": "opt_present", "arm": "arm", "depth": "depth",
-    "chunk": "chunk",
+    "chunk": "chunk", "retain": "retain",
 }
 
 # Which fields each procedure actually reads.  The model picks a class for
@@ -66,7 +67,7 @@ VALUE_MEMBER = {
 VALUE_RELEVANT = {
     "EchoScalars":  ["i", "u", "l", "ul", "f", "b", "col", "chunk"],
     "EchoBytes":    ["strLen", "opaqueLen", "boundedLen", "chunk"],
-    "EchoZbytes":   ["u", "opaqueLen", "chunk"],
+    "EchoZbytes":   ["u", "opaqueLen", "chunk", "retain"],
     "EchoArrays":   ["u", "arrLen", "boundedLen", "chunk"],
     "EchoUnion":    ["arm", "i", "strLen", "chunk"],
     "EchoOptional": ["optPresent", "u", "i", "chunk"],
@@ -237,6 +238,14 @@ def main():
 
     values = collect_values(value_paths)
     defects = collect_defects(defect_paths)
+    # Require retained, nonempty payloads in every placement class, so corpus
+    # sampling cannot silently drop the ownership boundary under test.
+    retained_chunks = {row[VALUE_ORDER.index("chunk")] for row in values
+                       if row[0] == VALUE_FIELDS["proc"].index("EchoZbytes")
+                       and row[VALUE_ORDER.index("opaqueLen")] != 0
+                       and row[VALUE_ORDER.index("retain")] == 1}
+    if retained_chunks != set(range(len(VALUE_FIELDS["chunk"]))):
+        raise ValueError("RPC corpus lacks retained payloads for some chunk classes")
 
     o = []
     # The header written into the GENERATED file.  Fenced off because reuse
@@ -274,6 +283,7 @@ def main():
     emit_enum(o, "conf_opt_cls", "CLS", VALUE_FIELDS["optPresent"])
     emit_enum(o, "conf_arm_cls", "CLS", VALUE_FIELDS["arm"])
     emit_enum(o, "conf_chunk_cls", "CLS", VALUE_FIELDS["chunk"])
+    emit_enum(o, "conf_retain_cls", "CLS", VALUE_FIELDS["retain"])
     emit_enum(o, "conf_defect", "DEF", DEFECTS)
     emit_enum(o, "conf_target", "TGT", TARGETS)
     emit_enum(o, "conf_outcome", "EXP", OUTCOMES)

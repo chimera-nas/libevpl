@@ -367,7 +367,7 @@ seventeen enabled actions inside a twelve-operation program are negligible.
 
 ## SDK lifecycle and coverage profiles
 
-The coverage matrix also runs four independent Quint specifications. Their C
+The coverage matrix also runs six independent Quint specifications. Their C
 interpreters consume generated operations and expected states; they do not
 infer expected outcomes from the implementation.
 
@@ -377,12 +377,15 @@ infer expected outcomes from the implementation.
 | `quint/lifecycle.qnt` | Synchronous/asynchronous thread and pool creation/destruction; readiness, shutdown and completion counts, including empty pools |
 | `quint/listener.qnt` | Attach/detach with a queued accepted connection; acceptance or discard and peer disconnection |
 | `quint/block_lifecycle.qnt` | SPDK malloc-device resize/removal notifications, visible size and read outcomes before/after removal |
+| `quint/ownership.qnt` | Local/shared buffer reference ledger, clone/move/partial move, and write-chunk ownership retained after encoding-holder destruction |
+| `quint/block_retry.qnt` | SPDK read/write retries, repeated resource exhaustion, close/removal while parked, and read-after-write bytes |
 
 `quint/generate_sdk_cases.py` generates four TypeScript-backend walks per model
-with seed 827. FD, thread and block walks contain 1,024 steps; listener walks
-contain 128 because each restart creates reactors and, for io_uring, kernel
-rings. Generation rejects missing operations and requires callback removal and
-queued-accept discard witnesses. `check_core_models.sh` runs model scenarios
+with seed 827. FD, thread, block-lifecycle and ownership walks contain 1,024
+steps; listener and block-retry walks contain 128 because each restart creates
+reactors, kernel rings, or devices. Generation rejects missing operations and
+requires callback removal, queued-accept discard, retained ownership, retry
+close/removal, and read-after-write witnesses. `check_core_models.sh` runs model scenarios
 and a separate invariant-checking seed.
 
 The listener interpreter stops worker dispatch at the actual accepted-handoff
@@ -408,6 +411,24 @@ include GSS establishment rejection/peer close and validate XID wraparound on
 fresh connections. They never deliberately reuse an outstanding XID: the public
 API forbids that. Configure coverage CI with `EVPL_REQUIRE_KRB5_MBT=ON` so a
 missing MIT Kerberos dependency or skipped protected cases fails the job.
+
+The ownership model checks both local and shared allocation profiles. Its
+encoding holder deliberately owns descriptor storage separately from the
+buffer: `Take` must remove the holder's release obligation, and `Destroy`
+must not invalidate the caller's moved iovec. A second take returns no owned
+references. The C interpreter checks a model-derived reference ledger and
+bytes in every remaining view, with ASan and iovec tracing in Debug builds.
+This is a component test of the public encoding helper; real RPC callback
+retention is exercised separately by the RPC value model.
+
+The block-retry interpreter interposes only SPDK submission failure and wait
+callback scheduling. A real malloc bdev performs successful reads and writes.
+Unaligned user buffers require a bounce vector, whose identity and storage
+must survive each parked retry. The model chooses repeated exhaustion,
+completion, device removal, and asynchronous queue/device close. It checks
+exact completion/error/close counts, device-close ordering, and retained bytes.
+No I/O is submitted on a closing queue. The test executable exports its own
+interposition symbols; normal applications and other replays are unaffected.
 
 Coverage artifacts include `function-coverage.csv`, aggregating inline copies
 by source function and retaining zero-hit functions. The matrix gate checks

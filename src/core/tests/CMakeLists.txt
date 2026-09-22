@@ -311,14 +311,14 @@ if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EX
     if(EVPL_CONFORMANCE_CASES_DIR)
         set(SDK_CASES_DIR ${EVPL_CONFORMANCE_CASES_DIR})
     else()
-        add_custom_command(OUTPUT ${SDK_CASES_DIR}/listener_cases.h ${SDK_CASES_DIR}/fd_cases.h ${SDK_CASES_DIR}/lifecycle_cases.h ${SDK_CASES_DIR}/block_lifecycle_cases.h
+        add_custom_command(OUTPUT ${SDK_CASES_DIR}/listener_cases.h ${SDK_CASES_DIR}/fd_cases.h ${SDK_CASES_DIR}/lifecycle_cases.h ${SDK_CASES_DIR}/block_lifecycle_cases.h ${SDK_CASES_DIR}/ownership_cases.h ${SDK_CASES_DIR}/block_retry_cases.h
             COMMAND ${PYTHON3_EXECUTABLE} ${CORE_QUINT_SRC_DIR}/generate_sdk_cases.py
                     ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR} ${SDK_CASES_DIR}
             DEPENDS ${CORE_QUINT_SRC_DIR}/listener.qnt ${CORE_QUINT_SRC_DIR}/generate_sdk_cases.py
-                    ${CORE_QUINT_SRC_DIR}/fd.qnt ${CORE_QUINT_SRC_DIR}/lifecycle.qnt ${CORE_QUINT_SRC_DIR}/block_lifecycle.qnt
+                    ${CORE_QUINT_SRC_DIR}/fd.qnt ${CORE_QUINT_SRC_DIR}/lifecycle.qnt ${CORE_QUINT_SRC_DIR}/block_lifecycle.qnt ${CORE_QUINT_SRC_DIR}/ownership.qnt ${CORE_QUINT_SRC_DIR}/block_retry.qnt
             VERBATIM)
     endif()
-    foreach(family fd lifecycle listener)
+    foreach(family fd lifecycle listener ownership)
         unit_test_all_mechs(core ${family}_conformance ${family}_conformance.c)
         target_sources(core_${family}_conformance PRIVATE ${SDK_CASES_DIR}/${family}_cases.h)
         target_include_directories(core_${family}_conformance PRIVATE ${SDK_CASES_DIR})
@@ -326,6 +326,10 @@ if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EX
             set_tests_properties(libevpl/core/${family}_conformance_${mech}
                 PROPERTIES LABELS "mbt" TIMEOUT 60)
         endforeach()
+    endforeach()
+    foreach(mech ${EVPL_MECHANISMS})
+        unit_test_mbt_variant(core ownership_conformance_shared_${mech}
+            core_ownership_conformance ${mech} TIMEOUT 60 ENVIRONMENT EVPL_TEST_SHARED=1)
     endforeach()
 endif()
 
@@ -373,6 +377,12 @@ if(HAVE_SPDK AND TARGET core_lifecycle_conformance)
 endif()
 
 if(HAVE_SPDK AND TARGET core_lifecycle_conformance)
+    add_executable(core_block_retry_conformance block_retry_conformance.c ${SDK_CASES_DIR}/block_retry_cases.h)
+    target_include_directories(core_block_retry_conformance PRIVATE ${SDK_CASES_DIR})
+    target_link_libraries(core_block_retry_conformance evpl ${SPDK_TEST_LINK_TARGETS} ${CMAKE_DL_LIBS})
+    set_target_properties(core_block_retry_conformance PROPERTIES ENABLE_EXPORTS ON)
+    unit_test_mbt_variant(core block_retry_conformance_spdk core_block_retry_conformance
+        spdk TIMEOUT 120 ENVIRONMENT ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1)
     add_executable(core_block_lifecycle_conformance block_lifecycle_conformance.c ${SDK_CASES_DIR}/block_lifecycle_cases.h)
     target_include_directories(core_block_lifecycle_conformance PRIVATE ${SDK_CASES_DIR})
     target_link_libraries(core_block_lifecycle_conformance evpl ${SPDK_TEST_LINK_TARGETS})
