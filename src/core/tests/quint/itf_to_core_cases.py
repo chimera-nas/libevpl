@@ -211,15 +211,21 @@ def collect(paths):
 # branches. They are checked both at generation and after actual replay.
 WITNESSES = ["send_burst", "bidirectional", "send_progress_send",
              "finish_pending", "parallel_block", "cross_queue_read",
-             "read_known_data", "queue_reopen", "connection_reuse"]
+             "read_known_data", "queue_reopen", "connection_reuse", "large_send_burst"]
 
 
 def witnesses(program):
     reached = set()
     sends, progressed, queues = {}, False, set()
     writes, opened, connected = {}, set(), set()
+    queued_bytes = {}
     for step in program:
         op, conn, side, q, region, pattern = step[0], step[6], step[7], step[12], step[13], step[15]
+        if op in ('OpQuiesce', 'OpProgress'):
+            queued_bytes = {}
+        elif op in ('OpClose', 'OpConnect', 'OpBindPair'):
+            queued_bytes.pop((conn, 0), None)
+            queued_bytes.pop((conn, 1), None)
         if op == 'OpQuiesce':
             sends, progressed, queues = {}, False, set()
         elif op == 'OpProgress' and sends:
@@ -233,6 +239,9 @@ def witnesses(program):
             if progressed:
                 reached.add('send_progress_send')
             sends[key] = sends.get(key, 0) + 1
+            queued_bytes[key] = queued_bytes.get(key, 0) + step[17]
+            if queued_bytes[key] >= 262144:
+                reached.add('large_send_burst')
         elif op == 'OpFinish' and sends.get((conn, side), 0):
             reached.add('finish_pending')
         elif op == 'OpOpenQueue':

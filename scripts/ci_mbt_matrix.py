@@ -9,6 +9,7 @@ import os
 import re
 
 from ci_coverage_report import relative
+from mbt_configurations import configurations, config_api
 
 
 def check_rdma_tests(data):
@@ -46,6 +47,8 @@ def check_tests(data, backends):
     for mech in ('epoll', 'select'):
         required.append(f'libevpl/core/ownership_conformance_{mech}$')
         required.append(f'libevpl/core/ownership_conformance_shared_{mech}$')
+        for i in range(len(configurations()[0])):
+            required.append(f'libevpl/core/core_conformance_config_pair{i:02d}_{mech}$')
     if 'tls' in backends:
         for mech in ('epoll', 'select'):
             required.append(f'libevpl/core/core_conformance_alpn_{mech}$')
@@ -129,6 +132,7 @@ def check_functions(rows, backends):
         'evpl_rpc2_conn_get_next_xid', 'evpl_rpc2_conn_set_next_xid',
         'evpl_iovec_move_segment', 'evpl_rpc2_encoding_take_write_chunk',
     }
+    required.update(config_api(libfabric='libfabric' in backends))
     if 'tls' in backends:
         required.add('evpl_tls_get_alpn')
     if 'spdk' in backends:

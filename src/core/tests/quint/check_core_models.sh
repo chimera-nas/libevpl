@@ -55,7 +55,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   "runs": [
     { "init": "initStream", "step": "stepMixed", "invariant": "safety", "maxSamples": 200, "maxSteps": 65 },
     { "init": "initSmallDatagram", "step": "stepTransport", "invariant": "safety", "maxSamples": 100, "maxSteps": 65 },
-    { "init": "initStream", "step": "stepBlock", "invariant": "safety", "maxSamples": 100, "maxSteps": 65 }
+    { "init": "initStream", "step": "stepBlock", "invariant": "safety", "maxSamples": 100, "maxSteps": 65 },
+    { "init": "initStream", "step": "stepPressure", "invariant": "safety", "maxSamples": 100, "maxSteps": 65 }
   ]
 }
 SPEC

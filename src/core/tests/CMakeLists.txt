@@ -189,6 +189,14 @@ if(NOT WIN32)
 endif()
 
 if(TARGET core_core_conformance)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/config_profiles.cmake)
+    foreach(profile ${MBT_CONFIG_PROFILES})
+        foreach(mech ${EVPL_MECHANISMS})
+            unit_test_mbt_variant(core core_conformance_config_${profile}_${mech} core_core_conformance
+                ${mech} TIMEOUT 180 ENVIRONMENT EVPL_TEST_CONFIG_PROFILE=${profile}
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        endforeach()
+    endforeach()
     foreach(mech ${EVPL_MECHANISMS})
         unit_test_mbt_variant(core core_conformance_inproc_${mech}
             core_core_conformance ${mech} TIMEOUT 120 ENVIRONMENT

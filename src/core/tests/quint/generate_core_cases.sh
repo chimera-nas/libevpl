@@ -34,9 +34,9 @@ mkdir -p "${WORK_DIR}"
 
 # Each profile walks legal transitions with a different focus. No profile
 # prescribes operation positions. Limits describe inputs, not providers.
-profiles=(Stream Message Datagram SmallDatagram Block Events Mixed Poll)
-inits=(initStream initMessage initDatagram initSmallDatagram initStream initStream initStream initPoll)
-steps=(stepTransport stepTransport stepTransport stepTransport stepBlock stepEvents stepMixed stepPoll)
+profiles=(Stream Message Datagram SmallDatagram Block Events Mixed Poll Pressure)
+inits=(initStream initMessage initDatagram initSmallDatagram initStream initStream initStream initPoll initStream)
+steps=(stepTransport stepTransport stepTransport stepTransport stepBlock stepEvents stepMixed stepPoll stepPressure)
 traces=()
 pids=()
 for i in "${!profiles[@]}"; do

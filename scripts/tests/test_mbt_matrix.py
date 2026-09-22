@@ -6,9 +6,18 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests, check_storage_tests
+from mbt_configurations import configurations
 
 
 class MatrixTests(unittest.TestCase):
+    def test_every_configuration_replay_is_required(self):
+        for mech in ('epoll', 'select'):
+            for i in range(len(configurations()[0])):
+                name = f'libevpl/core/core_conformance_config_pair{i:02d}_{mech}'
+                tests = [t for t in self.data['tests'] if t['name'] != name]
+                with self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
+                    check_tests({'tests': tests}, ['libfabric', 'spdk'])
+
     def test_tls_matrix_requires_both_modes_and_spdk(self):
         names = []
         for mech in ('epoll', 'select'):
@@ -92,6 +101,8 @@ class MatrixTests(unittest.TestCase):
         names.append('core/block_retry_conformance_spdk')
         for mech in ('epoll', 'select'):
             names.extend((f'core/ownership_conformance_{mech}', f'core/ownership_conformance_shared_{mech}'))
+            names.extend(f'core/core_conformance_config_pair{i:02d}_{mech}'
+                         for i in range(len(configurations()[0])))
             for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
                 for mode in ('fd', 'pollfd', 'none'):
                     names.append(f'rpc2/conformance_libfabric_external_{proto}_{mode}_{mech}')

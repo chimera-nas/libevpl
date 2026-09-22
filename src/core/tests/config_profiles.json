@@ -1,0 +1,22 @@
+{
+  "factors": {
+    "buffer_size": [32768, 65536],
+    "slab_size": [131072, 1048576],
+    "iovec_ring_size": [4, 32],
+    "dgram_ring_size": [4, 32],
+    "rdma_request_ring_size": [4, 32],
+    "max_datagram_batch": [1, 16],
+    "max_poll_fd": [1, 16],
+    "preallocate_threads": [0, 1, 4]
+  },
+  "stress": {
+    "buffer_size": 32768,
+    "slab_size": 131072,
+    "iovec_ring_size": 4,
+    "dgram_ring_size": 4,
+    "rdma_request_ring_size": 4,
+    "max_datagram_batch": 1,
+    "max_poll_fd": 1,
+    "preallocate_threads": 4
+  }
+}
