@@ -340,7 +340,7 @@ if(TARGET core_core_conformance)
             EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
         if(HAVE_TLS)
             unit_test_mbt_variant(core core_conformance_alpn_${mech} core_core_conformance
-                ${mech} TIMEOUT 180 ENVIRONMENT EVPL_TEST_ALPN=mbt/1
+                ${mech} TIMEOUT 180 ENVIRONMENT EVPL_TEST_ALPN=mbt/1 EVPL_TEST_TLS_ERROR_QUEUE=1
                 EVPL_TEST_PORTABLE_ONLY=1 EVPL_TEST_TLS_MODE=software
                 EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_TLS
                 EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})

@@ -397,6 +397,12 @@ operation. `EVPL_TEST_VFIO_PRP=1` disables optional SGL use through
 byte/ownership oracle. Guest profiles remain labeled `mbt_guest` and
 `mbt_storage`, and need a disposable storage device.
 
+ALPN profiles set `EVPL_TEST_TLS_ERROR_QUEUE=1` to leave an unrelated OpenSSL
+system error on the reactor thread before each pump. The transport must isolate
+its TLS operations from that stale error while preserving the same model-derived
+bytes and callback obligations. This deterministically exercises the false
+fatal-error disconnect observed in the macOS select replay.
+
 HTTP replays check chunked trailers by lookup and iteration. RPC client traces
 include GSS establishment rejection/peer close and validate XID wraparound on
 fresh connections. They never deliberately reuse an outstanding XID: the public

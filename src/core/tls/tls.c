@@ -178,6 +178,9 @@ evpl_tls_handshake(
     struct evpl_notify notify;
     int                ret;
 
+    /* SSL_get_error also inspects the thread's error queue. Another session
+     * (including its shutdown) may have left an unrelated error there. */
+    ERR_clear_error();
     if (t->is_server) {
         ret = SSL_accept(t->ssl);
     } else {
@@ -491,6 +494,7 @@ evpl_tls_read(
         evpl_iovec_alloc_whole(evpl, &t->recv1);
     }
 
+    ERR_clear_error();
     res = SSL_read(t->ssl, evpl_iovec_data(&t->recv1), evpl_iovec_length(&t->recv1));
 
     if (res <= 0) {
@@ -584,6 +588,7 @@ evpl_tls_write(
     }
 
 
+    ERR_clear_error();
     res = SSL_write(t->ssl, iov.iov_base, iov.iov_len);
 
     if (res <= 0) {
@@ -830,6 +835,7 @@ evpl_tls_pending_close(
     struct evpl_tls *t = evpl_bind_private(bind);
 
     if (t->ssl && t->state == EVPL_TLS_STATE_CONNECTED) {
+        ERR_clear_error();
         SSL_shutdown(t->ssl);
     }
 

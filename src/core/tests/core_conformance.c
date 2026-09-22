@@ -50,6 +50,7 @@
 #include "tests/test_mbt.h"
 #ifdef HAVE_TLS
 #include "core/tls/tls.h"
+#include <openssl/err.h>
 #endif /* ifdef HAVE_TLS */
 #include "tests/test_block.h"
 
@@ -58,6 +59,23 @@
 #include "core/spdk/tests/spdk_bdev_test_common.h"
 #endif /* ifdef HAVE_SPDK */
 
+
+#ifdef HAVE_TLS
+static int tls_error_queue;
+#endif /* ifdef HAVE_TLS */
+
+static int
+core_continue(struct evpl *evpl)
+{
+#ifdef HAVE_TLS
+    if (tls_error_queue) {
+        /* Model an unrelated OpenSSL operation failing on this reactor thread.
+         * This must not change this connection's bytes or callback obligations. */
+        ERR_raise(ERR_LIB_SYS, EIO);
+    }
+#endif /* ifdef HAVE_TLS */
+    return test_mbt_continue(evpl);
+} /* core_continue */
 
 /*
  * The delay classes, in microseconds.  These MUST match core.qnt's delayMs():
@@ -599,7 +617,7 @@ settle(struct prog_state *ps)
     while (quiet < SETTLE_PASSES) {
         int before = ps->nlog;
 
-        test_mbt_continue(ps->evpl);
+        core_continue(ps->evpl);
 
         quiet = (ps->nlog == before) ? quiet + 1 : 0;
 
@@ -1116,7 +1134,7 @@ await_expectations(
     int             passes = 0;
 
     while (!expectations_met(ps, step)) {
-        test_mbt_continue(ps->evpl);
+        core_continue(ps->evpl);
 
         if (++passes < AWAIT_SPIN_PASSES) {
             continue;
@@ -1668,10 +1686,10 @@ block_device_open(
 
     if (uri && *uri) {
         ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
-                                            uri, test_mbt_continue);
+                                            uri, core_continue);
     } else if (block_protocol() == EVPL_BLOCK_PROTOCOL_SPDK_BDEV) {
         ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
-                                            "Malloc0", test_mbt_continue);
+                                            "Malloc0", core_continue);
     } else {
         snprintf(ps->device_path, sizeof(ps->device_path),
                  "core_conf_block-%d-%d.img", (int) evpl_process_id(), prog);
@@ -1681,7 +1699,7 @@ block_device_open(
                            "could not size %s", ps->device_path);
         evpl_test_close(fd);
         ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
-                                            ps->device_path, test_mbt_continue);
+                                            ps->device_path, core_continue);
     }
 
     evpl_test_abort_if(!ps->bdev, "could not open %s as a block device",
@@ -1715,7 +1733,7 @@ block_device_close(struct prog_state *ps)
     }
 
     if (ps->bdev) {
-        test_block_close_progress(ps->evpl, ps->bdev, test_mbt_continue);
+        test_block_close_progress(ps->evpl, ps->bdev, core_continue);
         ps->bdev = NULL;
     }
 
@@ -2115,7 +2133,7 @@ run_step(
             break;
 
         case COP_OPPROGRESS:
-            test_mbt_continue(ps->evpl);
+            core_continue(ps->evpl);
             break;
 
         case COP_OPQUIESCE:
@@ -2413,6 +2431,7 @@ core_conformance_init(void)
     test_mbt_tls_config(config);
 #ifdef HAVE_TLS
     const char                *alpn = getenv("EVPL_TEST_ALPN");
+    tls_error_queue = getenv("EVPL_TEST_TLS_ERROR_QUEUE") != NULL;
     if (alpn) {
         const char *offers[] = { alpn, "mbt-fallback" };
         evpl_tls_set_alpn_protocols(offers, 2);
