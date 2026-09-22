@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests
+from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests, check_storage_tests
 
 
 class MatrixTests(unittest.TestCase):
@@ -28,12 +28,32 @@ class MatrixTests(unittest.TestCase):
                                     'summary': {'lines': {'covered': 100}}}]}]}
         check_execution(data, '/repo', ['rdma'])
 
+    def test_storage_requires_every_backend_and_mechanism(self):
+        tests = [{'name': f'libevpl/core/core_conformance_{b}_{m}'}
+                 for b in ('libaio', 'io_uring', 'vfio') for m in ('epoll', 'select')]
+        check_storage_tests({'tests': tests})
+        for i in range(len(tests)):
+            with self.assertRaisesRegex(ValueError, 'Missing storage'):
+                check_storage_tests({'tests': tests[:i] + tests[i + 1:]})
+
+    def test_storage_execution_cannot_be_satisfied_by_another_backend(self):
+        for backend, source in (('libaio', 'libaio_block.c'),
+                                ('io_uring', 'io_uring_block.c'), ('vfio', 'vfio.c')):
+            data = {'data': [{'files': [{'filename': f'/repo/src/core/{backend}/{source}',
+                                        'summary': {'lines': {'covered': 10}}}]}]}
+            check_execution(data, '/repo', [backend])
+            for other in {'libaio', 'io_uring', 'vfio'} - {backend}:
+                with self.assertRaisesRegex(ValueError, 'no executed lines'):
+                    check_execution(data, '/repo', [other])
+
     def setUp(self):
         names = ['core/core_conformance_epoll', 'http/conformance',
                  'http/conformance_client', 'rpc2/conformance_STREAM_SOCKET_TCP_epoll',
                  'rpc2/conformance_client_STREAM_SOCKET_TCP_epoll',
                  'core/core_conformance_libfabric_epoll', 'core/core_conformance_spdk',
-                 'core/core_conformance_libfabric_spdk']
+                 'core/core_conformance_libfabric_spdk',
+                 'core/core_conformance_libfabric_rdm_epoll',
+                 'core/core_conformance_libfabric_rdm_spdk']
         for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
             names.append(f'rpc2/conformance_{proto}_epoll')
         for mode in ('polling', 'interrupt'):
@@ -50,6 +70,13 @@ class MatrixTests(unittest.TestCase):
         self.data['tests'].pop()
         with self.assertRaisesRegex(ValueError, 'DATAGRAM_LIBFABRIC_MSG_spdk_interrupt'):
             check_tests(self.data, ['libfabric', 'spdk'])
+
+    def test_rdm_replay_is_required_alongside_msg(self):
+        for name in ('core/core_conformance_libfabric_rdm_epoll',
+                     'core/core_conformance_libfabric_rdm_spdk'):
+            tests = [t for t in self.data['tests'] if t['name'] != 'libevpl/' + name]
+            with self.assertRaisesRegex(ValueError, 'libfabric_rdm'):
+                check_tests({'tests': tests}, ['libfabric', 'spdk'])
 
     def test_native_only_still_supported_but_ci_requires_backends(self):
         self.data['tests'] = self.data['tests'][:5]

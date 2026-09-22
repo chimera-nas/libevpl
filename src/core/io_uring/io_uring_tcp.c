@@ -315,6 +315,7 @@ evpl_io_uring_setup_socket(
 {
     int flags, rc, yes = 1, n;
 
+    evpl_io_uring_init_recv_ring(ctx);
     n = evpl_io_uring_fill_recv_ring(evpl, ctx);
 
     if (n) {

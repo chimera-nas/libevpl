@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #pragma once
+#include <stddef.h>
+#include "evpl/evpl_export.h"
 
 /*
  * Event-loop core mechanism abstraction.
@@ -25,6 +27,8 @@ struct evpl_event;
  * mechanism's own machinery invokes evpl_continue(), so evpl_run()/evpl_stop()
  * must not be used and the wait op never blocks. */
 #define EVPL_CORE_OPS_EXTERNAL_LOOP 0x1
+/* Removal is keyed by descriptor number and must verify registration ownership. */
+#define EVPL_CORE_OPS_FD_REGISTRY   0x2
 
 struct evpl_core_ops {
     /* Dispatch collected completions after post_wait, on the loop thread. */
@@ -69,6 +73,8 @@ struct evpl_core_ops {
 
 struct evpl_core {
     const struct evpl_core_ops *ops;
+    struct evpl_event         **fd_events;
+    size_t                      num_fd_events;
     union {
 #ifdef EVPL_HAVE_IOCP
         struct evpl_core_iocp   iocp;
@@ -106,27 +112,14 @@ int evpl_core_init(
     struct evpl_core *evc,
     int               max_events);
 
-static inline void
-evpl_core_destroy(struct evpl_core *evc)
-{
-    evc->ops->destroy(evc);
-} /* evpl_core_destroy */
-
-static inline void
-evpl_core_add(
+EVPL_API void evpl_core_destroy(
+    struct evpl_core *evc);
+EVPL_API void evpl_core_add(
     struct evpl_core  *evc,
-    struct evpl_event *event)
-{
-    evc->ops->add(evc, event);
-} /* evpl_core_add */
-
-static inline void
-evpl_core_remove(
+    struct evpl_event *event);
+EVPL_API void evpl_core_remove(
     struct evpl_core  *evc,
-    struct evpl_event *event)
-{
-    evc->ops->remove(evc, event);
-} /* evpl_core_remove */
+    struct evpl_event *event);
 
 static inline int
 evpl_core_wait(

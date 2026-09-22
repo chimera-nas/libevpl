@@ -15,14 +15,14 @@ phase=${MBT_COVERAGE_PHASE:-all}
 case "$phase" in all|run|report) ;; *) echo "Invalid coverage phase: $phase" >&2; exit 1 ;; esac
 if [[ "$phase" != report ]]; then
     # A nonempty suite is insufficient: catch accidentally disabled model families.
-    ctest --test-dir "$build" -L '^mbt$' -LE '^mbt_rdma$' --show-only=json-v1 > "$out/tests.json"
+    ctest --test-dir "$build" -L '^mbt$' -LE '^mbt_guest$' --show-only=json-v1 > "$out/tests.json"
     python3 scripts/ci_mbt_matrix.py tests "$out/tests.json" --require "${required[@]}"
     rm -rf "${build:?}/coverage"
     mkdir -p "$build/coverage/profraw"
     # Each replay may drive a host, wire peer and several reactor threads.
     # Bound concurrency; callers can override it on a dedicated larger runner.
     LLVM_PROFILE_FILE="$build/coverage/profraw/%m-%p.profraw" \
-        ctest --test-dir "$build" -L '^mbt$' -LE '^mbt_rdma$' --output-on-failure \
+        ctest --test-dir "$build" -L '^mbt$' -LE '^mbt_guest$' --output-on-failure \
         --no-tests=error --timeout 600 --output-junit "$out/results.xml" -j "${CTEST_PARALLEL_LEVEL:-2}"
 fi
 if [[ "$phase" == run ]]; then exit 0; fi
@@ -31,6 +31,13 @@ if [[ " ${required[*]} " == *" rdma "* ]]; then
     python3 scripts/ci_mbt_matrix.py execution "$out/rdma-coverage-export.json" \
         --root "$PWD" --require rdma
 fi
+for backend in libaio io_uring vfio; do
+    if [[ " ${required[*]} " == *" $backend "* ]]; then
+        python3 scripts/ci_mbt_matrix.py storage-tests "$out/storage-tests.json"
+        python3 scripts/ci_mbt_matrix.py execution "$out/$backend-coverage-export.json" \
+            --root "$PWD" --require "$backend"
+    fi
+done
 python3 scripts/ci_patch_coverage.py --sources "$diff" > "$out/sources.txt"
 COVERAGE_JSON="$out/coverage-export.json" COVERAGE_LCOV="$out/patch-coverage.lcov" \
     COVERAGE_LCOV_SOURCES="$out/sources.txt" bash etc/coverage-report.sh "$build"

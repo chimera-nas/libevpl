@@ -172,11 +172,10 @@ evpl_io_uring_complete(
 
     if (cq_count) {
 
-        buf_count = evpl_io_uring_fill_recv_ring(evpl, ctx);
-
-        //__io_uring_buf_ring_cq_advance(&ctx->ring, ctx->recv_ring, cq_count, buf_count);
-
-        io_uring_buf_ring_advance(ctx->recv_ring, buf_count);
+        if (ctx->recv_ring) {
+            buf_count = evpl_io_uring_fill_recv_ring(evpl, ctx);
+            io_uring_buf_ring_advance(ctx->recv_ring, buf_count);
+        }
         io_uring_cq_advance(&ctx->ring, cq_count);
 
         evpl_activity(evpl);
@@ -281,6 +280,36 @@ evpl_io_uring_complete_event(
     } while (n);
 } /* evpl_io_uring_complete */
 
+/* Block queues do not need TCP provided-buffer support or receive buffers. */
+void
+evpl_io_uring_init_recv_ring(struct evpl_io_uring_context *ctx)
+{
+    int ret;
+
+    if (ctx->recv_ring) {
+        return;
+    }
+
+    ctx->recv_ring_size   = 8192;
+    ctx->recv_buffer_size = 2 * 1024 * 1024;
+
+    ctx->recv_ring = io_uring_setup_buf_ring(&ctx->ring, ctx->recv_ring_size,
+                                             EVPL_IO_URING_BUFGROUP_ID,
+                                             0, &ret);
+
+    evpl_io_uring_abort_if(ret < 0, "io_uring_setup_buf_ring() failed: %s (%d)", strerror(-ret), ret);
+
+    ctx->recv_ring_mask = io_uring_buf_ring_mask(ctx->recv_ring_size);
+
+    ctx->recv_ring_iov_empty = evpl_zalloc((ctx->recv_ring_size / 64) * sizeof(uint64_t));
+    memset(ctx->recv_ring_iov_empty, 0xff, (ctx->recv_ring_size / 64) * sizeof(uint64_t));
+
+    ctx->recv_ring_iov = evpl_zalloc(ctx->recv_ring_size * sizeof(struct evpl_iovec));
+
+
+
+} /* evpl_io_uring_init_recv_ring */
+
 static void *
 evpl_io_uring_create(
     struct evpl *evpl,
@@ -320,22 +349,6 @@ evpl_io_uring_create(
 
     evpl_deferral_init(&ctx->flush, evpl_io_uring_flush_sqe, ctx);
 
-    ctx->recv_ring_size   = 8192;
-    ctx->recv_buffer_size = 2 * 1024 * 1024;
-
-    ctx->recv_ring = io_uring_setup_buf_ring(&ctx->ring, ctx->recv_ring_size,
-                                             EVPL_IO_URING_BUFGROUP_ID,
-                                             0, &ret);
-
-    ctx->recv_ring_mask = io_uring_buf_ring_mask(ctx->recv_ring_size);
-
-    ctx->recv_ring_iov_empty = evpl_zalloc((ctx->recv_ring_size / 64) * sizeof(uint64_t));
-    memset(ctx->recv_ring_iov_empty, 0xff, (ctx->recv_ring_size / 64) * sizeof(uint64_t));
-
-    ctx->recv_ring_iov = evpl_zalloc(ctx->recv_ring_size * sizeof(struct evpl_iovec));
-
-    evpl_io_uring_abort_if(ret < 0, "io_uring_setup_buf_ring");
-
     ctx->poll = evpl_add_poll(evpl, evpl_io_uring_poll_enter, evpl_io_uring_poll_exit, evpl_io_uring_poll, ctx);
 
     return ctx;
@@ -348,7 +361,7 @@ evpl_io_uring_destroy(
 {
     struct evpl_io_uring_context *ctx = private_data;
     struct evpl_io_uring_request *req;
-    int                           n;
+    int                           i;
 
     while (ctx->free_requests) {
         req = ctx->free_requests;
@@ -356,19 +369,22 @@ evpl_io_uring_destroy(
         evpl_free(req);
     }
 
-    n = evpl_io_uring_fill_recv_ring(evpl, ctx);
-
-    if (n) {
-        io_uring_buf_ring_advance(ctx->recv_ring, n);
+    if (ctx->recv_ring) {
+        io_uring_free_buf_ring(&ctx->ring, ctx->recv_ring, ctx->recv_ring_size,
+                               EVPL_IO_URING_BUFGROUP_ID);
     }
-
-    io_uring_free_buf_ring(&ctx->ring, ctx->recv_ring, ctx->recv_ring_size, 0);
 
     io_uring_queue_exit(&ctx->ring);
 
     close(ctx->eventfd);
 
-    evpl_iovecs_release_internal(evpl, ctx->recv_ring_iov, ctx->recv_ring_size);
+    /* Empty slots have transferred their reference to a socket's receive
+     * queue. Release only buffers still owned by the provided-buffer ring. */
+    for (i = 0; i < ctx->recv_ring_size; i++) {
+        if (!(ctx->recv_ring_iov_empty[i >> 6] & (1ULL << (i & 63)))) {
+            evpl_iovecs_release_internal(evpl, &ctx->recv_ring_iov[i], 1);
+        }
+    }
 
     evpl_free(ctx->recv_ring_iov_empty);
     evpl_free(ctx->recv_ring_iov);

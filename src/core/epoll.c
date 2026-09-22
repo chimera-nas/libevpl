@@ -130,6 +130,7 @@ evpl_core_epoll_wait(
 
 const struct evpl_core_ops evpl_core_epoll_ops = {
     .name    = "epoll",
+    .flags   = EVPL_CORE_OPS_FD_REGISTRY,
     .init    = evpl_core_epoll_init,
     .destroy = evpl_core_epoll_destroy,
     .add     = evpl_core_epoll_add,

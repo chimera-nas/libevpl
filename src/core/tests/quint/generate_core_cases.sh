@@ -32,52 +32,23 @@ OUT_HEADER="${5:?}"
 
 mkdir -p "${WORK_DIR}"
 
-# Unlike the RPC2 models, these traces are not a bag of independent cases that
-# de-duplicate down to a taxonomy: each program is distinct, so breadth comes
-# from generating more of them rather than from longer traces.
-#
-# Generous, because a program costs almost nothing to run.  Its windows are
-# advances of libevpl's virtual clock rather than sleeps, so a 100ms window is
-# a few hundred non-blocking passes of the event loop and the whole suite runs
-# in well under a second.  On a real clock this many programs would be minutes.
-#
-# Split across a few seeds, several traces each, rather than one trace per
-# seed.  Two costs are in play: quint parses and typechecks the model once per
-# PROCESS, and simulates once per TRACE.  This model is big enough that the
-# simulation is not lost in the noise, so neither extreme is right -- one
-# process per trace pays the parse ten times, and one process for all ten
-# serialises the simulation.  A handful of processes, each producing a
-# handful of traces, pays the parse once per core and still runs them at once.
-SEEDS=(0xe1 0xe2 0xe3 0xe4 0xe5)
-TRACES_PER_SEED=2
-STEPS=260
-
-TRACES=()
-PIDS=()
-
-for s in "${SEEDS[@]}"; do
-    "${QUINT}" run --backend=typescript "${SRC_DIR}/core.qnt" \
-        --seed="$s" --max-steps="${STEPS}" \
-        --max-samples="${TRACES_PER_SEED}" --n-traces="${TRACES_PER_SEED}" \
-        --out-itf="${WORK_DIR}/core-${s}-{seq}.itf.json" > /dev/null &
-    PIDS+=($!)
-
-    for i in $(seq 0 $((TRACES_PER_SEED - 1))); do
-        TRACES+=("${WORK_DIR}/core-${s}-${i}.itf.json")
-    done
+# Each profile walks legal transitions with a different focus. No profile
+# prescribes operation positions. Limits describe inputs, not providers.
+profiles=(Stream Message Datagram SmallDatagram Block Events Mixed Poll)
+inits=(initStream initMessage initDatagram initSmallDatagram initStream initStream initStream initPoll)
+steps=(stepTransport stepTransport stepTransport stepTransport stepBlock stepEvents stepMixed stepPoll)
+traces=()
+pids=()
+for i in "${!profiles[@]}"; do
+    prefix="$WORK_DIR/core-${profiles[$i]}"
+    "$QUINT" run --backend=typescript "$SRC_DIR/core_generation.qnt" \
+        --init="${inits[$i]}" --step="${steps[$i]}" --seed="$((225 + i))" \
+        --max-steps=520 --max-samples=2 --n-traces=2 \
+        --out-itf="$prefix-{seq}.itf.json" > /dev/null &
+    pids+=($!)
+    traces+=("$prefix-0.itf.json" "$prefix-1.itf.json")
 done
-
-# UD needs its own size bounds: keep the original UDP traces unchanged and
-# add separately generated, MTU-sized RDMA programs using the same obligations.
-"${QUINT}" run --backend=typescript "${SRC_DIR}/core.qnt" \
-    --init=initRdmaUd --step=stepRdmaUd --seed=0xe6 --max-steps="${STEPS}" \
-    --max-samples=2 --n-traces=2 \
-    --out-itf="${WORK_DIR}/core-rdma-{seq}.itf.json" > /dev/null &
-PIDS+=($!)
-TRACES+=("${WORK_DIR}/core-rdma-0.itf.json" "${WORK_DIR}/core-rdma-1.itf.json")
-
-for pid in "${PIDS[@]}"; do
-    wait "$pid" || { echo "quint run failed" >&2; exit 1; }
+for pid in "${pids[@]}"; do
+    wait "$pid" || { echo "quint generation failed" >&2; exit 1; }
 done
-
-"${PYTHON}" "${SRC_DIR}/itf_to_core_cases.py" "${OUT_HEADER}" "${TRACES[@]}"
+"$PYTHON" "$SRC_DIR/itf_to_core_cases.py" "$OUT_HEADER" "${traces[@]}"

@@ -64,7 +64,7 @@ struct evpl_vfio_mr {
     void                *buffer;
     uint64_t             iova;
     uint64_t             size;
-    int                  mapped; /* MAP_DMA done (0 while queued on ->pending) */
+    int                  mapped; /* Mapped in the current IOMMU domain. */
     struct evpl_vfio_mr *prev;
     struct evpl_vfio_mr *next;
 };
@@ -75,6 +75,8 @@ struct evpl_vfio_queue {
     uint32_t                       size;
     uint32_t                       sizemask;
     int                            cidcount;
+    /* Command-specific DW0, valid while invoking a completion callback. */
+    uint32_t                       completion_result;
     union nvme_sq_entry           *sq;
     struct nvme_cq_entry          *cq;
     uint32_t                      *sq_doorbell;
@@ -114,11 +116,9 @@ struct evpl_vfio_shared {
     uint64_t                iova_current;
     uint64_t                iova_max;
     struct evpl_vfio_group *groups;
-    /* Regions registered before the IOMMU type could be set (no device/group
-     * is attached yet at framework init, so VFIO_SET_IOMMU is not possible and
-     * MAP_DMA would EINVAL).  Mapped by evpl_vfio_flush_pending once the first
-     * device attach establishes the IOMMU and the valid IOVA window. */
-    struct evpl_vfio_mr    *pending;
+    /* Keep every registration so it can be remapped when the last group is
+     * detached and a later device open creates a new IOMMU domain. */
+    struct evpl_vfio_mr    *regions;
     evpl_mutex_t            lock;
 };
 
@@ -400,26 +400,19 @@ evpl_vfio_map_locked(
     mr->mapped = 1;
 } /* evpl_vfio_map_locked */
 
-/*
- * Map every region that was registered before the IOMMU type was set.  Called
- * from the device-attach path immediately after VFIO_SET_IOMMU and the IOVA
- * range query, so the deferred maps land in the correct window.
- */
+/* Caller holds vfio->lock after establishing the IOMMU and IOVA window. */
 static void
-evpl_vfio_flush_pending(struct evpl_vfio_shared *vfio)
+evpl_vfio_map_regions_locked(struct evpl_vfio_shared *vfio)
 {
     struct evpl_vfio_mr *mr;
 
-    evpl_mutex_lock(&vfio->lock);
-
-    while (vfio->pending) {
-        mr = vfio->pending;
-        DL_DELETE(vfio->pending, mr);
-        evpl_vfio_map_locked(vfio, mr);
+    DL_FOREACH(vfio->regions, mr)
+    {
+        if (!mr->mapped) {
+            evpl_vfio_map_locked(vfio, mr);
+        }
     }
-
-    evpl_mutex_unlock(&vfio->lock);
-} /* evpl_vfio_flush_pending */
+} /* evpl_vfio_map_regions_locked */
 
 static struct evpl_vfio_mr *
 evpl_vfio_register(
@@ -435,13 +428,9 @@ evpl_vfio_register(
 
     evpl_mutex_lock(&vfio->lock);
 
+    DL_APPEND(vfio->regions, mr);
     if (vfio->iommu_set) {
         evpl_vfio_map_locked(vfio, mr);
-    } else {
-        /* No device/group is attached yet, so the IOMMU type cannot be set and
-         * MAP_DMA would EINVAL.  Queue the region; evpl_vfio_flush_pending maps
-         * it once the first device attach establishes the IOMMU window. */
-        DL_APPEND(vfio->pending, mr);
     }
 
     evpl_mutex_unlock(&vfio->lock);
@@ -465,10 +454,8 @@ evpl_vfio_unregister(
         unmap.size  = mr->size;
 
         ioctl(vfio->container_fd, VFIO_IOMMU_UNMAP_DMA, &unmap);
-    } else {
-        /* Freed before the IOMMU was ready -- still on the pending queue. */
-        DL_DELETE(vfio->pending, mr);
     }
+    DL_DELETE(vfio->regions, mr);
 
     evpl_mutex_unlock(&vfio->lock);
 
@@ -569,6 +556,7 @@ evpl_vfio_attach_device(
 
     group = evpl_zalloc(sizeof(*group));
 
+    evpl_mutex_lock(&vfio->lock);
     DL_APPEND(vfio->groups, group);
 
     group->fd = open(vfio_device_path, O_RDWR);
@@ -591,12 +579,13 @@ evpl_vfio_attach_device(
 
         /* Map any regions registered before the IOMMU was ready (slabs that
          * already existed when the VFIO framework initialised). */
-        evpl_vfio_flush_pending(vfio);
+        evpl_vfio_map_regions_locked(vfio);
     }
 
     device_fd = ioctl(group->fd, VFIO_GROUP_GET_DEVICE_FD, pciname_vfio);
 
-    evpl_vfio_abort_if(device_fd < 0, "Failed to open VFIO IOMMU NVMe device");
+    evpl_vfio_abort_if(device_fd < 0, "Failed to open VFIO IOMMU NVMe device: %s", strerror(errno));
+    evpl_mutex_unlock(&vfio->lock);
 
     *out_group = group;
 
@@ -778,6 +767,7 @@ evpl_vfio_poll_queue(
             evpl_vfio_error("cqecid %d  cs %d sct %d sc %d", cid, cqe->cs, cqe->sct, cqe->sc);
         }
 
+        queue->completion_result = cqe->cs;
         if (cb->fn) {
             cb->fn(evpl, cqe->sc ? EIO : 0, cb->arg);
         }
@@ -955,8 +945,9 @@ evpl_vfio_create_ioq(
          * MSI-X vector, all device-owned and indexed by id). */
         id = device->free_ioq_ids[--device->num_free_ioq_ids];
     } else {
-        evpl_vfio_abort_if(device->next_ioq_id >= device->msixsize,
-                           "Too many VFIO device queues, exceeded msixsize.  Consider reducing thread count.");
+        evpl_vfio_abort_if(device->next_ioq_id >= device->msixsize ||
+                           device->next_ioq_id > device->max_queues,
+                           "Too many VFIO device queues for the controller allocation or interrupt vectors.");
 
         id = device->next_ioq_id++;
     }
@@ -1046,28 +1037,30 @@ evpl_vfio_identify(
 } /* evpl_vfio_identify */
 
 static void
-evpl_vfio_get_features(
+evpl_vfio_set_features(
     struct evpl_vfio_device *device,
     int                      feature,
+    uint32_t                 value,
     evpl_block_callback_t    callback,
     void                    *arg)
 {
     int                             cid;
-    struct nvme_admin_get_features *cmd;
+    struct nvme_admin_set_features *cmd;
 
     cid = evpl_vfio_alloc_cid(device->adminq, callback, arg);
-    cmd = &device->adminq->sq[cid].get_features;
+    cmd = &device->adminq->sq[cid].set_features;
 
     memset(cmd, 0, sizeof(*cmd));
-    cmd->common.opc  = NVME_ADMIN_GET_FEATURES;
+    cmd->common.opc  = NVME_ADMIN_SET_FEATURES;
     cmd->common.cid  = cid;
     cmd->common.nsid = 0;
     cmd->common.prp1 = 0;
     cmd->common.prp2 = 0;
     cmd->fid         = feature;
+    cmd->val         = value;
 
     evpl_vfio_ring_sq(device->adminq);
-} /* evpl_nvme_get_features */
+} /* evpl_vfio_set_features */
 
 static void
 evpl_vfio_identify_ctrl(
@@ -1133,7 +1126,8 @@ evpl_vfio_get_max_queues(
     struct evpl_vfio_device       *device = (struct evpl_vfio_device *) arg;
     struct nvme_feature_num_queues nq;
 
-    nq.val = status;
+    evpl_vfio_abort_if(status, "Failed to negotiate NVMe I/O queue allocation: %d", status);
+    nq.val = device->adminq->completion_result;
 
     device->max_queues = nq.nsq + 1;
 
@@ -1829,13 +1823,24 @@ evpl_vfio_close_device(
     if (dev->group) {
         evpl_mutex_lock(&dev->vfio->lock);
         DL_DELETE(dev->vfio->groups, dev->group);
-        evpl_mutex_unlock(&dev->vfio->lock);
 
         if (ioctl(dev->group->fd, VFIO_GROUP_UNSET_CONTAINER)) {
             evpl_vfio_error("Failed to unset VFIO group container: %s", strerror(errno));
         }
 
         close(dev->group->fd);
+        if (!dev->vfio->groups) {
+            struct evpl_vfio_mr *mr;
+
+            /* Removing the last group releases the IOMMU domain and all of
+             * its DMA mappings. Allocator registrations can outlive it. */
+            dev->vfio->iommu_set = 0;
+            DL_FOREACH(dev->vfio->regions, mr)
+            {
+                mr->mapped = 0;
+            }
+        }
+        evpl_mutex_unlock(&dev->vfio->lock);
         evpl_free(dev->group);
     }
 
@@ -1951,7 +1956,11 @@ evpl_vfio_open_device(
     evpl_vfio_identify(NULL, dev, ns_id_ctx.mr, 1,
                        evpl_vfio_identify_ns, &ns_id_ctx);
 
-    evpl_vfio_get_features(dev, NVME_FEATURE_NUM_QUEUES,
+    /* Number of Queues is zero-based. Request one I/O queue per available
+     * interrupt vector, reserving vector zero for the admin queue. */
+    evpl_vfio_abort_if(dev->msixsize < 2, "NVMe device has no I/O queue interrupt vector");
+    evpl_vfio_set_features(dev, NVME_FEATURE_NUM_QUEUES,
+                           (dev->msixsize - 2) | ((dev->msixsize - 2) << 16),
                            evpl_vfio_get_max_queues, dev);
 
     while (dev->adminq->cidcount > 0) {

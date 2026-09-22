@@ -28,13 +28,9 @@
  * satisfaction: an early exit would observe no absence, and the second and
  * third checks above would be worthless.
  *
- * The transport half runs over EVPL_STREAM_INPROC.  In-process is what makes
- * a whole connection lifecycle reachable from one thread and one evpl: both
- * ends are in this process, so the model can state what BOTH of them are
- * owed, and there is no port to collide on, no namespace to need and nothing
- * for a crash to leave behind.  Everything here is transport-agnostic above
- * the protocol id, so widening it to the socket transports is a matter of
- * parameterizing that id rather than of rewriting the harness.
+ * Backend adapters select concrete protocols and storage devices. Generated
+ * traces describe stream/message/datagram contracts and carry exact lengths;
+ * no adapter changes their operations or expected callback obligations.
  *
  * The model encodes the SPECIFICATION that include/evpl states, so a mismatch
  * is a candidate bug in libevpl rather than a broken test.  Reviewed,
@@ -171,12 +167,8 @@
  * region per data op, so these are the two numbers that have to agree with
  * NUM_REGION and NUM_BLOCK_QUEUE over there.
  *
- * The backend is the pread one, unconditionally.  It is the only block
- * backend present on every platform, and a conformance test of the block API
- * wants the same programs to run everywhere; the backends with a kernel
- * dependency keep their own tests.  EVPL_TEST_BLOCK_PROTOCOL overrides it by
- * name, which is how the same programs can be pointed at io_uring or libaio
- * on a host that has them.
+ * Pread is the portable default. Backend selection and optional external
+ * device URIs are adapter settings; every backend replays the same block ops.
  */
 #define NUM_BLOCK_QUEUE   2
 #define NUM_REGION        4
@@ -548,6 +540,7 @@ op_name(uint8_t op)
         case COP_OPBLOCKWRITEZEROES: return "BlockWriteZeroes";
         case COP_OPBLOCKWRITEZEROESALL: return "BlockWriteZeroesAll";
         case COP_OPBLOCKDISCARD: return "BlockDiscard";
+        case COP_OPPROGRESS: return "progress";
         case COP_OPQUIESCE: return "Quiesce";
         default: return "?";
     } /* switch */
@@ -585,20 +578,6 @@ failure_name(uint8_t failure)
         default: return "?";
     } /* switch */
 } /* failure_name */
-
-/* Must match core.qnt's sizeBytes(). */
-static int
-size_bytes(uint8_t size)
-{
-    switch (size) {
-        case CSZ_SZTINY: return 1;
-        case CSZ_SZSMALL: return 100;
-        case CSZ_SZMEDIUM: return 8192;
-        case CSZ_SZLARGE: return 131072;
-        case CSZ_SZUDMTU: return 4096;
-        default: return 0;
-    } /* switch */
-} /* size_bytes */
 
 /*
  * Drive the loop until it settles.
@@ -1507,7 +1486,7 @@ do_send(
     struct conn_slot     *cs   = &ps->conns[step->conn];
     struct evpl_bind     *bind = cs->bind[step->side];
     int                   dest = PEER(step->side);
-    int                   len  = size_bytes(step->size);
+    int                   len  = step->length;
     struct evpl_endpoint *dest_ep;
     struct evpl_iovec     iov[MAX_SEND_IOV];
     int                   niov, i;
@@ -1529,9 +1508,7 @@ do_send(
             evpl_send(ps->evpl, bind, ps->sendbuf, len);
             break;
 
-        /* Not generated today; see SendMode in core.qnt.  The arms stay so
-         * that re-enabling them is a one-line change in the model once the
-         * address ownership on that path is settled. */
+        /* Connectionless sends address the peer explicitly. */
         case CSND_SENDTOEP:
             dest_ep = cs->ep[dest] ? cs->ep[dest] : ps->endpoint;
             evpl_test_abort_if(!dest_ep,
@@ -1648,6 +1625,10 @@ block_protocol(void)
         return EVPL_BLOCK_PROTOCOL_IO_URING;
     }
 
+    if (strcmp(name, "vfio") == 0) {
+        return EVPL_BLOCK_PROTOCOL_VFIO;
+    }
+
     if (strcmp(name, "libaio") == 0) {
         return EVPL_BLOCK_PROTOCOL_LIBAIO;
     }
@@ -1669,9 +1650,13 @@ block_device_open(
     struct prog_state *ps,
     int                prog)
 {
-    int fd;
+    int         fd;
+    const char *uri = getenv("EVPL_TEST_BLOCK_URI");
 
-    if (block_protocol() == EVPL_BLOCK_PROTOCOL_SPDK_BDEV) {
+    if (uri && *uri) {
+        ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
+                                            uri, test_mbt_continue);
+    } else if (block_protocol() == EVPL_BLOCK_PROTOCOL_SPDK_BDEV) {
         ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
                                             "Malloc0", test_mbt_continue);
     } else {
@@ -1693,7 +1678,7 @@ block_device_open(
      * get wrong, so they are checked here rather than modelled: a device that
      * misreports its size would have every offset the model chose land
      * somewhere else. */
-    evpl_test_abort_if(evpl_block_size(ps->bdev) != DEVICE_BYTES,
+    evpl_test_abort_if(evpl_block_size(ps->bdev) < DEVICE_BYTES,
                        "block device reports %lu bytes, expected %lu",
                        (unsigned long) evpl_block_size(ps->bdev),
                        (unsigned long) DEVICE_BYTES);
@@ -1794,7 +1779,7 @@ block_req_alloc(
     req->pattern = -1;
 
     for (i = 0; i < nsegs; i++) {
-        evpl_test_abort_if(evpl_iovec_alloc(ps->evpl, seglen, 0, 1, 0,
+        evpl_test_abort_if(evpl_iovec_alloc(ps->evpl, seglen, 4096, 1, 0,
                                             &req->iov[i]) != 1,
                            "a %u byte iovec came back in more than one piece",
                            seglen);
@@ -2116,6 +2101,10 @@ run_step(
                                REGION_BYTES, block_complete, br);
             break;
 
+        case COP_OPPROGRESS:
+            test_mbt_continue(ps->evpl);
+            break;
+
         case COP_OPQUIESCE:
             return do_quiesce(ps, step, prog, stepno);
 
@@ -2201,12 +2190,6 @@ run_program(
     struct prog_state         *ps;
     int                        i, s, failures = 0;
 
-#ifdef _WIN32
-    if (core_steps[p->first_step].transport == CTR_TSTREAMUNIX) {
-        fprintf(stderr, "SKIP program %d: AF_UNIX transport unavailable on Windows\n", prog);
-        return 0;
-    }
-#endif /* ifdef _WIN32 */
     ps = calloc(1, sizeof(*ps));
     evpl_test_abort_if(!ps, "out of memory");
 
@@ -2250,36 +2233,31 @@ run_program(
 
     /* Every step of a program carries the same transport, so the first one
      * settles it. */
+    const char *message  = getenv("EVPL_TEST_MESSAGE_PROTOCOL");
+    const char *datagram = getenv("EVPL_TEST_DATAGRAM_PROTOCOL");
     switch (core_steps[p->first_step].transport) {
-        case CTR_TSTREAMINPROC:
-            ps->proto = EVPL_STREAM_INPROC;
-            break;
-        case CTR_TDATAGRAMINPROC:
-            ps->proto = EVPL_DATAGRAM_INPROC;
-            break;
-        case CTR_TSTREAMTCP:
+        case CTR_TSTREAM:
             ps->proto = test_mbt_stream_protocol();
             break;
-        case CTR_TSTREAMUNIX:
-            ps->proto = EVPL_STREAM_SOCKET_UNIX;
+        case CTR_TMESSAGE:
+            ps->proto = EVPL_DATAGRAM_INPROC;
+            evpl_test_abort_if(message && evpl_protocol_lookup(&ps->proto, message),
+                               "unknown message protocol");
             break;
-        case CTR_TDATAGRAMRDMAUD:
-            ps->proto = EVPL_DATAGRAM_RDMACM_UD;
-            break;
-        case CTR_TDATAGRAMUDP:
+        case CTR_TDATAGRAM:
             ps->proto = EVPL_DATAGRAM_SOCKET_UDP;
-            if (getenv("EVPL_TEST_DATAGRAM_PROTOCOL")) {
-                evpl_test_abort_if(evpl_protocol_lookup(&ps->proto,
-                                                        getenv("EVPL_TEST_DATAGRAM_PROTOCOL")),
-                                   "unknown datagram protocol");
-            }
+            evpl_test_abort_if(datagram && evpl_protocol_lookup(&ps->proto, datagram),
+                               "unknown datagram protocol");
             break;
         default:
-            evpl_test_abort("program %d names a transport the driver has no "
-                            "arm for", prog);
+            evpl_test_abort("unknown transport contract");
     } /* switch */
 
-    block_device_open(ps, prog);
+    // No storage initialization in scheduling-only programs: device progress
+    // itself may report activity to the native loop.
+    if (!core_steps[p->first_step].native_poll) {
+        block_device_open(ps, prog);
+    }
 
     /* Where this program's model clock starts.  The clock is process-wide and
      * monotonic, so each program takes a base rather than resetting it. */
@@ -2477,7 +2455,7 @@ main(
     int   argc,
     char *argv[])
 {
-    unsigned int i, rdma_mtu_modes = 0;
+    unsigned int i, witness_counts[CORE_NUM_WITNESSES] = { 0 };
     int          failures = 0;
 
     /* Unbuffered: a sanitizer that finds something at exit terminates the
@@ -2496,38 +2474,19 @@ main(
                    (unsigned int) (sizeof(core_steps) / sizeof(core_steps[0])));
 
     for (i = 0; i < CORE_NUM_PROGRAMS; i++) {
-        if (core_steps[core_programs[i].first_step].transport == CTR_TDATAGRAMRDMAUD &&
-            !getenv("EVPL_TEST_RDMA_IP")) {
+        const struct core_step *profile = &core_steps[core_programs[i].first_step];
+        const char             *limit   = getenv("EVPL_TEST_MAX_DATAGRAM");
+        if ((profile->native_poll && getenv("EVPL_TEST_PORTABLE_ONLY")) ||
+            (profile->transport == CTR_TDATAGRAM && limit &&
+             profile->max_datagram > (unsigned int) atoi(limit))) {
             g_results.skipped++;
             continue;
         }
-        /* The poll oracle assumes that only OpActivity reports activity and
-         * that the native spin grace applies. Providers report I/O activity
-         * themselves; SPDK deliberately has no native spin grace. Keep those
-         * programs in the native matrix, and replay the remaining programs
-         * with their complete, unchanged obligations on optional backends. */
-        if (test_mbt_spdk() || getenv("EVPL_TEST_DATAGRAM_PROTOCOL") || getenv("EVPL_TEST_RDMA_IP")) {
-            const struct core_program *p = &core_programs[i];
-            int                        j;
-            for (j = 0; j < p->nsteps; j++) {
-                if (core_steps[p->first_step + j].op == COP_OPADDPOLL) {
-                    break;
-                }
-            }
-            if (j < p->nsteps) {
-                g_results.skipped++;
-                continue;
-            }
-        }
-        failures += run_program(&core_programs[i], (int) i);
-        if (core_steps[core_programs[i].first_step].transport == CTR_TDATAGRAMRDMAUD) {
-            const struct core_program *p = &core_programs[i];
-            int                        j;
-            for (j = 0; j < p->nsteps; ++j) {
-                const struct core_step *step = &core_steps[p->first_step + j];
-                if (step->op == COP_OPSEND && step->size == CSZ_SZUDMTU) {
-                    rdma_mtu_modes |= 1U << step->send;
-                }
+        int                     program_failures = run_program(&core_programs[i], (int) i);
+        failures += program_failures;
+        if (!program_failures) {
+            for (unsigned int w = 0; w < CORE_NUM_WITNESSES; w++) {
+                witness_counts[w] += !!(core_programs[i].witnesses & (1U << w));
             }
         }
         g_results.programs++;
@@ -2539,11 +2498,11 @@ main(
     }
 #endif /* ifdef HAVE_SPDK */
     evpl_test_abort_if(!g_results.programs, "no applicable core programs");
-    evpl_test_abort_if(getenv("EVPL_TEST_RDMA_IP") &&
-                       (rdma_mtu_modes & ((1U << CSND_SENDTOEP) | (1U << CSND_SENDTOEPV))) !=
-                       ((1U << CSND_SENDTOEP) | (1U << CSND_SENDTOEPV)),
-                       "RDMA UD corpus must exercise MTU-sized scalar and vector sends");
     printf("programs not applicable to this backend: %d\n", g_results.skipped);
+    for (unsigned int w = 0; w < CORE_NUM_WITNESSES; w++) {
+        printf("behavior %s: %u passing programs\n", core_witness_names[w], witness_counts[w]);
+        evpl_test_abort_if(!witness_counts[w], "missing replayed behavior: %s", core_witness_names[w]);
+    }
     g_results.failed = failures;
 
     printf("core programs: %d run, %d steps, %d quiesces, %d obligations "

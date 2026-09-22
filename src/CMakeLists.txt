@@ -4,9 +4,9 @@
 
 # Additional model trace replays over a selected execution/transport backend.
 function(unit_test_mbt_variant module name binary mech)
-    cmake_parse_arguments(MBT "RDMA" "TIMEOUT" "ENVIRONMENT;ARGS" ${ARGN})
+    cmake_parse_arguments(MBT "RDMA;GUEST" "TIMEOUT" "ENVIRONMENT;ARGS" ${ARGN})
     set(test libevpl/${module}/${name})
-    if(LIBEVPL_NETNS_TESTING AND NOT MBT_RDMA)
+    if(LIBEVPL_NETNS_TESTING AND NOT MBT_RDMA AND NOT MBT_GUEST)
         add_test(NAME ${test} COMMAND ${LIBEVPL_SOURCE_DIR}/scripts/netns_test_wrapper.sh
                  $<TARGET_FILE:${binary}> ${MBT_ARGS})
     else()
@@ -15,6 +15,9 @@ function(unit_test_mbt_variant module name binary mech)
     endif()
     get_target_property(test_file ${binary} TEST_FILE)
     set(labels mbt)
+    if(MBT_GUEST OR MBT_RDMA)
+        list(APPEND labels mbt_guest)
+    endif()
     if(MBT_RDMA)
         list(APPEND labels mbt_rdma)
         list(APPEND MBT_ENVIRONMENT EVPL_TEST_RDMA_IP=${EVPL_RDMA_TEST_IP})

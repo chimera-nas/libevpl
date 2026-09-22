@@ -21,19 +21,30 @@ def check_rdma_tests(data):
                 raise ValueError('Missing RDMA MBT replay: ' + name)
 
 
+def check_storage_tests(data):
+    names = {test['name'] for test in data['tests']}
+    for backend in ('libaio', 'io_uring', 'vfio'):
+        for mech in ('epoll', 'select'):
+            name = f'libevpl/core/core_conformance_{backend}_{mech}'
+            if name not in names:
+                raise ValueError('Missing storage MBT replay: ' + name)
+
+
 def check_tests(data, backends):
     names = [test['name'] for test in data['tests']]
     required = [r'libevpl/core/core_conformance_', r'libevpl/http/conformance$',
                 r'libevpl/http/conformance_client', r'libevpl/rpc2/conformance_STREAM_',
                 r'libevpl/rpc2/conformance_client_']
     if 'libfabric' in backends:
-        required.append(r'libevpl/core/core_conformance_libfabric_(?!spdk)')
+        required.append(r'libevpl/core/core_conformance_libfabric_(?:epoll|select)$')
+        required.append(r'libevpl/core/core_conformance_libfabric_rdm_(?:epoll|select)$')
         for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
             required.append(f'libevpl/rpc2/conformance_{proto}_(?!spdk)')
     if 'spdk' in backends:
         required.append(r'libevpl/core/core_conformance_spdk$')
         if 'libfabric' in backends:
             required.append(r'libevpl/core/core_conformance_libfabric_spdk$')
+            required.append(r'libevpl/core/core_conformance_libfabric_rdm_spdk$')
         for mode in ('polling', 'interrupt'):
             for family in ('http', 'rpc2'):
                 for suite in ('conformance', 'conformance_client'):
@@ -56,6 +67,10 @@ def check_execution(data, root, backends):
     if 'spdk' in backends:
         required.extend('src/core/spdk/' + name for name in
                         ('spdk_core.c', 'spdk_block.c', 'tcp.c'))
+    for backend, source in (('libaio', 'libaio_block.c'),
+                            ('io_uring', 'io_uring_block.c'), ('vfio', 'vfio.c')):
+        if backend in backends:
+            required.append(f'src/core/{backend}/{source}')
     hits = {}
     for unit in data.get('data', []):
         for entry in unit.get('files', []):
@@ -68,16 +83,18 @@ def check_execution(data, root, backends):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('tests', 'rdma-tests', 'execution'))
+    parser.add_argument('mode', choices=('tests', 'rdma-tests', 'storage-tests', 'execution'))
     parser.add_argument('input')
     parser.add_argument('--root', default='.')
-    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma'), default=[])
+    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'vfio'), default=[])
     args = parser.parse_args()
     with open(args.input) as stream:
         data = json.load(stream)
     try:
         if args.mode == 'tests':
             check_tests(data, args.require)
+        elif args.mode == 'storage-tests':
+            check_storage_tests(data)
         elif args.mode == 'rdma-tests':
             check_rdma_tests(data)
         else:

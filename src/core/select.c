@@ -252,6 +252,7 @@ evpl_core_select_wait(
 
 const struct evpl_core_ops evpl_core_select_ops = {
     .name    = "select",
+    .flags   = EVPL_CORE_OPS_FD_REGISTRY,
     .init    = evpl_core_select_init,
     .destroy = evpl_core_select_destroy,
     .add     = evpl_core_select_add,

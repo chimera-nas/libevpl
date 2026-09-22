@@ -96,3 +96,53 @@ evpl_core_init(
 
     return evc->ops->init(evc, max_events);
 } /* evpl_core_init */
+
+/* Providers may close borrowed descriptors before withdrawing their watches.
+ * If another subsystem has registered the reused number, removing the old
+ * watch must not delete the new registration. Never dereference the previous
+ * slot: a protocol may have recycled its event storage after closing the fd.
+ * Completion-based cores own their registrations by handle and bypass this.
+ */
+SYMBOL_EXPORT void
+evpl_core_add(
+    struct evpl_core  *evc,
+    struct evpl_event *event)
+{
+    if (evc->ops->flags & EVPL_CORE_OPS_FD_REGISTRY) {
+        evpl_core_abort_if(event->fd < 0, "negative event descriptor");
+        size_t needed = (size_t) event->fd + 1;
+        if (needed > evc->num_fd_events) {
+            size_t capacity = (needed + 63) & ~(size_t) 63;
+            evc->fd_events = evpl_realloc(evc->fd_events, capacity * sizeof(*evc->fd_events));
+            memset(evc->fd_events + evc->num_fd_events, 0,
+                   (capacity - evc->num_fd_events) * sizeof(*evc->fd_events));
+            evc->num_fd_events = capacity;
+        }
+        evc->fd_events[event->fd] = event;
+    }
+    evc->ops->add(evc, event);
+} /* evpl_core_add */
+
+SYMBOL_EXPORT void
+evpl_core_remove(
+    struct evpl_core  *evc,
+    struct evpl_event *event)
+{
+    if (evc->ops->flags & EVPL_CORE_OPS_FD_REGISTRY) {
+        if (event->fd < 0 || (size_t) event->fd >= evc->num_fd_events ||
+            evc->fd_events[event->fd] != event) {
+            return;
+        }
+        evc->fd_events[event->fd] = NULL;
+    }
+    evc->ops->remove(evc, event);
+} /* evpl_core_remove */
+
+SYMBOL_EXPORT void
+evpl_core_destroy(struct evpl_core *evc)
+{
+    evc->ops->destroy(evc);
+    evpl_free(evc->fd_events);
+    evc->fd_events     = NULL;
+    evc->num_fd_events = 0;
+} /* evpl_core_destroy */
