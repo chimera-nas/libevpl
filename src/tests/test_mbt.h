@@ -6,6 +6,23 @@
 #include "test_common.h"
 #include "core/test_log.h"
 
+/* TLS is an adapter for the existing stream contract. These replays use the
+* same self-signed setup as the transport tests; they do not model certificate
+* authentication. "auto" permits kTLS, while "software" requires SSL I/O. */
+static void
+test_mbt_tls_config(struct evpl_global_config *config)
+{
+    const char *mode = getenv("EVPL_TEST_TLS_MODE");
+
+    if (!mode) {
+        return;
+    }
+    evpl_test_abort_if(strcmp(mode, "software") && strcmp(mode, "auto"),
+                       "unknown TLS replay mode %s", mode);
+    evpl_global_config_set_tls_verify_peer(config, 0);
+    evpl_global_config_set_tls_ktls_enabled(config, strcmp(mode, "auto") == 0);
+} // test_mbt_tls_config
+
 static const char *
 test_mbt_address(void)
 {

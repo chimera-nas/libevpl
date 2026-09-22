@@ -230,6 +230,24 @@ if(TARGET core_core_conformance)
                 EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
         endforeach()
     endif()
+    if(HAVE_TLS)
+        foreach(mech ${EVPL_MECHANISMS})
+            foreach(mode software auto)
+                unit_test_mbt_variant(core core_conformance_tls_${mode}_${mech}
+                    core_core_conformance ${mech} TIMEOUT 180 ENVIRONMENT
+                    EVPL_TEST_PORTABLE_ONLY=1 EVPL_TEST_TLS_MODE=${mode}
+                    EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_TLS
+                    EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+            endforeach()
+        endforeach()
+        if(HAVE_SPDK)
+            unit_test_mbt_variant(core core_conformance_tls_software_spdk
+                core_core_conformance spdk TIMEOUT 180 ENVIRONMENT
+                ASAN_OPTIONS=detect_leaks=1 EVPL_TEST_PORTABLE_ONLY=1
+                EVPL_TEST_TLS_MODE=software EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_TLS
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        endif()
+    endif()
     if(HAVE_LIBFABRIC)
         # Provider policy belongs to the adapter. Native TCP RDM in libfabric
         # 2.1 loops on simultaneous connects; 2.x also leaks rejection data.

@@ -79,3 +79,21 @@ register the guest storage variants. `EVPL_TEST_BLOCK_URI` supplies an explicit
 test device; without it, file-capable adapters use temporary files. VFIO needs
 a PCI address already bound to vfio-pci. These replays write their modeled
 region window, so guest CI uses only newly created disposable images.
+
+## TLS stream coverage
+
+The core state-machine programs and RPC server conformance cases also run over
+`STREAM_SOCKET_TLS`, using the same operations, payloads and callback oracles.
+The core replay selects software TLS and the default kTLS-enabled configuration
+on each native mechanism; kTLS is permitted, not assumed available. Software
+TLS additionally runs on the SPDK core, and RPC runs on SPDK in polling and
+interrupt modes. Windows exercises the memory-BIO TLS implementation.
+
+These adapters use generated self-signed certificates with peer verification
+disabled, matching the existing transport tests. They cover successful
+handshakes, data transfer, framing, notifications and connection lifecycle;
+they do not claim coverage of authentication policy or malformed TLS records.
+HTTP and raw RPC-client peers remain plaintext until their adapters can speak
+TLS. Coverage CI requires the TLS replay registrations and execution in both
+OpenSSL setup and a TLS transport implementation; their profiles enter the
+existing model-only coverage union.

@@ -35,6 +35,15 @@ def check_tests(data, backends):
     required = [r'libevpl/core/core_conformance_', r'libevpl/http/conformance$',
                 r'libevpl/http/conformance_client', r'libevpl/rpc2/conformance_STREAM_',
                 r'libevpl/rpc2/conformance_client_']
+    if 'tls' in backends:
+        for mech in ('epoll', 'select'):
+            for mode in ('software', 'auto'):
+                required.append(f'libevpl/core/core_conformance_tls_{mode}_{mech}$')
+            required.append(f'libevpl/rpc2/conformance_STREAM_SOCKET_TLS_{mech}$')
+        if 'spdk' in backends:
+            required.append(r'libevpl/core/core_conformance_tls_software_spdk$')
+            for mode in ('polling', 'interrupt'):
+                required.append(f'libevpl/rpc2/conformance_STREAM_SOCKET_TLS_spdk_{mode}$')
     if 'libfabric' in backends:
         required.append(r'libevpl/core/core_conformance_libfabric_(?:epoll|select)$')
         required.append(r'libevpl/core/core_conformance_libfabric_rdm_(?:epoll|select)$')
@@ -60,6 +69,8 @@ def check_tests(data, backends):
 
 def check_execution(data, root, backends):
     required = []
+    if 'tls' in backends:
+        required.append('src/core/tls/openssl.c')
     if 'rdma' in backends:
         required.append('src/core/rdmacm/rdmacm.c')
     if 'libfabric' in backends:
@@ -76,6 +87,9 @@ def check_execution(data, root, backends):
         for entry in unit.get('files', []):
             path = relative(os.path.realpath(entry['filename']), (os.path.realpath(root),))
             hits[path] = hits.get(path, 0) + entry.get('summary', {}).get('lines', {}).get('covered', 0)
+    if 'tls' in backends and not any(hits.get('src/core/tls/' + source, 0) > 0
+                                     for source in ('tls.c', 'stream_tls.c')):
+        raise ValueError('Required TLS transport has no executed lines')
     for path in required:
         if hits.get(path, 0) <= 0:
             raise ValueError('Required MBT backend has no executed lines: ' + path)
@@ -86,7 +100,7 @@ def main():
     parser.add_argument('mode', choices=('tests', 'rdma-tests', 'storage-tests', 'execution'))
     parser.add_argument('input')
     parser.add_argument('--root', default='.')
-    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'vfio'), default=[])
+    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'vfio', 'tls'), default=[])
     args = parser.parse_args()
     with open(args.input) as stream:
         data = json.load(stream)
