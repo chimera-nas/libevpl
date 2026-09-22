@@ -4,21 +4,20 @@
 /* TLS records over a libevpl byte stream. The crypto engine never receives a
  * native socket handle; the TCP backend owns asynchronous buffer lifetimes. */
 #include "core/os.h"
-#include <openssl/err.h>
 #include "core/bind.h"
 #include "core/endpoint.h"
-#include "core/tls/openssl.h"
+#include "core/tls/engine.h"
 #include "core/tls/tls.h"
 #include "core/socket/tcp.h"
 
 struct evpl_stream_tls {
-    struct evpl_bind *wire;
-    SSL              *ssl;
-    uint64_t          wire_pending;
-    unsigned int      plaintext_pending;
-    int               ready;
-    int               driving;
-    int               shutdown;
+    struct evpl_bind       *wire;
+    struct evpl_tls_engine *engine;
+    uint64_t                wire_pending;
+    unsigned int            plaintext_pending;
+    int                     ready;
+    int                     driving;
+    int                     shutdown;
 };
 
 static void evpl_stream_tls_drive(
@@ -37,17 +36,10 @@ evpl_stream_tls_result(
     struct evpl_bind *bind,
     int               result)
 {
-    struct evpl_stream_tls *t = evpl_bind_private(bind);
-    int                     error;
-
-    if (result > 0) {
-        return 1;
-    }
-    error = SSL_get_error(t->ssl, result);
-    if (error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE) {
+    if (result < 0) {
         evpl_close(evpl, bind);
     }
-    return 0;
+    return result > 0;
 } /* evpl_stream_tls_result */
 
 static void
@@ -59,7 +51,7 @@ evpl_stream_tls_output(
     char                    bytes[16384];
     int                     length;
 
-    while ((length = BIO_read(SSL_get_wbio(t->ssl), bytes, sizeof(bytes))) > 0) {
+    while ((length = evpl_tls_engine_output(t->engine, bytes, sizeof(bytes))) > 0) {
         t->wire_pending += length;
         evpl_send(evpl, t->wire, bytes, length);
     }
@@ -151,13 +143,12 @@ evpl_stream_tls_drive(
     int                     result;
     size_t                  length;
 
-    if (t->driving || !t->ssl || evpl_stream_tls_closed(bind)) {
+    if (t->driving || !t->engine || evpl_stream_tls_closed(bind)) {
         return;
     }
     t->driving = 1;
     if (!t->ready) {
-        ERR_clear_error();
-        result = SSL_do_handshake(t->ssl);
+        result = evpl_tls_engine_handshake(t->engine);
         if (evpl_stream_tls_result(evpl, bind, result)) {
             t->ready           = 1;
             notify.notify_type = EVPL_NOTIFY_CONNECTED;
@@ -170,8 +161,7 @@ evpl_stream_tls_drive(
     if (t->ready && !t->shutdown) {
         evpl_iovec_alloc_whole(evpl, &plain);
         for (;;) {
-            ERR_clear_error();
-            result = SSL_read_ex(t->ssl, plain.data, plain.length, &length);
+            result = evpl_tls_engine_read(t->engine, plain.data, plain.length, &length);
             if (!evpl_stream_tls_result(evpl, bind, result)) {
                 break;
             }
@@ -194,8 +184,7 @@ evpl_stream_tls_drive(
     if (t->ready && !t->wire_pending && !t->plaintext_pending && !t->shutdown) {
         iov = evpl_iovec_ring_tail(&bind->iovec_send);
         if (iov) {
-            ERR_clear_error();
-            result = SSL_write_ex(t->ssl, iov->data, iov->length, &length);
+            result = evpl_tls_engine_write(t->engine, iov->data, iov->length, &length);
             if (evpl_stream_tls_result(evpl, bind, result)) {
                 t->plaintext_pending = (unsigned int) length;
             }
@@ -205,8 +194,7 @@ evpl_stream_tls_drive(
             evpl_stream_tls_output(evpl, bind);
         } else if (bind->flags & EVPL_BIND_FINISH) {
             t->shutdown = 1;
-            ERR_clear_error();
-            SSL_shutdown(t->ssl);
+            evpl_tls_engine_shutdown(t->engine);
             evpl_stream_tls_output(evpl, bind);
             evpl_finish(evpl, t->wire);
         }
@@ -246,8 +234,12 @@ evpl_stream_tls_wire_notify(
             break;
         case EVPL_NOTIFY_RECV_DATA:
             while ((length = evpl_recv(evpl, wire, bytes, sizeof(bytes), 0)) > 0) {
-                if (BIO_write(SSL_get_rbio(t->ssl), bytes, length) != length) {
+                if (evpl_tls_engine_input(t->engine, bytes, length) != length) {
                     evpl_close(evpl, bind); return;
+                }
+                evpl_stream_tls_drive(evpl, bind);
+                if (evpl_stream_tls_closed(bind)) {
+                    return;
                 }
             }
             break;
@@ -270,7 +262,6 @@ evpl_stream_tls_wire(
     int               listener)
 {
     struct evpl_stream_tls *t = evpl_bind_private(bind);
-    BIO                    *input, *output;
 
     if (bind->local) {
         evpl_address_incref(bind->local);
@@ -284,18 +275,8 @@ evpl_stream_tls_wire(
     t->wire->flags          |= EVPL_BIND_SENT_NOTIFY;
     evpl_bind_operation_begin(bind);
     if (!listener) {
-        t->ssl = evpl_tls_session_create(evpl, server);
-        input  = BIO_new(BIO_s_mem());
-        output = BIO_new(BIO_s_mem());
-        evpl_core_abort_if(!input || !output, "TLS BIO allocation failed");
-        BIO_set_mem_eof_return(input, -1);
-        BIO_set_mem_eof_return(output, -1);
-        SSL_set_bio(t->ssl, input, output);
-        if (server) {
-            SSL_set_accept_state(t->ssl);
-        } else {
-            SSL_set_connect_state(t->ssl);
-        }
+        t->engine = evpl_tls_engine_create(evpl, server);
+        evpl_core_abort_if(!t->engine, "TLS engine allocation failed");
     }
     return t->wire;
 } /* evpl_stream_tls_wire */
@@ -373,7 +354,7 @@ evpl_stream_tls_close(
 
     (void) evpl;
     evpl_core_assert(!t->wire && !bind->outstanding);
-    SSL_free(t->ssl);
+    evpl_tls_engine_free(t->engine);
 } /* evpl_stream_tls_close */
 static void
 evpl_stream_tls_finish(
@@ -388,21 +369,16 @@ evpl_tls_get_alpn(
     char             *buf,
     int               size)
 {
-    struct evpl_stream_tls *t      = evpl_bind_private(bind);
-    const unsigned char    *value  = NULL;
-    unsigned int            length = 0;
+    struct evpl_stream_tls *t;
 
-    if (bind->protocol->id == EVPL_STREAM_SOCKET_TLS && t->ssl && t->ready) {
-        SSL_get0_alpn_selected(t->ssl, &value, &length);
-    }
     if (size > 0) {
-        unsigned int copy = length < (unsigned int) size ? length : (unsigned int) size - 1;
-        if (copy) {
-            memcpy(buf, value, copy);
-        }
-        buf[copy] = 0;
+        buf[0] = 0;
     }
-    return (int) length;
+    if (bind->protocol->id != EVPL_STREAM_SOCKET_TLS) {
+        return 0;
+    }
+    t = evpl_bind_private(bind);
+    return t->engine && t->ready ? evpl_tls_engine_alpn(t->engine, buf, size) : 0;
 } /* evpl_tls_get_alpn */
 struct evpl_protocol evpl_socket_tls = {
     .id               = EVPL_STREAM_SOCKET_TLS,
