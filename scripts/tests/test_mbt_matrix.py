@@ -12,6 +12,8 @@ class MatrixTests(unittest.TestCase):
     def test_tls_matrix_requires_both_modes_and_spdk(self):
         names = []
         for mech in ('epoll', 'select'):
+            names.append(f'core/core_conformance_alpn_{mech}')
+            names.append(f'core/listener_conformance_TLS_{mech}')
             names.extend(f'core/core_conformance_tls_{mode}_{mech}'
                          for mode in ('software', 'auto'))
             names.append(f'rpc2/conformance_STREAM_SOCKET_TLS_{mech}')
@@ -58,7 +60,8 @@ class MatrixTests(unittest.TestCase):
 
     def test_storage_requires_every_backend_and_mechanism(self):
         tests = [{'name': f'libevpl/core/core_conformance_{b}_{m}'}
-                 for b in ('libaio', 'io_uring', 'vfio') for m in ('epoll', 'select')]
+                 for b in ('libaio', 'io_uring', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt') for m in ('epoll', 'select')]
+        tests.extend({'name': f'libevpl/core/listener_conformance_io_uring_{m}'} for m in ('epoll', 'select'))
         check_storage_tests({'tests': tests})
         for i in range(len(tests)):
             with self.assertRaisesRegex(ValueError, 'Missing storage'):
@@ -75,7 +78,11 @@ class MatrixTests(unittest.TestCase):
                     check_execution(data, '/repo', [other])
 
     def setUp(self):
-        names = ['core/core_conformance_epoll', 'http/conformance',
+        names = ['core/listener_conformance_STREAM_INPROC_epoll', 'core/listener_conformance_DATAGRAM_TCP_RDMA_epoll',
+                 'core/listener_conformance_epoll', 'core/fd_conformance_epoll', 'core/lifecycle_conformance_epoll',
+                 'core/core_conformance_capacity_epoll', 'core/core_conformance_tcp_rdma_epoll',
+                 'core/lifecycle_conformance_spdk', 'core/block_lifecycle_conformance_spdk',
+                 'core/core_conformance_epoll', 'http/conformance',
                  'http/conformance_client', 'rpc2/conformance_STREAM_SOCKET_TCP_epoll',
                  'rpc2/conformance_client_STREAM_SOCKET_TCP_epoll',
                  'core/core_conformance_libfabric_epoll', 'core/core_conformance_spdk',
@@ -107,7 +114,7 @@ class MatrixTests(unittest.TestCase):
                 check_tests({'tests': tests}, ['libfabric', 'spdk'])
 
     def test_native_only_still_supported_but_ci_requires_backends(self):
-        self.data['tests'] = self.data['tests'][:5]
+        self.data['tests'] = [t for t in self.data['tests'] if not any(b in t['name'] for b in ('libfabric', 'spdk'))]
         check_tests(self.data, [])
         with self.assertRaisesRegex(ValueError, 'libfabric'):
             check_tests(self.data, ['libfabric', 'spdk'])

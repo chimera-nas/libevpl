@@ -39,10 +39,11 @@ for backend in libaio io_uring vfio; do
     fi
 done
 python3 scripts/ci_patch_coverage.py --sources "$diff" > "$out/sources.txt"
-COVERAGE_JSON="$out/coverage-export.json" COVERAGE_LCOV="$out/patch-coverage.lcov" \
+COVERAGE_FUNCTIONS="$out/function-coverage.csv" COVERAGE_JSON="$out/coverage-export.json" COVERAGE_LCOV="$out/patch-coverage.lcov" \
     COVERAGE_LCOV_SOURCES="$out/sources.txt" bash etc/coverage-report.sh "$build"
 python3 scripts/ci_mbt_matrix.py execution "$out/coverage-export.json" --root "$PWD" \
     --require "${required[@]}"
+python3 scripts/ci_mbt_matrix.py functions "$out/function-coverage.csv" --require "${required[@]}"
 python3 scripts/ci_coverage_report.py "$out/coverage-export.json" "$PWD" "${RUN_URL:-}" > "$out/coverage-report.md"
 python3 scripts/ci_patch_coverage.py "$diff" "$out/patch-coverage.lcov" "$PWD" \
     "${GH_REPO:-}" "${SOURCE_SHA:-}" >> "$out/coverage-report.md"

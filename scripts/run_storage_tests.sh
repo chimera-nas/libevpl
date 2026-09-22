@@ -13,7 +13,7 @@ for backend in libaio io_uring vfio; do
     uri=("EVPL_TEST_BLOCK_URI=$(cat "$out/kernel-nvme-device")")
     if [[ "$backend" == vfio ]]; then uri=(EVPL_TEST_BLOCK_URI=00:04.0); fi
     env "${uri[@]}" LLVM_PROFILE_FILE="/build/coverage/profraw/$backend/%m-%p.profraw" \
-        ctest --test-dir /build -R "^libevpl/core/core_conformance_${backend}_" \
+        ctest --test-dir /build -R "^libevpl/core/(core|listener)_conformance_${backend}_" \
         --output-on-failure --no-tests=error --timeout 300 -j 1 \
         --output-junit "$out/$backend-model-results.xml" || status=$?
     COVERAGE_PROFILE_DIR="/build/coverage/profraw/$backend" \

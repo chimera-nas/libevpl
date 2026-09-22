@@ -85,6 +85,7 @@ static int port = 8095;
 /* The echo application reflects what it parsed through these.  Brackets
  * around the probe value so that "present but empty" is distinguishable from
  * "absent" on the wire, which is exactly the distinction HdrEmpty tests. */
+#define ECHO_TRAILER        "X-Echo-Trailer"
 #define ECHO_METHOD         "X-Echo-Method"
 #define ECHO_URI            "X-Echo-Uri"
 #define ECHO_PROBE          "X-Echo-Probe"
@@ -595,6 +596,20 @@ echo_send_next(
     st->sent += chunk;
 } /* echo_send_next */
 
+/* Each received trailer must remain distinct from ordinary headers. */
+static void
+trailer_check_cb(
+    const char *name,
+    const char *value,
+    void       *arg)
+{
+    struct evpl_http_request *request = arg;
+    const char               *lookup  = evpl_http_request_trailer(request, name);
+
+    evpl_test_abort_if(!lookup || strcmp(lookup, value), "trailer iteration disagrees with lookup");
+    evpl_test_abort_if(evpl_http_request_header(request, name), "trailer leaked into headers");
+} /* trailer_check_cb */
+
 static void
 server_notify(
     struct evpl                *evpl,
@@ -622,6 +637,15 @@ server_notify(
             break;
         case EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE:
 
+            evpl_test_abort_if(evpl_http_request_protocol(request) != EVPL_HTTP_PROTOCOL_HTTP1,
+                               "HTTP/1 model negotiated a different protocol");
+            evpl_http_request_trailer_iterate(request, trailer_check_cb, request);
+            const char *trailer = evpl_http_request_trailer(request, "x-trailer");
+            evpl_http_request_add_header(request, ECHO_TRAILER, trailer ? trailer : "absent");
+            if (trailer) {
+                evpl_test_abort_if(evpl_http_request_add_trailer(request, "X-Result", trailer),
+                                   "response trailer rejected");
+            }
             memset(&scan, 0, sizeof(scan));
             evpl_http_request_header_iterate(request, probe_count_cb, &scan);
 
@@ -1196,6 +1220,9 @@ build_request(
     }
 
     append_headers(wb, c->hdr);
+    if (c->body == HBDY_BODYCHUNKEDTRAILER && c->ver == HVER_V11) {
+        wb_str(wb, RESPOND_CHUNKED ": yes\r\n");
+    }
 
     if (c->conn == HCONN_CONNKEEPALIVE) {
         wb_str(wb, "Connection: keep-alive\r\n");
@@ -1324,6 +1351,7 @@ struct rawrsp {
 
     int64_t content_length;   /* -1 when the response declares none */
     int     chunked;
+    char    trailer[128];
     int     close_delimited;
 
     /* The decoded content, whichever framing carried it. */
@@ -1586,6 +1614,14 @@ parse_message(
                 break;
             }
 
+            if ((size_t) (eol - (base + p)) >= 10 && !strncasecmp(base + p, "X-Result: ", 10)) {
+                int n = (int) (eol - (base + p + 10));
+                if (n >= (int) sizeof(r->trailer)) {
+                    return -1;
+                }
+                memcpy(r->trailer, base + p + 10, n);
+                r->trailer[n] = 0;
+            }
             p = (int) (eol + 2 - base);
         }
 
@@ -2124,6 +2160,13 @@ check_response(
         /* Nothing downstream of the status means anything if the request was
          * not served: there is no echo to compare and no body to check. */
         return;
+    }
+
+    echo = rsp_header(r, ECHO_TRAILER);
+    const char *want_trailer = c->body == HBDY_BODYCHUNKEDTRAILER ? "after-the-body" : "absent";
+    evpl_test_abort_if(!echo || strcmp(echo, want_trailer), "model request trailer value lost");
+    if (r->chunked && c->body == HBDY_BODYCHUNKEDTRAILER && c->method != HMETH_MHEAD) {
+        evpl_test_abort_if(strcmp(r->trailer, want_trailer), "model response trailer value lost");
     }
 
     check_framing(PHASE_REQUEST, c->ver, c->ver, r);

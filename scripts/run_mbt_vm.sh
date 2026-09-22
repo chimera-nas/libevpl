@@ -34,7 +34,7 @@ users:
       - $key
 package_update: true
 packages:
-  - linux-image-generic
+  - linux-image-generic-hwe-24.04
   - docker.io
   - rdma-core
   - ibverbs-providers
@@ -93,7 +93,9 @@ ssh_vm 'sudo cloud-init status --wait --long' || {
     exit 1
 }
 # The cloud image starts with the virtual kernel, which omits RXE. Boot the
-# generic kernel installed above before creating the software RDMA device.
+# generic HWE kernel installed above before creating the software RDMA device.
+# Noble's GA 6.8 kernel rejects valid io_uring provided-buffer registrations:
+# https://bugs.launchpad.net/bugs/2162843
 boot_id=$(ssh_vm cat /proc/sys/kernel/random/boot_id)
 ssh_vm 'sudo reboot' || true
 for ((i=0; i<120; i++)); do

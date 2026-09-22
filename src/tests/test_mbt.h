@@ -73,10 +73,16 @@ test_mbt_continue(struct evpl *evpl)
     return evpl_continue(evpl);
 } // test_mbt_continue
 
+/* Pass a context object through void *, rather than implicitly dropping the
+ * _Atomic qualifier on a flag pointer (MSVC C4090). */
+struct test_mbt_completion { atomic_int done; };
+
 static void
 test_mbt_done(void *arg)
 {
-    atomic_store((atomic_int *) arg, 1);
+    struct test_mbt_completion *completion = arg;
+
+    atomic_store(&completion->done, 1);
 } // test_mbt_done
 
 static void
@@ -84,10 +90,10 @@ test_mbt_destroy(struct evpl *evpl)
 {
 #ifdef HAVE_SPDK
     if (test_mbt_spdk()) {
-        struct spdk_thread *thread = spdk_get_thread();
-        atomic_int          done   = 0;
-        evpl_destroy_async(evpl, test_mbt_done, &done);
-        while (!atomic_load(&done)) {
+        struct spdk_thread        *thread     = spdk_get_thread();
+        struct test_mbt_completion completion = { 0 };
+        evpl_destroy_async(evpl, test_mbt_done, &completion);
+        while (!atomic_load(&completion.done)) {
             spdk_thread_poll(thread, 0, 0);
         }
         spdk_thread_exit(thread);
@@ -106,6 +112,30 @@ test_mbt_destroy(struct evpl *evpl)
  * management must not pump its guest between model steps: that would deliver
  * callbacks before the model's next quiesce. Background reactors service the
  * listener while this OS thread temporarily leaves its logical SPDK thread. */
+struct test_mbt_listen_result { atomic_int done; int status; };
+
+static void
+test_mbt_listened(
+    int   status,
+    void *arg)
+{
+    struct test_mbt_listen_result *result = arg;
+
+    result->status = status;
+    atomic_store(&result->done, 1);
+} // test_mbt_listened
+
+static void
+test_mbt_wait_completion(atomic_int *done)
+{
+    int n;
+
+    for (n = 0; n < 5000 && !atomic_load(done); n++) {
+        evpl_sleep_us(1000);
+    }
+    evpl_test_abort_if(!atomic_load(done), "asynchronous listener operation did not complete");
+} // test_mbt_wait_completion
+
 static int
 test_mbt_listen(
     struct evpl          *evpl,
@@ -113,7 +143,14 @@ test_mbt_listen(
     enum evpl_protocol_id protocol,
     struct evpl_endpoint *endpoint)
 {
-    int                 rc;
+    int rc;
+
+    if (getenv("EVPL_TEST_ASYNC_LISTENER")) {
+        struct test_mbt_listen_result result = { 0 };
+        evpl_listen_async(listener, protocol, endpoint, test_mbt_listened, &result);
+        test_mbt_wait_completion(&result.done);
+        return result.status;
+    }
 
 #ifdef HAVE_SPDK
     struct spdk_thread *thread = spdk_get_thread();
@@ -135,7 +172,13 @@ test_mbt_listener_destroy(
     struct spdk_thread *thread = spdk_get_thread();
     spdk_set_thread(NULL);
 #endif // ifdef HAVE_SPDK
-    evpl_listener_destroy(listener);
+    if (getenv("EVPL_TEST_ASYNC_LISTENER")) {
+        struct test_mbt_completion completion = { 0 };
+        evpl_listener_destroy_async(listener, test_mbt_done, &completion);
+        test_mbt_wait_completion(&completion.done);
+    } else {
+        evpl_listener_destroy(listener);
+    }
 #ifdef HAVE_SPDK
     spdk_set_thread(thread);
 #endif // ifdef HAVE_SPDK

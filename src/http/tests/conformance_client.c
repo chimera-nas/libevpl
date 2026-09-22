@@ -1318,6 +1318,8 @@ struct req_ctx {
     int  sent;           /* how much of it has been handed over so far   */
     int  finished;       /* the end-of-body marker has been handed over  */
     int  n_headers;      /* RESPONSE_HEADERS callbacks                  */
+    char trailer[128];
+    int  n_trailers;
     int  n_complete;     /* RECEIVE_COMPLETE callbacks                  */
     /* EVPL_HTTP_NOTIFY_FAILED callbacks, and the reason the last one
      * carried.  This is what makes a CbFailed expectation satisfiable at
@@ -1441,6 +1443,20 @@ client_send_body(
 } /* client_send_body */
 
 static void
+trailer_count_cb(
+    const char *name,
+    const char *value,
+    void       *arg)
+{
+    struct req_ctx *ctx = arg;
+
+    ctx->n_trailers++;
+    if (!strcasecmp(name, "X-Trailer")) {
+        snprintf(ctx->trailer, sizeof(ctx->trailer), "%s", value);
+    }
+} /* trailer_count_cb */
+
+static void
 client_notify(
     struct evpl                *evpl,
     struct evpl_http_agent     *agent,
@@ -1487,6 +1503,11 @@ client_notify(
             client_drain(evpl, request, ctx);
             break;
         case EVPL_HTTP_NOTIFY_RECEIVE_COMPLETE:
+            evpl_test_abort_if(evpl_http_request_protocol(request) != EVPL_HTTP_PROTOCOL_HTTP1,
+                               "HTTP/1 response protocol mismatch");
+            evpl_http_request_trailer_iterate(request, trailer_count_cb, ctx);
+            const char *trailer = evpl_http_request_trailer(request, "x-trailer");
+            evpl_test_abort_if(trailer && strcmp(trailer, ctx->trailer), "response trailer lookup mismatch");
             client_drain(evpl, request, ctx);
             ctx->n_complete++;
             break;
@@ -1718,6 +1739,11 @@ check_request(
 
     if (c->expect != HCOUT_CBCOMPLETE || actual != c->expect_status) {
         return;
+    }
+
+    if (c->defect == HCDEF_RSPCHUNKEDTRAILER) {
+        evpl_test_abort_if(ctx->n_trailers != 2 || strcmp(ctx->trailer, "after-the-content"),
+                           "model response trailers lost or changed");
     }
 
     switch (c->expect_body) {

@@ -203,6 +203,8 @@ defect_name(int d)
         case CDEF_REPLYGARBAGEBODY:          return "ReplyGarbageBody";
         case CDEF_REPLYSTRINGLENOVERFLOW:    return "ReplyStringLenOverflow";
         case CDEF_REPLYSTRINGLENBEYONDMESSAGE: return "ReplyStringLenBeyondMessage";
+        case CDEF_GSSINITREJECTED: return "GssInitRejected";
+        case CDEF_GSSINITPEERCLOSE: return "GssInitPeerClose";
         case CDEF_GSSINTEGREPLYVALID:        return "GssIntegReplyValid";
         case CDEF_GSSPRIVREPLYVALID:         return "GssPrivReplyValid";
         case CDEF_GSSINTEGREPLYCHECKSUMBAD:  return "GssIntegReplyChecksumBad";
@@ -1056,6 +1058,9 @@ ensure_conn(struct evpl *evpl)
         return -1;
     }
     g_conn_alive = 1;
+    /* Choose a boundary XID only on a fresh connection: reusing it with an
+     * outstanding dropped-reply case would violate the public API contract. */
+    evpl_rpc2_conn_set_next_xid(g_conn, UINT32_MAX);
 
     g_peer_fd = accept_peer(evpl);
     if (g_peer_fd == TEST_INVALID_SOCKET) {
@@ -1144,6 +1149,7 @@ static struct evpl_rpc2_gss_client         *g_gss;
 static int                                  g_gss_ready;
 static int                                  g_gss_failed;
 static int                                  g_gss_skipped;
+static int                                  g_gss_executed;
 
 /* Which service each GSS defect is expressed under.  The wrapping is what the
  * case is about, so the service is a property of the defect rather than a
@@ -1152,6 +1158,8 @@ static int
 gss_case_service(int defect)
 {
     switch (defect) {
+        case CDEF_GSSINITREJECTED:
+        case CDEF_GSSINITPEERCLOSE:
         case CDEF_GSSINTEGREPLYVALID:
         case CDEF_GSSINTEGREPLYCHECKSUMBAD:
         case CDEF_GSSINTEGREPLYSEQMISMATCH:
@@ -1762,6 +1770,49 @@ check_authsys_call(
 } /* check_authsys_call */
 
 static void
+gss_init_failed_cb(
+    struct evpl_rpc2_gss_client *client,
+    int                          status,
+    void                        *arg)
+{
+    struct call_state *cs = arg;
+
+    cs->fired++;
+    cs->status = status;
+    if (!status) {
+        g_gss = client;
+    }
+} /* gss_init_failed_cb */
+
+static void
+run_gss_init_failure(
+    struct evpl              *evpl,
+    const struct client_case *c,
+    struct call_state        *cs)
+{
+    uint8_t            buf[4096];
+    uint32_t           len, xid;
+    struct wirebuf     msg;
+    struct client_case refusal = *c;
+
+    evpl_rpc2_gss_client_create(evpl, &g_prog.rpc2, g_conn,
+                                krb5_local_initiator_provider(), krb5_local_initiator_arg(g_kl),
+                                EVPL_RPC2_GSS_SVC_INTEGRITY, "conformance@localhost", gss_init_failed_cb, cs);
+    evpl_test_abort_if(read_call(evpl, buf, sizeof(buf), &len, &xid) != READ_OK,
+                       "GSS initialization never sent its token");
+    if (c->defect == CDEF_GSSINITPEERCLOSE) {
+        test_socket_close(g_peer_fd);
+        g_peer_fd = -1;
+    } else {
+        refusal.defect = CDEF_REPLYREJECTEDAUTH;
+        build_reply(&msg, &refusal, xid);
+        evpl_test_abort_if(deliver(evpl, c, &msg), "cannot deliver GSS refusal");
+    }
+    pump_until_fired(evpl, cs);
+    gss_release(evpl);
+} /* run_gss_init_failure */
+
+static void
 run_case(
     struct evpl              *evpl,
     const struct client_case *c)
@@ -1787,6 +1838,11 @@ run_case(
 
         g_results.run++;
 
+        g_gss_executed++;
+        if (c->defect == CDEF_GSSINITREJECTED || c->defect == CDEF_GSSINITPEERCLOSE) {
+            run_gss_init_failure(evpl, c, cs);
+            goto classify;
+        }
         if (run_gss_case(evpl, c, cs)) {
             evpl_test_error("case %s/%s: the harness could not hold up its end "
                             "of the context", defect_name(c->defect),
@@ -1800,6 +1856,7 @@ run_case(
 
     g_results.run++;
 
+    uint32_t expected_xid = evpl_rpc2_conn_get_next_xid(g_conn);
     issue_call(evpl, cs);
 
     rc = read_call(evpl, buf, sizeof(buf), &len, &xid);
@@ -1807,6 +1864,8 @@ run_case(
                        "case %s/%s: never saw the client's CALL (rc %d)",
                        defect_name(c->defect), delivery_name(c->delivery), rc);
 
+    evpl_test_abort_if(xid != expected_xid || evpl_rpc2_conn_get_next_xid(g_conn) != (uint32_t) (expected_xid + 1),
+                       "CALL XID did not wrap as specified");
     build_reply(&msg, c, xid);
 
     if (c->defect == CDEF_PEERCLOSESWITHOUTREPLY) {
@@ -2048,6 +2107,12 @@ main(
            g_results.matched_by_expect[CEXP_CBDROPPED]);
 
     failed = g_results.unknown != 0 || g_cred_failed != 0;
+    if (getenv("EVPL_REQUIRE_KRB5_MBT") &&
+        (g_gss_executed == 0 || g_gss_skipped != 0)) {
+        fprintf(stderr, "required protected RPC cases: %d executed, %d skipped\n",
+                g_gss_executed, g_gss_skipped);
+        failed = 1;
+    }
 
     printf("Test %s\n", failed ? "FAILED" : "PASSED");
     return failed ? 1 : 0;

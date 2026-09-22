@@ -81,8 +81,16 @@ struct tcp_rdma_pending_ring {
 /*
  * Per-connection state (extends evpl_socket)
  */
+struct tcp_rdma_sent_frame {
+    struct tcp_rdma_sent_frame *next;
+    uint64_t                    remaining;
+    unsigned int                header_left;
+    int                         application_send;
+};
+
 struct evpl_tcp_rdma_socket {
     struct evpl_bind            *wire;
+    struct tcp_rdma_sent_frame  *sent_head, *sent_tail;
     struct tcp_rdma_pending_ring pending_ring;
 };
 
@@ -339,6 +347,28 @@ tcp_rdma_copy_payload_to_buffer(
     tcp_rdma_peek_bytes(ring, buf, offset, length);
 } /* tcp_rdma_copy_payload_to_buffer */
 
+/* Preserve application send accounting across framing and partial native
+* writes. RDMA protocol traffic is not an application SEND completion. */
+static void
+tcp_rdma_track_frame(
+    struct evpl_bind *bind,
+    unsigned int      opcode,
+    uint64_t          payload)
+{
+    struct evpl_tcp_rdma_socket *ts    = evpl_bind_private(bind);
+    struct tcp_rdma_sent_frame  *frame = evpl_zalloc(sizeof(*frame));
+
+    frame->remaining        = TCP_RDMA_HEADER_SIZE + payload;
+    frame->header_left      = TCP_RDMA_HEADER_SIZE;
+    frame->application_send = opcode == TCP_RDMA_OP_SEND;
+    if (ts->sent_tail) {
+        ts->sent_tail->next = frame;
+    } else {
+        ts->sent_head = frame;
+    }
+    ts->sent_tail = frame;
+} /* tcp_rdma_track_frame */
+
 /*
  * Queue a header + optional payload for sending
  */
@@ -374,6 +404,7 @@ tcp_rdma_queue_message(
     }
 
     iov.length = TCP_RDMA_HEADER_SIZE + payload_len;
+    tcp_rdma_track_frame(bind, header->opcode, payload_len);
 
     /* Add to the framed-output ring (ready to write), never the raw send ring. */
     evpl_iovec_ring_add(&bind->iovec_send_framed, &iov);
@@ -413,9 +444,13 @@ tcp_rdma_queue_message_iov(
     /* Add header + payload to the framed-output ring (ready to write). */
     evpl_iovec_ring_add(&bind->iovec_send_framed, &iov);
 
+    uint64_t payload_len = 0;
     for (i = 0; i < niov; i++) {
         evpl_iovec_ring_add_clone(&bind->iovec_send_framed, &payload_iov[i]);
+        payload_len += payload_iov[i].length;
     }
+    tcp_rdma_track_frame(bind, header->opcode, payload_len);
+
 } /* tcp_rdma_queue_message_iov */
 
 /*
@@ -712,11 +747,38 @@ evpl_tcp_rdma_wire_notify(
             }
             bind->notify_callback(evpl, bind, notify, bind->private_data);
             return;
-        case EVPL_NOTIFY_SENT:
-            if (bind->flags & EVPL_BIND_SENT_NOTIFY) {
-                bind->notify_callback(evpl, bind, notify, bind->private_data);
+        case EVPL_NOTIFY_SENT: {
+            uint64_t           left        = notify->sent.bytes;
+            struct evpl_notify application = *notify;
+            application.sent.bytes = application.sent.msgs = 0;
+            while (left) {
+                struct tcp_rdma_sent_frame *frame = ts->sent_head;
+                evpl_core_abort_if(!frame, "TCP RDMA completion exceeds queued frames");
+                uint64_t                    n      = left < frame->remaining ? left : frame->remaining;
+                unsigned int                header = n < frame->header_left ? n : frame->header_left;
+                frame->header_left -= header;
+                frame->remaining   -= n;
+                left               -= n;
+                if (frame->application_send) {
+                    application.sent.bytes += n - header;
+                }
+                if (!frame->remaining) {
+                    if (frame->application_send) {
+                        application.sent.msgs++;
+                    }
+                    ts->sent_head = frame->next;
+                    if (!ts->sent_head) {
+                        ts->sent_tail = NULL;
+                    }
+                    evpl_free(frame);
+                }
+            }
+            if ((bind->flags & EVPL_BIND_SENT_NOTIFY) &&
+                (application.sent.bytes || application.sent.msgs)) {
+                bind->notify_callback(evpl, bind, &application, bind->private_data);
             }
             return;
+        }
         case EVPL_NOTIFY_RECV_DATA:
             while ((iov = evpl_iovec_ring_tail(&wire->iovec_recv)) != NULL) {
                 evpl_iovec_ring_add(&bind->iovec_recv, iov);
@@ -1008,6 +1070,13 @@ evpl_tcp_rdma_close(
     struct evpl_bind *bind)
 {
     struct evpl_tcp_rdma_socket *ts = evpl_bind_private(bind);
+
+    while (ts->sent_head) {
+        struct tcp_rdma_sent_frame *frame = ts->sent_head;
+        ts->sent_head = frame->next;
+        evpl_free(frame);
+    }
+    ts->sent_tail = NULL;
 
     /* Clear pending operations with error */
     tcp_rdma_pending_clear(evpl, ts);

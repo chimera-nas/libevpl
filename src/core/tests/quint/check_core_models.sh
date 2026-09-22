@@ -59,3 +59,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   ]
 }
 SPEC
+
+for model in fd lifecycle block_lifecycle listener; do
+    "$QUINT" test --backend=typescript "$SRC_DIR/$model.qnt"
+    "$QUINT" run --backend=typescript "$SRC_DIR/$model.qnt" --invariant=inv \
+        --seed=991 --max-steps=128 --max-samples=32 --verbosity=0
+done

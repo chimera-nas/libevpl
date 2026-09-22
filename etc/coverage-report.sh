@@ -156,3 +156,13 @@ if [[ "${COVERAGE_HTML:-0}" == "1" ]]; then
         -show-line-counts-or-regions
     echo "coverage: open ${HTML_DIR}/index.html"
 fi
+
+# Keep a compact whole-function inventory, including untouched functions.
+# Inline copies are aggregated by source location, matching llvm-cov's source
+# function denominator rather than counting every executable instantiation.
+if [[ -n "${COVERAGE_FUNCTIONS:-}" ]]; then
+    "${COV_TOOL}" export "${objs[0]}" "${object_args[@]}" \
+        -instr-profile="${PROFDATA}" -ignore-filename-regex="${IGNORE_REGEX}" \
+        -skip-expansions -skip-branches \
+        | python3 "${SRC_DIR}/scripts/ci_function_coverage.py" "${SRC_DIR}" > "${COVERAGE_FUNCTIONS}"
+fi

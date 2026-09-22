@@ -290,8 +290,16 @@ evpl_io_uring_init_recv_ring(struct evpl_io_uring_context *ctx)
         return;
     }
 
-    ctx->recv_ring_size   = 8192;
-    ctx->recv_buffer_size = 2 * 1024 * 1024;
+    ctx->recv_ring_size = ctx->ring.sq.ring_entries;
+    if (ctx->recv_ring_size > 8192) {
+        ctx->recv_ring_size = 8192;
+    }
+    /* Each provided buffer must fit in one allocator buffer. The allocator
+     * releases a partial allocation when max_iovecs=1 cannot hold the size. */
+    ctx->recv_buffer_size = evpl_shared->config->buffer_size;
+    if (ctx->recv_buffer_size > 65536) {
+        ctx->recv_buffer_size = 65536;
+    }
 
     ctx->recv_ring = io_uring_setup_buf_ring(&ctx->ring, ctx->recv_ring_size,
                                              EVPL_IO_URING_BUFGROUP_ID,

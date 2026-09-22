@@ -319,7 +319,9 @@ defensible and changing them would be a behaviour change on existing callers:
   last poll emits no exit callback, and adding one again afterwards emits no
   enter callback. The model never generates a re-add rather than encoding it.
 
-## What the suite does not cover
+## Original transport model limitations
+
+The additional replay families below extend this original scope.
 
 - **TLS, io_uring, XLIO and RDMA transports**, which need build options or
   hardware. `EVPL_DATAGRAM_TCP_RDMA` is the interesting one, since it needs
@@ -361,3 +363,54 @@ uniform random walk over the operation set almost never builds one — `send`,
 `close` and `finish` all need a connection that is up, which takes `listen`,
 `connect` and a quiesce to reach, and the odds of drawing that sequence out of
 seventeen enabled actions inside a twelve-operation program are negligible.
+
+
+## SDK lifecycle and coverage profiles
+
+The coverage matrix also runs four independent Quint specifications. Their C
+interpreters consume generated operations and expected states; they do not
+infer expected outcomes from the implementation.
+
+| Model | Observable contract |
+| --- | --- |
+| `quint/fd.qnt` | Read/write interest, readiness, byte delivery, removal, and removal inside a callback |
+| `quint/lifecycle.qnt` | Synchronous/asynchronous thread and pool creation/destruction; readiness, shutdown and completion counts, including empty pools |
+| `quint/listener.qnt` | Attach/detach with a queued accepted connection; acceptance or discard and peer disconnection |
+| `quint/block_lifecycle.qnt` | SPDK malloc-device resize/removal notifications, visible size and read outcomes before/after removal |
+
+`quint/generate_sdk_cases.py` generates four TypeScript-backend walks per model
+with seed 827. FD, thread and block walks contain 1,024 steps; listener walks
+contain 128 because each restart creates reactors and, for io_uring, kernel
+rings. Generation rejects missing operations and requires callback removal and
+queued-accept discard witnesses. `check_core_models.sh` runs model scenarios
+and a separate invariant-checking seed.
+
+The listener interpreter stops worker dispatch at the actual accepted-handoff
+queue, then lets the model choose whether detach wins. It runs over socket TCP,
+inproc, TCP-RDMA, TLS and io_uring TCP. Waiting for a queue/completion is bounded;
+a sleep alone is never evidence that the handoff occurred.
+
+Additional existing-core replay profiles exercise small rings and allocator
+preallocation, TCP-RDMA messages, TLS ALPN, io_uring TCP, and VFIO PRP/interrupt
+operation. `EVPL_TEST_VFIO_PRP=1` disables optional SGL use through
+`evpl_global_config_set_vfio_sgl_enabled`; PRP still obeys the original block
+byte/ownership oracle. Guest profiles remain labeled `mbt_guest` and
+`mbt_storage`, and need a disposable storage device.
+
+ALPN profiles set `EVPL_TEST_TLS_ERROR_QUEUE=1` to leave an unrelated OpenSSL
+system error on the reactor thread before each pump. The transport must isolate
+its TLS operations from that stale error while preserving the same model-derived
+bytes and callback obligations. This deterministically exercises the false
+fatal-error disconnect observed in the macOS select replay.
+
+HTTP replays check chunked trailers by lookup and iteration. RPC client traces
+include GSS establishment rejection/peer close and validate XID wraparound on
+fresh connections. They never deliberately reuse an outstanding XID: the public
+API forbids that. Configure coverage CI with `EVPL_REQUIRE_KRB5_MBT=ON` so a
+missing MIT Kerberos dependency or skipped protected cases fails the job.
+
+Coverage artifacts include `function-coverage.csv`, aggregating inline copies
+by source function and retaining zero-hit functions. The matrix gate checks
+selected function witnesses as well as test registration and backend execution.
+Diagnostic/fatal helpers and unsupported hardware are not counted as covered
+merely by calling them from the replay adapter.

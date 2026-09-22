@@ -93,6 +93,8 @@ module rpc2_client {
          * existing ones because what can go wrong is different in kind: a
          * checksum that does not verify has no analogue in an unprotected
          * reply, and an unprotected reply has no checksum to get wrong. */
+        | GssInitRejected
+        | GssInitPeerClose
         | GssIntegReplyValid
         | GssPrivReplyValid
         /* The protection is present but does not hold up. */
@@ -221,6 +223,8 @@ module rpc2_client {
 
         /* A correctly wrapped reply carries the results the caller asked
          * for -- the wrapping is transport, not a different answer. */
+        | GssInitRejected => CbFailed
+        | GssInitPeerClose => CbFailed
         | GssIntegReplyValid => CbSuccess
         | GssPrivReplyValid => CbSuccess
 
@@ -246,6 +250,7 @@ module rpc2_client {
         | ReplyMtypeUndefined(_) => ConnAny
         | ReplyVerfBodyOverlong => ConnAny
         | PeerClosesWithoutReply => ConnAny
+        | GssInitPeerClose => ConnAny
         | _ => ConnUp
     }
 
@@ -287,6 +292,7 @@ module rpc2_client {
         ReplyGarbageBody,
         ReplyStringLenOverflow,
         ReplyStringLenBeyondMessage,
+        GssInitRejected, GssInitPeerClose,
         GssIntegReplyValid,
         GssPrivReplyValid,
         GssIntegReplyChecksumBad,
