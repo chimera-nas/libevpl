@@ -46,6 +46,8 @@ DEFECTS = [
     "ReplyGarbageBody",
     "ReplyStringLenOverflow",
     "ReplyStringLenBeyondMessage",
+    "GssInitRejected",
+    "GssInitPeerClose",
     "GssIntegReplyValid",
     "GssPrivReplyValid",
     "GssIntegReplyChecksumBad",
@@ -72,6 +74,7 @@ SURVIVALS = ["ConnUp", "ConnAny"]
 DELIVERY_IRRELEVANT = {
     # Nothing is written at all; the defect is the close.
     "PeerClosesWithoutReply",
+    "GssInitPeerClose",
     # The defect *is* a delivery pattern: it writes its own fragments.
     "ReplySplitAcrossFragments",
 }

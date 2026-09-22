@@ -48,6 +48,9 @@
 #include "core/test_log.h"
 #include "evpl/evpl.h"
 #include "tests/test_mbt.h"
+#ifdef HAVE_TLS
+#include "core/tls/tls.h"
+#endif /* ifdef HAVE_TLS */
 #include "tests/test_block.h"
 
 #include "core_cases.h"
@@ -919,6 +922,16 @@ conn_notify_cb(
     switch (notify->notify_type) {
         case EVPL_NOTIFY_CONNECTED:
             cs->bind[ec->side] = bind;
+#ifdef HAVE_TLS
+            if (ec->ps->proto == EVPL_STREAM_SOCKET_TLS) {
+                char        selected[32];
+                const char *want = getenv("EVPL_TEST_ALPN");
+                int         n    = evpl_tls_get_alpn(bind, selected, sizeof(selected));
+                evpl_test_abort_if(n != (want ? (int) strlen(want) : 0) ||
+                                   (want && strcmp(selected, want)),
+                                   "negotiated ALPN does not match the configured offer");
+            }
+#endif /* ifdef HAVE_TLS */
 
             /* Accessors on a bind that is definitely up.  Sequence-free, so
              * they live here rather than in the model; the point of checking
@@ -2227,7 +2240,7 @@ run_program(
      * test_mbt_create() takes ownership of the config and releases it itself.
      */
     tcfg = evpl_thread_config_init();
-    evpl_thread_config_set_poll_mode(tcfg, 1);
+    evpl_thread_config_set_poll_mode(tcfg, getenv("EVPL_TEST_INTERRUPT") ? 0 : 1);
     evpl_thread_config_set_poll_iterations(tcfg, POLL_ITERATIONS);
     ps->evpl = test_mbt_create(tcfg);
 
@@ -2398,8 +2411,18 @@ core_conformance_init(void)
     struct evpl_global_config *config = evpl_global_config_init();
 
     test_mbt_tls_config(config);
+#ifdef HAVE_TLS
+    const char                *alpn = getenv("EVPL_TEST_ALPN");
+    if (alpn) {
+        const char *offers[] = { alpn, "mbt-fallback" };
+        evpl_tls_set_alpn_protocols(offers, 2);
+    }
+#endif /* ifdef HAVE_TLS */
 
     evpl_global_config_set_virtual_clock(config, 1);
+    if (getenv("EVPL_TEST_VFIO_PRP")) {
+        evpl_global_config_set_vfio_sgl_enabled(config, 0);
+    }
 
     /* A buffer well under the largest payload class, so payloads actually
      * span several iovecs and the gather/scatter paths are walked rather than
@@ -2424,7 +2447,12 @@ core_conformance_init(void)
      * over a datagram transport.
      */
     evpl_global_config_set_max_datagram_size(config, CONF_BUFFER_SIZE / 2);
-    evpl_global_config_set_iovec_ring_size(config, 1024);
+    evpl_global_config_set_iovec_ring_size(config, getenv("EVPL_TEST_SMALL_CAPACITY") ? 4 : 1024);
+    if (getenv("EVPL_TEST_SMALL_CAPACITY")) {
+        evpl_global_config_set_preallocate_slabs(config, 1);
+        evpl_global_config_set_preallocate_threads(config, 4);
+        evpl_global_config_set_io_uring_entries(config, 256);
+    }
 
     if (getenv("EVPL_TEST_RDMA_IP")) {
         /* RC receives one SEND into an SRQ buffer. Provision for the model's

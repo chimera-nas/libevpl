@@ -33,3 +33,6 @@ def generate(job):
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
     list(pool.map(generate, jobs))
+
+source = root / "src/core/tests/quint"
+subprocess.run([sys.executable, str(source / "generate_sdk_cases.py"), quint, str(source), str(output)], check=True)

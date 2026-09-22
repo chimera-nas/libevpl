@@ -304,3 +304,100 @@ foreach(_test ${_mbt_tests})
         set_property(TEST ${_test} APPEND PROPERTY LABELS mbt)
     endif()
 endforeach()
+
+# Separate SDK state machines share a generated corpus across mechanisms.
+if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)))
+    set(SDK_CASES_DIR ${CMAKE_CURRENT_BINARY_DIR}/quint-sdk)
+    if(EVPL_CONFORMANCE_CASES_DIR)
+        set(SDK_CASES_DIR ${EVPL_CONFORMANCE_CASES_DIR})
+    else()
+        add_custom_command(OUTPUT ${SDK_CASES_DIR}/listener_cases.h ${SDK_CASES_DIR}/fd_cases.h ${SDK_CASES_DIR}/lifecycle_cases.h ${SDK_CASES_DIR}/block_lifecycle_cases.h
+            COMMAND ${PYTHON3_EXECUTABLE} ${CORE_QUINT_SRC_DIR}/generate_sdk_cases.py
+                    ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR} ${SDK_CASES_DIR}
+            DEPENDS ${CORE_QUINT_SRC_DIR}/listener.qnt ${CORE_QUINT_SRC_DIR}/generate_sdk_cases.py
+                    ${CORE_QUINT_SRC_DIR}/fd.qnt ${CORE_QUINT_SRC_DIR}/lifecycle.qnt ${CORE_QUINT_SRC_DIR}/block_lifecycle.qnt
+            VERBATIM)
+    endif()
+    foreach(family fd lifecycle listener)
+        unit_test_all_mechs(core ${family}_conformance ${family}_conformance.c)
+        target_sources(core_${family}_conformance PRIVATE ${SDK_CASES_DIR}/${family}_cases.h)
+        target_include_directories(core_${family}_conformance PRIVATE ${SDK_CASES_DIR})
+        foreach(mech ${EVPL_MECHANISMS})
+            set_tests_properties(libevpl/core/${family}_conformance_${mech}
+                PROPERTIES LABELS "mbt" TIMEOUT 60)
+        endforeach()
+    endforeach()
+endif()
+
+if(TARGET core_core_conformance)
+    foreach(mech ${EVPL_MECHANISMS})
+        unit_test_mbt_variant(core core_conformance_capacity_${mech} core_core_conformance
+            ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_SMALL_CAPACITY=1
+            EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        unit_test_mbt_variant(core core_conformance_tcp_rdma_${mech} core_core_conformance
+            ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_MESSAGE_PROTOCOL=DATAGRAM_TCP_RDMA
+            EVPL_TEST_PORTABLE_ONLY=1 EVPL_TEST_ASYNC_LISTENER=1
+            EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        if(HAVE_TLS)
+            unit_test_mbt_variant(core core_conformance_alpn_${mech} core_core_conformance
+                ${mech} TIMEOUT 180 ENVIRONMENT EVPL_TEST_ALPN=mbt/1
+                EVPL_TEST_PORTABLE_ONLY=1 EVPL_TEST_TLS_MODE=software
+                EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_TLS
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+        endif()
+        if(EVPL_STORAGE_TESTS)
+            unit_test_mbt_variant(core core_conformance_io_uring_tcp_${mech} core_core_conformance
+                ${mech} GUEST TIMEOUT 180 ENVIRONMENT EVPL_TEST_PORTABLE_ONLY=1
+                EVPL_TEST_STREAM_PROTOCOL=STREAM_IO_URING_TCP
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+            unit_test_mbt_variant(core core_conformance_vfio_prp_${mech} core_core_conformance
+                ${mech} GUEST TIMEOUT 300 ENVIRONMENT EVPL_TEST_PORTABLE_ONLY=1
+                EVPL_TEST_BLOCK_PROTOCOL=vfio EVPL_TEST_VFIO_PRP=1
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+            set_property(TEST libevpl/core/core_conformance_vfio_prp_${mech}
+                APPEND PROPERTY LABELS mbt_storage)
+            unit_test_mbt_variant(core core_conformance_vfio_interrupt_${mech} core_core_conformance
+                ${mech} GUEST TIMEOUT 300 ENVIRONMENT EVPL_TEST_PORTABLE_ONLY=1
+                EVPL_TEST_BLOCK_PROTOCOL=vfio EVPL_TEST_INTERRUPT=1
+                EVPL_TEST_SOCKET_DIR=${EVPL_TEST_SOCKET_DIR})
+            set_property(TEST libevpl/core/core_conformance_io_uring_tcp_${mech}
+                APPEND PROPERTY LABELS mbt_storage)
+            set_property(TEST libevpl/core/core_conformance_vfio_interrupt_${mech}
+                APPEND PROPERTY LABELS mbt_storage)
+        endif()
+    endforeach()
+endif()
+if(HAVE_SPDK AND TARGET core_lifecycle_conformance)
+    unit_test_mbt_variant(core lifecycle_conformance_spdk core_lifecycle_conformance
+        spdk TIMEOUT 120 ENVIRONMENT ASAN_OPTIONS=detect_leaks=1)
+endif()
+
+if(HAVE_SPDK AND TARGET core_lifecycle_conformance)
+    add_executable(core_block_lifecycle_conformance block_lifecycle_conformance.c ${SDK_CASES_DIR}/block_lifecycle_cases.h)
+    target_include_directories(core_block_lifecycle_conformance PRIVATE ${SDK_CASES_DIR})
+    target_link_libraries(core_block_lifecycle_conformance evpl ${SPDK_TEST_LINK_TARGETS})
+    unit_test_mbt_variant(core block_lifecycle_conformance_spdk core_block_lifecycle_conformance
+        spdk TIMEOUT 120 ENVIRONMENT ASAN_OPTIONS=detect_leaks=1)
+endif()
+
+if(TARGET core_listener_conformance)
+    foreach(mech ${EVPL_MECHANISMS})
+        set_property(TEST libevpl/core/listener_conformance_${mech} APPEND PROPERTY ENVIRONMENT EVPL_TEST_ASYNC_LISTENER=1)
+        foreach(protocol STREAM_INPROC DATAGRAM_TCP_RDMA)
+            unit_test_mbt_variant(core listener_conformance_${protocol}_${mech} core_listener_conformance
+                ${mech} TIMEOUT 60 ENVIRONMENT EVPL_TEST_ASYNC_LISTENER=1
+                EVPL_TEST_STREAM_PROTOCOL=${protocol})
+        endforeach()
+        if(HAVE_TLS)
+            unit_test_mbt_variant(core listener_conformance_TLS_${mech} core_listener_conformance
+                ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_ASYNC_LISTENER=1
+                EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_TLS EVPL_TEST_TLS_MODE=software)
+        endif()
+        if(EVPL_STORAGE_TESTS)
+            unit_test_mbt_variant(core listener_conformance_io_uring_${mech} core_listener_conformance
+                ${mech} GUEST TIMEOUT 120 ENVIRONMENT EVPL_TEST_ASYNC_LISTENER=1
+                EVPL_TEST_STREAM_PROTOCOL=STREAM_IO_URING_TCP)
+            set_property(TEST libevpl/core/listener_conformance_io_uring_${mech} APPEND PROPERTY LABELS mbt_storage)
+        endif()
+    endforeach()
+endif()

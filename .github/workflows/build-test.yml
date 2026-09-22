@@ -557,7 +557,7 @@ jobs:
               EVPL_REQUIRE_LLVM_TEST=1 python3 -m unittest discover -s scripts/tests -p test_profile_merge.py -v
               cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Coverage -DCMAKE_C_FLAGS=-g \
                 -DCMAKE_C_COMPILER=clang -DREQUIRE_NETNS_TESTS=ON \
-                -DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON \
+                -DLIBFABRIC_ENABLED=ON -DSPDK_ENABLED=ON -DEVPL_REQUIRE_KRB5_MBT=ON \
                 -DEVPL_CONFORMANCE_CASES_DIR=/workspace/corpus -DEVPL_RDMA_TEST_IP=192.0.2.1 -DEVPL_STORAGE_TESTS=ON
               cmake --build /build --parallel "$(nproc)"
               MBT_COVERAGE_PHASE=run bash scripts/run_mbt_coverage.sh /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk tls

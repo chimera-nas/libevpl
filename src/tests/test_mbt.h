@@ -106,6 +106,30 @@ test_mbt_destroy(struct evpl *evpl)
  * management must not pump its guest between model steps: that would deliver
  * callbacks before the model's next quiesce. Background reactors service the
  * listener while this OS thread temporarily leaves its logical SPDK thread. */
+struct test_mbt_listen_result { atomic_int done; int status; };
+
+static void
+test_mbt_listened(
+    int   status,
+    void *arg)
+{
+    struct test_mbt_listen_result *result = arg;
+
+    result->status = status;
+    atomic_store(&result->done, 1);
+} // test_mbt_listened
+
+static void
+test_mbt_wait_completion(atomic_int *done)
+{
+    int n;
+
+    for (n = 0; n < 5000 && !atomic_load(done); n++) {
+        evpl_sleep_us(1000);
+    }
+    evpl_test_abort_if(!atomic_load(done), "asynchronous listener operation did not complete");
+} // test_mbt_wait_completion
+
 static int
 test_mbt_listen(
     struct evpl          *evpl,
@@ -113,7 +137,14 @@ test_mbt_listen(
     enum evpl_protocol_id protocol,
     struct evpl_endpoint *endpoint)
 {
-    int                 rc;
+    int rc;
+
+    if (getenv("EVPL_TEST_ASYNC_LISTENER")) {
+        struct test_mbt_listen_result result = { 0 };
+        evpl_listen_async(listener, protocol, endpoint, test_mbt_listened, &result);
+        test_mbt_wait_completion(&result.done);
+        return result.status;
+    }
 
 #ifdef HAVE_SPDK
     struct spdk_thread *thread = spdk_get_thread();
@@ -135,7 +166,13 @@ test_mbt_listener_destroy(
     struct spdk_thread *thread = spdk_get_thread();
     spdk_set_thread(NULL);
 #endif // ifdef HAVE_SPDK
-    evpl_listener_destroy(listener);
+    if (getenv("EVPL_TEST_ASYNC_LISTENER")) {
+        atomic_int done = 0;
+        evpl_listener_destroy_async(listener, test_mbt_done, &done);
+        test_mbt_wait_completion(&done);
+    } else {
+        evpl_listener_destroy(listener);
+    }
 #ifdef HAVE_SPDK
     spdk_set_thread(thread);
 #endif // ifdef HAVE_SPDK

@@ -15,6 +15,7 @@ set(SPDK_ENABLED "" CACHE STRING "Enable SPDK support (empty=autodetect, YES=req
 option(EVPL_IOVEC_PROFILE "Enable retained-iovec stack profiling" OFF)
 
 option(EVPL_STORAGE_TESTS "Register guest storage model tests" OFF)
+option(EVPL_REQUIRE_KRB5_MBT "Require MIT Kerberos and execution of protected RPC model cases" OFF)
 
 project(libevpl LANGUAGES C)
 option(EVPL_TLS_MEMORY_BIO "Run TLS over the portable byte-stream backend" ${WIN32})
@@ -28,7 +29,7 @@ endif()
 
 set(EVPL_CONFORMANCE_CASES_DIR "" CACHE PATH "Directory containing pre-generated core, HTTP and RPC conformance case headers")
 if(EVPL_CONFORMANCE_CASES_DIR)
-    foreach(header core_cases.h http_cases.h conformance_cases.h client_cases.h)
+    foreach(header core_cases.h http_cases.h conformance_cases.h client_cases.h fd_cases.h lifecycle_cases.h block_lifecycle_cases.h listener_cases.h)
         if(NOT EXISTS "${EVPL_CONFORMANCE_CASES_DIR}/${header}")
             message(FATAL_ERROR "Missing conformance case table: ${header}")
         endif()
