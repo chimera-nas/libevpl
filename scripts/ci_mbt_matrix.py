@@ -71,6 +71,9 @@ def check_tests(data, backends):
                 required.append(f'libevpl/rpc2/conformance_STREAM_SOCKET_TLS_spdk_{mode}$')
     if 'libfabric' in backends:
         for mech in ('epoll', 'select'):
+            required.append(f'libevpl/core/listener_conformance_libfabric_wildcard_{mech}$')
+            for kind in ('msg', 'rdm'):
+                required.append(f'libevpl/core/datagram_boundary_conformance_libfabric_{kind}_{mech}$')
             for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
                 for mode in ('fd', 'pollfd', 'none'):
                     required.append(f'libevpl/rpc2/conformance_libfabric_external_{proto}_{mode}_{mech}$')
@@ -157,7 +160,10 @@ def check_functions(rows, backends):
         required.update(('evpl_spdk_bdev_io_wait_retry', 'evpl_spdk_sock_check_active'))
     if 'libfabric' in backends:
         required.update(('evpl_global_config_set_libfabric_external_domain',
-                         'evpl_libfabric_init_external', 'evpl_libfabric_tick'))
+                         'evpl_libfabric_init_external', 'evpl_libfabric_tick',
+                         'evpl_libfabric_handle_cq_error', 'evpl_libfabric_addr_is_wildcard',
+                         'evpl_libfabric_first_device_of_type', 'evpl_libfabric_match_device_by_addr',
+                         'evpl_listener_discard_notify'))
     if 'io_uring' in backends:
         required.update(('evpl_io_uring_tcp_recv_callback', 'evpl_io_uring_tcp_send_callback',
                          'evpl_io_uring_attach_discard'))

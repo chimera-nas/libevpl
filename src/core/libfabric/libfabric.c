@@ -260,6 +260,7 @@ struct evpl_libfabric_ep {
     int                                  stream;
     int                                  rdm;
     int                                  connected;
+    int                                  accepting;
     int                                  closed;
     int                                  cur_sends;
     int                                  cur_rdma_reads;
@@ -1383,6 +1384,15 @@ evpl_libfabric_connected(
     int                     rc;
 
     lfep->connected = 1;
+    lfep->accepting = 0;
+
+    if (bind->flags & EVPL_BIND_PENDING_CLOSED) {
+        /* Finish an accepted connection's handshake before shutting it down.
+         * The worker may have detached while its accept was queued. */
+        fi_shutdown(lfep->ep, 0);
+        bind->flags &= ~EVPL_BIND_CLOSE_DEFERRED;
+        return;
+    }
 
     if (!bind->local) {
         rc = fi_getname(&lfep->ep->fid, &ss, &sslen);
@@ -1484,7 +1494,9 @@ evpl_libfabric_drain_eq(
             if (lfep && !lfep->closed) {
                 evpl_libfabric_info("connection error: %s",
                                     fi_strerror(err.err));
-                bind = evpl_private2bind(lfep);
+                bind            = evpl_private2bind(lfep);
+                lfep->accepting = 0;
+                bind->flags    &= ~EVPL_BIND_CLOSE_DEFERRED;
                 evpl_close(evpl, bind);
             }
 
@@ -1521,6 +1533,7 @@ evpl_libfabric_drain_eq(
                  * closed and discards its completed receive buffers. */
                 evpl_libfabric_poll_cq(evpl, &lfep->recv_cq, 1);
                 lfep->connected = 0;
+                lfep->accepting = 0;
 
                 bind = evpl_private2bind(lfep);
 
@@ -2983,7 +2996,8 @@ evpl_libfabric_attach(
 
     evpl_libfabric_ep_setup(evpl, lf, lfep, lfep->info, devindex);
 
-    rc = fi_accept(lfep->ep, NULL, 0);
+    lfep->accepting = 1;
+    rc              = fi_accept(lfep->ep, NULL, 0);
 
     evpl_libfabric_abort_if(rc, "fi_accept: %s", fi_strerror(-rc));
 } /* evpl_libfabric_attach */
@@ -3160,9 +3174,15 @@ evpl_libfabric_pending_close(
 {
     struct evpl_libfabric_ep *lfep = evpl_bind_private(bind);
 
-    /* teardown completes synchronously in close(), so the bind is not
-     * parked with EVPL_BIND_CLOSE_DEFERRED; fi_shutdown just informs the
-     * peer */
+    /* fi_accept is asynchronous. Closing before FI_CONNECTED can discard its
+     * response and leave older TCP providers waiting forever at the peer.
+     * Keep progressing the accept until connection success or failure, then
+     * perform the ordinary shutdown/close sequence. */
+    if (lfep->accepting) {
+        bind->flags |= EVPL_BIND_CLOSE_DEFERRED;
+        return;
+    }
+
     if (lfep->ep && lfep->connected) {
         fi_shutdown(lfep->ep, 0);
     }

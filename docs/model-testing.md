@@ -135,6 +135,57 @@ without freeing that data. CI uses RxM to preserve behavioral coverage without
 suppressing leaks or changing legal operations. Native TCP RDM remains an
 explicitly reproducible provider limitation; this PR does not fix libfabric.
 
+### Datagram boundaries and wildcard listeners
+
+`datagram_boundary.qnt` generates fragmentation, ownership, pause/drain, local
+close, peer close, reconnect, and cancellation-from-receive-callback sequences.
+Both libfabric MSG/TCP and RDM/RxM adapters replay the same table. Each burst
+contains 256 messages. Shapes use 1, 4, 5, or 65 nonuniform fragments; the large
+shape contains roughly 32 KiB per message and exceeds libevpl's maximum provider
+iovec limit. Bursts exceed the configured 128-entry transmit queue. The receiver
+has four posted receive buffers and is progressed independently of the sender.
+
+The oracle checks message identities, exact boundaries and bytes, absence of
+repeated deliveries, cumulative send bytes/messages on drain, unchanged guard
+bytes, and one retained application buffer reference after completion or close.
+Borrowed and transferred fragment views both retain a separate application view
+for inspection. Cancellation occurs on the first or seventh receive callback
+while the sender still has an outstanding suffix; deliveries already in flight
+are permitted, but no callback may use a disconnected endpoint. Six mandatory
+scenarios and four seeded traces include reuse after cancellation.
+
+The listener model additionally runs with `0.0.0.0` listeners and loopback dial
+addresses, exercising wildcard device selection and accepted-connection address
+matching, including detach with an accept queued for a worker. Datagram replays
+also bind/listen on the wildcard address. CI requires the three address-selection
+helpers, the completion-queue error handler, and the listener's queued-accept
+discard callback to execute.
+
+The queued-accept discard scenario also guards asynchronous accept teardown.
+On libfabric 1.17, immediately closing an endpoint after `fi_accept` could drop
+the accept response and leave the client waiting indefinitely. Libevpl retains
+the endpoint until the accept succeeds or fails, then completes shutdown and
+close. The same scenario runs on older and newer libfabric CI images.
+
+RDM `Connect` includes a one-byte adapter readiness exchange, with both receive
+and send completion checked before model counters begin. This establishes RxM's
+lazy underlying connection before exploring application-transfer cancellation.
+Without it, closing during setup exposed provider allocations leaking from
+inside libfabric in ASan. The RDM boundary variants set
+`FI_OFI_RXM_BUFFER_SIZE=65536`, keeping the same large messages in RxM's eager
+path. With the provider's default buffer size, cancelling these transfers
+reproduced a null-PC crash inside libfabric 2.1's `fi_close`. Neither failure is
+suppressed: ASan and leak checking remain enabled. Cancellation during lazy
+connection setup and pending non-eager RxM transfers remain provider limitations
+of these replays. The knob is documented in the upstream
+[RxM manual](https://github.com/ofiwg/libfabric/blob/main/man/fi_rxm.7.md).
+
+On macOS, the RDM boundary adapter binds explicitly to `127.0.0.1`: Homebrew
+libfabric 2.7 crashes inside `rxm_getinfo` when querying the wildcard source
+address, before a transfer starts. The complete RDM replay remains enabled for
+both kqueue and select. MSG datagrams and listeners still use wildcard addresses
+on macOS, and Linux additionally exercises the wildcard RDM bind.
+
 ## Guest storage coverage
 
 `scripts/run_mbt_vm.sh` boots the existing Linux KVM guest with Soft-RoCE and two
