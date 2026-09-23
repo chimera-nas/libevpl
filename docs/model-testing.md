@@ -28,9 +28,13 @@ same 64 KiB modeled region window as a temporary file.
 which I/O completed. Subsequent operations can add work before `OpQuiesce`
 checks the cumulative obligations. This explores submission/completion
 interleavings without demanding a particular backend's completion order.
-Progress is currently restricted to I/O: timers, coalescing callbacks and
-notification opt-in require additional observation state before arbitrary
-interleavings can be modeled precisely. Connection acceptance is still limited
+Progress is currently restricted to I/O: timers and coalescing callbacks
+require additional observation state before arbitrary interleavings can be
+modeled precisely. Send notifications are enabled only before an endpoint's
+first send. Before opt-in, peer receipt cannot prove local send completion
+(particularly with RDMA), so quiesce retains those unobserved sends instead of
+allowing an ambiguous late opt-in. A replacement connection resets this state.
+Connection acceptance is still limited
 to one outstanding attempt because the harness attributes accepted endpoints
 by the initiating slot. These are explicit exploration limits, not API rules.
 
@@ -46,6 +50,45 @@ reuse. The replay checks that each witness occurred in a passing program after
 adapter filtering and prints the program counts. These are behavioral coverage
 checks, not an exhaustive state-space claim. Ordinary line/branch coverage is
 reported separately.
+
+## RDMA operations and UNIX path ownership
+
+`rdma.qnt` models batches of direct TCP-RDMA reads and writes, successful and
+invalid accesses, connection reuse, and cancellation with requests outstanding.
+The adapter progresses only the initiator after submission, holding the peer
+at an event-loop boundary until the model selects completion or disconnect.
+This makes pending-operation pressure deterministic without fault injection.
+Bursts of 15, 16, 17 and 33 operations exercise capacity boundaries and growth
+after earlier completions have advanced the ring. The oracle checks each
+callback once, its status, nonuniform data across split iovecs, untouched guard
+bytes, and the release of library buffer references. Both write ownership modes
+are exercised. The model can also request close from the Nth completion
+callback, preserving a completed prefix while cancelling the outstanding
+suffix. Mandatory scenarios cover successful and invalid accesses, both write
+ownership modes, and first/middle/penultimate completion boundaries in wrapped and
+grown rings. The adapter checks each operation's status and data separately,
+including that cancellation neither revisits completed callbacks nor overwrites
+uncompleted read buffers. A cancelled write may already have modified remote
+memory before its acknowledgement is discarded. This model does not yet explore
+overlapping mixed read/write dependencies.
+
+`registration.qnt` separately models registration, reuse, revocation, bounds
+validation, and growth while old keys remain live or revoked. Its adapter uses
+the production registration-table component with small explicit extents.
+Public iovec releases do not revoke individual regions: the allocator registers
+whole slabs and retains their registrations until shutdown. Consequently, a
+transport test cannot treat the end of an iovec as the registration boundary.
+
+`unix_path.qnt` models absent paths, stale sockets, foreign live listeners,
+regular files, listen attempts, crashes, and restarts. Failed listen attempts
+must preserve the existing inode and file contents; foreign listeners must
+remain reachable, while successful listener teardown must remove its own path.
+
+These models replay four seeded random walks plus explicit Quint scenarios on
+each native mechanism. Generation requires the relevant success/error outcomes,
+and Linux coverage CI requires the new replays and previously untouched growth,
+error, stale-path, and bind-abort functions to execute. No RDMA hardware or KVM
+is needed for these replays.
 
 ## Libfabric providers
 
@@ -70,6 +113,9 @@ disposable QEMU NVMe devices. One stays on the kernel NVMe driver for libaio and
 io_uring; the other is bound to vfio-pci behind the emulated Intel IOMMU. Device
 serials and PCI addresses are checked before binding. The container reuses the
 native coverage build and runs each storage adapter under epoll and select.
+The ordinary RDMA regressions and RPC model harness use 64 MiB slabs and 256 receive queue entries
+so memory registration does not pin production-sized 1 GiB slabs in the guest.
+Payload sizes and the production defaults remain unchanged.
 Only generated model replays enter the merged coverage report. Per-backend
 profiles and execution checks prevent a missing device or empty suite from
 silently reporting success.

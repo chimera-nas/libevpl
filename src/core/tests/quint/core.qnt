@@ -571,8 +571,9 @@ module evpl_core {
     /// set; the model never generates that rather than encoding it.
     var pollEverAdded: bool
 
-    /// Ends that have asked for send notifications, and the bytes each is
-    /// owed a notification for.
+    /// Ends that have asked for send notifications, and bytes whose local
+    /// completion is not yet observed. Without notifications the model cannot
+    /// observe completion, even after the peer has received those bytes.
     var sentNotify: int -> bool
     var pendingSent: int -> int
 
@@ -709,9 +710,10 @@ module evpl_core {
     /// has asked to be told.  An end that never asked is owed nothing, so
     /// rule 2 turns a notification it did not ask for into a failure.
     ///
-    /// Notification opt-in is read when queued sends complete. Progress only
-    /// runs unnotified connected endpoints when they have no pending sends,
-    /// so opt-in cannot retroactively claim already completed bytes.
+    /// Notification opt-in is read when queued sends complete. The exact
+    /// local completion time is unobservable before opt-in: even receiving at
+    /// the peer does not establish it. Opt in only before an end's first send
+    /// so every later completion has an unambiguous expectation.
     pure def sentExpect(e: int, notified: bool, bytes: int): Set[Expect] =
         if (not(notified) or bytes == 0) Set()
         else Set({ kind: EvSent, slot: e, mult: MExactly, count: bytes })
@@ -1191,7 +1193,8 @@ module evpl_core {
         pendingBytes' = pendingBytes,
         sentNotify' = sentNotify.set(sideSlot(c, SIDE_CLIENT), false)
                                 .set(sideSlot(c, SIDE_SERVER), false),
-        pendingSent' = pendingSent,
+        pendingSent' = pendingSent.set(sideSlot(c, SIDE_CLIENT), 0)
+                                  .set(sideSlot(c, SIDE_SERVER), 0),
         pendingMsgs' = pendingMsgs,
         keepTimers,
         keepDeferrals,
@@ -1205,6 +1208,7 @@ module evpl_core {
         isConnected(transport),
         connSt.get(c) == CUp,
         not(sentNotify.get(sideSlot(c, side))),
+        pendingSent.get(sideSlot(c, side)) == 0,
         emit(NOP_STEP.with("op", OpRequestSendNotify).with("conn", c)
                  .with("side", side)),
         sentNotify' = sentNotify.set(sideSlot(c, side), true),
@@ -1593,7 +1597,10 @@ module evpl_core {
             pendingMsgs' = ALL_ENDS_DRAINED,
             transport' = transport,
             sentNotify' = sentNotify,
-            pendingSent' = ALL_ENDS_DRAINED,
+            // Only an opted-in completion was observable. Retain uncertainty
+            // for unnotified ends until their connection is replaced.
+            pendingSent' = END_SLOTS.mapBy(e =>
+                if (sentNotify.get(e)) 0 else pendingSent.get(e)),
             hooksInstalled' = hooksInstalled,
 
             pollSt' = if (not(pollPresent)) PAbsent
@@ -1626,10 +1633,6 @@ module evpl_core {
         DEFERRAL_SLOTS.forall(d => deferralOwes.get(d) == 0),
         DOORBELL_SLOTS.forall(d => not(doorbellRung.get(d))),
         not(hooksInstalled), pollSt == PAbsent,
-        // Before opting in, the exact set of sends completed by partial
-        // progress is unobservable. Keep opt-in at an observed boundary.
-        isConnected(transport) implies END_SLOTS.forall(e =>
-            sentNotify.get(e) or pendingSent.get(e) == 0),
         emit(NOP_STEP.with("op", OpProgress)),
         keepTransport, keepTimers, keepDeferrals, keepDoorbells, keepHooks, keepPolls,
     }
@@ -2029,13 +2032,15 @@ module evpl_core {
             .then(quiesce(QShort))
             .expect(expects == Set(
                 { kind: EvRecv, slot: sideSlot(0, SIDE_SERVER), mult: MExactly, count: 100 }))
-            /* After asking, both. */
-            .then(requestSendNotify(0, SIDE_CLIENT))
-            .then(send(0, SIDE_CLIENT, SzSmall, SendReserveCommit))
+            // The unnotified sender's local completion is unobservable.
+            .expect(pendingSent.get(sideSlot(0, SIDE_CLIENT)) == 100)
+            // Opt in on the other end, which has not sent yet.
+            .then(requestSendNotify(0, SIDE_SERVER))
+            .then(send(0, SIDE_SERVER, SzSmall, SendReserveCommit))
             .then(quiesce(QShort))
             .expect(expects == Set(
-                { kind: EvRecv, slot: sideSlot(0, SIDE_SERVER), mult: MExactly, count: 100 },
-                { kind: EvSent, slot: sideSlot(0, SIDE_CLIENT), mult: MExactly, count: 100 }))
+                { kind: EvRecv, slot: sideSlot(0, SIDE_CLIENT), mult: MExactly, count: 100 },
+                { kind: EvSent, slot: sideSlot(0, SIDE_SERVER), mult: MExactly, count: 100 }))
 
     /// While hooks are installed all three run on every window, and once
     /// cleared none of them does -- which rule 2 is what checks.
@@ -2195,5 +2200,21 @@ module evpl_core {
             .then(quiesce(QShort))
             .then(connect(0, DrainRecv))
             .expect(not(sentNotify.get(sideSlot(0, SIDE_CLIENT))))
+
+    run reusedConnectionClearsUnobservedSendsTest =
+        init
+            .then(listen)
+            .then(connect(0, DrainRecv))
+            .then(quiesce(QShort))
+            .then(send(0, SIDE_CLIENT, SzTiny, SendBuf))
+            .then(quiesce(QShort))
+            .expect(pendingSent.get(sideSlot(0, SIDE_CLIENT)) == 1)
+            .then(close(0, SIDE_CLIENT))
+            .then(quiesce(QShort))
+            .then(connect(0, DrainRecv))
+            .expect(not(sentNotify.get(sideSlot(0, SIDE_CLIENT))))
+            .expect(pendingSent.get(sideSlot(0, SIDE_CLIENT)) == 0)
+            .then(quiesce(QShort))
+            .then(requestSendNotify(0, SIDE_CLIENT))
 
 }
