@@ -18,6 +18,7 @@ if not quint:
 jobs = [
     ("core", "generate_core_cases.sh", "core_cases.h"),
     ("http", "generate_cases.sh", "http_cases.h"),
+    ("http", "generate_http2_cases.py", "http2_cases.h"),
     ("rpc2", "generate_cases.sh", "conformance_cases.h"),
     ("rpc2", "generate_client_cases.sh", "client_cases.h"),
 ]
@@ -27,8 +28,11 @@ def generate(job):
     component, script, header = job
     source = root / "src" / component / "tests" / "quint"
     work = output / header.removesuffix(".h")
-    subprocess.run(["bash", str(source / script), quint, sys.executable,
-                    str(source), str(work), str(output / header)], check=True)
+    if script.endswith(".py"):
+        command = [sys.executable, str(source / script), quint]
+    else:
+        command = ["bash", str(source / script), quint, sys.executable]
+    subprocess.run(command + [str(source), str(work), str(output / header)], check=True)
 
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:

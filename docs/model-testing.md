@@ -148,3 +148,25 @@ HTTP and raw RPC-client peers remain plaintext until their adapters can speak
 TLS. Coverage CI requires the TLS replay registrations and execution in both
 OpenSSL setup and a TLS transport implementation; their profiles enter the
 existing model-only coverage union.
+
+## HTTP/2 integration coverage
+
+`http2.qnt` models three independent streams sharing a connection. It is
+separate from the HTTP/1 text-framing model: nghttp2 owns framing and HPACK,
+while these traces test libevpl's request lifecycle, callback mapping and iovec
+ownership. Both client and server roles run against a controlled nghttp2 peer,
+through the public HTTP API on epoll/select, over h2c and TLS with ALPN.
+
+Mandatory model scenarios supplement seeded walks. They cover multiplexed and
+reused stream slots, queued requests, fixed and deferred streaming bodies,
+empty messages, trailers, interim responses, fragmented delivery, a zero stream
+window followed by resumption or cancellation, resets, GOAWAY and connection
+loss. Payload patterns distinguish each stream and direction. The adapter
+checks exact body contents, header/trailer mapping, protocol selection and one
+terminal callback per request; cancellation must preserve sibling streams.
+
+The model does not duplicate HPACK, enumerate HTTP/2 frame errors or prove
+nghttp2's protocol implementation. Allocation failure and exhaustive malformed
+frame combinations remain outside this suite. CI requires the codec to be
+compiled and the integration's submission, data, trailer and teardown paths to
+execute, rather than counting the nghttp2 library itself.

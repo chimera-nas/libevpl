@@ -51,6 +51,11 @@ def check_tests(data, backends):
         required.append(f'libevpl/core/ownership_conformance_shared_{mech}$')
         for i in range(len(configurations()[0])):
             required.append(f'libevpl/core/core_conformance_config_pair{i:02d}_{mech}$')
+    if 'http2' in backends:
+        for mech in ('epoll', 'select'):
+            required.append(f'libevpl/http/conformance_http2_{mech}$')
+            if 'tls' in backends:
+                required.append(f'libevpl/http/conformance_http2_tls_{mech}$')
     if 'tls' in backends:
         for mech in ('epoll', 'select'):
             required.append(f'libevpl/core/core_conformance_alpn_{mech}$')
@@ -94,6 +99,8 @@ def check_tests(data, backends):
 
 def check_execution(data, root, backends):
     required = []
+    if 'http2' in backends:
+        required.append('src/http/http2.c')
     if 'tls' in backends:
         required.append('src/core/tls/openssl.c')
     if 'rdma' in backends:
@@ -154,6 +161,11 @@ def check_functions(rows, backends):
         required.update('evpl_io_uring_nvme_' + name for name in
                         ('open_device', 'close_device', 'open_queue', 'close_queue',
                          'read', 'write', 'flush', 'callback'))
+    if 'http2' in backends:
+        required.update('evpl_http2_' + name for name in
+                        ('data_read', 'send_data', 'submit_trailers', 'on_begin_headers',
+                         'on_header', 'on_data_chunk', 'on_stream_close', 'fail_unfinished',
+                         'conn_init', 'conn_destroy', 'submit_request', 'submit_response', 'submit'))
     if 'vfio' in backends:
         required.update(('evpl_vfio_prepare_prplist', 'evpl_vfio_event_callback'))
     hits = {row['function'] for row in rows if int(row['count']) > 0}
@@ -167,7 +179,7 @@ def main():
     parser.add_argument('mode', choices=('tests', 'rdma-tests', 'storage-tests', 'execution', 'functions'))
     parser.add_argument('input')
     parser.add_argument('--root', default='.')
-    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'io_uring_nvme', 'vfio', 'tls'), default=[])
+    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'io_uring_nvme', 'vfio', 'tls', 'http2'), default=[])
     args = parser.parse_args()
     with open(args.input) as stream:
         data = list(csv.DictReader(stream)) if args.mode == 'functions' else json.load(stream)

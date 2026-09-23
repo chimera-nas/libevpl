@@ -55,3 +55,14 @@ MODEL="${SRC_DIR}/http1x.qnt"
   ]
 }
 SPEC
+
+# The integration model has independent stream lifecycles rather than HTTP/1
+# text-framing rules. Keep its scenario and invariant checks in the same suite.
+"${NODE}" "${SCRIPT_DIR}/../../../../scripts/quint_batch.js" "${QUINT}" <<SPEC
+{
+  "model": "${SRC_DIR}/http2.qnt",
+  "backend": "typescript",
+  "tests": [{ "main": "http2" }],
+  "runs": [{ "main": "http2", "invariant": "inv", "maxSamples": 100, "maxSteps": 96 }]
+}
+SPEC
