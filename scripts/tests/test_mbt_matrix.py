@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests, check_storage_tests
+from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests, check_storage_tests, check_functions
 from mbt_configurations import configurations
 
 
@@ -69,7 +69,7 @@ class MatrixTests(unittest.TestCase):
 
     def test_storage_requires_every_backend_and_mechanism(self):
         tests = [{'name': f'libevpl/core/core_conformance_{b}_{m}'}
-                 for b in ('libaio', 'io_uring', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt') for m in ('epoll', 'select')]
+                 for b in ('libaio', 'io_uring', 'io_uring_nvme', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt') for m in ('epoll', 'select')]
         tests.extend({'name': f'libevpl/core/listener_conformance_io_uring_{m}'} for m in ('epoll', 'select'))
         check_storage_tests({'tests': tests})
         for i in range(len(tests)):
@@ -77,14 +77,28 @@ class MatrixTests(unittest.TestCase):
                 check_storage_tests({'tests': tests[:i] + tests[i + 1:]})
 
     def test_storage_execution_cannot_be_satisfied_by_another_backend(self):
-        for backend, source in (('libaio', 'libaio_block.c'),
-                                ('io_uring', 'io_uring_block.c'), ('vfio', 'vfio.c')):
-            data = {'data': [{'files': [{'filename': f'/repo/src/core/{backend}/{source}',
+        for backend, source in (('libaio', 'libaio/libaio_block.c'),
+                                ('io_uring', 'io_uring/io_uring_block.c'),
+                                ('io_uring_nvme', 'io_uring/io_uring_nvme_block.c'),
+                                ('vfio', 'vfio/vfio.c')):
+            data = {'data': [{'files': [{'filename': f'/repo/src/core/{source}',
                                         'summary': {'lines': {'covered': 10}}}]}]}
             check_execution(data, '/repo', [backend])
-            for other in {'libaio', 'io_uring', 'vfio'} - {backend}:
+            for other in {'libaio', 'io_uring', 'io_uring_nvme', 'vfio'} - {backend}:
                 with self.assertRaisesRegex(ValueError, 'no executed lines'):
                     check_execution(data, '/repo', [other])
+
+    def test_nvme_requires_command_and_lifecycle_witnesses(self):
+        with self.assertRaises(ValueError) as error:
+            check_functions([], ['io_uring_nvme'])
+        names = str(error.exception).split(': ', 1)[1].split(', ')
+        rows = [{'function': name, 'count': '1'} for name in names]
+        check_functions(rows, ['io_uring_nvme'])
+        for operation in ('read', 'write', 'flush', 'callback', 'open_device',
+                          'close_device', 'open_queue', 'close_queue'):
+            name = 'evpl_io_uring_nvme_' + operation
+            with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, name):
+                check_functions([row for row in rows if row['function'] != name], ['io_uring_nvme'])
 
     def setUp(self):
         names = ['core/listener_conformance_STREAM_INPROC_epoll', 'core/listener_conformance_DATAGRAM_TCP_RDMA_epoll',

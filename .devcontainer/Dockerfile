@@ -92,6 +92,15 @@ RUN apt-get -y update && \
     bundler install && \
     npm install -g @anthropic-ai/claude-code
 
+# Direct NVMe MBT needs io_uring_prep_uring_cmd, absent from Noble's liburing.
+# Pin the headers and runtime together; the guest uses this same image.
+ARG LIBURING_VERSION=liburing-2.14
+RUN git clone --depth 1 --branch ${LIBURING_VERSION} \
+        https://github.com/axboe/liburing.git /tmp/liburing && \
+    cd /tmp/liburing && ./configure --prefix=/usr/local && \
+    make -C src -j"$(nproc)" && make -C src install && \
+    ldconfig && rm -rf /tmp/liburing
+
 # quint drives the Core/HTTP/RPC2 conformance tests: cmake detects it and
 # generates their case tables from the models at build time.  Without it those
 # suites, and the quint_model checks, silently disable themselves.

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: LGPL-2.1-only
 # Run inside the devcontainer after configuring and building Coverage.
 set -euo pipefail
-build=${1:?usage: run_mbt_coverage.sh BUILD_DIR OUTPUT_DIR DIFF [libfabric spdk rdma libaio io_uring vfio tls]}
+build=${1:?usage: run_mbt_coverage.sh BUILD_DIR OUTPUT_DIR DIFF [libfabric spdk rdma libaio io_uring io_uring_nvme vfio tls]}
 out=${2:?}
 diff=${3:?}
 mkdir -p "$out"
@@ -31,7 +31,7 @@ if [[ " ${required[*]} " == *" rdma "* ]]; then
     python3 scripts/ci_mbt_matrix.py execution "$out/rdma-coverage-export.json" \
         --root "$PWD" --require rdma
 fi
-for backend in libaio io_uring vfio; do
+for backend in libaio io_uring io_uring_nvme vfio; do
     if [[ " ${required[*]} " == *" $backend "* ]]; then
         python3 scripts/ci_mbt_matrix.py storage-tests "$out/storage-tests.json"
         python3 scripts/ci_mbt_matrix.py execution "$out/$backend-coverage-export.json" \

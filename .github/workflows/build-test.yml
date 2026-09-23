@@ -576,7 +576,7 @@ jobs:
           docker run --rm -v "$PWD:/workspace" -v "$PWD/coverage-build:/build" -w /workspace \
             -e RUN_URL -e GH_REPO -e SOURCE_SHA -e MBT_COVERAGE_PHASE=report -e MBT_RDMA_COVERAGE=1 -e MBT_STORAGE_COVERAGE=1 \
             libevpl-coverage:ci bash scripts/run_mbt_coverage.sh \
-            /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk tls rdma libaio io_uring vfio
+            /build /workspace/coverage-output /workspace/coverage-output/pr.diff libfabric spdk tls rdma libaio io_uring io_uring_nvme vfio
       - name: Add job summary
         run: cat coverage-output/coverage-report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Record pull request

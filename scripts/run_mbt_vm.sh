@@ -130,6 +130,8 @@ test "$(cat /sys/bus/pci/devices/0000:00:04.0/nvme/nvme*/serial | xargs)" = EVPL
 test "$(cat /sys/bus/pci/devices/0000:00:05.0/nvme/nvme*/serial | xargs)" = EVPL_MBT_KERNEL
 kernel_ns=$(basename /sys/bus/pci/devices/0000:00:05.0/nvme/nvme*/nvme*n1)
 test -b "/dev/$kernel_ns"
+# NVMe uring_cmd uses the corresponding namespace character node.
+test -c "/dev/${kernel_ns/nvme/ng}"
 printf '%s\n' "/dev/$kernel_ns" > /workspace/coverage-output/kernel-nvme-device
 test -d /sys/bus/pci/devices/0000:00:04.0/iommu_group
 modprobe vfio-pci
