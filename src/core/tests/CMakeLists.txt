@@ -484,14 +484,21 @@ if(HAVE_LIBFABRIC AND TARGET core_listener_conformance)
             ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_ASYNC_LISTENER=1 FI_PROVIDER=tcp
             EVPL_TEST_STREAM_PROTOCOL=STREAM_LIBFABRIC_MSG EVPL_TEST_LISTEN_ADDRESS=0.0.0.0)
         foreach(kind msg rdm)
+            set(_boundary_address 0.0.0.0)
             if(kind STREQUAL "msg")
                 set(_boundary_protocol DATAGRAM_LIBFABRIC_MSG)
             else()
                 set(_boundary_protocol DATAGRAM_LIBFABRIC_RDM)
+                if(APPLE)
+                    # RxM 2.7 crashes in fi_getinfo for a wildcard RDM source
+                    # on macOS. Keep the full replay on an explicit address;
+                    # MSG and listener variants still cover wildcard binds.
+                    set(_boundary_address 127.0.0.1)
+                endif()
             endif()
             unit_test_mbt_variant(core datagram_boundary_conformance_libfabric_${kind}_${mech} core_datagram_boundary_conformance
                 ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=${_boundary_protocol}
-                EVPL_TEST_LISTEN_ADDRESS=0.0.0.0)
+                EVPL_TEST_LISTEN_ADDRESS=${_boundary_address})
             if(kind STREQUAL "msg")
                 set_property(TEST libevpl/core/datagram_boundary_conformance_libfabric_${kind}_${mech}
                     APPEND PROPERTY ENVIRONMENT "FI_PROVIDER=tcp")

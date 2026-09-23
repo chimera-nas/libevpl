@@ -180,6 +180,12 @@ connection setup and pending non-eager RxM transfers remain provider limitations
 of these replays. The knob is documented in the upstream
 [RxM manual](https://github.com/ofiwg/libfabric/blob/main/man/fi_rxm.7.md).
 
+On macOS, the RDM boundary adapter binds explicitly to `127.0.0.1`: Homebrew
+libfabric 2.7 crashes inside `rxm_getinfo` when querying the wildcard source
+address, before a transfer starts. The complete RDM replay remains enabled for
+both kqueue and select. MSG datagrams and listeners still use wildcard addresses
+on macOS, and Linux additionally exercises the wildcard RDM bind.
+
 ## Guest storage coverage
 
 `scripts/run_mbt_vm.sh` boots the existing Linux KVM guest with Soft-RoCE and two
