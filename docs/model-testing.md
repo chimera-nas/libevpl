@@ -161,6 +161,12 @@ also bind/listen on the wildcard address. CI requires the three address-selectio
 helpers, the completion-queue error handler, and the listener's queued-accept
 discard callback to execute.
 
+The queued-accept discard scenario also guards asynchronous accept teardown.
+On libfabric 1.17, immediately closing an endpoint after `fi_accept` could drop
+the accept response and leave the client waiting indefinitely. Libevpl retains
+the endpoint until the accept succeeds or fails, then completes shutdown and
+close. The same scenario runs on older and newer libfabric CI images.
+
 RDM `Connect` includes a one-byte adapter readiness exchange, with both receive
 and send completion checked before model counters begin. This establishes RxM's
 lazy underlying connection before exploring application-transfer cancellation.
