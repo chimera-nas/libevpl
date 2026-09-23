@@ -23,8 +23,8 @@ class MatrixTests(unittest.TestCase):
         for mech in ('epoll', 'select'):
             names.append(f'core/core_conformance_alpn_{mech}')
             names.append(f'core/listener_conformance_TLS_{mech}')
-            names.extend(f'core/core_conformance_tls_{mode}_{mech}'
-                         for mode in ('software', 'auto'))
+            names.extend(f'core/{family}_conformance_tls_{mode}_{mech}'
+                         for family in ('core', 'backpressure') for mode in ('software', 'auto'))
             names.append(f'rpc2/conformance_STREAM_SOCKET_TLS_{mech}')
             names.extend(f'http/conformance_http2_{prefix}{mech}' for prefix in ('', 'tls_'))
         names.append('core/core_conformance_tls_software_spdk')
@@ -86,7 +86,8 @@ class MatrixTests(unittest.TestCase):
     def test_storage_requires_every_backend_and_mechanism(self):
         tests = [{'name': f'libevpl/core/core_conformance_{b}_{m}'}
                  for b in ('libaio', 'io_uring', 'io_uring_nvme', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt') for m in ('epoll', 'select')]
-        tests.extend({'name': f'libevpl/core/listener_conformance_io_uring_{m}'} for m in ('epoll', 'select'))
+        tests.extend({'name': f'libevpl/core/{family}_conformance_io_uring_{m}'}
+                     for family in ('listener', 'backpressure') for m in ('epoll', 'select'))
         check_storage_tests({'tests': tests})
         for i in range(len(tests)):
             with self.assertRaisesRegex(ValueError, 'Missing storage'):
@@ -129,9 +130,10 @@ class MatrixTests(unittest.TestCase):
                  'core/core_conformance_libfabric_rdm_epoll',
                  'core/core_conformance_libfabric_rdm_spdk']
         names.append('core/block_retry_conformance_spdk')
+        names.extend('core/backpressure_conformance_spdk' + suffix for suffix in ('', '_interrupt'))
         for mech in ('epoll', 'select'):
             names.extend((f'core/ownership_conformance_{mech}', f'core/ownership_conformance_shared_{mech}'))
-            names.extend(f'core/{family}_conformance_{mech}' for family in ('rdma', 'unix_path', 'registration'))
+            names.extend(f'core/{family}_conformance_{mech}' for family in ('rdma', 'unix_path', 'registration', 'backpressure'))
             names.extend(f'core/core_conformance_config_pair{i:02d}_{mech}'
                          for i in range(len(configurations()[0])))
             for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
@@ -164,7 +166,7 @@ class MatrixTests(unittest.TestCase):
     def test_ownership_retry_and_external_modes_cannot_disappear(self):
         targets = [t['name'] for t in self.data['tests']
                    if any(s in t['name'] for s in ('ownership_conformance', 'block_retry', 'libfabric_external',
-                                                  'rdma_conformance', 'unix_path_conformance', 'registration_conformance'))]
+                                                  'rdma_conformance', 'unix_path_conformance', 'registration_conformance', 'backpressure_conformance'))]
         for name in targets:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
                 check_tests({'tests': [t for t in self.data['tests'] if t['name'] != name]},

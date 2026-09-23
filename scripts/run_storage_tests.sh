@@ -15,7 +15,7 @@ for backend in libaio io_uring io_uring_nvme vfio; do
     exclude=()
     if [[ "$backend" == io_uring ]]; then exclude=(-E "_io_uring_nvme_"); fi
     env "${uri[@]}" LLVM_PROFILE_FILE="/build/coverage/profraw/$backend/%m-%p.profraw" \
-        ctest --test-dir /build -R "^libevpl/core/(core|listener)_conformance_${backend}_" \
+        ctest --test-dir /build -R "^libevpl/core/(core|listener|backpressure)_conformance_${backend}_" \
         "${exclude[@]}" --output-on-failure --no-tests=error --timeout 300 -j 1 \
         --output-junit "$out/$backend-model-results.xml" || status=$?
     COVERAGE_PROFILE_DIR="/build/coverage/profraw/$backend" \

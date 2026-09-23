@@ -423,3 +423,42 @@ if(TARGET core_listener_conformance)
         endif()
     endforeach()
 endif()
+
+if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)))
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
+        add_custom_command(OUTPUT ${SDK_CASES_DIR}/backpressure_cases.h
+            COMMAND ${PYTHON3_EXECUTABLE} ${CORE_QUINT_SRC_DIR}/generate_backpressure_cases.py
+                ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR} ${SDK_CASES_DIR}/backpressure
+                ${SDK_CASES_DIR}/backpressure_cases.h
+            DEPENDS ${CORE_QUINT_SRC_DIR}/backpressure.qnt ${CORE_QUINT_SRC_DIR}/generate_backpressure_cases.py
+            VERBATIM)
+    endif()
+    unit_test_all_mechs(core backpressure_conformance backpressure_conformance.c)
+    target_sources(core_backpressure_conformance PRIVATE ${SDK_CASES_DIR}/backpressure_cases.h)
+    target_include_directories(core_backpressure_conformance PRIVATE ${SDK_CASES_DIR})
+    if(HAVE_TLS)
+        target_link_libraries(core_backpressure_conformance OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    foreach(mech ${EVPL_MECHANISMS})
+        set_tests_properties(libevpl/core/backpressure_conformance_${mech} PROPERTIES LABELS mbt TIMEOUT 180)
+        if(HAVE_TLS)
+            foreach(mode software auto)
+                unit_test_mbt_variant(core backpressure_conformance_tls_${mode}_${mech}
+                    core_backpressure_conformance ${mech} TIMEOUT 180
+                    ENVIRONMENT EVPL_TEST_TLS_MODE=${mode} EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_TLS)
+            endforeach()
+        endif()
+        if(EVPL_STORAGE_TESTS)
+            unit_test_mbt_variant(core backpressure_conformance_io_uring_${mech}
+                core_backpressure_conformance ${mech} GUEST TIMEOUT 180
+                ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=STREAM_IO_URING_TCP)
+            set_property(TEST libevpl/core/backpressure_conformance_io_uring_${mech} APPEND PROPERTY LABELS mbt_storage)
+        endif()
+    endforeach()
+    if(HAVE_SPDK)
+        unit_test_mbt_variant(core backpressure_conformance_spdk core_backpressure_conformance
+            spdk TIMEOUT 180 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=STREAM_SPDK_TCP)
+        unit_test_mbt_variant(core backpressure_conformance_spdk_interrupt core_backpressure_conformance
+            spdk TIMEOUT 180 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=STREAM_SPDK_TCP EVPL_TEST_INTERRUPT=1)
+    endif()
+endif()
