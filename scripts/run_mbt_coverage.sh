@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: LGPL-2.1-only
 # Run inside the devcontainer after configuring and building Coverage.
 set -euo pipefail
-build=${1:?usage: run_mbt_coverage.sh BUILD_DIR OUTPUT_DIR DIFF [libfabric spdk rdma libaio io_uring io_uring_nvme vfio tls]}
+build=${1:?usage: run_mbt_coverage.sh BUILD_DIR OUTPUT_DIR DIFF [libfabric spdk rdma libaio io_uring io_uring_nvme vfio tls http2]}
 out=${2:?}
 diff=${3:?}
 mkdir -p "$out"

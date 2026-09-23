@@ -26,16 +26,32 @@ class MatrixTests(unittest.TestCase):
             names.extend(f'core/core_conformance_tls_{mode}_{mech}'
                          for mode in ('software', 'auto'))
             names.append(f'rpc2/conformance_STREAM_SOCKET_TLS_{mech}')
+            names.extend(f'http/conformance_http2_{prefix}{mech}' for prefix in ('', 'tls_'))
         names.append('core/core_conformance_tls_software_spdk')
         names.extend(f'rpc2/conformance_STREAM_SOCKET_TLS_spdk_{mode}'
                      for mode in ('polling', 'interrupt'))
         base = self.data['tests']
         tests = base + [{'name': 'libevpl/' + n} for n in names]
-        check_tests({'tests': tests}, ['tls', 'spdk'])
+        check_tests({'tests': tests}, ['tls', 'spdk', 'http2'])
         for name in names:
             with self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
                 check_tests({'tests': [t for t in tests if t['name'] != 'libevpl/' + name]},
-                            ['tls', 'spdk'])
+                            ['tls', 'spdk', 'http2'])
+
+    def test_http2_requires_both_mechanisms_and_codec_execution(self):
+        names = [f'libevpl/http/conformance_http2_{prefix}{mech}'
+                 for prefix in ('', 'tls_') for mech in ('epoll', 'select')]
+        # Other TLS requirements are exercised by their own matrix test.
+        tests = self.data['tests'] + [{'name': name} for name in names]
+        check_tests({'tests': tests}, ['http2'])
+        for name in names[:2]:
+            with self.assertRaisesRegex(ValueError, 'http2'):
+                check_tests({'tests': [t for t in tests if t['name'] != name]}, ['http2'])
+        files = [{'filename': '/repo/src/http/http.c', 'summary': {'lines': {'covered': 100}}}]
+        with self.assertRaisesRegex(ValueError, 'http2.c'):
+            check_execution({'data': [{'files': files}]}, '/repo', ['http2'])
+        files.append({'filename': '/repo/src/http/http2.c', 'summary': {'lines': {'covered': 100}}})
+        check_execution({'data': [{'files': files}]}, '/repo', ['http2'])
 
     def test_tls_requires_openssl_and_transport_execution(self):
         for transport in ('tls.c', 'stream_tls.c'):

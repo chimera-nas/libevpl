@@ -90,6 +90,7 @@ reason:
 |------|-------------|
 | `EVPL_HTTP_ERROR_CONN_LOST` | The connection was lost before the request completed |
 | `EVPL_HTTP_ERROR_BAD_RESPONSE` | Client: the peer's response could not be parsed |
+| `EVPL_HTTP_ERROR_STREAM_RESET` | HTTP/2: the stream ended prematurely, including rejection by GOAWAY |
 
 The request is freed as soon as the callback returns, so nothing may reference
 it afterwards.
