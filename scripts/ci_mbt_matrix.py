@@ -25,7 +25,7 @@ def check_rdma_tests(data):
 
 def check_storage_tests(data):
     names = {test['name'] for test in data['tests']}
-    for backend in ('libaio', 'io_uring', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt'):
+    for backend in ('libaio', 'io_uring', 'io_uring_nvme', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt'):
         for mech in ('epoll', 'select'):
             name = f'libevpl/core/core_conformance_{backend}_{mech}'
             if name not in names:
@@ -107,6 +107,8 @@ def check_execution(data, root, backends):
                             ('io_uring', 'io_uring_block.c'), ('vfio', 'vfio.c')):
         if backend in backends:
             required.append(f'src/core/{backend}/{source}')
+    if 'io_uring_nvme' in backends:
+        required.append('src/core/io_uring/io_uring_nvme_block.c')
     hits = {}
     for unit in data.get('data', []):
         for entry in unit.get('files', []):
@@ -148,6 +150,10 @@ def check_functions(rows, backends):
     if 'io_uring' in backends:
         required.update(('evpl_io_uring_tcp_recv_callback', 'evpl_io_uring_tcp_send_callback',
                          'evpl_io_uring_attach_discard'))
+    if 'io_uring_nvme' in backends:
+        required.update('evpl_io_uring_nvme_' + name for name in
+                        ('open_device', 'close_device', 'open_queue', 'close_queue',
+                         'read', 'write', 'flush', 'callback'))
     if 'vfio' in backends:
         required.update(('evpl_vfio_prepare_prplist', 'evpl_vfio_event_callback'))
     hits = {row['function'] for row in rows if int(row['count']) > 0}
@@ -161,7 +167,7 @@ def main():
     parser.add_argument('mode', choices=('tests', 'rdma-tests', 'storage-tests', 'execution', 'functions'))
     parser.add_argument('input')
     parser.add_argument('--root', default='.')
-    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'vfio', 'tls'), default=[])
+    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'io_uring_nvme', 'vfio', 'tls'), default=[])
     args = parser.parse_args()
     with open(args.input) as stream:
         data = list(csv.DictReader(stream)) if args.mode == 'functions' else json.load(stream)

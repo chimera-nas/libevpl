@@ -1674,6 +1674,10 @@ block_protocol(void)
         return EVPL_BLOCK_PROTOCOL_IO_URING;
     }
 
+    if (strcmp(name, "io_uring_nvme") == 0) {
+        return EVPL_BLOCK_PROTOCOL_IO_URING_NVME;
+    }
+
     if (strcmp(name, "vfio") == 0) {
         return EVPL_BLOCK_PROTOCOL_VFIO;
     }
@@ -1709,6 +1713,8 @@ block_device_open(
         ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
                                             "Malloc0", core_continue);
     } else {
+        evpl_test_abort_if(block_protocol() == EVPL_BLOCK_PROTOCOL_IO_URING_NVME,
+                           "io_uring_nvme requires EVPL_TEST_BLOCK_URI to name an NVMe namespace");
         snprintf(ps->device_path, sizeof(ps->device_path),
                  "core_conf_block-%d-%d.img", (int) evpl_process_id(), prog);
         fd = evpl_test_open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);

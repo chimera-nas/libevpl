@@ -212,7 +212,7 @@ if(TARGET core_core_conformance)
     # The guest supplies unrestricted kernel I/O and a disposable NVMe device.
     # Keep hardware-dependent registrations explicit on ordinary developer hosts.
     if(EVPL_STORAGE_TESTS)
-        foreach(backend libaio io_uring vfio)
+        foreach(backend libaio io_uring io_uring_nvme vfio)
             string(TOUPPER "${backend}" feature)
             if(NOT HAVE_${feature})
                 message(FATAL_ERROR "Storage MBT requires ${backend}")

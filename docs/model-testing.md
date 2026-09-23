@@ -21,8 +21,8 @@ concrete byte lengths and expected totals, so adapters cannot silently shrink
 payloads or rewrite expectations. A bounded datagram profile runs on every
 compatible adapter, including UDP and RDMA UD. The larger profile additionally
 exercises adapters that support its limit. Storage operations share one oracle
-across pread, SPDK, libaio, io_uring and VFIO; an external device supplies the
-same 64 KiB modeled region window as a temporary file.
+across pread, SPDK, libaio, io_uring, io_uring_nvme and VFIO; an external device
+supplies the same 64 KiB modeled region window as a temporary file.
 
 `OpProgress` pumps one iteration without advancing virtual time or asserting
 which I/O completed. Subsequent operations can add work before `OpQuiesce`
@@ -109,9 +109,9 @@ explicitly reproducible provider limitation; this PR does not fix libfabric.
 ## Guest storage coverage
 
 `scripts/run_mbt_vm.sh` boots the existing Linux KVM guest with Soft-RoCE and two
-disposable QEMU NVMe devices. One stays on the kernel NVMe driver for libaio and
-io_uring; the other is bound to vfio-pci behind the emulated Intel IOMMU. Device
-serials and PCI addresses are checked before binding. The container reuses the
+disposable QEMU NVMe devices. One stays on the kernel NVMe driver for libaio,
+io_uring and direct NVMe `uring_cmd`; the other is bound to vfio-pci behind the
+emulated Intel IOMMU. Device serials and PCI addresses are checked before binding. The container reuses the
 native coverage build and runs each storage adapter under epoll and select.
 The ordinary RDMA regressions and RPC model harness use 64 MiB slabs and 256 receive queue entries
 so memory registration does not pin production-sized 1 GiB slabs in the guest.
@@ -123,8 +123,13 @@ silently reporting success.
 Local native replays need no NVMe hardware. Set `EVPL_STORAGE_TESTS=ON` to
 register the guest storage variants. `EVPL_TEST_BLOCK_URI` supplies an explicit
 test device; without it, file-capable adapters use temporary files. VFIO needs
-a PCI address already bound to vfio-pci. These replays write their modeled
-region window, so guest CI uses only newly created disposable images.
+a PCI address already bound to vfio-pci. `io_uring_nvme` needs a whole NVMe
+namespace block-device URI (including by-id aliases), its matching `/dev/ng*`
+character device, and mounted sysfs. The block node supplies geometry; the
+character node submits NVMe read/write and flush commands. Partition URIs are
+rejected because passthrough offsets address the whole namespace. The CI image
+pins liburing 2.14 so this backend is compiled and required, rather than omitted
+by feature detection. These replays write their modeled region window, so guest CI uses only newly created disposable images.
 
 ## TLS stream coverage
 
