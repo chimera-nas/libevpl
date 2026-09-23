@@ -1447,8 +1447,9 @@ evpl_rdmacm_register(
                               IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE |
                               IBV_ACCESS_RELAXED_ORDERING);
 
-        evpl_rdmacm_abort_if(!mrset[i], "Failed to register RDMA memory region")
-        ;
+        evpl_rdmacm_abort_if(!mrset[i], "Failed to register %d-byte RDMA memory region on %s: %s",
+                             size, ibv_get_device_name(rdmacm_devices->pd[i]->context->device),
+                             strerror(errno));
     }
 
     return mrset;

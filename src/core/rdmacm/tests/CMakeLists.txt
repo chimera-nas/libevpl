@@ -23,12 +23,10 @@ if(EVPL_RDMA_TEST_IP)
 
     unit_test_bin(rdmacm rdma_ops_rc rdma_ops -r DATAGRAM_RDMACM_RC -a ${EVPL_RDMA_TEST_IP})
     unit_test(rdmacm receive_error receive_error.c)
-    set_property(TEST libevpl/rdmacm/receive_error APPEND PROPERTY ENVIRONMENT
-                 EVPL_TEST_RDMA_IP=${EVPL_RDMA_TEST_IP})
     unit_test(rdmacm dgram_resize dgram_resize.c)
-    set_property(TEST libevpl/rdmacm/dgram_resize APPEND PROPERTY ENVIRONMENT
-                 EVPL_TEST_RDMA_IP=${EVPL_RDMA_TEST_IP})
     get_property(rdma_tests DIRECTORY PROPERTY TESTS)
+    set_property(TEST ${rdma_tests} APPEND PROPERTY ENVIRONMENT
+                 EVPL_TEST_RDMA_IP=${EVPL_RDMA_TEST_IP})
     set_tests_properties(${rdma_tests} PROPERTIES LABELS rdma TIMEOUT 120)
     set_tests_properties(libevpl/rdmacm/receive_error libevpl/rdmacm/dgram_resize PROPERTIES TIMEOUT 20)
 else()
