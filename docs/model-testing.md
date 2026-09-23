@@ -51,6 +51,35 @@ adapter filtering and prints the program counts. These are behavioral coverage
 checks, not an exhaustive state-space claim. Ordinary line/branch coverage is
 reported separately.
 
+## Transport backpressure and cancellation
+
+`backpressure.qnt` controls an independent TCP peer: connect, queue, hold reads,
+consume a prefix, drain, finish, local close, and peer reset. The same generated
+programs run over socket TCP, TLS (software and automatic kTLS selection), SPDK
+TCP (polling and interrupt modes), and io_uring TCP in the KVM storage job.
+The peer uses POSIX sockets and OpenSSL directly; an evpl receiver would continue
+reading into its own buffers and would not reliably apply transport pressure.
+
+A burst contains 4096 nonuniform 4093-byte vectors, exceeding ordinary socket
+buffering and SPDK's in-flight request limit. Up to two bursts can be queued.
+Reads advance by quarter-burst prefixes. `Hold` pumps the sender while leaving
+the peer unread and requires an outstanding suffix. `Drain` checks every byte
+in order and the exact cumulative send-notification byte count. Notification
+batching and the amount completed during a hold remain implementation choices.
+`Finish` must eventually deliver the entire queue before disconnecting;
+cancellation may discard the unobserved suffix. Both local close and peer reset
+are tested after a delivered prefix, including reset while finish is pending.
+
+Each buffer has an independent reference ledger. Borrowed application references
+must survive completion and cancellation with their contents intact; transferred
+references must be released exactly once. Connections are reopened after
+cancellation. Six mandatory scenarios and four seeded random traces are replayed;
+the generator rejects a corpus missing the required pressure/partial-delivery
+outcomes. CI also requires execution of `evpl_spdk_sock_check_active`, so merely
+registering a pressure replay cannot hide loss of SPDK queue-pressure coverage.
+This model tests bounded single-connection schedules, not exhaustive network
+failure behavior or a precise relationship between callbacks and wire delivery.
+
 ## RDMA operations and UNIX path ownership
 
 `rdma.qnt` models batches of direct TCP-RDMA reads and writes, successful and

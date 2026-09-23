@@ -32,8 +32,9 @@ def check_storage_tests(data):
                 raise ValueError('Missing storage MBT replay: ' + name)
 
     for mech in ('epoll', 'select'):
-        if f'libevpl/core/listener_conformance_io_uring_{mech}' not in names:
-            raise ValueError('Missing storage MBT listener replay: ' + mech)
+        for family in ('listener', 'backpressure'):
+            if f'libevpl/core/{family}_conformance_io_uring_{mech}' not in names:
+                raise ValueError('Missing storage MBT ' + family + ' replay: ' + mech)
 
 
 def check_tests(data, backends):
@@ -45,7 +46,7 @@ def check_tests(data, backends):
                 r'libevpl/http/conformance_client', r'libevpl/rpc2/conformance_STREAM_',
                 r'libevpl/rpc2/conformance_client_']
     for mech in ('epoll', 'select'):
-        for family in ('rdma', 'unix_path', 'registration'):
+        for family in ('rdma', 'unix_path', 'registration', 'backpressure'):
             required.append(f'libevpl/core/{family}_conformance_{mech}$')
         required.append(f'libevpl/core/ownership_conformance_{mech}$')
         required.append(f'libevpl/core/ownership_conformance_shared_{mech}$')
@@ -62,6 +63,7 @@ def check_tests(data, backends):
             required.append(f'libevpl/core/listener_conformance_TLS_{mech}$')
             for mode in ('software', 'auto'):
                 required.append(f'libevpl/core/core_conformance_tls_{mode}_{mech}$')
+                required.append(f'libevpl/core/backpressure_conformance_tls_{mode}_{mech}$')
             required.append(f'libevpl/rpc2/conformance_STREAM_SOCKET_TLS_{mech}$')
         if 'spdk' in backends:
             required.append(r'libevpl/core/core_conformance_tls_software_spdk$')
@@ -81,6 +83,8 @@ def check_tests(data, backends):
         required.append(r'libevpl/core/lifecycle_conformance_spdk$')
         required.append(r'libevpl/core/block_lifecycle_conformance_spdk$')
         required.append(r'libevpl/core/block_retry_conformance_spdk$')
+        required.extend(r'libevpl/core/backpressure_conformance_spdk' + suffix + '$'
+                        for suffix in ('', '_interrupt'))
         if 'libfabric' in backends:
             required.append(r'libevpl/core/core_conformance_libfabric_spdk$')
             required.append(r'libevpl/core/core_conformance_libfabric_rdm_spdk$')
@@ -150,7 +154,7 @@ def check_functions(rows, backends):
         required.add('evpl_tls_get_alpn')
     if 'spdk' in backends:
         required.update(('evpl_thread_destroy_async_spdk', 'evpl_block_set_event_callback'))
-        required.add('evpl_spdk_bdev_io_wait_retry')
+        required.update(('evpl_spdk_bdev_io_wait_retry', 'evpl_spdk_sock_check_active'))
     if 'libfabric' in backends:
         required.update(('evpl_global_config_set_libfabric_external_domain',
                          'evpl_libfabric_init_external', 'evpl_libfabric_tick'))

@@ -16,6 +16,7 @@ if not quint:
     raise SystemExit("quint must be on PATH")
 
 jobs = [
+    ("core", "generate_backpressure_cases.py", "backpressure_cases.h"),
     ("core", "generate_core_cases.sh", "core_cases.h"),
     ("http", "generate_cases.sh", "http_cases.h"),
     ("http", "generate_http2_cases.py", "http2_cases.h"),
