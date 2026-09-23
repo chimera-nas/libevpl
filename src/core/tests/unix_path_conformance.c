@@ -79,17 +79,15 @@ check_path(
 int
 main(void)
 {
-    char                         directory[] = "/tmp/evpl-path-mbt-XXXXXX";
-    struct evpl_global_config   *config      = evpl_global_config_init();
-    struct stat                  before, after;
-    const struct unix_path_step *previous = NULL;
+    char                       directory[] = "/tmp/evpl-path-mbt-XXXXXX";
+    struct evpl_global_config *config      = evpl_global_config_init();
 
     test_evpl_set_core_mech(config);
     evpl_init(config);
     evpl_test_abort_if(!mkdtemp(directory), "mkdtemp failed");
     address.sun_family = AF_UNIX;
     snprintf(address.sun_path, sizeof(address.sun_path), "%s/socket", directory);
-    struct evpl_endpoint        *endpoint = evpl_endpoint_create_local(address.sun_path);
+    struct evpl_endpoint      *endpoint = evpl_endpoint_create_local(address.sun_path);
     evpl_test_abort_if(!endpoint, "local endpoint failed");
     for (size_t i = 0; i < sizeof(unix_path_steps) / sizeof(unix_path_steps[0]); i++) {
         const struct unix_path_step *s = &unix_path_steps[i];
@@ -113,11 +111,12 @@ main(void)
                 break;
             }
             case unix_path_Listen: {
-                if (previous->path == 2 || previous->path == 3) {
+                struct stat before = { 0 }, after;
+                if (!s->success) {
                     evpl_test_abort_if(lstat(address.sun_path, &before), "lstat before failed");
                 }
                 listener = evpl_listener_create();
-                int rc = evpl_listen(listener, EVPL_STREAM_SOCKET_UNIX, endpoint);
+                int         rc = evpl_listen(listener, EVPL_STREAM_SOCKET_UNIX, endpoint);
                 evpl_test_abort_if((rc == 0) != s->success, "step %zu: listen result differs from model", i);
                 if (rc) {
                     evpl_listener_destroy(listener); listener = NULL;
@@ -134,7 +133,6 @@ main(void)
             default: abort();
         } /* switch */
         check_path(s->path, i);
-        previous = s;
     }
     cleanup();
     evpl_endpoint_close(endpoint);
