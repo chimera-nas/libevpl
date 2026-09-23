@@ -462,3 +462,45 @@ if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EX
             spdk TIMEOUT 180 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=STREAM_SPDK_TCP EVPL_TEST_INTERRUPT=1)
     endif()
 endif()
+
+if(HAVE_LIBFABRIC AND TARGET core_listener_conformance)
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
+        add_custom_command(OUTPUT ${SDK_CASES_DIR}/datagram_boundary_cases.h
+            COMMAND ${PYTHON3_EXECUTABLE} ${CORE_QUINT_SRC_DIR}/generate_datagram_boundary_cases.py
+                ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR} ${SDK_CASES_DIR}/datagram-boundary
+                ${SDK_CASES_DIR}/datagram_boundary_cases.h
+            DEPENDS ${CORE_QUINT_SRC_DIR}/datagram_boundary.qnt ${CORE_QUINT_SRC_DIR}/generate_datagram_boundary_cases.py
+            VERBATIM)
+    endif()
+    add_executable(core_datagram_boundary_conformance datagram_boundary_conformance.c ${SDK_CASES_DIR}/datagram_boundary_cases.h)
+    target_include_directories(core_datagram_boundary_conformance PRIVATE ${SDK_CASES_DIR})
+    set_target_properties(core_datagram_boundary_conformance PROPERTIES TEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/datagram_boundary_conformance.c)
+    target_link_libraries(core_datagram_boundary_conformance evpl)
+    if(HAVE_SPDK)
+        target_link_libraries(core_datagram_boundary_conformance ${SPDK_TEST_LINK_TARGETS})
+    endif()
+    foreach(mech ${EVPL_MECHANISMS})
+        unit_test_mbt_variant(core listener_conformance_libfabric_wildcard_${mech} core_listener_conformance
+            ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_ASYNC_LISTENER=1 FI_PROVIDER=tcp
+            EVPL_TEST_STREAM_PROTOCOL=STREAM_LIBFABRIC_MSG EVPL_TEST_LISTEN_ADDRESS=0.0.0.0)
+        foreach(kind msg rdm)
+            if(kind STREQUAL "msg")
+                set(_boundary_protocol DATAGRAM_LIBFABRIC_MSG)
+            else()
+                set(_boundary_protocol DATAGRAM_LIBFABRIC_RDM)
+            endif()
+            unit_test_mbt_variant(core datagram_boundary_conformance_libfabric_${kind}_${mech} core_datagram_boundary_conformance
+                ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=${_boundary_protocol}
+                EVPL_TEST_LISTEN_ADDRESS=0.0.0.0)
+            if(kind STREQUAL "msg")
+                set_property(TEST libevpl/core/datagram_boundary_conformance_libfabric_${kind}_${mech}
+                    APPEND PROPERTY ENVIRONMENT "FI_PROVIDER=tcp")
+            else()
+                # Exercise libevpl's coalescing/cancellation with eager RxM
+                # sends; 2.1 crashes in fi_close for pending non-eager sends.
+                set_property(TEST libevpl/core/datagram_boundary_conformance_libfabric_${kind}_${mech}
+                    APPEND PROPERTY ENVIRONMENT "FI_PROVIDER=${_rdm_provider}" "FI_OFI_RXM_BUFFER_SIZE=65536")
+            endif()
+        endforeach()
+    endforeach()
+endif()

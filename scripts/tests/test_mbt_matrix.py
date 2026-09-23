@@ -132,6 +132,8 @@ class MatrixTests(unittest.TestCase):
         names.append('core/block_retry_conformance_spdk')
         names.extend('core/backpressure_conformance_spdk' + suffix for suffix in ('', '_interrupt'))
         for mech in ('epoll', 'select'):
+            names.append(f'core/listener_conformance_libfabric_wildcard_{mech}')
+            names.extend(f'core/datagram_boundary_conformance_libfabric_{kind}_{mech}' for kind in ('msg', 'rdm'))
             names.extend((f'core/ownership_conformance_{mech}', f'core/ownership_conformance_shared_{mech}'))
             names.extend(f'core/{family}_conformance_{mech}' for family in ('rdma', 'unix_path', 'registration', 'backpressure'))
             names.extend(f'core/core_conformance_config_pair{i:02d}_{mech}'
@@ -166,7 +168,8 @@ class MatrixTests(unittest.TestCase):
     def test_ownership_retry_and_external_modes_cannot_disappear(self):
         targets = [t['name'] for t in self.data['tests']
                    if any(s in t['name'] for s in ('ownership_conformance', 'block_retry', 'libfabric_external',
-                                                  'rdma_conformance', 'unix_path_conformance', 'registration_conformance', 'backpressure_conformance'))]
+                                                  'rdma_conformance', 'unix_path_conformance', 'registration_conformance', 'backpressure_conformance',
+                                                  'datagram_boundary_conformance', 'listener_conformance_libfabric_wildcard'))]
         for name in targets:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
                 check_tests({'tests': [t for t in self.data['tests'] if t['name'] != name]},
