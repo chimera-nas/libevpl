@@ -68,11 +68,26 @@ test_evpl_set_core_mech(struct evpl_global_config *config)
 } /* test_evpl_set_core_mech */
 
 static inline void
+test_evpl_rdma_config(struct evpl_global_config *config)
+{
+    if (getenv("EVPL_TEST_RDMA_IP")) {
+        /* Registration pins the entire slab. The production 1 GiB slab and
+        * 8192-entry SRQ are excessive for these small guest regressions,
+        * especially when client and server allocate concurrently. Keep the
+        * payload limits unchanged and bound the registered working set. */
+        evpl_global_config_set_slab_size(config, 64 * 1024 * 1024);
+        evpl_global_config_set_rdmacm_srq_size(config, 256);
+    }
+} // test_evpl_rdma_config
+
+static inline void
 test_evpl_config(void)
 {
     struct evpl_global_config *config = evpl_global_config_init();
 
     evpl_global_config_set_tls_verify_peer(config, 0);
+
+    test_evpl_rdma_config(config);
 
     test_evpl_set_core_mech(config);
 

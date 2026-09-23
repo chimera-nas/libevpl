@@ -28,9 +28,13 @@ supplies the same 64 KiB modeled region window as a temporary file.
 which I/O completed. Subsequent operations can add work before `OpQuiesce`
 checks the cumulative obligations. This explores submission/completion
 interleavings without demanding a particular backend's completion order.
-Progress is currently restricted to I/O: timers, coalescing callbacks and
-notification opt-in require additional observation state before arbitrary
-interleavings can be modeled precisely. Connection acceptance is still limited
+Progress is currently restricted to I/O: timers and coalescing callbacks
+require additional observation state before arbitrary interleavings can be
+modeled precisely. Send notifications are enabled only before an endpoint's
+first send. Before opt-in, peer receipt cannot prove local send completion
+(particularly with RDMA), so quiesce retains those unobserved sends instead of
+allowing an ambiguous late opt-in. A replacement connection resets this state.
+Connection acceptance is still limited
 to one outstanding attempt because the harness attributes accepted endpoints
 by the initiating slot. These are explicit exploration limits, not API rules.
 
@@ -70,6 +74,9 @@ disposable QEMU NVMe devices. One stays on the kernel NVMe driver for libaio,
 io_uring and direct NVMe `uring_cmd`; the other is bound to vfio-pci behind the
 emulated Intel IOMMU. Device serials and PCI addresses are checked before binding. The container reuses the
 native coverage build and runs each storage adapter under epoll and select.
+The ordinary RDMA regressions and RPC model harness use 64 MiB slabs and 256 receive queue entries
+so memory registration does not pin production-sized 1 GiB slabs in the guest.
+Payload sizes and the production defaults remain unchanged.
 Only generated model replays enter the merged coverage report. Per-backend
 profiles and execution checks prevent a missing device or empty suite from
 silently reporting success.
