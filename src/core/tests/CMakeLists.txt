@@ -319,14 +319,15 @@ if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EX
     if(EVPL_CONFORMANCE_CASES_DIR)
         set(SDK_CASES_DIR ${EVPL_CONFORMANCE_CASES_DIR})
     else()
-        add_custom_command(OUTPUT ${SDK_CASES_DIR}/listener_cases.h ${SDK_CASES_DIR}/fd_cases.h ${SDK_CASES_DIR}/lifecycle_cases.h ${SDK_CASES_DIR}/block_lifecycle_cases.h ${SDK_CASES_DIR}/ownership_cases.h ${SDK_CASES_DIR}/block_retry_cases.h
+        add_custom_command(OUTPUT ${SDK_CASES_DIR}/listener_cases.h ${SDK_CASES_DIR}/fd_cases.h ${SDK_CASES_DIR}/lifecycle_cases.h ${SDK_CASES_DIR}/block_lifecycle_cases.h ${SDK_CASES_DIR}/ownership_cases.h ${SDK_CASES_DIR}/block_retry_cases.h ${SDK_CASES_DIR}/rdma_cases.h ${SDK_CASES_DIR}/unix_path_cases.h ${SDK_CASES_DIR}/registration_cases.h
             COMMAND ${PYTHON3_EXECUTABLE} ${CORE_QUINT_SRC_DIR}/generate_sdk_cases.py
                     ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR} ${SDK_CASES_DIR}
             DEPENDS ${CORE_QUINT_SRC_DIR}/listener.qnt ${CORE_QUINT_SRC_DIR}/generate_sdk_cases.py
                     ${CORE_QUINT_SRC_DIR}/fd.qnt ${CORE_QUINT_SRC_DIR}/lifecycle.qnt ${CORE_QUINT_SRC_DIR}/block_lifecycle.qnt ${CORE_QUINT_SRC_DIR}/ownership.qnt ${CORE_QUINT_SRC_DIR}/block_retry.qnt
+                    ${CORE_QUINT_SRC_DIR}/rdma.qnt ${CORE_QUINT_SRC_DIR}/unix_path.qnt ${CORE_QUINT_SRC_DIR}/registration.qnt
             VERBATIM)
     endif()
-    foreach(family fd lifecycle listener ownership)
+    foreach(family fd lifecycle listener ownership rdma unix_path registration)
         unit_test_all_mechs(core ${family}_conformance ${family}_conformance.c)
         target_sources(core_${family}_conformance PRIVATE ${SDK_CASES_DIR}/${family}_cases.h)
         target_include_directories(core_${family}_conformance PRIVATE ${SDK_CASES_DIR})
@@ -335,6 +336,9 @@ if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EX
                 PROPERTIES LABELS "mbt" TIMEOUT 60)
         endforeach()
     endforeach()
+    # Registration-table symbols are private. Compile the production component
+    # into its replay instead of exporting test-only accessors from the SDK.
+    target_sources(core_registration_conformance PRIVATE ../rdma_mr.c)
     foreach(mech ${EVPL_MECHANISMS})
         unit_test_mbt_variant(core ownership_conformance_shared_${mech}
             core_ownership_conformance ${mech} TIMEOUT 60 ENVIRONMENT EVPL_TEST_SHARED=1)

@@ -45,6 +45,8 @@ def check_tests(data, backends):
                 r'libevpl/http/conformance_client', r'libevpl/rpc2/conformance_STREAM_',
                 r'libevpl/rpc2/conformance_client_']
     for mech in ('epoll', 'select'):
+        for family in ('rdma', 'unix_path', 'registration'):
+            required.append(f'libevpl/core/{family}_conformance_{mech}$')
         required.append(f'libevpl/core/ownership_conformance_{mech}$')
         required.append(f'libevpl/core/ownership_conformance_shared_{mech}$')
         for i in range(len(configurations()[0])):
@@ -131,6 +133,8 @@ def check_functions(rows, backends):
         'evpl_http_request_trailer_iterate', 'evpl_http_request_protocol',
         'evpl_rpc2_conn_get_next_xid', 'evpl_rpc2_conn_set_next_xid',
         'evpl_iovec_move_segment', 'evpl_rpc2_encoding_take_write_chunk',
+        'tcp_rdma_pending_ring_resize', 'tcp_rdma_handle_error',
+        'evpl_socket_unix_clear_stale', 'evpl_bind_abort', 'evpl_rdma_mr_table_resize',
     }
     required.update(config_api(libfabric='libfabric' in backends))
     if 'tls' in backends:

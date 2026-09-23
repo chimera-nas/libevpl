@@ -101,6 +101,7 @@ class MatrixTests(unittest.TestCase):
         names.append('core/block_retry_conformance_spdk')
         for mech in ('epoll', 'select'):
             names.extend((f'core/ownership_conformance_{mech}', f'core/ownership_conformance_shared_{mech}'))
+            names.extend(f'core/{family}_conformance_{mech}' for family in ('rdma', 'unix_path', 'registration'))
             names.extend(f'core/core_conformance_config_pair{i:02d}_{mech}'
                          for i in range(len(configurations()[0])))
             for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
@@ -132,7 +133,8 @@ class MatrixTests(unittest.TestCase):
 
     def test_ownership_retry_and_external_modes_cannot_disappear(self):
         targets = [t['name'] for t in self.data['tests']
-                   if any(s in t['name'] for s in ('ownership_conformance', 'block_retry', 'libfabric_external'))]
+                   if any(s in t['name'] for s in ('ownership_conformance', 'block_retry', 'libfabric_external',
+                                                  'rdma_conformance', 'unix_path_conformance', 'registration_conformance'))]
         for name in targets:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
                 check_tests({'tests': [t for t in self.data['tests'] if t['name'] != name]},
