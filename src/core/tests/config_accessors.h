@@ -69,6 +69,19 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_global_config_set_preallocate_slabs(config, before.preallocate_slabs);
     evpl_global_config_set_preallocate_threads(config, before.preallocate_threads);
     evpl_global_config_set_vfio_sgl_enabled(config, before.vfio_sgl_enabled);
+    evpl_global_config_set_io_uring_zerocopy_rx(config, before.io_uring_zerocopy_rx);
+    evpl_global_config_set_io_uring_zcrx_interface(config, before.io_uring_zcrx_interface);
+    evpl_global_config_set_io_uring_zcrx_rxq(config, before.io_uring_zcrx_rxq);
+    evpl_global_config_set_io_uring_zcrx_rxq_count(config, before.io_uring_zcrx_rxq_count);
+    evpl_global_config_set_io_uring_zcrx_ifq_count(config, before.io_uring_zcrx_ifq_count);
+    evpl_global_config_set_io_uring_zcrx_area_size(config, before.io_uring_zcrx_area_size);
+    evpl_global_config_set_io_uring_zcrx_rq_entries(config, before.io_uring_zcrx_rq_entries);
+    evpl_global_config_set_io_uring_zcrx_rx_buf_len(config, before.io_uring_zcrx_rx_buf_len);
+    evpl_global_config_set_io_uring_zcrx_area_import(config, before.io_uring_zcrx_area_import);
+    evpl_global_config_set_io_uring_registered_buffers(config, before.io_uring_registered_buffers);
+    evpl_global_config_set_io_uring_registered_files(config, before.io_uring_registered_files);
+    evpl_global_config_set_io_uring_send_zc(config, before.io_uring_send_zc);
+    evpl_global_config_set_io_uring_recv_bundle(config, before.io_uring_recv_bundle);
 #ifdef HAVE_LIBFABRIC
     evpl_global_config_set_libfabric_external_domain(config, NULL, NULL, NULL);
 #endif // ifdef HAVE_LIBFABRIC
@@ -85,6 +98,7 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_global_config_set_tls_cipher_list(strings, text);
     evpl_global_config_set_libfabric_provider(strings, text);
     evpl_global_config_set_spdk_sock_impl(strings, text);
+    evpl_global_config_set_io_uring_zcrx_interface(strings, text);
     text[0] = 'X';
     evpl_test_abort_if(strcmp(strings->tls_cert_file, "mbt-first"), "tls_cert did not copy its input");
     evpl_global_config_set_tls_cert(strings, "mbt-second");
@@ -112,6 +126,13 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_test_abort_if(strcmp(strings->spdk_sock_impl, "mbt-second"), "spdk_sock_impl replacement failed");
     evpl_global_config_set_spdk_sock_impl(strings, NULL);
     evpl_test_abort_if(strings->spdk_sock_impl, "spdk_sock_impl reset failed");
+    evpl_test_abort_if(strcmp(strings->io_uring_zcrx_interface, "mbt-first"),
+                       "io_uring_zcrx_interface did not copy its input");
+    evpl_global_config_set_io_uring_zcrx_interface(strings, "mbt-second");
+    evpl_test_abort_if(strcmp(strings->io_uring_zcrx_interface, "mbt-second"),
+                       "io_uring_zcrx_interface replacement failed");
+    evpl_global_config_set_io_uring_zcrx_interface(strings, NULL);
+    evpl_test_abort_if(strings->io_uring_zcrx_interface, "io_uring_zcrx_interface reset failed");
     evpl_global_config_release(strings);
 } /* mbt_config_defaults */
 

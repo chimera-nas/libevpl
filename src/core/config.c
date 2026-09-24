@@ -62,8 +62,21 @@ evpl_global_config_init(void)
 
     config->http_max_header_size = 8192;
 
-    config->io_uring_enabled = 1;
-    config->io_uring_entries = 8192;
+    config->io_uring_enabled            = 1;
+    config->io_uring_entries            = 8192;
+    config->io_uring_zerocopy_rx        = EVPL_IO_URING_AUTO;
+    config->io_uring_zcrx_interface     = NULL;
+    config->io_uring_zcrx_rxq           = 0;
+    config->io_uring_zcrx_rxq_count     = 1;
+    config->io_uring_zcrx_ifq_count     = 1;
+    config->io_uring_zcrx_area_size     = 256 * 1024 * 1024;
+    config->io_uring_zcrx_rq_entries    = 4096;
+    config->io_uring_zcrx_rx_buf_len    = 0;
+    config->io_uring_zcrx_area_import   = 0;
+    config->io_uring_registered_buffers = EVPL_IO_URING_AUTO;
+    config->io_uring_registered_files   = EVPL_IO_URING_AUTO;
+    config->io_uring_send_zc            = EVPL_IO_URING_AUTO;
+    config->io_uring_recv_bundle        = EVPL_IO_URING_AUTO;
 
     /*
      * A ring is not a small allocation: IORING_SETUP_SQE128 and
@@ -198,6 +211,9 @@ evpl_global_config_free(struct evpl_global_config *config)
 
     if (config->libfabric_provider) {
         evpl_free(config->libfabric_provider);
+    }
+    if (config->io_uring_zcrx_interface) {
+        evpl_free(config->io_uring_zcrx_interface);
     }
     if (config->spdk_sock_impl) {
         evpl_free(config->spdk_sock_impl);
@@ -575,6 +591,118 @@ evpl_global_config_set_io_uring_sqpoll(
 {
     config->io_uring_sqpoll = enabled ? 1 : 0;
 } /* evpl_global_config_set_io_uring_sqpoll */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zerocopy_rx(
+    struct evpl_global_config *config,
+    unsigned int               mode)
+{
+    config->io_uring_zerocopy_rx = mode;
+} /* evpl_global_config_set_io_uring_zerocopy_rx */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_interface(
+    struct evpl_global_config *config,
+    const char                *ifname)
+{
+    /* Copy first so that re-applying the stored value is safe. */
+    char *copy = ifname ? evpl_strdup(ifname) : NULL;
+
+    if (config->io_uring_zcrx_interface) {
+        evpl_free(config->io_uring_zcrx_interface);
+    }
+    config->io_uring_zcrx_interface = copy;
+} /* evpl_global_config_set_io_uring_zcrx_interface */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_rxq(
+    struct evpl_global_config *config,
+    unsigned int               rxq)
+{
+    config->io_uring_zcrx_rxq = rxq;
+} /* evpl_global_config_set_io_uring_zcrx_rxq */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_rxq_count(
+    struct evpl_global_config *config,
+    unsigned int               count)
+{
+    config->io_uring_zcrx_rxq_count = count ? count : 1;
+} /* evpl_global_config_set_io_uring_zcrx_rxq_count */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_ifq_count(
+    struct evpl_global_config *config,
+    unsigned int               count)
+{
+    /* Consecutive receive queues starting at zcrx_rxq, each given its own
+     * ifq on the same ring. */
+    config->io_uring_zcrx_ifq_count = count ? count : 1;
+} /* evpl_global_config_set_io_uring_zcrx_ifq_count */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_area_size(
+    struct evpl_global_config *config,
+    size_t                     size)
+{
+    config->io_uring_zcrx_area_size = size;
+} /* evpl_global_config_set_io_uring_zcrx_area_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_rq_entries(
+    struct evpl_global_config *config,
+    unsigned int               entries)
+{
+    config->io_uring_zcrx_rq_entries = entries;
+} /* evpl_global_config_set_io_uring_zcrx_rq_entries */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_rx_buf_len(
+    struct evpl_global_config *config,
+    unsigned int               len)
+{
+    config->io_uring_zcrx_rx_buf_len = len;
+} /* evpl_global_config_set_io_uring_zcrx_rx_buf_len */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_zcrx_area_import(
+    struct evpl_global_config *config,
+    int                        enable)
+{
+    config->io_uring_zcrx_area_import = enable ? 1u : 0u;
+} /* evpl_global_config_set_io_uring_zcrx_area_import */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_registered_buffers(
+    struct evpl_global_config *config,
+    unsigned int               mode)
+{
+    config->io_uring_registered_buffers = mode;
+} /* evpl_global_config_set_io_uring_registered_buffers */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_registered_files(
+    struct evpl_global_config *config,
+    unsigned int               mode)
+{
+    config->io_uring_registered_files = mode;
+} /* evpl_global_config_set_io_uring_registered_files */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_send_zc(
+    struct evpl_global_config *config,
+    unsigned int               mode)
+{
+    config->io_uring_send_zc = mode;
+} /* evpl_global_config_set_io_uring_send_zc */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_io_uring_recv_bundle(
+    struct evpl_global_config *config,
+    unsigned int               mode)
+{
+    config->io_uring_recv_bundle = mode;
+} /* evpl_global_config_set_io_uring_recv_bundle */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_enabled(
