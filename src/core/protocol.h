@@ -189,8 +189,26 @@ struct evpl_protocol {
         struct evpl *evpl,
         void        *accepted);
 
+
+    /* Optional: distributed/per-worker listen.
+     *
+     * Called on the listener thread before the centralized listen path.
+     * A protocol that implements this can choose, at runtime, to fan the
+     * listen out to one or more of the workers that previously called
+     * evpl_listener_attach() (e.g. one io_uring ring + ifq + listen
+     * socket per worker for io_uring ZCRX). When the implementation
+     * decides to handle the listen distributedly, it must return 0 and
+     * the listener thread skips the centralized bind_prepare + ->listen
+     * path. Returning non-zero (or leaving this method NULL) leaves the
+     * existing single-bind, listener-dispatcher path in place.
+     */
+    int  (*listen_distributed)(
+        struct evpl_listener *listener,
+        unsigned int          protocol_id,
+        struct evpl_address  *address);
+
     /* Called to attach an accepted connection to an evpl context */
-    void                    (*attach)(
+    void (*attach)(
         struct evpl      *evpl,
         struct evpl_bind *bind,
         void             *accepted);
@@ -199,7 +217,7 @@ struct evpl_protocol {
      * Callbacks for non-connection-oriented protocols
      */
 
-    void                    (*bind)(
+    void (*bind)(
         struct evpl      *evpl,
         struct evpl_bind *bind);
 };

@@ -61,6 +61,42 @@ evpl_listener_discard(
     }
 } /* evpl_listener_discard */
 
+/* Listen-time accept callback for distributedly-listened binds. The
+ * worker thread owns both the listen socket and the io_uring ring, so
+ * when an accept CQE fires we are ALREADY running on the worker — no
+ * cross-thread doorbell needed. Invoke the user's attach_callback (set
+ * via evpl_listener_attach on this worker) directly, then call into
+ * the protocol's attach so it can wire up recv on the accepted socket.
+ *
+ * private_data here is the evpl_listener_binding we attached on this
+ * worker, NOT the listener pointer used by the centralized dispatcher.
+ */
+void
+evpl_listener_accept_local(
+    struct evpl         *evpl,
+    struct evpl_bind    *listen_bind,
+    struct evpl_address *remote_address,
+    void                *accepted,
+    void                *private_data)
+{
+    struct evpl_listener_binding *binding = private_data;
+    struct evpl_bind             *new_bind;
+
+    new_bind = evpl_bind_prepare(evpl,
+                                 listen_bind->protocol,
+                                 NULL,
+                                 remote_address);
+
+    binding->attach_callback(evpl,
+                             new_bind,
+                             &new_bind->notify_callback,
+                             &new_bind->segment_callback,
+                             &new_bind->private_data,
+                             binding->private_data);
+
+    listen_bind->protocol->attach(evpl, new_bind, accepted);
+} /* evpl_listener_accept_local */
+
 static void
 evpl_listener_accept(
     struct evpl         *evpl,
@@ -132,6 +168,7 @@ evpl_listener_callback(
     struct evpl_listener       *listener = container_of(doorbell, struct evpl_listener, doorbell);
     struct evpl_listen_request *request;
     struct evpl_bind           *bind;
+    struct evpl_protocol       *proto;
     int                         closing;
 
     for (;;) {
@@ -151,8 +188,26 @@ evpl_listener_callback(
             evpl_listen_complete(request);
             continue;
         }
-        bind = evpl_bind_prepare(evpl, evpl_shared->protocol[request->protocol_id],
-                                 request->address, NULL);
+
+        proto = evpl_shared->protocol[request->protocol_id];
+
+        /* Give the protocol a chance to handle the listen distributedly
+         * (e.g. io_uring_tcp with ZCRX fans the listen out to a per-worker
+         * ring + ifq + listen socket). If it returns 0 the listen is done
+         * and the centralized bind_prepare + ->listen path is skipped
+         * entirely. A non-zero return -- or a NULL method, as for every
+         * protocol other than io_uring_tcp -- is not an error: it means
+         * "fall through to the centralized single-bind path".
+         */
+        if (proto->listen_distributed &&
+            proto->listen_distributed(listener, request->protocol_id,
+                                      request->address) == 0) {
+            request->status = 0;
+            evpl_listen_complete(request);
+            continue;
+        }
+
+        bind                  = evpl_bind_prepare(evpl, proto, request->address, NULL);
         bind->accept_callback = evpl_listener_accept;
         bind->private_data    = listener;
         request->status       = bind->protocol->listen(evpl, bind);
