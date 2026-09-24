@@ -95,6 +95,19 @@ struct evpl_rdmacm_device {
     struct ibv_pd              *parent_pd;
     struct ibv_pd              *pd;
     struct ibv_cq              *cq;
+    /* Set when the provider lacks the extended CQ API (bnxt_re, for one),
+     * so completions are read with ibv_poll_cq instead of ibv_start_poll. */
+    int                         cq_legacy;
+    /* What this device will accept for a QP, which may be less than the
+    * configured values: bnxt_re offers 13 SGEs where mlx5 offers 30. */
+    unsigned int                max_sge;
+    unsigned int                max_qp_wr;
+    unsigned int                max_inline;
+    /* Close the extended-API send batch after every work request.  The
+     * bnxt_re provider shipped before rdma-core 66 finalises only the last
+     * WQE of a batch, so any batch of two or more is malformed and the QP
+     * fails with a local operation error on the first such post. */
+    int                         wr_single;
     struct ibv_srq             *srq;
     struct evpl_rdmacm_request *srq_reqs;
     struct evpl_rdmacm_request *srq_free_reqs;
@@ -143,6 +156,7 @@ struct evpl_rdmacm_id {
     int                           max_rdma_reads;
     int                           cur_rdma_reads;
     int                           cur_sends;
+    int                           wr_open; /* WRs posted since ibv_wr_start */
     uint64_t                      sends_posted, sends_completed;
     uint64_t                      reads_posted, reads_completed;
 
@@ -268,6 +282,28 @@ evpl_rdmacm_map_device(
     return NULL;
 } /* evpl_rdmacm_map_device */
 
+/* Account for a work request just posted inside an ibv_wr_start batch.  On
+ * providers that cannot take more than one WR per batch, close it here and
+ * open the next, so the callers can post freely and only the doorbell
+ * frequency differs. */
+static inline void
+evpl_rdmacm_wr_posted(struct evpl_rdmacm_id *rdmacm_id)
+{
+    int rc;
+
+    if (!rdmacm_id->dev->wr_single) {
+        rdmacm_id->wr_open++;
+        return;
+    }
+
+    rc = ibv_wr_complete(rdmacm_id->qp);
+
+    evpl_rdmacm_abort_if(rc, "ibv_wr_complete error %s", strerror(errno));
+
+    ibv_wr_start(rdmacm_id->qp);
+    rdmacm_id->wr_open = 0;
+} /* evpl_rdmacm_wr_posted */
+
 static void
 evpl_rdmacm_create_qp(
     struct evpl           *evpl,
@@ -302,11 +338,11 @@ evpl_rdmacm_create_qp(
     qp_attr.send_cq             = dev->cq;
     qp_attr.recv_cq             = dev->cq;
     qp_attr.srq                 = dev->srq;
-    qp_attr.cap.max_send_wr     = evpl_shared->config->rdmacm_sq_size;
-    qp_attr.cap.max_recv_wr     = evpl_shared->config->rdmacm_sq_size;
-    qp_attr.cap.max_send_sge    = evpl_shared->config->rdmacm_max_sge;
-    qp_attr.cap.max_recv_sge    = evpl_shared->config->rdmacm_max_sge;
-    qp_attr.cap.max_inline_data = evpl_shared->config->rdmacm_max_inline;
+    qp_attr.cap.max_send_wr     = dev->max_qp_wr;
+    qp_attr.cap.max_recv_wr     = dev->max_qp_wr;
+    qp_attr.cap.max_send_sge    = dev->max_sge;
+    qp_attr.cap.max_recv_sge    = dev->max_sge;
+    qp_attr.cap.max_inline_data = dev->max_inline;
     qp_attr.sq_sig_all          = 0;
 
     qp_attr.send_ops_flags = IBV_QP_EX_WITH_SEND;
@@ -315,13 +351,21 @@ evpl_rdmacm_create_qp(
             IBV_QP_EX_WITH_RDMA_WRITE;
     }
 
-    qp_attr.comp_mask = IBV_QP_INIT_ATTR_CREATE_FLAGS |
-        IBV_QP_INIT_ATTR_PD |
+    /* Only claim the attributes actually set.  Announcing CREATE_FLAGS with
+     * no flags in it is harmless to mlx5 but bnxt_re rejects any comp_mask
+     * bit it does not implement, and this one was never needed. */
+    qp_attr.comp_mask = IBV_QP_INIT_ATTR_PD |
         IBV_QP_INIT_ATTR_SEND_OPS_FLAGS;
 
     rc = rdma_create_qp_ex(rdmacm_id->id, &qp_attr);
 
-    evpl_rdmacm_abort_if(rc, "rdma_create_qp error %s", strerror(errno));
+    /* Providers may fail this without setting errno, so report what was
+     * asked for as well as whatever errno happens to hold. */
+    evpl_rdmacm_abort_if(rc,
+                         "rdma_create_qp error %s on %s (sge %u wr %u inline %u)",
+                         strerror(errno),
+                         ibv_get_device_name(dev->context->device),
+                         dev->max_sge, dev->max_qp_wr, dev->max_inline);
 
     rdmacm_id->qp     = ibv_qp_to_qp_ex(rdmacm_id->id->qp);
     rdmacm_id->qp_num = rdmacm_id->id->qp->qp_num;
@@ -794,122 +838,161 @@ evpl_rdmacm_recv_stream(
 } /* evpl_rdmacm_recv_stream */
 
 
+/* Act on one completion.  Both CQ flavours end up here with the only five
+ * fields the backend ever uses; the extended API reads them straight off the
+ * CQ, the legacy API takes them from an ibv_poll_cq batch. */
+static void
+evpl_rdmacm_process_completion(
+    struct evpl               *evpl,
+    struct evpl_rdmacm_device *dev,
+    uint64_t                   wr_id,
+    uint32_t                   qp_num,
+    enum ibv_wc_status         status,
+    uint32_t                   vendor_err,
+    uint32_t                   byte_len)
+{
+    struct evpl_rdmacm_id      *rdmacm_id;
+    struct evpl_rdmacm_request *req;
+    struct evpl_bind           *bind;
+    struct evpl_notify          notify;
+    uint32_t                    kind;
+    uint64_t                    id;
+
+    kind      = wr_id & 3;
+    id        = wr_id >> 2;
+    rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
+
+    /* Flushes are the expected aftermath of a QP leaving RTS, one per
+     * outstanding WR, and say nothing the first error did not; a fast
+     * stream can have thousands queued when its peer disconnects. */
+    if (unlikely(status) && status != IBV_WC_WR_FLUSH_ERR) {
+        evpl_rdmacm_error("completion error wr_id %lu qp %u status %u vendor_err %u",
+                          wr_id, qp_num, status, vendor_err);
+    }
+
+    if (kind == EVPL_RDMACM_WR_RECV) {
+        evpl_rdmacm_abort_if(id >= (uint64_t) dev->srq_max, "invalid receive request ID");
+        req = &dev->srq_reqs[id];
+        if (unlikely(status)) {
+            evpl_iovec_release_internal(evpl, &req->iovec);
+        } else {
+            req->iovec.length = byte_len;
+
+            if (unlikely(!rdmacm_id)) {
+                evpl_iovec_release_internal(evpl, &req->iovec);
+            } else if (rdmacm_id->stream) {
+
+                bind = evpl_private2bind(rdmacm_id);
+
+                evpl_rdmacm_recv_stream(evpl, bind, &req->iovec);
+            } else {
+
+                bind = evpl_private2bind(rdmacm_id);
+
+                /* UD reserves a GRH-sized prefix even without a
+                 * valid GRH. RC has no prefix; RXE may still set the
+                 * completion flag there, so use the QP type. */
+                if (rdmacm_id->ud) {
+                    evpl_rdmacm_abort_if(req->iovec.length < sizeof(struct ibv_grh),
+                                         "short UD receive buffer");
+                    req->iovec.length -= sizeof(struct ibv_grh);
+                    req->iovec.data    = (char *) req->iovec.data + sizeof(struct ibv_grh);
+                }
+
+                rdmacm_id->dbg_req_recv++;
+
+                notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
+                notify.notify_status   = 0;
+                notify.recv_msg.iovec  = &req->iovec;
+                notify.recv_msg.niov   = 1;
+                notify.recv_msg.addr   = bind->remote;
+                notify.recv_msg.length = req->iovec.length;
+
+                bind->notify_callback(evpl, bind, &notify,
+                                      bind->private_data);
+            }
+
+        }
+        --dev->srq_fill;
+        req->used = 0;
+        LL_PREPEND(dev->srq_free_reqs, req);
+    } else if (rdmacm_id) {
+        if (kind == EVPL_RDMACM_WR_READ) {
+            evpl_rdmacm_process_rdma_read_completions(evpl, rdmacm_id, id, status ? EIO : 0);
+        } else {
+            evpl_rdmacm_abort_if(kind != EVPL_RDMACM_WR_SEND, "invalid send request ID");
+            if (status == IBV_WC_RNR_RETRY_EXC_ERR) {
+                rdmacm_id->dbg_send_rnr++;
+                evpl_rdmacm_error(
+                    "RNR-DIAG qp=%u send_inflight=%d send_hwm=%d cur_sends=%d rnr_count=%lu req_recv=%lu reply_sent=%lu excess_replies=%ld",
+                    rdmacm_id->qp_num, rdmacm_id->dbg_send_inflight,
+                    rdmacm_id->dbg_send_hwm, rdmacm_id->cur_sends,
+                    rdmacm_id->dbg_send_rnr,
+                    rdmacm_id->dbg_req_recv, rdmacm_id->dbg_reply_sent,
+                    (long) (rdmacm_id->dbg_reply_sent - rdmacm_id->dbg_req_recv));
+            }
+            evpl_rdmacm_process_send_completions(evpl, rdmacm_id, id, status ? EIO : 0);
+        }
+    }
+    if (unlikely(status) && rdmacm_id) {
+        evpl_close(evpl, evpl_private2bind(rdmacm_id));
+    }
+
+
+} /* evpl_rdmacm_process_completion */
+
 static FORCE_INLINE void
 evpl_rdmacm_poll_cq(
     struct evpl               *evpl,
     struct evpl_rdmacm_device *dev,
     int                        drain)
 {
-    struct evpl_rdmacm            *rdmacm = dev->rdmacm;
-    struct evpl_rdmacm_id         *rdmacm_id;
-    struct evpl_rdmacm_request    *req;
-    struct evpl_bind              *bind;
-    struct evpl_notify             notify;
+    struct evpl_rdmacm            *rdmacm  = dev->rdmacm;
     struct ibv_cq_ex              *cq      = (struct ibv_cq_ex *) dev->cq;
     static struct ibv_poll_cq_attr cq_attr = { .comp_mask = 0 };
-    int                            rc, n;
-    uint32_t                       qp_num, kind;
-    uint64_t                       id;
+    int                            rc, n, i;
 
  again:
 
-    rc = ibv_start_poll(cq, &cq_attr);
+    if (dev->cq_legacy) {
+        struct ibv_wc wcs[64];
 
-    if (rc) {
-        return;
+        n = ibv_poll_cq(dev->cq, 64, wcs);
+
+        if (n <= 0) {
+            return;
+        }
+
+        evpl_activity(evpl);
+
+        for (i = 0; i < n; i++) {
+            evpl_rdmacm_process_completion(evpl, dev, wcs[i].wr_id, wcs[i].qp_num,
+                                           wcs[i].status, wcs[i].vendor_err,
+                                           wcs[i].byte_len);
+        }
+    } else {
+        rc = ibv_start_poll(cq, &cq_attr);
+
+        if (rc) {
+            return;
+        }
+
+        n = 0;
+
+        evpl_activity(evpl);
+
+        do {
+            n++;
+            /* qp_num and wr_id remain valid on errors; opcode and byte count
+            * do not, and the vendor code only means anything on an error. */
+            evpl_rdmacm_process_completion(evpl, dev, cq->wr_id,
+                                           ibv_wc_read_qp_num(cq), cq->status,
+                                           cq->status ? ibv_wc_read_vendor_err(cq) : 0,
+                                           cq->status ? 0 : ibv_wc_read_byte_len(cq));
+        } while (n < 64 && ibv_next_poll(cq) == 0);
+
+        ibv_end_poll(cq);
     }
-
-    n = 0;
-
-    evpl_activity(evpl);
-
-    do {
-
-        n++;
-
-        /* qp_num and wr_id remain valid on errors; opcode does not. */
-        qp_num    = ibv_wc_read_qp_num(cq);
-        kind      = cq->wr_id & 3;
-        id        = cq->wr_id >> 2;
-        rdmacm_id = evpl_rdmacm_qp_lookup_find(dev, qp_num);
-
-        if (unlikely(cq->status)) {
-            evpl_rdmacm_error("completion error wr_id %lu qp %u status %u vendor_err %u",
-                              cq->wr_id, qp_num, cq->status, ibv_wc_read_vendor_err(cq));
-        }
-
-        if (kind == EVPL_RDMACM_WR_RECV) {
-            evpl_rdmacm_abort_if(id >= (uint64_t) dev->srq_max, "invalid receive request ID");
-            req = &dev->srq_reqs[id];
-            if (unlikely(cq->status)) {
-                evpl_iovec_release_internal(evpl, &req->iovec);
-            } else {
-                req->iovec.length = ibv_wc_read_byte_len(cq);
-
-                if (unlikely(!rdmacm_id)) {
-                    evpl_iovec_release_internal(evpl, &req->iovec);
-                } else if (rdmacm_id->stream) {
-
-                    bind = evpl_private2bind(rdmacm_id);
-
-                    evpl_rdmacm_recv_stream(evpl, bind, &req->iovec);
-                } else {
-
-                    bind = evpl_private2bind(rdmacm_id);
-
-                    /* UD reserves a GRH-sized prefix even without a
-                     * valid GRH. RC has no prefix; RXE may still set the
-                     * completion flag there, so use the QP type. */
-                    if (rdmacm_id->ud) {
-                        evpl_rdmacm_abort_if(req->iovec.length < sizeof(struct ibv_grh),
-                                             "short UD receive buffer");
-                        req->iovec.length -= sizeof(struct ibv_grh);
-                        req->iovec.data    = (char *) req->iovec.data + sizeof(struct ibv_grh);
-                    }
-
-                    rdmacm_id->dbg_req_recv++;
-
-                    notify.notify_type     = EVPL_NOTIFY_RECV_MSG;
-                    notify.notify_status   = 0;
-                    notify.recv_msg.iovec  = &req->iovec;
-                    notify.recv_msg.niov   = 1;
-                    notify.recv_msg.addr   = bind->remote;
-                    notify.recv_msg.length = req->iovec.length;
-
-                    bind->notify_callback(evpl, bind, &notify,
-                                          bind->private_data);
-                }
-
-            }
-            --dev->srq_fill;
-            req->used = 0;
-            LL_PREPEND(dev->srq_free_reqs, req);
-        } else if (rdmacm_id) {
-            if (kind == EVPL_RDMACM_WR_READ) {
-                evpl_rdmacm_process_rdma_read_completions(evpl, rdmacm_id, id, cq->status ? EIO : 0);
-            } else {
-                evpl_rdmacm_abort_if(kind != EVPL_RDMACM_WR_SEND, "invalid send request ID");
-                if (cq->status == IBV_WC_RNR_RETRY_EXC_ERR) {
-                    rdmacm_id->dbg_send_rnr++;
-                    evpl_rdmacm_error(
-                        "RNR-DIAG qp=%u send_inflight=%d send_hwm=%d cur_sends=%d rnr_count=%lu req_recv=%lu reply_sent=%lu excess_replies=%ld",
-                        rdmacm_id->qp_num, rdmacm_id->dbg_send_inflight,
-                        rdmacm_id->dbg_send_hwm, rdmacm_id->cur_sends,
-                        rdmacm_id->dbg_send_rnr,
-                        rdmacm_id->dbg_req_recv, rdmacm_id->dbg_reply_sent,
-                        (long) (rdmacm_id->dbg_reply_sent - rdmacm_id->dbg_req_recv));
-                }
-                evpl_rdmacm_process_send_completions(evpl, rdmacm_id, id, cq->status ? EIO : 0);
-            }
-        }
-        if (unlikely(cq->status) && rdmacm_id) {
-            evpl_close(evpl, evpl_private2bind(rdmacm_id));
-        }
-
-
-    } while (n < 64 && ibv_next_poll(cq) == 0);
-
-    ibv_end_poll(cq);
 
     while (dev->srq_fill < dev->srq_max &&
            dev->srq_max - dev->srq_fill >= evpl_shared->config->rdmacm_srq_batch) {
@@ -919,7 +1002,6 @@ evpl_rdmacm_poll_cq(
     if (drain && n) {
         goto again;
     }
-
 
 } /* evpl_rdmacm_poll_cq */
 
@@ -1086,6 +1168,51 @@ evpl_rdmacm_create(
         dev->responder_resources = rdmacm_devices->device_attr[i].max_qp_rd_atom > 16 ?
             16 : rdmacm_devices->device_attr[i].max_qp_rd_atom;
 
+        /* The provider fails QP creation outright when asked for more than
+         * the device supports, and bnxt_re does so without even setting
+         * errno, so size the request to the device rather than the config. */
+        dev->max_sge   = evpl_shared->config->rdmacm_max_sge;
+        dev->max_qp_wr = evpl_shared->config->rdmacm_sq_size;
+
+        if (dev->max_sge > (unsigned int) rdmacm_devices->device_attr[i].max_sge) {
+            dev->max_sge = rdmacm_devices->device_attr[i].max_sge;
+        }
+
+        if (dev->max_qp_wr > (unsigned int) rdmacm_devices->device_attr[i].max_qp_wr) {
+            dev->max_qp_wr = rdmacm_devices->device_attr[i].max_qp_wr;
+        }
+
+        /* Inline data shares the WQE with the scatter list, so a device
+         * cannot take more inline bytes than its SGEs would occupy: 16 bytes
+         * apiece (208 for bnxt_re's 13, 480 for mlx5's 30).  The limit is
+         * the configured value or that capacity, whichever is less; asking
+         * for more makes bnxt_re fail the QP without even setting errno. */
+        dev->max_inline = evpl_shared->config->rdmacm_max_inline;
+
+        if (dev->max_inline > dev->max_sge * sizeof(struct ibv_sge)) {
+            dev->max_inline = dev->max_sge * sizeof(struct ibv_sge);
+        }
+
+        /* Broadcom (0x14e4): see wr_single.  Keyed on the vendor rather than
+         * the rdma-core version because the provider gives no other hint. */
+        if (rdmacm_devices->device_attr[i].vendor_id == 0x14e4) {
+            dev->wr_single = 1;
+            evpl_rdmacm_info("rdma device %s: posting one work request per batch",
+                             ibv_get_device_name(dev->context->device));
+        }
+
+        if (dev->max_sge != evpl_shared->config->rdmacm_max_sge ||
+            dev->max_qp_wr != evpl_shared->config->rdmacm_sq_size ||
+            dev->max_inline != evpl_shared->config->rdmacm_max_inline) {
+            evpl_rdmacm_info("rdma device %s limits QPs to %u SGEs, %u WRs and "
+                             "%u inline bytes (configured %u, %u and %u)",
+                             ibv_get_device_name(dev->context->device),
+                             dev->max_sge, dev->max_qp_wr, dev->max_inline,
+                             evpl_shared->config->rdmacm_max_sge,
+                             evpl_shared->config->rdmacm_sq_size,
+                             evpl_shared->config->rdmacm_max_inline);
+        }
+
         evpl_rdmacm_qp_lookup_init(dev);
 
         dev->parent_pd = rdmacm_devices->pd[i];
@@ -1151,8 +1278,21 @@ evpl_rdmacm_create(
 
         dev->cq = (struct ibv_cq *) ibv_create_cq_ex(dev->context, &cq_attr);
 
+        /* Some providers (bnxt_re among them) implement only the classic
+         * create_cq/poll_cq verbs, and libibverbs reports the missing
+         * extended entry point as EOPNOTSUPP.  Fall back to a plain CQ and
+         * read completions through ibv_poll_cq for that device. */
+        if (!dev->cq && (errno == EOPNOTSUPP || errno == ENOSYS)) {
+            dev->cq = ibv_create_cq(dev->context,
+                                    evpl_shared->config->rdmacm_cq_size,
+                                    dev, dev->comp_channel, 0);
+            dev->cq_legacy = 1;
+        }
+
         evpl_rdmacm_abort_if(!dev->cq,
-                             "Failed to create completion queue for rdma device");
+                             "Failed to create completion queue for rdma device %s: %s",
+                             ibv_get_device_name(dev->context->device),
+                             strerror(errno));
 
         rc = ibv_req_notify_cq(dev->cq, 0);
 
@@ -1447,9 +1587,8 @@ evpl_rdmacm_register(
                               IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE |
                               IBV_ACCESS_RELAXED_ORDERING);
 
-        evpl_rdmacm_abort_if(!mrset[i], "Failed to register %d-byte RDMA memory region on %s: %s",
-                             size, ibv_get_device_name(rdmacm_devices->pd[i]->context->device),
-                             strerror(errno));
+        evpl_rdmacm_abort_if(!mrset[i], "Failed to register RDMA memory region")
+        ;
     }
 
     return mrset;
@@ -1595,6 +1734,8 @@ evpl_rdmacm_flush_rdma_reads(
 
         ibv_wr_set_sge_list(qp, dgram->niov, sge);
 
+        evpl_rdmacm_wr_posted(rdmacm_id);
+
         bind->dgram_read.waist = (bind->dgram_read.waist + 1) & bind->dgram_read.mask;
     }
 } /* evpl_rdmacm_flush_rdma_read */
@@ -1619,7 +1760,12 @@ evpl_rdmacm_flush_datagram(
         return;
     }
 
+    /* Nothing below is guaranteed to post a work request, and closing an
+     * empty batch is not something every provider tolerates: bnxt_re writes
+     * the header flags through a pointer that only a posted WR sets.  So
+     * count what gets posted and abort rather than complete an empty batch. */
     ibv_wr_start(qp);
+    rdmacm_id->wr_open = 0;
 
     evpl_rdmacm_flush_rdma_reads(evpl, bind);
 
@@ -1645,7 +1791,7 @@ evpl_rdmacm_flush_datagram(
         }
 
         if (dgram->dgram_type == EVPL_DGRAM_TYPE_SEND &&
-            dgram->length <= evpl_shared->config->rdmacm_max_inline) {
+            dgram->length <= rdmacm_id->dev->max_inline) {
             send_inline = 1;
 
             nsge = 0;
@@ -1734,12 +1880,16 @@ evpl_rdmacm_flush_datagram(
             evpl_address_release(dgram->addr);
         }
 
+        evpl_rdmacm_wr_posted(rdmacm_id);
     }
 
-    rc = ibv_wr_complete(qp);
+    if (rdmacm_id->wr_open == 0) {
+        ibv_wr_abort(qp);
+    } else {
+        rc = ibv_wr_complete(qp);
 
-    evpl_rdmacm_abort_if(rc, "ibv_wr_complete error error %s", strerror(
-                             errno));
+        evpl_rdmacm_abort_if(rc, "ibv_wr_complete error %s", strerror(errno));
+    }
 
     if (unlikely(rdmacm_id->cur_sends == 0 &&
                  evpl_iovec_ring_is_empty(&bind->iovec_send))) {
