@@ -81,6 +81,7 @@ struct evpl_global_config {
     unsigned int              io_uring_zcrx_rxq;
     unsigned int              io_uring_zcrx_rxq_count;
     unsigned int              io_uring_zcrx_ifq_count;
+    unsigned int              xlio_socket_buffer_size;
     size_t                    io_uring_zcrx_area_size;
     unsigned int              io_uring_zcrx_rq_entries;
     unsigned int              io_uring_zcrx_rx_buf_len;

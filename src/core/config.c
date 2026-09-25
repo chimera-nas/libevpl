@@ -156,7 +156,8 @@ evpl_global_config_init(void)
     config->rdmacm_retry_count            = 4;
     config->rdmacm_rnr_retry_count        = 4;
 
-    config->xlio_enabled = 1;
+    config->xlio_enabled            = 1;
+    config->xlio_socket_buffer_size = 16 * 1024 * 1024;
 
     config->libfabric_enabled                = 1;
     config->libfabric_srq_enabled            = 1;
@@ -639,6 +640,16 @@ evpl_global_config_set_io_uring_zcrx_ifq_count(
      * ifq on the same ring. */
     config->io_uring_zcrx_ifq_count = count ? count : 1;
 } /* evpl_global_config_set_io_uring_zcrx_ifq_count */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_xlio_socket_buffer_size(
+    struct evpl_global_config *config,
+    unsigned int               size)
+{
+    /* Applied as SO_SNDBUF and SO_RCVBUF on every XLIO socket; the receive
+     * side is the TCP window XLIO advertises.  Default 16 MiB. */
+    config->xlio_socket_buffer_size = size ? size : 16 * 1024 * 1024;
+} /* evpl_global_config_set_xlio_socket_buffer_size */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_io_uring_zcrx_area_size(
