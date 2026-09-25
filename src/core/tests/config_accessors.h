@@ -57,6 +57,7 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_global_config_set_libfabric_inject_max(config, before.libfabric_inject_max);
     evpl_global_config_set_libfabric_datagram_size_override(config, before.libfabric_datagram_size_override);
     evpl_global_config_set_xlio_enabled(config, before.xlio_enabled);
+    evpl_global_config_set_xlio_socket_buffer_size(config, before.xlio_socket_buffer_size);
     evpl_global_config_set_vfio_enabled(config, before.vfio_enabled);
     evpl_global_config_set_libaio_enabled(config, before.libaio_enabled);
     evpl_global_config_set_spdk_enabled(config, before.spdk_enabled);

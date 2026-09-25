@@ -240,6 +240,11 @@ EVPL_API void evpl_global_config_set_io_uring_zcrx_rxq_count(
 EVPL_API void evpl_global_config_set_io_uring_zcrx_ifq_count(
     struct evpl_global_config *config,
     unsigned int               count);
+/* SO_SNDBUF/SO_RCVBUF for XLIO sockets (the receive side is the advertised
+ * TCP window). Default 16 MiB; 2 MiB caps one 200GbE stream near 100 Gbps. */
+EVPL_API void evpl_global_config_set_xlio_socket_buffer_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
 
 EVPL_API void evpl_global_config_set_io_uring_zcrx_area_size(
     struct evpl_global_config *config,

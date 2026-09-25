@@ -427,7 +427,13 @@ evpl_xlio_socket_init(
     evpl_xlio_write_callback_t write_callback)
 {
     int res, yes = 1;
-    int sndbuf = 2 * 1024 * 1024, rcvbuf = 2 * 1024 * 1024;
+    /* SO_RCVBUF is the receive window XLIO advertises and SO_SNDBUF caps what
+     * it keeps in flight; XLIO accounts both against its own buffer pool
+     * rather than allocating per socket.  The old hardcoded 2 MB was too
+     * small to fill a 200GbE pipe (the window must cover the bandwidth-delay
+     * product), so size it from the configuration.  Default 16 MiB. */
+    int sndbuf = (int) evpl_shared->config->xlio_socket_buffer_size;
+    int rcvbuf = (int) evpl_shared->config->xlio_socket_buffer_size;
 
     s->evpl      = evpl;
     s->listen    = listen;
