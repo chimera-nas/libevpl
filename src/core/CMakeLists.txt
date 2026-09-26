@@ -130,6 +130,7 @@ if (HAVE_SPDK)
     set(CORE_SRC ${CORE_SRC}
         spdk/spdk_core.c spdk/evpl_spdk.h
         spdk/spdk_framework.c
+        spdk/spdk_managed.c spdk/spdk_managed.h
         spdk/spdk_sock_common.h
         spdk/spdk_block.c
         spdk/tcp.c

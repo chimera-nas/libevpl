@@ -702,6 +702,18 @@ evpl_spdk_sock_connect_done(
     }
 } /* evpl_spdk_sock_connect_done */
 
+/* The URING protocol pins spdk_sock to the io_uring implementation; the plain
+ * protocol honors the global spdk_sock_impl config (NULL selects SPDK's
+ * default, i.e. posix). */
+static const char *
+evpl_spdk_tcp_impl(struct evpl_bind *bind)
+{
+    if (bind->protocol->id == EVPL_STREAM_SPDK_TCP_URING) {
+        return "uring";
+    }
+    return evpl_shared->config->spdk_sock_impl;
+} /* evpl_spdk_tcp_impl */
+
 static void
 evpl_spdk_tcp_connect(
     struct evpl      *evpl,
@@ -712,7 +724,7 @@ evpl_spdk_tcp_connect(
     struct spdk_sock_opts    opts;
     char                     ip[INET6_ADDRSTRLEN];
     uint16_t                 port;
-    const char              *impl = evpl_shared->config->spdk_sock_impl;
+    const char              *impl = evpl_spdk_tcp_impl(bind);
     int                      rc;
 
     evpl_spdk_sock_abort_if(
@@ -849,7 +861,7 @@ evpl_spdk_tcp_listen(
     opts.zcopy = false;
 
     s->sock = spdk_sock_listen_ext(ip, port,
-                                   evpl_shared->config->spdk_sock_impl,
+                                   evpl_spdk_tcp_impl(listen_bind),
                                    &opts);
 
     if (!s->sock) {
@@ -1005,6 +1017,20 @@ struct evpl_protocol evpl_spdk_tcp = {
     .connected     = 1,
     .stream        = 1,
     .name          = "STREAM_SPDK_TCP",
+    .framework     = &evpl_framework_spdk,
+    .connect       = evpl_spdk_tcp_connect,
+    .pending_close = evpl_spdk_tcp_pending_close,
+    .close         = evpl_spdk_tcp_close,
+    .listen        = evpl_spdk_tcp_listen,
+    .attach        = evpl_spdk_tcp_attach,
+    .flush         = evpl_spdk_tcp_flush,
+};
+
+struct evpl_protocol evpl_spdk_tcp_uring = {
+    .id            = EVPL_STREAM_SPDK_TCP_URING,
+    .connected     = 1,
+    .stream        = 1,
+    .name          = "STREAM_SPDK_TCP_URING",
     .framework     = &evpl_framework_spdk,
     .connect       = evpl_spdk_tcp_connect,
     .pending_close = evpl_spdk_tcp_pending_close,
