@@ -474,7 +474,6 @@ jobs:
   ci-complete:
     if: false
     name: CI complete
-    if: always()
     needs: [test, static-analysis, macos, native, mbt-coverage]
     runs-on: ubuntu-24.04
     # It reads `needs` and nothing else -- no checkout, no API call -- so the
@@ -533,7 +532,6 @@ jobs:
     if: false
     name: Model-based test coverage
     needs: conformance-corpus
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.platform == 'mbt')
     timeout-minutes: 45
     runs-on: ubuntu-24.04
     permissions:
