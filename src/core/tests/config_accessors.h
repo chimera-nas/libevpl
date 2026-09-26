@@ -42,6 +42,7 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_global_config_set_rdmacm_max_sge(config, before.rdmacm_max_sge);
     evpl_global_config_set_rdmacm_cq_size(config, before.rdmacm_cq_size);
     evpl_global_config_set_rdmacm_sq_size(config, before.rdmacm_sq_size);
+    evpl_global_config_set_rdmacm_flush_batch(config, before.rdmacm_flush_batch);
     evpl_global_config_set_rdmacm_srq_size(config, before.rdmacm_srq_size);
     evpl_global_config_set_rdmacm_srq_min(config, before.rdmacm_srq_min);
     evpl_global_config_set_rdmacm_max_inline(config, before.rdmacm_max_inline);

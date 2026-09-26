@@ -123,6 +123,7 @@ struct evpl_rdmacm_device {
 
 struct evpl_rdmacm {
     struct rdma_event_channel   *event_channel;
+    struct evpl_rdmacm_id       *flush_pending; /* binds owing a bounded flush */
     struct evpl_event            event;
     struct evpl_poll            *poll;
     struct evpl_rdmacm_listener *listener;
@@ -157,6 +158,9 @@ struct evpl_rdmacm_id {
     int                           cur_rdma_reads;
     int                           cur_sends;
     int                           wr_open; /* WRs posted since ibv_wr_start */
+    /* bounded-flush continuation list (rdmacm->flush_pending) */
+    struct evpl_rdmacm_id        *flush_prev, *flush_next;
+    int                           flush_listed;
     uint64_t                      sends_posted, sends_completed;
     uint64_t                      reads_posted, reads_completed;
 
@@ -1114,6 +1118,11 @@ evpl_rdmacm_poll_exit(
     }
 } /* evpl_rdmacm_poll_exit */
 
+void
+evpl_rdmacm_flush_datagram(
+    struct evpl      *evpl,
+    struct evpl_bind *bind);
+
 static void
 evpl_rdmacm_poll(
     struct evpl *evpl,
@@ -1121,11 +1130,22 @@ evpl_rdmacm_poll(
 {
     struct evpl_rdmacm        *rdmacm = arg;
     struct evpl_rdmacm_device *dev;
+    struct evpl_rdmacm_id     *id, *tmp;
     int                        i;
 
     for (i = 0; i < rdmacm->num_active_devices; ++i) {
         dev = rdmacm->active_devices[i];
         evpl_rdmacm_poll_cq(evpl, dev, 0);
+    }
+
+    /* Continue any bounded flushes left from a prior iteration: post the next
+     * batch per bind that still owes work.  evpl_rdmacm_flush_datagram removes
+     * a bind from flush_pending once its ring drains or its SQ fills, and
+     * re-holds poll mode (evpl_activity) while any remain, so we never sleep
+     * with sends on the table but still yield between batches. */
+    DL_FOREACH_SAFE2(rdmacm->flush_pending, id, tmp, flush_next)
+    {
+        evpl_rdmacm_flush_datagram(evpl, evpl_private2bind(id));
     }
 
 } /* evpl_rdmacm_poll */
@@ -1755,6 +1775,8 @@ evpl_rdmacm_flush_datagram(
     struct evpl_rdmacm_ah *ah;
     int                    nsge, rc, send_inline, need_signal;
     int                    send_limit = evpl_shared->config->rdmacm_sq_size;
+    int                    batch      = evpl_shared->config->rdmacm_flush_batch;
+    int                    posted     = 0;
 
     if (unlikely(!qp || (!rdmacm_id->ud && !rdmacm_id->connected))) {
         return;
@@ -1770,6 +1792,7 @@ evpl_rdmacm_flush_datagram(
     evpl_rdmacm_flush_rdma_reads(evpl, bind);
 
     while (rdmacm_id->cur_sends < send_limit &&
+           (batch == 0 || posted < batch) &&
            bind->dgram_send.waist != bind->dgram_send.head) {
 
         dgram = evpl_dgram_ring_waist(&bind->dgram_send);
@@ -1843,10 +1866,15 @@ evpl_rdmacm_flush_datagram(
         }
 
         ++rdmacm_id->cur_sends;
+        ++posted;
 
         bind->dgram_send.waist = (bind->dgram_send.waist + 1) & bind->dgram_send.mask;
 
+        /* Signal the last WR of each bounded batch too, so completion credits
+         * for this chunk come back per-batch rather than only when the ring
+         * fully drains -- otherwise a capped batch carries no signaled WR. */
         need_signal =  rdmacm_id->cur_sends == send_limit ||
+            (batch && posted == batch) ||
             bind->dgram_send.waist == bind->dgram_send.head;
 
 
@@ -1889,6 +1917,26 @@ evpl_rdmacm_flush_datagram(
         rc = ibv_wr_complete(qp);
 
         evpl_rdmacm_abort_if(rc, "ibv_wr_complete error %s", strerror(errno));
+    }
+
+    /* Bounded flush: if the per-iteration cap stopped us with sends still
+     * queued and SQ room to post them, leave this bind on flush_pending so the
+     * poll callback posts the next batch next iteration, and hold poll mode via
+     * evpl_activity so we don't sleep with work on the table.  If the ring
+     * drained or the SQ is full, drop off the list (the SQ-full case is
+     * re-driven by the send-completion path re-arming the flush deferral). */
+    if (bind->dgram_send.waist != bind->dgram_send.head &&
+        rdmacm_id->cur_sends < send_limit) {
+        if (!rdmacm_id->flush_listed) {
+            DL_APPEND2(rdmacm_id->rdmacm->flush_pending, rdmacm_id,
+                       flush_prev, flush_next);
+            rdmacm_id->flush_listed = 1;
+        }
+        evpl_activity(evpl);
+    } else if (rdmacm_id->flush_listed) {
+        DL_DELETE2(rdmacm_id->rdmacm->flush_pending, rdmacm_id,
+                   flush_prev, flush_next);
+        rdmacm_id->flush_listed = 0;
     }
 
     if (unlikely(rdmacm_id->cur_sends == 0 &&
@@ -1994,6 +2042,11 @@ evpl_rdmacm_close(
     struct evpl_rdmacm_id     *rdmacm_id = evpl_bind_private(bind);
     struct evpl_rdmacm        *rdmacm    = rdmacm_id->rdmacm;
     struct evpl_rdmacm_device *dev       = rdmacm_id->dev;
+
+    if (rdmacm_id->flush_listed) {
+        DL_DELETE2(rdmacm->flush_pending, rdmacm_id, flush_prev, flush_next);
+        rdmacm_id->flush_listed = 0;
+    }
 
     if (dev) {
         --dev->num_qp;

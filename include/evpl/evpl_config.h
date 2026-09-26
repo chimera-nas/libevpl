@@ -294,6 +294,10 @@ EVPL_API void evpl_global_config_set_rdmacm_sq_size(
     struct evpl_global_config *config,
     unsigned int               size);
 
+EVPL_API void evpl_global_config_set_rdmacm_flush_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch);
+
 EVPL_API void evpl_global_config_set_rdmacm_srq_size(
     struct evpl_global_config *config,
     unsigned int               size);

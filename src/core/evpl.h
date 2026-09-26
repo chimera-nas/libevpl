@@ -96,6 +96,10 @@ struct evpl_global_config {
     unsigned int              rdmacm_max_sge;
     unsigned int              rdmacm_cq_size;
     unsigned int              rdmacm_sq_size;
+    /* Max sends posted to a QP per flush call; the flush yields (holding poll
+     * mode via evpl_activity) and posts the next batch on the next poll
+     * iteration instead of draining the whole ring in one pass. 0 = unbounded. */
+    unsigned int              rdmacm_flush_batch;
     unsigned int              rdmacm_datagram_size_override;
     unsigned int              rdmacm_srq_size;
     unsigned int              rdmacm_srq_min;
