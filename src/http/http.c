@@ -2299,10 +2299,11 @@ evpl_http_event(
              */
             DL_FOREACH_SAFE(http_conn->pending_requests, request, next)
             {
-                if (request->request_state ==
+                if (!http_conn->is_server && request->request_state ==
                     EVPL_HTTP_REQUEST_STATE_COMPLETE) {
-                    /* The close-delimited case just above: answered, not
-                     * abandoned. */
+                    /* Only the client close-delimited case just above has
+                     * finished. A server's COMPLETE describes its incoming
+                     * body; its pending asynchronous reply still needs FAILED. */
                     continue;
                 }
 
@@ -2979,7 +2980,29 @@ evpl_http_server_destroy(
     struct evpl_http_agent  *agent,
     struct evpl_http_server *server)
 {
+    struct evpl_http_conn *conn, *tmp;
+    int                    live;
+
     evpl_listener_detach(agent->evpl, server->binding);
+
+    /* Connections retain server->private_data for terminal notifications.
+     * Retire them while the server and its application state still exist.
+     * Closing a bind is deferred, so pump until every matching connection has
+     * delivered FAILED/RESPONSE_COMPLETE and left the agent's list. */
+    do {
+        live = 0;
+        DL_FOREACH_SAFE(agent->conns, conn, tmp)
+        {
+            if (conn->server == server && conn->bind) {
+                evpl_close(agent->evpl, conn->bind);
+                live = 1;
+            }
+        }
+        if (live) {
+            evpl_continue(agent->evpl);
+        }
+    } while (live);
+
     evpl_free(server);
 } /* evpl_http_server_destroy */
 
