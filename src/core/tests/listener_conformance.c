@@ -82,6 +82,11 @@ loop(void)
     struct evpl_thread_config *config = evpl_thread_config_init();
 
     evpl_thread_config_set_wait_ms(config, 0);
+    /* These loops are pumped once per millisecond, not continuously. The
+     * default 1000 busy-poll turns would postpone the worker's accept
+     * doorbell for a second (longer with scheduler sleep coalescing). Keep
+     * both polling and kernel-readiness turns, but check readiness promptly. */
+    evpl_thread_config_set_poll_iterations(config, 1);
     return evpl_create(config);
 } /* loop */
 int
@@ -101,9 +106,9 @@ main(void)
 #endif /* ifdef _WIN32 */
     for (size_t i = 0; i < sizeof(listener_steps) / sizeof(listener_steps[0]); i++) {
         const struct listener_step *s = &listener_steps[i];
-        struct timespec begin, end;
-        evpl_clock_gettime(CLOCK_MONOTONIC, &begin);
-        fprintf(stderr, "STEP begin pid=%u i=%zu op=%d accepts=%d disconnects=%d\n", evpl_process_id(), i, s->op, accepts, disconnects);
+        fprintf(stderr, "listener step %zu/%zu op=%d accepted/disconnected=%d/%d expected=%d/%d\n",
+                i, sizeof(listener_steps) / sizeof(listener_steps[0]), s->op,
+                accepts, disconnects, s->accepts, s->disconnects);
         switch (s->op) {
             case listener_Reset:
                 cleanup(); accepts = disconnects = 0;
@@ -156,9 +161,6 @@ main(void)
                 break;
             default: abort();
         } /* switch */
-        evpl_clock_gettime(CLOCK_MONOTONIC, &end);
-        fprintf(stderr, "STEP end i=%zu op=%d elapsed_ms=%.3f\n", i, s->op,
-                (end.tv_sec-begin.tv_sec)*1000.0+(end.tv_nsec-begin.tv_nsec)/1000000.0);
     }
     cleanup();
     return 0;
