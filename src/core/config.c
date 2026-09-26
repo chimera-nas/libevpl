@@ -147,6 +147,7 @@ evpl_global_config_init(void)
     config->rdmacm_max_sge                = 31;
     config->rdmacm_cq_size                = 8192;
     config->rdmacm_sq_size                = 256;
+    config->rdmacm_flush_batch            = 0;
     config->rdmacm_srq_size               = 8192;
     config->rdmacm_srq_min                = 256;
     config->rdmacm_srq_batch              = 16;
@@ -747,6 +748,14 @@ evpl_global_config_set_rdmacm_sq_size(
 {
     config->rdmacm_sq_size = size;
 } /* evpl_global_config_set_rdmacm_sq_size */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_flush_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch)
+{
+    config->rdmacm_flush_batch = batch;
+} /* evpl_global_config_set_rdmacm_flush_batch */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_srq_size(
