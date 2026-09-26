@@ -2518,6 +2518,11 @@ core_conformance_init(void)
         evpl_global_config_set_buffer_size(config, MAX_SEND_BYTES);
         evpl_global_config_set_max_datagram_size(config, MAX_SEND_BYTES);
         evpl_global_config_set_rdmacm_srq_size(config, 256);
+        /* Registration pins the whole slab, and the base run holds a client
+         * and a server context at once, so the 1 GiB default is more than the
+         * Soft-RoCE CI guest can spare (see test_evpl_rdma_config).  A profile
+         * run overrides this below with its own slab_size. */
+        evpl_global_config_set_slab_size(config, 64 * 1024 * 1024);
     }
 
     /* As test_evpl_config(), which this replaces: ctest runs the suite once
