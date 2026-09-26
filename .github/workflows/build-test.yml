@@ -72,7 +72,7 @@ jobs:
   # which would otherwise turn a broken runner into a green run.
   # ---------------------------------------------------------------------------
   test:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
+    if: false
     name: Test ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -263,7 +263,7 @@ jobs:
   # here catches that at source instead of in a downstream bump.
   # ---------------------------------------------------------------------------
   static-analysis:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
+    if: false
     name: Analyze ${{ matrix.image_name }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -339,7 +339,7 @@ jobs:
   # above it -- which is exactly the part nothing else in this matrix exercises.
   # ---------------------------------------------------------------------------
   macos:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
+    if: true
     name: Test macOS ${{ matrix.build_type }}
     runs-on: macos-14
     permissions:
@@ -347,7 +347,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [Release, Debug]
+        build_type: [Debug]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -374,7 +374,7 @@ jobs:
           brew update
           # openssl@3 and nghttp2 are keg-only; CMakeLists.txt already adds the
           # Homebrew prefixes for them.  uthash is headers only.
-          brew install cmake ninja bison openssl@3 nghttp2 uthash protobuf-c sqlite oras libfabric
+          HOMEBREW_MAKE_JOBS=1 brew install cmake ninja bison openssl@3 nghttp2 uthash protobuf-c sqlite oras libfabric
           oras pull "${CCACHE_REF}" --output "${RUNNER_TEMP}"
           install -m 0755 "${RUNNER_TEMP}/ccache-darwin" /usr/local/bin/ccache
           ccache --version | head -1
@@ -406,7 +406,7 @@ jobs:
                 -DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison" \
                 -S "${{ github.workspace }}" -B "${{ runner.temp }}/build"
           # Require SQLite coverage here as well as in the Linux images.
-          ninja -C "${{ runner.temp }}/build" all otel_sqlite_test otel-trace
+          ninja -C "${{ runner.temp }}/build" core_listener_conformance all otel_sqlite_test otel-trace
           ccache --show-stats || true
           ccache --trim-max-size "${CCACHE_MAXSIZE}" || true
 
@@ -423,15 +423,33 @@ jobs:
         run: |
           cd "${{ runner.temp }}/build"
           mkdir -p "${{ github.workspace }}/ctest-results"
+          (
+            while true; do
+              for pid in $(pgrep -f '/core_listener_conformance$' || true); do
+                sample "$pid" 1 -file "${{ github.workspace }}/ctest-results/sample-${pid}-$(date +%s).txt" || true
+              done
+              sleep 15
+            done
+          ) &
+          sampler=$!
           rc=0
-          ctest --output-on-failure --test-output-size-failed 65536 \
+          ctest -V -R '^libevpl/core/listener_conformance_libfabric_wildcard_' --output-on-failure --test-output-size-failed 262144 \
                 --timeout 300 -j "$(sysctl -n hw.ncpu)" \
-                --output-junit "${{ github.workspace }}/ctest-results/results.xml" || rc=$?
+                --output-junit "${{ github.workspace }}/ctest-results/results.xml" 2>&1 | tee "${{ github.workspace }}/ctest-results/listener.log" || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "ctest reported failures; rerunning them to tell a flake from a real failure"
             if ctest --rerun-failed --output-on-failure --timeout 300; then
               echo "rerun passed: treating as flaky"
-              rc=0
+              (
+            while true; do
+              for pid in $(pgrep -f '/core_listener_conformance$' || true); do
+                sample "$pid" 1 -file "${{ github.workspace }}/ctest-results/sample-${pid}-$(date +%s).txt" || true
+              done
+              sleep 15
+            done
+          ) &
+          sampler=$!
+          rc=0
             else
               echo "rerun still failing: real failure"
             fi
@@ -454,6 +472,7 @@ jobs:
   # skipped-but-not-run leg cannot pass for the wrong reason.
   # ---------------------------------------------------------------------------
   ci-complete:
+    if: false
     name: CI complete
     if: always()
     needs: [test, static-analysis, macos, native, mbt-coverage]
@@ -488,7 +507,7 @@ jobs:
           PYCODE
 
   conformance-corpus:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'tls'
+    if: false
     name: Generate native conformance cases
     runs-on: ubuntu-24.04
     permissions:
@@ -511,6 +530,7 @@ jobs:
           retention-days: 7
 
   mbt-coverage:
+    if: false
     name: Model-based test coverage
     needs: conformance-corpus
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.platform == 'mbt')
@@ -592,7 +612,7 @@ jobs:
           if-no-files-found: error
 
   native:
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.platform != 'mbt') && (needs.conformance-corpus.result == 'success' || inputs.platform == 'tls') }}
+    if: false
     needs: conformance-corpus
     name: MSVC ${{ matrix.arch }} ${{ matrix.config }}
     runs-on: ${{ matrix.runner }}

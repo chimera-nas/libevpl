@@ -101,6 +101,9 @@ main(void)
 #endif /* ifdef _WIN32 */
     for (size_t i = 0; i < sizeof(listener_steps) / sizeof(listener_steps[0]); i++) {
         const struct listener_step *s = &listener_steps[i];
+        struct timespec begin, end;
+        evpl_clock_gettime(CLOCK_MONOTONIC, &begin);
+        fprintf(stderr, "STEP begin pid=%u i=%zu op=%d accepts=%d disconnects=%d\n", evpl_process_id(), i, s->op, accepts, disconnects);
         switch (s->op) {
             case listener_Reset:
                 cleanup(); accepts = disconnects = 0;
@@ -153,6 +156,9 @@ main(void)
                 break;
             default: abort();
         } /* switch */
+        evpl_clock_gettime(CLOCK_MONOTONIC, &end);
+        fprintf(stderr, "STEP end i=%zu op=%d elapsed_ms=%.3f\n", i, s->op,
+                (end.tv_sec-begin.tv_sec)*1000.0+(end.tv_nsec-begin.tv_nsec)/1000000.0);
     }
     cleanup();
     return 0;
