@@ -61,6 +61,7 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_global_config_set_vfio_enabled(config, before.vfio_enabled);
     evpl_global_config_set_libaio_enabled(config, before.libaio_enabled);
     evpl_global_config_set_spdk_enabled(config, before.spdk_enabled);
+    evpl_global_config_set_spdk_managed(config, before.spdk_managed);
     evpl_global_config_set_libaio_max_pending(config, before.libaio_max_pending);
     evpl_global_config_set_pread_enabled(config, before.pread_enabled);
     evpl_global_config_set_hf_time_mode(config, before.hf_time_mode);

@@ -130,6 +130,7 @@ struct evpl_global_config {
 
     unsigned int              pread_enabled;
     unsigned int              spdk_enabled;
+    unsigned int              spdk_managed;
 
     /* spdk_sock implementation name for STREAM_SPDK_TCP ("posix", "uring",
      * ...); NULL selects SPDK's default implementation. */

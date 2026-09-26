@@ -378,6 +378,13 @@ EVPL_API void evpl_global_config_set_spdk_enabled(
     struct evpl_global_config *config,
     int                        enabled);
 
+/* When set (default), libevpl initializes and owns the SPDK env, thread
+ * library scheduler, and a reactor thread per worker under EVPL_CORE_MECH_SPDK.
+ * When cleared, the host application must bootstrap the SPDK env itself. */
+EVPL_API void evpl_global_config_set_spdk_managed(
+    struct evpl_global_config *config,
+    int                        enabled);
+
 /* spdk_sock implementation for STREAM_SPDK_TCP ("posix", "uring", ...);
  * NULL (default) selects SPDK's default implementation. */
 EVPL_API void evpl_global_config_set_spdk_sock_impl(

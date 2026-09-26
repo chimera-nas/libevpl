@@ -45,6 +45,7 @@
 
 #ifdef HAVE_SPDK
 #include <spdk/thread.h>
+#include "core/spdk/spdk_managed.h"
 #endif /* ifdef HAVE_SPDK */
 
 #ifdef HAVE_IO_URING
@@ -179,6 +180,14 @@ evpl_shared_init(struct evpl_global_config *config)
     evpl_check_message_size(config);
 
     evpl_shared->config = config;
+
+#ifdef HAVE_SPDK
+    /* Own the SPDK env/reactors unless the host opted out; must be up before
+    * any worker spdk_thread is created and before the framework attaches. */
+    if (config->core_mech == EVPL_CORE_MECH_SPDK && config->spdk_managed) {
+        evpl_spdk_managed_init(config);
+    }
+#endif /* ifdef HAVE_SPDK */
 
     if (evpl_shared->config->hf_time_mode == 2) {
         /* Deetect if nonstop_tsc is supported, enable iff so */
@@ -388,6 +397,11 @@ evpl_shared_init(struct evpl_global_config *config)
         evpl_protocol_init(evpl_shared, EVPL_STREAM_SPDK_TCP,
                            &evpl_spdk_tcp);
 
+        /* io_uring spdk_sock variant; usable when SPDK was built --with-uring
+         * and the running kernel supports io_uring. */
+        evpl_protocol_init(evpl_shared, EVPL_STREAM_SPDK_TCP_URING,
+                           &evpl_spdk_tcp_uring);
+
         evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_SPDK_BDEV,
                                  &evpl_block_protocol_spdk_bdev);
     }
@@ -426,6 +440,12 @@ evpl_cleanup(void)
                                                );
         }
     }
+
+#ifdef HAVE_SPDK
+    /* After framework cleanup (which still touches SPDK) and once all worker
+     * spdk_threads have exited: release the env libevpl owns in managed mode. */
+    evpl_spdk_managed_fini();
+#endif /* ifdef HAVE_SPDK */
 
     evpl_numa_config_release(evpl_shared->numa_config);
 

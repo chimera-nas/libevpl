@@ -177,6 +177,7 @@ evpl_global_config_init(void)
 
     config->pread_enabled  = 1;
     config->spdk_enabled   = 1;
+    config->spdk_managed   = 1;
     config->slab_alignment = config->page_size;
 
     config->preallocate_slabs   = 0;
@@ -967,6 +968,14 @@ evpl_global_config_set_spdk_enabled(
 {
     config->spdk_enabled = enabled;
 } /* evpl_global_config_set_spdk_enabled */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_spdk_managed(
+    struct evpl_global_config *config,
+    int                        enabled)
+{
+    config->spdk_managed = enabled ? 1u : 0u;
+} /* evpl_global_config_set_spdk_managed */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_spdk_sock_impl(
