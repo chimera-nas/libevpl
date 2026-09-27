@@ -315,7 +315,7 @@ evpl_libfabric_hints_type(
     hints->mode                 = FI_CONTEXT | FI_CONTEXT2;
     hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
         FI_MR_ALLOCATED | FI_MR_PROV_KEY;
-    hints->domain_attr->threading = FI_THREAD_SAFE;
+    hints->domain_attr->threading = FI_THREAD_COMPLETION;
 
     if (config->libfabric_provider) {
         hints->fabric_attr->prov_name = strdup(config->libfabric_provider);
