@@ -147,8 +147,8 @@ evpl_global_config_init(void)
     config->rdmacm_max_sge                = 31;
     config->rdmacm_cq_size                = 8192;
     config->rdmacm_sq_size                = 256;
-    config->rdmacm_flush_batch            = 0;
-    config->rdmacm_srq_size               = 8192;
+    config->rdmacm_flush_batch            = 16;
+    config->rdmacm_srq_size               = 256;
     config->rdmacm_srq_min                = 256;
     config->rdmacm_srq_batch              = 16;
     config->rdmacm_max_inline             = 250;
