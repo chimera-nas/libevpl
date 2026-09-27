@@ -89,6 +89,10 @@ struct evpl_global_config {
     unsigned int              io_uring_registered_buffers;
     unsigned int              io_uring_registered_files;
     unsigned int              io_uring_send_zc;
+    /* Sends of at least this many bytes use zero-copy (when send_zc is
+     * enabled); smaller sends fall back to a copying send, whose lower
+     * per-op overhead wins below the crossover. 0 = always zero-copy. */
+    unsigned int              io_uring_send_zc_threshold;
     unsigned int              io_uring_recv_bundle;
 
     unsigned int              rdmacm_enabled;

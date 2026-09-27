@@ -572,7 +572,8 @@ evpl_io_uring_pump(
      * request until the notification, which is free to lag behind.  Waiting on
      * the notification instead would idle the sender for a DMA round trip per
      * batch. */
-    if (ctx->effective.send_zc) {
+    if (ctx->effective.send_zc &&
+        total >= evpl_shared->config->io_uring_send_zc_threshold) {
         struct evpl_iovec *first  = iov;
         int                maxiov = evpl_shared->config->max_num_iovec;
         unsigned int       group;

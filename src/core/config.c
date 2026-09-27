@@ -76,6 +76,7 @@ evpl_global_config_init(void)
     config->io_uring_registered_buffers = EVPL_IO_URING_AUTO;
     config->io_uring_registered_files   = EVPL_IO_URING_AUTO;
     config->io_uring_send_zc            = EVPL_IO_URING_AUTO;
+    config->io_uring_send_zc_threshold  = 4096;
     config->io_uring_recv_bundle        = EVPL_IO_URING_AUTO;
 
     /*
@@ -708,6 +709,14 @@ evpl_global_config_set_io_uring_send_zc(
 {
     config->io_uring_send_zc = mode;
 } /* evpl_global_config_set_io_uring_send_zc */
+
+void
+evpl_global_config_set_io_uring_send_zc_threshold(
+    struct evpl_global_config *config,
+    unsigned int               threshold)
+{
+    config->io_uring_send_zc_threshold = threshold;
+} /* evpl_global_config_set_io_uring_send_zc_threshold */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_io_uring_recv_bundle(
