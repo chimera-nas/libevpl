@@ -84,6 +84,7 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_global_config_set_io_uring_registered_buffers(config, before.io_uring_registered_buffers);
     evpl_global_config_set_io_uring_registered_files(config, before.io_uring_registered_files);
     evpl_global_config_set_io_uring_send_zc(config, before.io_uring_send_zc);
+    evpl_global_config_set_io_uring_send_zc_threshold(config, before.io_uring_send_zc_threshold);
     evpl_global_config_set_io_uring_recv_bundle(config, before.io_uring_recv_bundle);
 #ifdef HAVE_LIBFABRIC
     evpl_global_config_set_libfabric_external_domain(config, NULL, NULL, NULL);

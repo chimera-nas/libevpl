@@ -274,6 +274,10 @@ EVPL_API void evpl_global_config_set_io_uring_send_zc(
     struct evpl_global_config *config,
     unsigned int               mode);
 
+EVPL_API void evpl_global_config_set_io_uring_send_zc_threshold(
+    struct evpl_global_config *config,
+    unsigned int               threshold);
+
 EVPL_API void evpl_global_config_set_io_uring_recv_bundle(
     struct evpl_global_config *config,
     unsigned int               mode);
