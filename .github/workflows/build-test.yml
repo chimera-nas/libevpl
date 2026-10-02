@@ -341,7 +341,7 @@ jobs:
   macos:
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     name: Test macOS ${{ matrix.build_type }}
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: read
     strategy:
@@ -370,19 +370,32 @@ jobs:
           # corpus from the rest of the matrix -- testing something else
           # rather than testing more widely.
           QUINT_VERSION: 0.32.0
+          # Keep the formula snapshot that matches the hosted image. Updating
+          # it can select packages for a newer macOS and force source builds.
+          HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
-          brew update
+          retry() {
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                return 1
+              fi
+              sleep $((attempt * 10))
+            done
+          }
           # openssl@3 and nghttp2 are keg-only; CMakeLists.txt already adds the
           # Homebrew prefixes for them.  uthash is headers only.
-          brew install cmake ninja bison openssl@3 nghttp2 uthash protobuf-c sqlite oras libfabric
-          oras pull "${CCACHE_REF}" --output "${RUNNER_TEMP}"
+          retry brew install cmake ninja bison openssl@3 nghttp2 uthash protobuf-c sqlite oras libfabric
+          retry oras pull "${CCACHE_REF}" --output "${RUNNER_TEMP}"
           install -m 0755 "${RUNNER_TEMP}/ccache-darwin" /usr/local/bin/ccache
           ccache --version | head -1
           # quint is not a brew formula; upstream publishes it on npm, which is
           # also what pins it exactly.  The Linux images take it from the GHCR
           # mirror instead, but that image carries a Linux node+quint tree and
           # cannot be reused here.
-          npm install -g "@informalsystems/quint@${QUINT_VERSION}"
+          retry npm install -g "@informalsystems/quint@${QUINT_VERSION}"
           quint --version
 
       - name: Restore the ccache directory
