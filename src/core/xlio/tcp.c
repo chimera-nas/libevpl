@@ -104,7 +104,7 @@ evpl_xlio_prepare_batch(
             /* Consuming the send ring drops its references.  Keep a
              * separate reference for each entry until XLIO completes. */
             evpl_iovec_ref_incr(zc->refs[i]);
-            p           = (p + 1) & ring->mask;
+            p = (p + 1) & ring->mask;
         }
 
         s->zc_pending++;
