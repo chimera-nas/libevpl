@@ -674,10 +674,11 @@ static inline void
 evpl_io_uring_setup_socket(
     struct evpl                  *evpl,
     struct evpl_io_uring_context *ctx,
-    struct evpl_io_uring_socket  *s,
-    int                           listen)
+    struct evpl_io_uring_socket  *s)
 {
-    int flags, rc, yes = 1, n;
+    int flags, rc;
+
+    (void) evpl;
 
     s->recv_req      = NULL;
     s->accept_req    = NULL;
@@ -704,64 +705,84 @@ evpl_io_uring_setup_socket(
     if (ctx->effective.fixed_file) {
         s->direct_fd_idx = evpl_io_uring_alloc_direct_fd(ctx, s->fd);
     }
+} /* evpl_io_uring_setup_socket */
 
-    if (!listen) {
+/*
+ * Arm receive on a connected data socket: choose its ZCRX ifq, prime the
+ * copy recv ring if ZCRX is off, and post the first multishot receive.
+ *
+ * This must run only once the socket is connected, because with several ifqs
+ * the right one is chosen from the queue the connection actually lands on,
+ * reported by SO_INCOMING_NAPI_ID -- and that is not populated until a packet
+ * has been seen on the socket. On the accept path the SYN already supplies it;
+ * on the connect path the caller waits for the connect completion (the
+ * SYN-ACK), so this is deferred out of setup_socket to the connect callback.
+ * Posting RECV_ZC against the wrong ifq fails with EFAULT and resets the
+ * connection, which is exactly what an unconnected socket used to hit.
+ */
+static inline void
+evpl_io_uring_start_recv(
+    struct evpl                  *evpl,
+    struct evpl_io_uring_context *ctx,
+    struct evpl_io_uring_socket  *s)
+{
+    int yes = 1, rc, n;
+
 #ifdef HAVE_IO_URING_ZCRX
-        /* When this ring owns the queue's ifq, every accepted socket on it
-         * receives via RECV_ZC. Steering only ZCRX-bound traffic to this
-         * queue is the caller's job (typically an ethtool ntuple rule). */
-        if (ctx->effective.zcrx && ctx->num_zcrx) {
-            s->zcrx_enabled = 1;
-            s->zcrx         = ctx->zcrx[0];
+    /* When this ring owns the queue's ifq, the socket receives via RECV_ZC.
+     * Steering only ZCRX-bound traffic to that queue is the caller's job
+     * (typically an ethtool ntuple rule). */
+    if (ctx->effective.zcrx && ctx->num_zcrx) {
+        s->zcrx_enabled = 1;
+        s->zcrx         = ctx->zcrx[0];
 
-            /* With several ifqs, receive on the one bound to the queue this
-             * connection actually arrives on; the kernel names that queue's
-             * NAPI instance, and each ifq learned its own at registration.
-             * A socket on some other queue still works through the first
-             * ifq, but by copy rather than placement, so count it. */
-            if (ctx->num_zcrx > 1) {
-                unsigned int napi_id = 0;
-                socklen_t    len     = sizeof(napi_id);
-                int          zi, found = 0;
+        /* With several ifqs, receive on the one bound to the queue this
+         * connection actually arrives on; the kernel names that queue's NAPI
+         * instance, and each ifq learned its own at registration. */
+        if (ctx->num_zcrx > 1) {
+            unsigned int napi_id = 0;
+            socklen_t    len     = sizeof(napi_id);
+            int          zi, found = 0;
 
-                if (getsockopt(s->fd, SOL_SOCKET, SO_INCOMING_NAPI_ID,
-                               &napi_id, &len) == 0 && napi_id) {
-                    for (zi = 0; zi < ctx->num_zcrx; zi++) {
-                        if (ctx->zcrx[zi]->napi_id == napi_id) {
-                            s->zcrx = ctx->zcrx[zi];
-                            found   = 1;
-                            break;
-                        }
+            if (getsockopt(s->fd, SOL_SOCKET, SO_INCOMING_NAPI_ID,
+                           &napi_id, &len) == 0 && napi_id) {
+                for (zi = 0; zi < ctx->num_zcrx; zi++) {
+                    if (ctx->zcrx[zi]->napi_id == napi_id) {
+                        s->zcrx = ctx->zcrx[zi];
+                        found   = 1;
+                        break;
                     }
                 }
+            }
 
-                if (!found) {
-                    ctx->stat_zcrx_unmatched++;
-                }
+            /* The socket's queue is not owned by any ifq on this ring (or its
+            * NAPI id is somehow still unknown). RECV_ZC against a foreign ifq
+            * would EFAULT and reset the connection, so receive it by copy. */
+            if (!found) {
+                ctx->stat_zcrx_unmatched++;
+                s->zcrx_enabled = 0;
+                s->zcrx         = NULL;
             }
         }
+    }
 #endif /* ifdef HAVE_IO_URING_ZCRX */
 
-        /* ZCRX delivers out of the registered area, so the provided-buffer
-         * recv ring would only tie up allocator buffers it never fills. */
-        if (!s->zcrx_enabled) {
-            evpl_io_uring_init_recv_ring(ctx);
-            n = evpl_io_uring_fill_recv_ring(evpl, ctx);
-            if (n) {
-                io_uring_buf_ring_advance(ctx->recv_ring, n);
-            }
+    /* ZCRX delivers out of the registered area, so the provided-buffer recv
+     * ring would only tie up allocator buffers it never fills. */
+    if (!s->zcrx_enabled) {
+        evpl_io_uring_init_recv_ring(ctx);
+        n = evpl_io_uring_fill_recv_ring(evpl, ctx);
+        if (n) {
+            io_uring_buf_ring_advance(ctx->recv_ring, n);
         }
-
-        rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-        evpl_io_uring_abort_if(rc, "Failed to set TCP_NODELAY on socket");
-
-
-        evpl_io_uring_post_multishot_recv(evpl, ctx, s);
     }
 
+    rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
-} /* evpl_io_uring_setup_socket */
+    evpl_io_uring_abort_if(rc, "Failed to set TCP_NODELAY on socket");
+
+    evpl_io_uring_post_multishot_recv(evpl, ctx, s);
+} /* evpl_io_uring_start_recv */
 
 static void
 evpl_io_uring_tcp_connect_callback(
@@ -777,6 +798,11 @@ evpl_io_uring_tcp_connect_callback(
         evpl_close(evpl, bind);
         return;
     }
+
+    /* Connected now, so SO_INCOMING_NAPI_ID is populated (the SYN-ACK just
+     * arrived): pick the ZCRX ifq and arm receive here rather than in
+     * setup_socket, which ran before connect when the queue was not yet known. */
+    evpl_io_uring_start_recv(evpl, ctx, s);
 
     notify.notify_type   = EVPL_NOTIFY_CONNECTED;
     notify.notify_status = 0;
@@ -807,7 +833,7 @@ evpl_io_uring_tcp_connect(
     evpl_io_uring_abort_if(s->fd < 0, "Failed to create tcp socket: %s", strerror(
                                errno));
 
-    evpl_io_uring_setup_socket(evpl, ctx, s, 0);
+    evpl_io_uring_setup_socket(evpl, ctx, s);
 
     io_uring_prep_connect(sqe, s->fd, (struct sockaddr *) bind->remote->addr, bind->remote->addrlen);
 
@@ -980,7 +1006,7 @@ evpl_io_uring_tcp_listen(
         goto fail;
     }
 
-    evpl_io_uring_setup_socket(evpl, ctx, s, 1);
+    evpl_io_uring_setup_socket(evpl, ctx, s);
 
     req = evpl_io_uring_request_alloc(ctx, EVPL_IO_URING_REQ_TCP);
 
@@ -1047,7 +1073,11 @@ evpl_io_uring_attach(
     bind->local->addrlen = sslen;
     memcpy(bind->local->addr, &ss, sslen);
 
-    evpl_io_uring_setup_socket(evpl, ctx, s, 0);
+    evpl_io_uring_setup_socket(evpl, ctx, s);
+
+    /* Accepted from a connection that has already delivered its SYN, so
+     * SO_INCOMING_NAPI_ID is available for the ZCRX ifq choice. */
+    evpl_io_uring_start_recv(evpl, ctx, s);
 
     notify.notify_type   = EVPL_NOTIFY_CONNECTED;
     notify.notify_status = 0;

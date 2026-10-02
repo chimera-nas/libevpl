@@ -1078,8 +1078,8 @@ evpl_io_uring_zcrx_teardown(
 
     if (ctx->stat_zcrx_unmatched) {
         evpl_io_uring_info(
-            "zcrx: %lu sockets arrived on a queue without an ifq and were "
-            "received through the first ifq by copy",
+            "zcrx: %lu sockets arrived on a queue without a matching ifq and "
+            "were received by copy",
             (unsigned long) ctx->stat_zcrx_unmatched);
     }
 
