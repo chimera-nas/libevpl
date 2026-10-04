@@ -272,23 +272,31 @@ static inline void
 evpl_xlio_send_completion(
     struct evpl             *evpl,
     struct evpl_xlio_socket *s,
-    int                      length)
+    int                      length,
+    int                      niov)
 {
     struct evpl_bind  *bind = evpl_private2bind(s);
     struct evpl_notify notify;
     int                msg_sent = 0;
 
-
     if (bind->segment_callback) {
-        struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
+        /* A batch can carry several messages (small sends are coalesced into
+         * one xlio_socket_sendv), so retire every message it completes. */
+        while (niov) {
+            struct evpl_dgram *dgram = evpl_dgram_ring_tail(&bind->dgram_send);
 
-        if (dgram) {
-            --dgram->niov;
-
-            if (dgram->niov == 0) {
-                msg_sent++;
-                evpl_dgram_ring_remove(&bind->dgram_send);
+            if (!dgram) {
+                break;
             }
+
+            if (dgram->niov > niov) {
+                dgram->niov -= niov;
+                break;
+            }
+
+            niov -= dgram->niov;
+            msg_sent++;
+            evpl_dgram_ring_remove(&bind->dgram_send);
         }
     }
 

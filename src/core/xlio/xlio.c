@@ -189,7 +189,7 @@ evpl_xlio_socket_completion(
 
     xlio = evpl_framework_private(evpl, EVPL_FRAMEWORK_XLIO);
 
-    evpl_xlio_send_completion(evpl, s, zc->length);
+    evpl_xlio_send_completion(evpl, s, zc->length, zc->niov);
 
     for (i = 0; i < zc->niov; i++) {
         evpl_iovec_ref_release(evpl, zc->refs[i]);
@@ -290,6 +290,11 @@ evpl_xlio_poll(
 
         bind = evpl_private2bind(s);
 
+        if (s->readable) {
+            s->readable = 0;
+            s->read_callback(evpl, s);
+        }
+
         if (s->writable && s->write_interest) {
             res = s->write_callback(evpl, s);
 
@@ -305,11 +310,6 @@ evpl_xlio_poll(
                     evpl_close(evpl, bind);
                 }
             }
-        }
-
-        if (s->readable) {
-            s->readable = 0;
-            s->read_callback(evpl, s);
         }
 
         if (s->closed ||  !(s->readable || (s->writable && s->write_interest))) {
