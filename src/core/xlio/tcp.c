@@ -218,7 +218,7 @@ evpl_xlio_tcp_write(
         }
 
         if (!zc) {
-            evpl_xlio_send_completion(evpl, s, total);
+            evpl_xlio_send_completion(evpl, s, total, niov);
         }
 
         evpl_iovec_ring_consume(evpl, &bind->iovec_send, total);
