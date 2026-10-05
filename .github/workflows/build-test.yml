@@ -341,7 +341,7 @@ jobs:
   macos:
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     name: Test macOS ${{ matrix.build_type }}
-    runs-on: macos-15
+    runs-on: macos-26
     permissions:
       contents: read
     strategy:
@@ -402,9 +402,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/ccache
-          key: ccache-macos-${{ matrix.build_type }}-${{ github.sha }}
+          key: ccache-macos-26-${{ matrix.build_type }}-${{ github.sha }}
           restore-keys: |
-            ccache-macos-${{ matrix.build_type }}-
+            ccache-macos-26-${{ matrix.build_type }}-
 
       - name: Configure and build
         env:
@@ -428,7 +428,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/ccache
-          key: ccache-macos-${{ matrix.build_type }}-${{ github.sha }}
+          key: ccache-macos-26-${{ matrix.build_type }}-${{ github.sha }}
 
       # No REQUIRE_NETNS_TESTS here: network namespaces are a Linux feature, so
       # the suite falls back to its serialised shared-port path on Darwin.
