@@ -9,7 +9,7 @@
 static struct evpl                  *client, *worker;
 static struct evpl_listener         *listener;
 static struct evpl_listener_binding *binding;
-static struct evpl_endpoint         *endpoint;
+static struct evpl_endpoint         *endpoint, *dial_endpoint;
 static int                           accepts, disconnects;
 
 static void
@@ -64,6 +64,10 @@ cleanup(void)
         evpl_endpoint_close(endpoint);
     }
     endpoint = NULL;
+    if (dial_endpoint) {
+        evpl_endpoint_close(dial_endpoint);
+        dial_endpoint = NULL;
+    }
     if (worker) {
         evpl_destroy(worker);
     }
@@ -78,6 +82,11 @@ loop(void)
     struct evpl_thread_config *config = evpl_thread_config_init();
 
     evpl_thread_config_set_wait_ms(config, 0);
+    /* These loops are pumped once per millisecond, not continuously. The
+     * default 1000 busy-poll turns would postpone the worker's accept
+     * doorbell for a second (longer with scheduler sleep coalescing). Keep
+     * both polling and kernel-readiness turns, but check readiness promptly. */
+    evpl_thread_config_set_poll_iterations(config, 1);
     return evpl_create(config);
 } /* loop */
 int
@@ -97,23 +106,29 @@ main(void)
 #endif /* ifdef _WIN32 */
     for (size_t i = 0; i < sizeof(listener_steps) / sizeof(listener_steps[0]); i++) {
         const struct listener_step *s = &listener_steps[i];
+        fprintf(stderr, "listener step %zu/%zu op=%d accepted/disconnected=%d/%d expected=%d/%d\n",
+                i, sizeof(listener_steps) / sizeof(listener_steps[0]), s->op,
+                accepts, disconnects, s->accepts, s->disconnects);
         switch (s->op) {
             case listener_Reset:
                 cleanup(); accepts = disconnects = 0;
                 worker             = loop(); client = loop(); break;
-            case listener_Start:
-                listener = evpl_listener_create();
-                endpoint = evpl_endpoint_create(test_address(test_mbt_stream_protocol(),
-                                                             "127.0.0.1", "listener-mbt"), port++);
+            case listener_Start: {
+                const char *address        = test_address(test_mbt_stream_protocol(), "127.0.0.1", "listener-mbt");
+                const char *listen_address = getenv("EVPL_TEST_LISTEN_ADDRESS");
+                listener      = evpl_listener_create();
+                endpoint      = evpl_endpoint_create(listen_address ? listen_address : address, port);
+                dial_endpoint = evpl_endpoint_create(address, port++);
                 evpl_test_abort_if(test_mbt_listen(worker, listener, test_mbt_stream_protocol(), endpoint),
                                    "listen failed");
                 break;
+            }
             case listener_Attach: binding = evpl_listener_attach(worker, listener
                                                                  , accepted, NULL); break;
             case listener_Detach: evpl_listener_detach(worker, binding); binding = NULL; break;
             case listener_Connect: {
                 int queued = 0;
-                evpl_test_abort_if(!evpl_connect(client, test_mbt_stream_protocol(), NULL, endpoint,
+                evpl_test_abort_if(!evpl_connect(client, test_mbt_stream_protocol(), NULL, dial_endpoint,
                                                  client_notify, NULL, NULL), "connect failed");
                 /* Freeze worker dispatch at a real handoff barrier, then let the
                  * model choose whether detach or acceptance wins ownership. */
@@ -131,7 +146,8 @@ main(void)
             }
             case listener_Stop:
                 test_mbt_listener_destroy(worker, listener); listener = NULL;
-                evpl_endpoint_close(endpoint); endpoint               = NULL; break;
+                evpl_endpoint_close(endpoint); endpoint               = NULL;
+                evpl_endpoint_close(dial_endpoint); dial_endpoint     = NULL; break;
             case listener_Quiesce:
                 for (int n = 0; n < 5000 && disconnects < s->disconnects; n++) {
                     pump(); evpl_sleep_us(1000);

@@ -523,11 +523,30 @@ evpl_http2_on_frame_send(
     if (request) {
         /* The local message (response on the server, request on the client) has
          * been fully transmitted. */
+        request->h2.send_complete = 1;
         evpl_http2_notify(request, EVPL_HTTP_NOTIFY_RESPONSE_COMPLETE);
     }
 
     return 0;
 } /* evpl_http2_on_frame_send */
+
+/* Stream closure and connection loss must settle the public API obligation,
+ * even when nghttp2 never delivered END_STREAM. Receiving the request is not
+ * the server's terminal event; sending its response is. The roles reverse on
+ * the client. The request is unlinked before calling application code. */
+static void
+evpl_http2_fail_unfinished(
+    struct evpl_http_request *request,
+    int                       error)
+{
+    int complete = request->conn->is_server ? request->h2.send_complete :
+        request->request_state == EVPL_HTTP_REQUEST_STATE_COMPLETE;
+
+    if (!complete) {
+        request->status = error;
+        evpl_http2_notify(request, EVPL_HTTP_NOTIFY_FAILED);
+    }
+} /* evpl_http2_fail_unfinished */
 
 static int
 evpl_http2_on_stream_close(
@@ -548,6 +567,7 @@ evpl_http2_on_stream_close(
     nghttp2_session_set_stream_user_data(session, stream_id, NULL);
 
     DL_DELETE(conn->h2->streams, request);
+    evpl_http2_fail_unfinished(request, EVPL_HTTP_ERROR_STREAM_RESET);
 
     evpl_http_request_free(conn->agent, request);
 
@@ -605,6 +625,7 @@ evpl_http2_conn_destroy(struct evpl_http_conn *conn)
     while (h2->streams) {
         request = h2->streams;
         DL_DELETE(h2->streams, request);
+        evpl_http2_fail_unfinished(request, conn->error ? conn->error : EVPL_HTTP_ERROR_CONN_LOST);
         evpl_http_request_free(conn->agent, request);
     }
 

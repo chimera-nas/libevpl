@@ -145,6 +145,7 @@ conformance_evpl_config(void)
     struct evpl_global_config *config = evpl_global_config_init();
 
     test_mbt_tls_config(config);
+    test_evpl_rdma_config(config);
 
     evpl_global_config_set_tls_verify_peer(config, 0);
     evpl_global_config_set_rpc2_max_message_size(config, CONF_MAX_MESSAGE_SIZE);

@@ -86,11 +86,20 @@ RUN apt-get -y update && \
     apt-get -y --no-install-recommends install clang clang-tools cmake ninja-build git lldb gdb less psmisc uncrustify reuse \
     net-tools tshark tcpdump uuid-dev iproute2 man-db manpages-dev ca-certificates ssh libjansson-dev libclang-rt-dev llvm \
     libxxhash-dev librdmacm-dev libfabric-dev libfabric-bin liburing-dev libaio-dev libunwind-dev flex bison libcurl4-openssl-dev build-essential ruby-full npm \
-    libssl-dev openssl clangd uthash-dev libnuma-dev libkrb5-dev \
+    libssl-dev libnghttp2-dev openssl clangd uthash-dev libnuma-dev libkrb5-dev \
     libprotobuf-c-dev protobuf-c-compiler libsqlite3-dev && \
     gem install jekyll bundler && \
     bundler install && \
     npm install -g @anthropic-ai/claude-code
+
+# Direct NVMe MBT needs io_uring_prep_uring_cmd, absent from Noble's liburing.
+# Pin the headers and runtime together; the guest uses this same image.
+ARG LIBURING_VERSION=liburing-2.14
+RUN git clone --depth 1 --branch ${LIBURING_VERSION} \
+        https://github.com/axboe/liburing.git /tmp/liburing && \
+    cd /tmp/liburing && ./configure --prefix=/usr/local && \
+    make -C src -j"$(nproc)" && make -C src install && \
+    ldconfig && rm -rf /tmp/liburing
 
 # quint drives the Core/HTTP/RPC2 conformance tests: cmake detects it and
 # generates their case tables from the models at build time.  Without it those

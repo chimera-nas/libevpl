@@ -6,6 +6,7 @@
 #include "evpl/evpl_export.h"
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifndef EVPL_INCLUDED
 #error "Do not include evpl_config.h directly, include evpl/evpl.h instead"
@@ -213,6 +214,74 @@ EVPL_API void evpl_global_config_set_io_uring_sqpoll(
     struct evpl_global_config *config,
     int                        enabled);
 
+/* Tri-state values for io_uring optional features */
+#define EVPL_IO_URING_OFF  0
+#define EVPL_IO_URING_ON   1
+#define EVPL_IO_URING_AUTO 2
+
+EVPL_API void evpl_global_config_set_io_uring_zerocopy_rx(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+EVPL_API void evpl_global_config_set_io_uring_zcrx_interface(
+    struct evpl_global_config *config,
+    const char                *ifname);
+
+EVPL_API void evpl_global_config_set_io_uring_zcrx_rxq(
+    struct evpl_global_config *config,
+    unsigned int               rxq);
+
+EVPL_API void evpl_global_config_set_io_uring_zcrx_rxq_count(
+    struct evpl_global_config *config,
+    unsigned int               count);
+/* Register this many consecutive receive queues (starting at zcrx_rxq) as
+ * zero-copy ifqs on each ring; accepted sockets use the ifq of the queue
+ * they arrive on.  Default 1. */
+EVPL_API void evpl_global_config_set_io_uring_zcrx_ifq_count(
+    struct evpl_global_config *config,
+    unsigned int               count);
+/* SO_SNDBUF/SO_RCVBUF for XLIO sockets (the receive side is the advertised
+ * TCP window). Default 16 MiB; 2 MiB caps one 200GbE stream near 100 Gbps. */
+EVPL_API void evpl_global_config_set_xlio_socket_buffer_size(
+    struct evpl_global_config *config,
+    unsigned int               size);
+
+EVPL_API void evpl_global_config_set_io_uring_zcrx_area_size(
+    struct evpl_global_config *config,
+    size_t                     size);
+
+EVPL_API void evpl_global_config_set_io_uring_zcrx_rq_entries(
+    struct evpl_global_config *config,
+    unsigned int               entries);
+
+EVPL_API void evpl_global_config_set_io_uring_zcrx_rx_buf_len(
+    struct evpl_global_config *config,
+    unsigned int               len);
+
+EVPL_API void evpl_global_config_set_io_uring_zcrx_area_import(
+    struct evpl_global_config *config,
+    int                        enable);
+
+EVPL_API void evpl_global_config_set_io_uring_registered_buffers(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+EVPL_API void evpl_global_config_set_io_uring_registered_files(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+EVPL_API void evpl_global_config_set_io_uring_send_zc(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
+EVPL_API void evpl_global_config_set_io_uring_send_zc_threshold(
+    struct evpl_global_config *config,
+    unsigned int               threshold);
+
+EVPL_API void evpl_global_config_set_io_uring_recv_bundle(
+    struct evpl_global_config *config,
+    unsigned int               mode);
+
 EVPL_API void evpl_global_config_set_rdmacm_enabled(
     struct evpl_global_config *config,
     int                        enabled);
@@ -228,6 +297,10 @@ EVPL_API void evpl_global_config_set_rdmacm_cq_size(
 EVPL_API void evpl_global_config_set_rdmacm_sq_size(
     struct evpl_global_config *config,
     unsigned int               size);
+
+EVPL_API void evpl_global_config_set_rdmacm_flush_batch(
+    struct evpl_global_config *config,
+    unsigned int               batch);
 
 EVPL_API void evpl_global_config_set_rdmacm_srq_size(
     struct evpl_global_config *config,
@@ -310,6 +383,13 @@ EVPL_API void evpl_global_config_set_libaio_enabled(
     int                        enabled);
 
 EVPL_API void evpl_global_config_set_spdk_enabled(
+    struct evpl_global_config *config,
+    int                        enabled);
+
+/* When set (default), libevpl initializes and owns the SPDK env, thread
+ * library scheduler, and a reactor thread per worker under EVPL_CORE_MECH_SPDK.
+ * When cleared, the host application must bootstrap the SPDK env itself. */
+EVPL_API void evpl_global_config_set_spdk_managed(
     struct evpl_global_config *config,
     int                        enabled);
 

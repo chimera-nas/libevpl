@@ -95,7 +95,12 @@ if (HAVE_IO_URING)
         set(CORE_SRC ${CORE_SRC} io_uring/io_uring_nvme_block.c)
     endif()
     add_subdirectory(io_uring)
-    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} uring)
+    # Link the liburing that configuration found rather than whatever -luring
+    # resolves to at link time: a toolchain with a distro liburing and a newer
+    # one under /usr/local (the devcontainer) would otherwise take the feature
+    # tests from one and the library from the other, and io_uring_register_ifq
+    # ends up undefined.
+    set(BACKEND_LIBDEPS ${BACKEND_LIBDEPS} ${URING_LIB})
 endif()
 
 if (HAVE_LIBAIO)
@@ -125,6 +130,7 @@ if (HAVE_SPDK)
     set(CORE_SRC ${CORE_SRC}
         spdk/spdk_core.c spdk/evpl_spdk.h
         spdk/spdk_framework.c
+        spdk/spdk_managed.c spdk/spdk_managed.h
         spdk/spdk_sock_common.h
         spdk/spdk_block.c
         spdk/tcp.c

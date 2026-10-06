@@ -115,6 +115,7 @@ struct evpl_http2_stream {
     int     want_data;           /* provider needs more body; fire WANT_DATA      */
     int     eof;                 /* outgoing body finished (add_datav(NULL,0))    */
     int     trailers_submitted;  /* nghttp2_submit_trailer already done          */
+    int     send_complete;       /* local END_STREAM has been transmitted      */
     int     in_trailers;         /* inbound HEADERS now carry trailer fields     */
 };
 

@@ -47,6 +47,10 @@ main(void)
 {
     FILE               *f = fopen("shutdown-close.img", "w");
 
+    if (!f) {
+        perror("shutdown-close.img");
+        return 1;
+    }
     fseek(f, 4095, SEEK_SET); fputc(0, f); fclose(f);
     struct evpl_thread *thread = evpl_thread_create(NULL, start, stop, NULL);
     while (!atomic_load(&opened)) {

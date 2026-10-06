@@ -45,6 +45,7 @@
 
 #ifdef HAVE_SPDK
 #include <spdk/thread.h>
+#include "core/spdk/spdk_managed.h"
 #endif /* ifdef HAVE_SPDK */
 
 #ifdef HAVE_IO_URING
@@ -179,6 +180,14 @@ evpl_shared_init(struct evpl_global_config *config)
     evpl_check_message_size(config);
 
     evpl_shared->config = config;
+
+#ifdef HAVE_SPDK
+    /* Own the SPDK env/reactors unless the host opted out; must be up before
+    * any worker spdk_thread is created and before the framework attaches. */
+    if (config->core_mech == EVPL_CORE_MECH_SPDK && config->spdk_managed) {
+        evpl_spdk_managed_init(config);
+    }
+#endif /* ifdef HAVE_SPDK */
 
     if (evpl_shared->config->hf_time_mode == 2) {
         /* Deetect if nonstop_tsc is supported, enable iff so */
@@ -388,6 +397,11 @@ evpl_shared_init(struct evpl_global_config *config)
         evpl_protocol_init(evpl_shared, EVPL_STREAM_SPDK_TCP,
                            &evpl_spdk_tcp);
 
+        /* io_uring spdk_sock variant; usable when SPDK was built --with-uring
+         * and the running kernel supports io_uring. */
+        evpl_protocol_init(evpl_shared, EVPL_STREAM_SPDK_TCP_URING,
+                           &evpl_spdk_tcp_uring);
+
         evpl_block_protocol_init(evpl_shared, EVPL_BLOCK_PROTOCOL_SPDK_BDEV,
                                  &evpl_block_protocol_spdk_bdev);
     }
@@ -426,6 +440,12 @@ evpl_cleanup(void)
                                                );
         }
     }
+
+#ifdef HAVE_SPDK
+    /* After framework cleanup (which still touches SPDK) and once all worker
+     * spdk_threads have exited: release the env libevpl owns in managed mode. */
+    evpl_spdk_managed_fini();
+#endif /* ifdef HAVE_SPDK */
 
     evpl_numa_config_release(evpl_shared->numa_config);
 
@@ -548,6 +568,67 @@ evpl_ipc_callback(
         }
         evpl_listener_binding_release(request->binding);
         evpl_free(request);
+    }
+
+    /* Drain distributed-listen requests posted to this worker. The
+     * protocol's listen() runs HERE on the worker thread (its own
+     * io_uring ring) so that things like ZCRX ifq registration happen
+     * on the ring that will also do the recvs. The originating listener
+     * thread is waiting on lreq->cond and will only return from its
+     * listen_distributed call once we signal each one.
+     */
+    for (;;) {
+        struct evpl_listen_distributed_request *lreq;
+        struct evpl_protocol                   *proto;
+        struct evpl_bind                       *bind;
+        int                                     status;
+
+        evpl_mutex_lock(&evpl->lock);
+        lreq = evpl->listen_distributed_requests;
+        if (lreq) {
+            DL_DELETE(evpl->listen_distributed_requests, lreq);
+        }
+        evpl_mutex_unlock(&evpl->lock);
+        if (!lreq) {
+            break;
+        }
+
+        proto = evpl_shared->protocol[lreq->protocol_id];
+
+        /* Make the assigned rxq visible to framework->create(), which
+         * runs from evpl_bind_prepare() below if io_uring isn't yet
+         * attached to this evpl.
+         */
+        evpl->zcrx_rxq_override = lreq->rxq;
+
+        bind = evpl_bind_prepare(evpl, proto, lreq->address, NULL);
+
+        evpl_core_abort_if(!bind->protocol->listen,
+                           "listen_distributed_request: protocol has no listen");
+
+        /* Accept callback runs on THIS worker thread (no cross-thread
+         * handoff). It invokes the user-provided attach_callback
+         * directly from the listener_binding the worker registered.
+         */
+        bind->accept_callback = evpl_listener_accept_local;
+        bind->private_data    = lreq->listener_binding;
+
+        status = bind->protocol->listen(evpl, bind);
+
+        if (status) {
+            evpl_bind_abort(evpl, bind);
+        }
+
+        /* Once listen has returned and the multishot-accept SQE is
+         * deferred for submission, the override is no longer needed.
+         */
+        evpl->zcrx_rxq_override = 0;
+
+        evpl_mutex_lock(&lreq->lock);
+        lreq->status   = status;
+        lreq->complete = 1;
+        evpl_cond_signal(&lreq->cond);
+        evpl_mutex_unlock(&lreq->lock);
     }
 
 } /* evpl_stop_callback */

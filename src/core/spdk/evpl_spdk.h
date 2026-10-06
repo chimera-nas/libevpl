@@ -63,6 +63,7 @@ struct evpl_block_protocol;
 
 extern struct evpl_framework      evpl_framework_spdk;
 extern struct evpl_protocol       evpl_spdk_tcp;
+extern struct evpl_protocol       evpl_spdk_tcp_uring;
 extern struct evpl_block_protocol evpl_block_protocol_spdk_bdev;
 
 void evpl_spdk_destroy_async(

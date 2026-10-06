@@ -70,6 +70,10 @@ enum evpl_http_notify_type {
  */
 #define EVPL_HTTP_ERROR_BAD_RESPONSE (-2)
 
+/* HTTP/2: the peer ended/reset the stream before its result completed,
+ * including a request rejected by GOAWAY. Other streams may still proceed. */
+#define EVPL_HTTP_ERROR_STREAM_RESET (-3)
+
 /* Protocol version selection for a client connection. */
 enum evpl_http_version {
     EVPL_HTTP_VERSION_AUTO,   /* HTTP/1.1, upgrading to h2 only if ALPN selects it */

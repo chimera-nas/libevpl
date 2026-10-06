@@ -43,7 +43,8 @@ enum evpl_protocol_id {
     EVPL_DATAGRAM_LIBFABRIC_MSG = 13,
     EVPL_DATAGRAM_LIBFABRIC_RDM = 14,
     EVPL_STREAM_SPDK_TCP        = 15,
-    EVPL_NUM_PROTO              = 16
+    EVPL_STREAM_SPDK_TCP_URING  = 16,
+    EVPL_NUM_PROTO              = 17
 };
 
 enum evpl_block_protocol_id {

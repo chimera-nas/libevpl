@@ -103,7 +103,7 @@ def main():
             "state/transition coverage.", ""]
 
     if os.environ.get('MBT_STORAGE_COVERAGE') == '1':
-        out += ["Includes libaio and io_uring replays on a disposable emulated NVMe "
+        out += ["Includes libaio, io_uring and direct io_uring_nvme replays on a disposable NVMe "
                 "namespace, and VFIO replays on a second NVMe controller behind "
                 "the guest IOMMU. Their model profiles enter the same union.", ""]
 

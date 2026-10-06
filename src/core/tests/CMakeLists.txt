@@ -212,7 +212,7 @@ if(TARGET core_core_conformance)
     # The guest supplies unrestricted kernel I/O and a disposable NVMe device.
     # Keep hardware-dependent registrations explicit on ordinary developer hosts.
     if(EVPL_STORAGE_TESTS)
-        foreach(backend libaio io_uring vfio)
+        foreach(backend libaio io_uring io_uring_nvme vfio)
             string(TOUPPER "${backend}" feature)
             if(NOT HAVE_${feature})
                 message(FATAL_ERROR "Storage MBT requires ${backend}")
@@ -319,14 +319,15 @@ if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EX
     if(EVPL_CONFORMANCE_CASES_DIR)
         set(SDK_CASES_DIR ${EVPL_CONFORMANCE_CASES_DIR})
     else()
-        add_custom_command(OUTPUT ${SDK_CASES_DIR}/listener_cases.h ${SDK_CASES_DIR}/fd_cases.h ${SDK_CASES_DIR}/lifecycle_cases.h ${SDK_CASES_DIR}/block_lifecycle_cases.h ${SDK_CASES_DIR}/ownership_cases.h ${SDK_CASES_DIR}/block_retry_cases.h
+        add_custom_command(OUTPUT ${SDK_CASES_DIR}/listener_cases.h ${SDK_CASES_DIR}/fd_cases.h ${SDK_CASES_DIR}/lifecycle_cases.h ${SDK_CASES_DIR}/block_lifecycle_cases.h ${SDK_CASES_DIR}/ownership_cases.h ${SDK_CASES_DIR}/block_retry_cases.h ${SDK_CASES_DIR}/rdma_cases.h ${SDK_CASES_DIR}/unix_path_cases.h ${SDK_CASES_DIR}/registration_cases.h
             COMMAND ${PYTHON3_EXECUTABLE} ${CORE_QUINT_SRC_DIR}/generate_sdk_cases.py
                     ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR} ${SDK_CASES_DIR}
             DEPENDS ${CORE_QUINT_SRC_DIR}/listener.qnt ${CORE_QUINT_SRC_DIR}/generate_sdk_cases.py
                     ${CORE_QUINT_SRC_DIR}/fd.qnt ${CORE_QUINT_SRC_DIR}/lifecycle.qnt ${CORE_QUINT_SRC_DIR}/block_lifecycle.qnt ${CORE_QUINT_SRC_DIR}/ownership.qnt ${CORE_QUINT_SRC_DIR}/block_retry.qnt
+                    ${CORE_QUINT_SRC_DIR}/rdma.qnt ${CORE_QUINT_SRC_DIR}/unix_path.qnt ${CORE_QUINT_SRC_DIR}/registration.qnt
             VERBATIM)
     endif()
-    foreach(family fd lifecycle listener ownership)
+    foreach(family fd lifecycle listener ownership rdma unix_path registration)
         unit_test_all_mechs(core ${family}_conformance ${family}_conformance.c)
         target_sources(core_${family}_conformance PRIVATE ${SDK_CASES_DIR}/${family}_cases.h)
         target_include_directories(core_${family}_conformance PRIVATE ${SDK_CASES_DIR})
@@ -335,6 +336,9 @@ if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EX
                 PROPERTIES LABELS "mbt" TIMEOUT 60)
         endforeach()
     endforeach()
+    # Registration-table symbols are private. Compile the production component
+    # into its replay instead of exporting test-only accessors from the SDK.
+    target_sources(core_registration_conformance PRIVATE ../rdma_mr.c)
     foreach(mech ${EVPL_MECHANISMS})
         unit_test_mbt_variant(core ownership_conformance_shared_${mech}
             core_ownership_conformance ${mech} TIMEOUT 60 ENVIRONMENT EVPL_TEST_SHARED=1)
@@ -417,5 +421,93 @@ if(TARGET core_listener_conformance)
                 EVPL_TEST_STREAM_PROTOCOL=STREAM_IO_URING_TCP)
             set_property(TEST libevpl/core/listener_conformance_io_uring_${mech} APPEND PROPERTY LABELS mbt_storage)
         endif()
+    endforeach()
+endif()
+
+if(NOT WIN32 AND (EVPL_CONFORMANCE_CASES_DIR OR (QUINT_EXECUTABLE AND PYTHON3_EXECUTABLE)))
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
+        add_custom_command(OUTPUT ${SDK_CASES_DIR}/backpressure_cases.h
+            COMMAND ${PYTHON3_EXECUTABLE} ${CORE_QUINT_SRC_DIR}/generate_backpressure_cases.py
+                ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR} ${SDK_CASES_DIR}/backpressure
+                ${SDK_CASES_DIR}/backpressure_cases.h
+            DEPENDS ${CORE_QUINT_SRC_DIR}/backpressure.qnt ${CORE_QUINT_SRC_DIR}/generate_backpressure_cases.py
+            VERBATIM)
+    endif()
+    unit_test_all_mechs(core backpressure_conformance backpressure_conformance.c)
+    target_sources(core_backpressure_conformance PRIVATE ${SDK_CASES_DIR}/backpressure_cases.h)
+    target_include_directories(core_backpressure_conformance PRIVATE ${SDK_CASES_DIR})
+    if(HAVE_TLS)
+        target_link_libraries(core_backpressure_conformance OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    foreach(mech ${EVPL_MECHANISMS})
+        set_tests_properties(libevpl/core/backpressure_conformance_${mech} PROPERTIES LABELS mbt TIMEOUT 180)
+        if(HAVE_TLS)
+            foreach(mode software auto)
+                unit_test_mbt_variant(core backpressure_conformance_tls_${mode}_${mech}
+                    core_backpressure_conformance ${mech} TIMEOUT 180
+                    ENVIRONMENT EVPL_TEST_TLS_MODE=${mode} EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_TLS)
+            endforeach()
+        endif()
+        if(EVPL_STORAGE_TESTS)
+            unit_test_mbt_variant(core backpressure_conformance_io_uring_${mech}
+                core_backpressure_conformance ${mech} GUEST TIMEOUT 180
+                ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=STREAM_IO_URING_TCP)
+            set_property(TEST libevpl/core/backpressure_conformance_io_uring_${mech} APPEND PROPERTY LABELS mbt_storage)
+        endif()
+    endforeach()
+    if(HAVE_SPDK)
+        unit_test_mbt_variant(core backpressure_conformance_spdk core_backpressure_conformance
+            spdk TIMEOUT 180 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=STREAM_SPDK_TCP)
+        unit_test_mbt_variant(core backpressure_conformance_spdk_interrupt core_backpressure_conformance
+            spdk TIMEOUT 180 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=STREAM_SPDK_TCP EVPL_TEST_INTERRUPT=1)
+    endif()
+endif()
+
+if(HAVE_LIBFABRIC AND TARGET core_listener_conformance)
+    if(NOT EVPL_CONFORMANCE_CASES_DIR)
+        add_custom_command(OUTPUT ${SDK_CASES_DIR}/datagram_boundary_cases.h
+            COMMAND ${PYTHON3_EXECUTABLE} ${CORE_QUINT_SRC_DIR}/generate_datagram_boundary_cases.py
+                ${QUINT_EXECUTABLE} ${CORE_QUINT_SRC_DIR} ${SDK_CASES_DIR}/datagram-boundary
+                ${SDK_CASES_DIR}/datagram_boundary_cases.h
+            DEPENDS ${CORE_QUINT_SRC_DIR}/datagram_boundary.qnt ${CORE_QUINT_SRC_DIR}/generate_datagram_boundary_cases.py
+            VERBATIM)
+    endif()
+    add_executable(core_datagram_boundary_conformance datagram_boundary_conformance.c ${SDK_CASES_DIR}/datagram_boundary_cases.h)
+    target_include_directories(core_datagram_boundary_conformance PRIVATE ${SDK_CASES_DIR})
+    set_target_properties(core_datagram_boundary_conformance PROPERTIES TEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/datagram_boundary_conformance.c)
+    target_link_libraries(core_datagram_boundary_conformance evpl)
+    if(HAVE_SPDK)
+        target_link_libraries(core_datagram_boundary_conformance ${SPDK_TEST_LINK_TARGETS})
+    endif()
+    foreach(mech ${EVPL_MECHANISMS})
+        unit_test_mbt_variant(core listener_conformance_libfabric_wildcard_${mech} core_listener_conformance
+            ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_ASYNC_LISTENER=1 FI_PROVIDER=tcp
+            EVPL_TEST_STREAM_PROTOCOL=STREAM_LIBFABRIC_MSG EVPL_TEST_LISTEN_ADDRESS=0.0.0.0)
+        foreach(kind msg rdm)
+            set(_boundary_address 0.0.0.0)
+            if(kind STREQUAL "msg")
+                set(_boundary_protocol DATAGRAM_LIBFABRIC_MSG)
+            else()
+                set(_boundary_protocol DATAGRAM_LIBFABRIC_RDM)
+                if(APPLE)
+                    # RxM 2.7 crashes in fi_getinfo for a wildcard RDM source
+                    # on macOS. Keep the full replay on an explicit address;
+                    # MSG and listener variants still cover wildcard binds.
+                    set(_boundary_address 127.0.0.1)
+                endif()
+            endif()
+            unit_test_mbt_variant(core datagram_boundary_conformance_libfabric_${kind}_${mech} core_datagram_boundary_conformance
+                ${mech} TIMEOUT 120 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=${_boundary_protocol}
+                EVPL_TEST_LISTEN_ADDRESS=${_boundary_address})
+            if(kind STREQUAL "msg")
+                set_property(TEST libevpl/core/datagram_boundary_conformance_libfabric_${kind}_${mech}
+                    APPEND PROPERTY ENVIRONMENT "FI_PROVIDER=tcp")
+            else()
+                # Exercise libevpl's coalescing/cancellation with eager RxM
+                # sends; 2.1 crashes in fi_close for pending non-eager sends.
+                set_property(TEST libevpl/core/datagram_boundary_conformance_libfabric_${kind}_${mech}
+                    APPEND PROPERTY ENVIRONMENT "FI_PROVIDER=${_rdm_provider}" "FI_OFI_RXM_BUFFER_SIZE=65536")
+            endif()
+        endforeach()
     endforeach()
 endif()

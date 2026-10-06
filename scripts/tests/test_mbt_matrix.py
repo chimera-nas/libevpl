@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests, check_storage_tests
+from ci_mbt_matrix import check_execution, check_tests, check_rdma_tests, check_storage_tests, check_functions
 from mbt_configurations import configurations
 
 
@@ -23,19 +23,35 @@ class MatrixTests(unittest.TestCase):
         for mech in ('epoll', 'select'):
             names.append(f'core/core_conformance_alpn_{mech}')
             names.append(f'core/listener_conformance_TLS_{mech}')
-            names.extend(f'core/core_conformance_tls_{mode}_{mech}'
-                         for mode in ('software', 'auto'))
+            names.extend(f'core/{family}_conformance_tls_{mode}_{mech}'
+                         for family in ('core', 'backpressure') for mode in ('software', 'auto'))
             names.append(f'rpc2/conformance_STREAM_SOCKET_TLS_{mech}')
+            names.extend(f'http/conformance_http2_{prefix}{mech}' for prefix in ('', 'tls_'))
         names.append('core/core_conformance_tls_software_spdk')
         names.extend(f'rpc2/conformance_STREAM_SOCKET_TLS_spdk_{mode}'
                      for mode in ('polling', 'interrupt'))
         base = self.data['tests']
         tests = base + [{'name': 'libevpl/' + n} for n in names]
-        check_tests({'tests': tests}, ['tls', 'spdk'])
+        check_tests({'tests': tests}, ['tls', 'spdk', 'http2'])
         for name in names:
             with self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
                 check_tests({'tests': [t for t in tests if t['name'] != 'libevpl/' + name]},
-                            ['tls', 'spdk'])
+                            ['tls', 'spdk', 'http2'])
+
+    def test_http2_requires_both_mechanisms_and_codec_execution(self):
+        names = [f'libevpl/http/conformance_http2_{prefix}{mech}'
+                 for prefix in ('', 'tls_') for mech in ('epoll', 'select')]
+        # Other TLS requirements are exercised by their own matrix test.
+        tests = self.data['tests'] + [{'name': name} for name in names]
+        check_tests({'tests': tests}, ['http2'])
+        for name in names[:2]:
+            with self.assertRaisesRegex(ValueError, 'http2'):
+                check_tests({'tests': [t for t in tests if t['name'] != name]}, ['http2'])
+        files = [{'filename': '/repo/src/http/http.c', 'summary': {'lines': {'covered': 100}}}]
+        with self.assertRaisesRegex(ValueError, 'http2.c'):
+            check_execution({'data': [{'files': files}]}, '/repo', ['http2'])
+        files.append({'filename': '/repo/src/http/http2.c', 'summary': {'lines': {'covered': 100}}})
+        check_execution({'data': [{'files': files}]}, '/repo', ['http2'])
 
     def test_tls_requires_openssl_and_transport_execution(self):
         for transport in ('tls.c', 'stream_tls.c'):
@@ -69,22 +85,37 @@ class MatrixTests(unittest.TestCase):
 
     def test_storage_requires_every_backend_and_mechanism(self):
         tests = [{'name': f'libevpl/core/core_conformance_{b}_{m}'}
-                 for b in ('libaio', 'io_uring', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt') for m in ('epoll', 'select')]
-        tests.extend({'name': f'libevpl/core/listener_conformance_io_uring_{m}'} for m in ('epoll', 'select'))
+                 for b in ('libaio', 'io_uring', 'io_uring_nvme', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt') for m in ('epoll', 'select')]
+        tests.extend({'name': f'libevpl/core/{family}_conformance_io_uring_{m}'}
+                     for family in ('listener', 'backpressure') for m in ('epoll', 'select'))
         check_storage_tests({'tests': tests})
         for i in range(len(tests)):
             with self.assertRaisesRegex(ValueError, 'Missing storage'):
                 check_storage_tests({'tests': tests[:i] + tests[i + 1:]})
 
     def test_storage_execution_cannot_be_satisfied_by_another_backend(self):
-        for backend, source in (('libaio', 'libaio_block.c'),
-                                ('io_uring', 'io_uring_block.c'), ('vfio', 'vfio.c')):
-            data = {'data': [{'files': [{'filename': f'/repo/src/core/{backend}/{source}',
+        for backend, source in (('libaio', 'libaio/libaio_block.c'),
+                                ('io_uring', 'io_uring/io_uring_block.c'),
+                                ('io_uring_nvme', 'io_uring/io_uring_nvme_block.c'),
+                                ('vfio', 'vfio/vfio.c')):
+            data = {'data': [{'files': [{'filename': f'/repo/src/core/{source}',
                                         'summary': {'lines': {'covered': 10}}}]}]}
             check_execution(data, '/repo', [backend])
-            for other in {'libaio', 'io_uring', 'vfio'} - {backend}:
+            for other in {'libaio', 'io_uring', 'io_uring_nvme', 'vfio'} - {backend}:
                 with self.assertRaisesRegex(ValueError, 'no executed lines'):
                     check_execution(data, '/repo', [other])
+
+    def test_nvme_requires_command_and_lifecycle_witnesses(self):
+        with self.assertRaises(ValueError) as error:
+            check_functions([], ['io_uring_nvme'])
+        names = str(error.exception).split(': ', 1)[1].split(', ')
+        rows = [{'function': name, 'count': '1'} for name in names]
+        check_functions(rows, ['io_uring_nvme'])
+        for operation in ('read', 'write', 'flush', 'callback', 'open_device',
+                          'close_device', 'open_queue', 'close_queue'):
+            name = 'evpl_io_uring_nvme_' + operation
+            with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, name):
+                check_functions([row for row in rows if row['function'] != name], ['io_uring_nvme'])
 
     def setUp(self):
         names = ['core/listener_conformance_STREAM_INPROC_epoll', 'core/listener_conformance_DATAGRAM_TCP_RDMA_epoll',
@@ -99,8 +130,12 @@ class MatrixTests(unittest.TestCase):
                  'core/core_conformance_libfabric_rdm_epoll',
                  'core/core_conformance_libfabric_rdm_spdk']
         names.append('core/block_retry_conformance_spdk')
+        names.extend('core/backpressure_conformance_spdk' + suffix for suffix in ('', '_interrupt'))
         for mech in ('epoll', 'select'):
+            names.append(f'core/listener_conformance_libfabric_wildcard_{mech}')
+            names.extend(f'core/datagram_boundary_conformance_libfabric_{kind}_{mech}' for kind in ('msg', 'rdm'))
             names.extend((f'core/ownership_conformance_{mech}', f'core/ownership_conformance_shared_{mech}'))
+            names.extend(f'core/{family}_conformance_{mech}' for family in ('rdma', 'unix_path', 'registration', 'backpressure'))
             names.extend(f'core/core_conformance_config_pair{i:02d}_{mech}'
                          for i in range(len(configurations()[0])))
             for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
@@ -132,7 +167,9 @@ class MatrixTests(unittest.TestCase):
 
     def test_ownership_retry_and_external_modes_cannot_disappear(self):
         targets = [t['name'] for t in self.data['tests']
-                   if any(s in t['name'] for s in ('ownership_conformance', 'block_retry', 'libfabric_external'))]
+                   if any(s in t['name'] for s in ('ownership_conformance', 'block_retry', 'libfabric_external',
+                                                  'rdma_conformance', 'unix_path_conformance', 'registration_conformance', 'backpressure_conformance',
+                                                  'datagram_boundary_conformance', 'listener_conformance_libfabric_wildcard'))]
         for name in targets:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'Missing MBT replay'):
                 check_tests({'tests': [t for t in self.data['tests'] if t['name'] != name]},

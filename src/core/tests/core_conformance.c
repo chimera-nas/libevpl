@@ -1674,6 +1674,10 @@ block_protocol(void)
         return EVPL_BLOCK_PROTOCOL_IO_URING;
     }
 
+    if (strcmp(name, "io_uring_nvme") == 0) {
+        return EVPL_BLOCK_PROTOCOL_IO_URING_NVME;
+    }
+
     if (strcmp(name, "vfio") == 0) {
         return EVPL_BLOCK_PROTOCOL_VFIO;
     }
@@ -1709,6 +1713,8 @@ block_device_open(
         ps->bdev = test_block_open_progress(ps->evpl, block_protocol(),
                                             "Malloc0", core_continue);
     } else {
+        evpl_test_abort_if(block_protocol() == EVPL_BLOCK_PROTOCOL_IO_URING_NVME,
+                           "io_uring_nvme requires EVPL_TEST_BLOCK_URI to name an NVMe namespace");
         snprintf(ps->device_path, sizeof(ps->device_path),
                  "core_conf_block-%d-%d.img", (int) evpl_process_id(), prog);
         fd = evpl_test_open(ps->device_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
@@ -2512,6 +2518,11 @@ core_conformance_init(void)
         evpl_global_config_set_buffer_size(config, MAX_SEND_BYTES);
         evpl_global_config_set_max_datagram_size(config, MAX_SEND_BYTES);
         evpl_global_config_set_rdmacm_srq_size(config, 256);
+        /* Registration pins the whole slab, and the base run holds a client
+         * and a server context at once, so the 1 GiB default is more than the
+         * Soft-RoCE CI guest can spare (see test_evpl_rdma_config).  A profile
+         * run overrides this below with its own slab_size. */
+        evpl_global_config_set_slab_size(config, 64 * 1024 * 1024);
     }
 
     /* As test_evpl_config(), which this replaces: ctest runs the suite once

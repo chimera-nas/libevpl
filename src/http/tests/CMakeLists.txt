@@ -106,6 +106,38 @@ if(EVPL_CONFORMANCE_CASES_DIR OR (NOT WIN32 AND QUINT_EXECUTABLE AND PYTHON3_EXE
                          LABELS "quint" TIMEOUT 360)
 
     endif()
+    if(HAVE_NGHTTP2)
+        set(HTTP2_CASES ${HTTP_QUINT_WORK_DIR}/http2_cases.h)
+        if(NOT EVPL_CONFORMANCE_CASES_DIR)
+            add_custom_command(OUTPUT ${HTTP2_CASES}
+                COMMAND ${PYTHON3_EXECUTABLE} ${HTTP_QUINT_SRC_DIR}/generate_http2_cases.py
+                    ${QUINT_EXECUTABLE} ${HTTP_QUINT_SRC_DIR} ${HTTP_QUINT_WORK_DIR}/http2 ${HTTP2_CASES}
+                DEPENDS ${HTTP_QUINT_SRC_DIR}/http2.qnt ${HTTP_QUINT_SRC_DIR}/generate_http2_cases.py
+                COMMENT "Generating HTTP/2 integration model traces" VERBATIM)
+        endif()
+        add_executable(http_conformance_http2 conformance_http2.c ${HTTP2_CASES})
+        target_include_directories(http_conformance_http2 PRIVATE ${HTTP_QUINT_WORK_DIR} ${NGHTTP2_INCLUDE_DIR})
+        target_link_libraries(http_conformance_http2 evpl_http ${NGHTTP2_LIB})
+        set_property(TARGET http_conformance_http2 PROPERTY TEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/conformance_http2.c)
+        if(HAVE_SPDK)
+            target_link_libraries(http_conformance_http2 ${SPDK_LINK_TARGETS})
+        endif()
+        foreach(mech ${EVPL_MECHANISMS})
+            unit_test_mbt_variant(http conformance_http2_${mech} http_conformance_http2
+                ${mech} TIMEOUT 300)
+            if(HAVE_TLS)
+                unit_test_mbt_variant(http conformance_http2_tls_${mech} http_conformance_http2
+                    ${mech} TIMEOUT 300 ENVIRONMENT EVPL_TEST_STREAM_PROTOCOL=STREAM_SOCKET_TLS
+                    EVPL_TEST_TLS_MODE=software)
+            endif()
+        endforeach()
+        if(NOT EVPL_CONFORMANCE_CASES_DIR)
+            add_test(NAME libevpl/http/quint_http2_model
+                COMMAND ${QUINT_EXECUTABLE} test --backend=typescript ${HTTP_QUINT_SRC_DIR}/http2.qnt)
+            set_tests_properties(libevpl/http/quint_http2_model PROPERTIES LABELS quint TIMEOUT 120)
+        endif()
+    endif()
+
     message(STATUS "HTTP conformance test enabled (quint: ${QUINT_EXECUTABLE})")
 else()
     message(STATUS

@@ -8,14 +8,17 @@
 
 #include <errno.h>
 #include <liburing.h>
+#include <limits.h>
 #include <linux/fs.h>
 #include <linux/nvme_ioctl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/sysmacros.h>
 
 
 #include "core/io_uring/io_uring.h"
@@ -261,6 +264,11 @@ evpl_io_uring_nvme_open_device(
     int                          sector_size;
     int                          nsid;
     int                          err;
+    int                          cmd_fd;
+    int                          consumed = 0;
+    unsigned int                 controller, instance;
+    char                         sysfs[128], resolved[PATH_MAX], command_path[128];
+    const char                  *name;
 
     bdev = evpl_zalloc(sizeof(*bdev));
     dev  = evpl_zalloc(sizeof(*dev));
@@ -269,41 +277,54 @@ evpl_io_uring_nvme_open_device(
 
     if (dev->fd < 0) {
         err = errno;
-        evpl_free(dev);
-        evpl_free(bdev);
-        complete(evpl, NULL, err, ctx);
-        return;
+        goto out;
     }
 
-    if (fstat(dev->fd, &st) < 0 || !S_ISBLK(st.st_mode)) {
-        err = errno ? errno : ENOTBLK;
-        close(dev->fd);
-        evpl_free(dev);
-        evpl_free(bdev);
-        complete(evpl, NULL, err, ctx);
-        return;
+    if (fstat(dev->fd, &st) < 0) {
+        err = errno;
+        goto out;
+    }
+    if (!S_ISBLK(st.st_mode)) {
+        err = ENOTBLK;
+        goto out;
     }
 
     nsid = ioctl(dev->fd, NVME_IOCTL_ID);
-
     if (nsid < 0) {
         err = errno;
-        close(dev->fd);
-        evpl_free(dev);
-        evpl_free(bdev);
-        complete(evpl, NULL, err, ctx);
-        return;
+        goto out;
     }
 
     if (ioctl(dev->fd, BLKGETSIZE64, &bytes) < 0 ||
         ioctl(dev->fd, BLKSSZGET, &sector_size) < 0) {
         err = errno;
-        close(dev->fd);
-        evpl_free(dev);
-        evpl_free(bdev);
-        complete(evpl, NULL, err, ctx);
-        return;
+        goto out;
     }
+
+    /* Block nodes supply geometry, but NVMe uring_cmd is implemented by the
+     * namespace character device. Resolve the kernel name through st_rdev so
+     * callers may still use /dev/disk/by-id or other block-device aliases.
+     * Reject partitions: passthrough offsets are relative to the namespace. */
+    snprintf(sysfs, sizeof(sysfs), "/sys/dev/block/%u:%u",
+             major(st.st_rdev), minor(st.st_rdev));
+    if (!realpath(sysfs, resolved)) {
+        err = errno;
+        goto out;
+    }
+    name = strrchr(resolved, '/');
+    if (!name || sscanf(name + 1, "nvme%un%u%n", &controller, &instance, &consumed) != 2 ||
+        name[1 + consumed] != '\0') {
+        err = ENOTBLK;
+        goto out;
+    }
+    snprintf(command_path, sizeof(command_path), "/dev/ng%un%u", controller, instance);
+    cmd_fd = open(command_path, O_RDWR);
+    if (cmd_fd < 0) {
+        err = errno;
+        goto out;
+    }
+    close(dev->fd);
+    dev->fd = cmd_fd;
 
     dev->nsid        = nsid;
     dev->sector_size = sector_size;
@@ -314,7 +335,19 @@ evpl_io_uring_nvme_open_device(
     bdev->size             = bytes;
     bdev->max_request_size = 4 * 1024 * 1024;
 
-    complete(evpl, bdev, 0, ctx);
+    err = 0;
+
+ out:
+    if (err) {
+        if (dev->fd >= 0) {
+            close(dev->fd);
+        }
+        evpl_free(dev);
+        evpl_free(bdev);
+        complete(evpl, NULL, err, ctx);
+    } else {
+        complete(evpl, bdev, 0, ctx);
+    }
 } /* evpl_io_uring_nvme_open_device */
 
 struct evpl_block_protocol evpl_block_protocol_io_uring_nvme = {

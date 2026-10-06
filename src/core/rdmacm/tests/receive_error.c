@@ -67,6 +67,9 @@ main(void)
 
     evpl_test_abort_if(!address, "RDMA test address is required");
     evpl_global_config_set_rdmacm_datagram_size_override(config, 64);
+    /* Registration pins the whole slab; the 1 GiB default is more than the
+     * Soft-RoCE CI guest can spare (see test_evpl_rdma_config). */
+    evpl_global_config_set_slab_size(config, 64 * 1024 * 1024);
     evpl_global_config_set_rdmacm_srq_size(config, 256);
     evpl_init(config);
     tcfg = evpl_thread_config_init();

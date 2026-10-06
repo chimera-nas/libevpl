@@ -101,7 +101,10 @@ evpl_xlio_prepare_batch(
         int p = ring->tail;
         for (int i = 0; i < niov; i++) {
             zc->refs[i] = evpl_iovec_get_ref(&ring->iovec[p]);
-            p           = (p + 1) & ring->mask;
+            /* Consuming the send ring drops its references.  Keep a
+             * separate reference for each entry until XLIO completes. */
+            evpl_iovec_ref_incr(zc->refs[i]);
+            p = (p + 1) & ring->mask;
         }
 
         s->zc_pending++;
@@ -203,6 +206,11 @@ evpl_xlio_tcp_write(
 
         if (res) {
             if (zc) {
+                /* XLIO did not accept this batch; the ring still owns
+                 * its entries, but the completion references must go. */
+                for (unsigned int i = 0; i < zc->niov; i++) {
+                    evpl_iovec_ref_release(evpl, zc->refs[i]);
+                }
                 s->zc_pending--;
                 evpl_xlio_free_zc(xlio, zc);
             }
@@ -210,7 +218,7 @@ evpl_xlio_tcp_write(
         }
 
         if (!zc) {
-            evpl_xlio_send_completion(evpl, s, total);
+            evpl_xlio_send_completion(evpl, s, total, niov);
         }
 
         evpl_iovec_ring_consume(evpl, &bind->iovec_send, total);

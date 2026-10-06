@@ -25,15 +25,16 @@ def check_rdma_tests(data):
 
 def check_storage_tests(data):
     names = {test['name'] for test in data['tests']}
-    for backend in ('libaio', 'io_uring', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt'):
+    for backend in ('libaio', 'io_uring', 'io_uring_nvme', 'io_uring_tcp', 'vfio', 'vfio_prp', 'vfio_interrupt'):
         for mech in ('epoll', 'select'):
             name = f'libevpl/core/core_conformance_{backend}_{mech}'
             if name not in names:
                 raise ValueError('Missing storage MBT replay: ' + name)
 
     for mech in ('epoll', 'select'):
-        if f'libevpl/core/listener_conformance_io_uring_{mech}' not in names:
-            raise ValueError('Missing storage MBT listener replay: ' + mech)
+        for family in ('listener', 'backpressure'):
+            if f'libevpl/core/{family}_conformance_io_uring_{mech}' not in names:
+                raise ValueError('Missing storage MBT ' + family + ' replay: ' + mech)
 
 
 def check_tests(data, backends):
@@ -45,16 +46,24 @@ def check_tests(data, backends):
                 r'libevpl/http/conformance_client', r'libevpl/rpc2/conformance_STREAM_',
                 r'libevpl/rpc2/conformance_client_']
     for mech in ('epoll', 'select'):
+        for family in ('rdma', 'unix_path', 'registration', 'backpressure'):
+            required.append(f'libevpl/core/{family}_conformance_{mech}$')
         required.append(f'libevpl/core/ownership_conformance_{mech}$')
         required.append(f'libevpl/core/ownership_conformance_shared_{mech}$')
         for i in range(len(configurations()[0])):
             required.append(f'libevpl/core/core_conformance_config_pair{i:02d}_{mech}$')
+    if 'http2' in backends:
+        for mech in ('epoll', 'select'):
+            required.append(f'libevpl/http/conformance_http2_{mech}$')
+            if 'tls' in backends:
+                required.append(f'libevpl/http/conformance_http2_tls_{mech}$')
     if 'tls' in backends:
         for mech in ('epoll', 'select'):
             required.append(f'libevpl/core/core_conformance_alpn_{mech}$')
             required.append(f'libevpl/core/listener_conformance_TLS_{mech}$')
             for mode in ('software', 'auto'):
                 required.append(f'libevpl/core/core_conformance_tls_{mode}_{mech}$')
+                required.append(f'libevpl/core/backpressure_conformance_tls_{mode}_{mech}$')
             required.append(f'libevpl/rpc2/conformance_STREAM_SOCKET_TLS_{mech}$')
         if 'spdk' in backends:
             required.append(r'libevpl/core/core_conformance_tls_software_spdk$')
@@ -62,6 +71,9 @@ def check_tests(data, backends):
                 required.append(f'libevpl/rpc2/conformance_STREAM_SOCKET_TLS_spdk_{mode}$')
     if 'libfabric' in backends:
         for mech in ('epoll', 'select'):
+            required.append(f'libevpl/core/listener_conformance_libfabric_wildcard_{mech}$')
+            for kind in ('msg', 'rdm'):
+                required.append(f'libevpl/core/datagram_boundary_conformance_libfabric_{kind}_{mech}$')
             for proto in ('STREAM_LIBFABRIC_MSG', 'DATAGRAM_LIBFABRIC_MSG'):
                 for mode in ('fd', 'pollfd', 'none'):
                     required.append(f'libevpl/rpc2/conformance_libfabric_external_{proto}_{mode}_{mech}$')
@@ -74,6 +86,8 @@ def check_tests(data, backends):
         required.append(r'libevpl/core/lifecycle_conformance_spdk$')
         required.append(r'libevpl/core/block_lifecycle_conformance_spdk$')
         required.append(r'libevpl/core/block_retry_conformance_spdk$')
+        required.extend(r'libevpl/core/backpressure_conformance_spdk' + suffix + '$'
+                        for suffix in ('', '_interrupt'))
         if 'libfabric' in backends:
             required.append(r'libevpl/core/core_conformance_libfabric_spdk$')
             required.append(r'libevpl/core/core_conformance_libfabric_rdm_spdk$')
@@ -92,6 +106,8 @@ def check_tests(data, backends):
 
 def check_execution(data, root, backends):
     required = []
+    if 'http2' in backends:
+        required.append('src/http/http2.c')
     if 'tls' in backends:
         required.append('src/core/tls/openssl.c')
     if 'rdma' in backends:
@@ -105,6 +121,8 @@ def check_execution(data, root, backends):
                             ('io_uring', 'io_uring_block.c'), ('vfio', 'vfio.c')):
         if backend in backends:
             required.append(f'src/core/{backend}/{source}')
+    if 'io_uring_nvme' in backends:
+        required.append('src/core/io_uring/io_uring_nvme_block.c')
     hits = {}
     for unit in data.get('data', []):
         for entry in unit.get('files', []):
@@ -131,19 +149,33 @@ def check_functions(rows, backends):
         'evpl_http_request_trailer_iterate', 'evpl_http_request_protocol',
         'evpl_rpc2_conn_get_next_xid', 'evpl_rpc2_conn_set_next_xid',
         'evpl_iovec_move_segment', 'evpl_rpc2_encoding_take_write_chunk',
+        'tcp_rdma_pending_ring_resize', 'tcp_rdma_handle_error',
+        'evpl_socket_unix_clear_stale', 'evpl_bind_abort', 'evpl_rdma_mr_table_resize',
     }
     required.update(config_api(libfabric='libfabric' in backends))
     if 'tls' in backends:
         required.add('evpl_tls_get_alpn')
     if 'spdk' in backends:
         required.update(('evpl_thread_destroy_async_spdk', 'evpl_block_set_event_callback'))
-        required.add('evpl_spdk_bdev_io_wait_retry')
+        required.update(('evpl_spdk_bdev_io_wait_retry', 'evpl_spdk_sock_check_active'))
     if 'libfabric' in backends:
         required.update(('evpl_global_config_set_libfabric_external_domain',
-                         'evpl_libfabric_init_external', 'evpl_libfabric_tick'))
+                         'evpl_libfabric_init_external', 'evpl_libfabric_tick',
+                         'evpl_libfabric_handle_cq_error', 'evpl_libfabric_addr_is_wildcard',
+                         'evpl_libfabric_first_device_of_type', 'evpl_libfabric_match_device_by_addr',
+                         'evpl_listener_discard_notify'))
     if 'io_uring' in backends:
         required.update(('evpl_io_uring_tcp_recv_callback', 'evpl_io_uring_tcp_send_callback',
                          'evpl_io_uring_attach_discard'))
+    if 'io_uring_nvme' in backends:
+        required.update('evpl_io_uring_nvme_' + name for name in
+                        ('open_device', 'close_device', 'open_queue', 'close_queue',
+                         'read', 'write', 'flush', 'callback'))
+    if 'http2' in backends:
+        required.update('evpl_http2_' + name for name in
+                        ('data_read', 'send_data', 'submit_trailers', 'on_begin_headers',
+                         'on_header', 'on_data_chunk', 'on_stream_close', 'fail_unfinished',
+                         'conn_init', 'conn_destroy', 'submit_request', 'submit_response', 'submit'))
     if 'vfio' in backends:
         required.update(('evpl_vfio_prepare_prplist', 'evpl_vfio_event_callback'))
     hits = {row['function'] for row in rows if int(row['count']) > 0}
@@ -157,7 +189,7 @@ def main():
     parser.add_argument('mode', choices=('tests', 'rdma-tests', 'storage-tests', 'execution', 'functions'))
     parser.add_argument('input')
     parser.add_argument('--root', default='.')
-    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'vfio', 'tls'), default=[])
+    parser.add_argument('--require', nargs='*', choices=('libfabric', 'spdk', 'rdma', 'libaio', 'io_uring', 'io_uring_nvme', 'vfio', 'tls', 'http2'), default=[])
     args = parser.parse_args()
     with open(args.input) as stream:
         data = list(csv.DictReader(stream)) if args.mode == 'functions' else json.load(stream)
