@@ -28,3 +28,9 @@ typedef struct evpl_iovec xdr_iovec;
 
 #define xdr_iovec_move_private(out, in) \
         evpl_iovec_move(out, in)
+
+/* Decode rollback drops only clones while their source iovecs remain live,
+ * so it cannot release the final reference and needs no event-loop pointer.
+ * Internal release also preserves borrowed GLOBAL buffers. */
+#define xdr_iovec_release_private(iov) \
+        evpl_iovec_release_internal(NULL, iov)

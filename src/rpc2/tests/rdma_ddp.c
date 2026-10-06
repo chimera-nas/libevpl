@@ -21,6 +21,7 @@
 #include "test_common.h"
 
 #include "rdma_ddp_xdr.h"
+#include "rpcrdma1_xdr.h"
 
 /* Default protocol and port */
 static enum evpl_protocol_id proto = EVPL_STREAM_SOCKET_TCP;
@@ -28,7 +29,7 @@ static int                   port  = 8002;
 
 /* Test data sizes */
 #define READ_SIZE         4096
-#define WRITE_SIZE        4096
+#define WRITE_SIZE        4093
 #define REDUCE_SIZE       8192 /* Large enough to trigger reply chunk */
 
 /*
@@ -57,6 +58,246 @@ struct test_state {
  * reply callback sets once it has verified the data landed directly in it. */
 static struct evpl_iovec read_into_dest;
 static int               read_into_done;
+
+struct multiread_state {
+    struct evpl_iovec dest;
+    uint32_t          count[2];
+    int               rdma;
+    int               expect_error;
+    int               expect_untouched;
+    int               done;
+};
+
+static void
+decode_error_reply(
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    struct MultiReadResponse    *reply,
+    int                          status,
+    void                        *private_data)
+{
+    evpl_test_abort_if(reply || status != EVPL_RPC2_REPLY_DECODE_ERROR, "expected decoder error callback");
+    *(int *) private_data = 1;
+} /* decode_error_reply */
+
+/* Failure after a successfully cloned item must restore the source's refcount
+ * on both decoder paths, including missing payload padding and arena failure. */
+static void
+check_decode_ownership(
+    struct evpl        *evpl,
+    struct RDMA_DDP_V1 *prog)
+{
+    uint32_t                 words[] = { 3, 1, 3, 0x11223300, 3, 1, 3, 0x44556600, 7 };
+    struct evpl_iovec        input, parts[2];
+    struct MultiReadResponse reply;
+    xdr_dbuf                 dbuf;
+
+    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+        words[i] = htonl(words[i]);
+    }
+    evpl_test_abort_if(evpl_iovec_alloc(evpl, sizeof(words), 1, 1, 0, &input) != 1, "decode input alloc");
+    memcpy(input.data, words, sizeof(words));
+    xdr_dbuf_init(&dbuf, 4096);
+    for (int split = 0; split < 2; split++) {
+        for (int length = 12; length < sizeof(words); length++) {
+            evpl_iovec_clone_segment(&parts[0], &input, 0, split ? 7 : length);
+            if (split) {
+                evpl_iovec_clone_segment(&parts[1], &input, 7, length - 7);
+            }
+            unsigned int refs = evpl_iovec_get_ref(&input)->refcnt;
+            xdr_dbuf_reset(&dbuf);
+            int          rc = unmarshall_MultiReadResponse(&reply, parts, split + 1, NULL, &dbuf);
+            evpl_test_abort_if(rc >= 0, "accepted truncated response (%d bytes, split %d)", length, split);
+            evpl_test_abort_if(evpl_iovec_get_ref(&input)->refcnt != refs, "partial decoder retained clones");
+            evpl_iovecs_release(evpl, parts, split + 1);
+        }
+        evpl_iovec_clone_segment(&parts[0], &input, 0, split ? 7 : sizeof(words));
+        if (split) {
+            evpl_iovec_clone_segment(&parts[1], &input, 7, sizeof(words) - 7);
+        }
+        unsigned int refs = evpl_iovec_get_ref(&input)->refcnt;
+        for (int size = 0; size < 160; size += 8) {
+            xdr_dbuf_reset(&dbuf);
+            dbuf.size = size;
+            int rc = unmarshall_MultiReadResponse(&reply, parts, split + 1, NULL, &dbuf);
+            if (rc >= 0) {
+                for (int i = 0; i < 2; i++) {
+                    evpl_iovecs_release(evpl, reply.reads[i].data.iov, reply.reads[i].data.niov);
+                }
+            }
+            evpl_test_abort_if(evpl_iovec_get_ref(&input)->refcnt != refs, "arena failure retained clones");
+        }
+        dbuf.size = 4096;
+        evpl_iovecs_release(evpl, parts, split + 1);
+    }
+    xdr_dbuf_reset(&dbuf);
+    unsigned int refs      = evpl_iovec_get_ref(&input)->refcnt;
+    int          completed = 0;
+    int          rc        = prog->rpc2.recv_reply_dispatch(evpl, NULL, &dbuf, 4, NULL, NULL,
+                                                            &input, 1, sizeof(words) + 4, 0, decode_error_reply, &
+                                                            completed);
+    evpl_test_abort_if(rc || !completed || evpl_iovec_get_ref(&input)->refcnt != refs,
+                       "trailing reply data retained clones or missed callback");
+    xdr_dbuf_destroy(&dbuf);
+    evpl_iovec_release(evpl, &input);
+} /* check_decode_ownership */
+
+struct raw_probe {
+    int      connected;
+    int      done;
+    int      rdma_error;
+    uint32_t rpc_status;
+    uint32_t write_segments;
+};
+
+static void
+raw_callback(
+    struct evpl        *evpl,
+    struct evpl_bind   *bind,
+    struct evpl_notify *notify,
+    void               *private_data)
+{
+    struct raw_probe *state = private_data;
+
+    if (notify->notify_type == EVPL_NOTIFY_CONNECTED) {
+        state->connected = 1;
+    } else if (notify->notify_type == EVPL_NOTIFY_RECV_MSG) {
+        struct rdma_msg reply;
+        xdr_dbuf        dbuf;
+        uint8_t         data[16384];
+        int             length = 0;
+        xdr_dbuf_init(&dbuf, 4096);
+        int             offset = unmarshall_rdma_msg(&reply, notify->recv_msg.iovec, notify->recv_msg.niov, NULL, &dbuf)
+        ;
+        evpl_test_abort_if(offset < 0, "raw reply transport header invalid");
+        state->rdma_error = reply.rdma_body.proc == RDMA_ERROR;
+        if (state->rdma_error) {
+            evpl_test_abort_if(reply.rdma_body.rdma_error.err != ERR_CHUNK, "expected ERR_CHUNK");
+        } else {
+            evpl_test_abort_if(reply.rdma_body.proc != RDMA_MSG, "expected inline reply");
+            struct xdr_write_list *writes = reply.rdma_body.rdma_msg.rdma_writes;
+            state->write_segments = writes ? writes->entry.num_target : UINT32_MAX;
+            if (writes) {
+                for (unsigned int i = 0; i < writes->entry.num_target; i++) {
+                    evpl_test_abort_if(writes->entry.target[i].length, "zero-capacity Write offer was used");
+                }
+            }
+            for (int i = 0; i < notify->recv_msg.niov; i++) {
+                struct evpl_iovec *iov = &notify->recv_msg.iovec[i];
+                evpl_test_abort_if(length + iov->length > sizeof(data), "oversized raw reply");
+                memcpy(data + length, iov->data, iov->length);
+                length += iov->length;
+            }
+            evpl_test_abort_if(length < offset + 24, "short raw RPC reply");
+            uint32_t status;
+            memcpy(&status, data + offset + 20, sizeof(status));
+            state->rpc_status = ntohl(status);
+        }
+        evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
+        xdr_dbuf_destroy(&dbuf);
+        state->done = 1;
+    }
+} /* raw_callback */
+
+/* A plain registered-memory peer can describe offers that the generated client
+ * never emits. Valid keys distinguish admission failures from provider errors;
+ * separate bad-key cases exercise read failure draining. */
+static void
+check_raw_chunks(
+    struct evpl          *evpl,
+    struct evpl_endpoint *endpoint,
+    int                   rdma)
+{
+    struct raw_probe  state = { 0 };
+
+    if (!rdma) {
+        return;
+    }
+    struct evpl_bind *bind = evpl_connect(evpl, proto, NULL, endpoint, raw_callback, NULL, &state);
+    evpl_test_abort_if(!bind, "raw connection failed");
+    while (!state.connected) {
+        evpl_continue(evpl);
+    }
+    struct evpl_iovec source;
+    uint32_t          key;
+    uint64_t          address;
+    evpl_test_abort_if(evpl_iovec_alloc(evpl, WRITE_SIZE, 1, 1, 0, &source) != 1, "raw source alloc");
+    memcpy(source.data, test_data, WRITE_SIZE);
+    evpl_rdma_get_address(evpl, bind, &source, &key, &address);
+    for (int scenario = 0; scenario < 23; scenario++) {
+        uint32_t wire[32768], n = 0;
+#define WORD(value) wire[n++] = htonl(value)
+        WORD(0xabc000 + scenario); WORD(1); WORD(1); WORD(0);
+        int      reads = scenario >= 4;
+        int      valid = scenario == 13 || scenario == 19 || scenario == 22;
+        int      count = scenario == 20 ? 4095 : scenario == 21 ? 5000 : scenario == 8 ? 17 : valid ? 16 : scenario == 7
+            || scenario == 9 || scenario == 18 ? 2
+        : 1;
+        uint32_t segment_offset = 0;
+        if (reads) {
+            for (int j = 0; j < count; j++) {
+                uint32_t position = scenario == 4 ? 36 : scenario == 5 ? 60 : scenario == 6 ? 55 :
+                    scenario == 7 && j ? 52 : 56;
+                uint32_t len = scenario == 16 ? 0 : scenario == 9 ? UINT32_MAX : scenario == 10 ? 0x40000000 :
+                    valid ? (j == 0 ? 0 : j == 15 ? WRITE_SIZE - segment_offset : 257) : 1;
+                uint64_t addr = scenario == 11 ? UINT64_MAX : address + segment_offset;
+                WORD(1); WORD(position); WORD((valid || (scenario >= 4 && scenario <= 8) || scenario == 20 || (scenario
+                                                                                                               == 18 &&
+                                                                                                               !j)) ?
+                                              key : 0xdeadbeef); WORD(len);
+                WORD(addr >> 32); WORD(addr);
+                segment_offset += len;
+            }
+        }
+        WORD(0);
+        if (!reads && scenario != 0) {
+            WORD(1); WORD(scenario == 1 ? 0 : 2);
+            if (scenario != 1) {
+                for (int j = 0; j < 2; j++) {
+                    WORD(0xdeadbeef); WORD(0); WORD(0); WORD(0);
+                }
+            }
+            WORD(0);
+        } else {
+            WORD(0);
+        }
+        WORD(0);
+        WORD(0xabc000 + scenario); WORD(0); WORD(2); WORD(0x20250001); WORD(1);
+        WORD(scenario == 12 ? 999 : reads ? 2 : 4);
+        WORD(0); WORD(0); WORD(0); WORD(0);
+        if (reads) {
+            WORD(0); WORD(0); WORD(WRITE_SIZE); WORD(WRITE_SIZE);
+        } else {
+            WORD(scenario == 3 ? 0 : 3); WORD(5); WORD(0);
+        }
+#undef WORD
+        if (scenario == 14 || scenario == 15) {
+            n = scenario == 14 ? 5 : 3;
+        }
+        struct evpl_iovec send;
+        evpl_test_abort_if(evpl_iovec_alloc(evpl, n * 4, 1, 1, 0, &send) != 1, "raw send alloc");
+        memcpy(send.data, wire, n * 4);
+        state.done = 0;
+        evpl_sendv(evpl, bind, &send, 1, n * 4, EVPL_SEND_FLAG_TAKE_REF);
+        while (!state.done) {
+            evpl_continue(evpl);
+        }
+        int               expected_error = scenario == 2 || (scenario >= 4 && scenario < 12) || scenario == 14 ||
+            scenario == 15 || scenario == 17 || scenario == 18 || scenario == 20 || scenario == 21;
+        evpl_test_abort_if(state.rdma_error != expected_error, "raw scenario %d: wrong RDMA status", scenario);
+        if (!expected_error) {
+            evpl_test_abort_if(state.rpc_status != (scenario == 12 ? 3 : scenario == 16 ? 4 : 0),
+                               "raw scenario %d: RPC status %u", scenario,
+                               state.rpc_status);
+            if (!reads) {
+                evpl_test_abort_if(state.write_segments != (scenario == 0 ? UINT32_MAX : scenario == 1 ? 0 : 2),
+                                   "raw Write segment count changed");
+            }
+        }
+    }
+    evpl_iovec_release(evpl, &source);
+    evpl_close(evpl, bind);
+} /* check_raw_chunks */
 
 /* Initialize test data with pattern */
 static void
@@ -221,6 +462,202 @@ server_recv_reduce(
 
     evpl_test_info("Server sent REDUCE reply: data_len=%u", REDUCE_SIZE);
 } /* server_recv_reduce */
+
+struct corrupt_reply {
+    struct evpl_rpc2_encoding *encoding;
+    struct MultiReadRequest   *call;
+};
+
+/* Deliberately report a shorter Write chunk than the encoded first result.
+* This reaches the client's chunk-length rejection after an RPC SUCCESS. */
+static void
+server_corrupt_chunk_length(
+    const struct evpl_iovec           *iov,
+    int                                niov,
+    int                                total_length,
+    uint32_t                           body_offset,
+    const struct evpl_rpc2_rdma_chunk *write_chunk,
+    void                              *private_data)
+{
+    struct corrupt_reply      *state    = private_data;
+    struct evpl_rpc2_encoding *encoding = state->encoding;
+
+    if (state->call->corrupt_length >= 2) {
+        /* Reject the second result after claiming the first Write payload (or
+         * cloning its inline reference), including caller-owned read-into. */
+        uint32_t offset = body_offset + 16 + (write_chunk ? 0 : (state->call->first_count + 3) / 4 * 4);
+        for (int i = 0; i < niov; i++) {
+            if (offset < iov[i].length) {
+                evpl_test_abort_if(offset + 4 > iov[i].length, "split test boolean");
+                uint32_t bad = htonl(2);
+                memcpy((char *) iov[i].data + offset, &bad, 4);
+                return;
+            }
+            offset -= iov[i].length;
+        }
+        evpl_test_abort_if(1, "missing test boolean");
+    }
+
+    evpl_test_abort_if(encoding->write_chunk->length < 2,
+                       "Malformed MULTIREAD needs a nonempty Write chunk");
+    encoding->write_chunk->length--;
+} /* server_corrupt_chunk_length */
+
+/* One Write chunk must select only the first result, even when it is empty.
+ * The odd lengths also check that inline roundup stays with the second item. */
+static void
+server_recv_multiread(
+    struct evpl               *evpl,
+    struct evpl_rpc2_conn     *conn,
+    struct evpl_rpc2_cred     *cred,
+    struct MultiReadRequest   *call,
+    struct evpl_rpc2_encoding *encoding,
+    void                      *private_data)
+{
+    struct test_state       *state = private_data;
+    struct MultiReadResponse reply = { 0 };
+    struct evpl_iovec        iov[2];
+    uint32_t                 count[2] = { call->first_count, call->second_count };
+    int                      i, j, rc;
+
+    if (call->corrupt_length >= 4 && conn->rdma) {
+        struct evpl_iovec bad;
+        uint32_t          header[] = { htonl(encoding->xid), htonl(call->corrupt_length == 5 ? 2 : 1), htonl(1) };
+        evpl_test_abort_if(evpl_iovec_alloc(evpl, sizeof(header), 1, 1, 0, &bad) != 1, "bad header alloc");
+        memcpy(bad.data, header, sizeof(header));
+        evpl_sendv(evpl, conn->bind, &bad, 1, sizeof(header), EVPL_SEND_FLAG_TAKE_REF);
+        /* Release the server request normally; the following complete reply
+         * must be ignored once the malformed one has completed the client. */
+        evpl_rpc2_send_reply_system_error(evpl, encoding);
+        return;
+    }
+    for (i = 0; i < 2; i++) {
+        evpl_test_abort_if(count[i] > REDUCE_SIZE, "MULTIREAD count too large");
+        reply.reads[i].count = count[i];
+        reply.reads[i].eof   = 1;
+        if (count[i]) {
+            rc = evpl_iovec_alloc(evpl, count[i], 1, 1, 0, &iov[i]);
+            evpl_test_abort_if(rc != 1, "MULTIREAD buffer allocation failed");
+            for (j = 0; j < count[i]; j++) {
+                ((char *) iov[i].data)[j] = (char) ((j + 17 + 56 * i) & 0xFF);
+            }
+            xdr_set_ref(&reply.reads[i], data, &iov[i], 1, count[i]);
+        }
+    }
+    struct corrupt_reply corruption = { .encoding = encoding, .call = call };
+    if (call->corrupt_length >= 2 || (call->corrupt_length && conn->rdma)) {
+        encoding->reply_capture_cb      = server_corrupt_chunk_length;
+        encoding->reply_capture_private = &corruption;
+    }
+    reply.sentinel = 0x13579BDF;
+    rc             = state->prog->send_reply_MULTIREAD(evpl, NULL, &reply, encoding);
+    evpl_test_abort_if(rc != 0, "Failed to send MULTIREAD reply: %d", rc);
+} /* server_recv_multiread */
+
+static void
+client_recv_multiread(
+    struct evpl                 *evpl,
+    const struct evpl_rpc2_verf *verf,
+    struct MultiReadResponse    *reply,
+    int                          status,
+    void                        *callback_private_data)
+{
+    struct multiread_state *state = callback_private_data;
+    struct ReadResponse    *read;
+    uint32_t                offset;
+    int                     i, j;
+
+    if (state->expect_error) {
+        evpl_test_abort_if(status != state->expect_error,
+                           "MULTIREAD expected transport/decode error %d, got %d",
+                           state->expect_error, status);
+        if (state->dest.data && state->expect_untouched) {
+            evpl_test_abort_if(((unsigned char *) state->dest.data)[0] != 0xCC,
+                               "Short Write chunk was modified before ERR_CHUNK");
+        }
+        state->done = 1;
+        return;
+    }
+
+    evpl_test_abort_if(status != 0 || !reply, "MULTIREAD reply error: %d", status);
+    evpl_test_abort_if(reply->sentinel != 0x13579BDF, "MULTIREAD tail corrupt");
+
+    for (i = 0; i < 2; i++) {
+        read = &reply->reads[i];
+        evpl_test_abort_if(read->count != state->count[i] || !read->eof ||
+                           read->data.length != state->count[i],
+                           "MULTIREAD result %d length or fields differ", i);
+        evpl_test_abort_if(!state->count[i] && read->data.niov,
+                           "Empty MULTIREAD result retains an iovec");
+        offset = 0;
+        for (j = 0; j < read->data.niov; j++) {
+            struct evpl_iovec *iov = &read->data.iov[j];
+            evpl_test_abort_if(iov->length > state->count[i] - offset,
+                               "MULTIREAD result %d iovec exceeds payload", i);
+            evpl_test_abort_if(verify_data(iov->data, offset + 17 + 56 * i,
+                                           iov->length) != 0,
+                               "MULTIREAD result %d data differs", i);
+            offset += iov->length;
+            if (state->rdma && i == 0) {
+                evpl_test_abort_if(iov->data != state->dest.data,
+                                   "First MULTIREAD did not use Write chunk");
+            } else {
+                evpl_test_abort_if(state->rdma && iov->data == state->dest.data,
+                                   "Second MULTIREAD reused first Write chunk");
+                evpl_iovec_release(evpl, iov);
+            }
+        }
+        evpl_test_abort_if(offset != state->count[i], "MULTIREAD result incomplete");
+    }
+    if (state->rdma && !state->count[0]) {
+        evpl_test_abort_if(((unsigned char *) state->dest.data)[0] != 0xCC,
+                           "Empty first MULTIREAD let second result use Write chunk");
+    }
+    state->done = 1;
+} /* client_recv_multiread */
+
+static void
+run_multiread(
+    struct evpl           *evpl,
+    struct evpl_rpc2_conn *conn,
+    struct RDMA_DDP_V1    *prog,
+    uint32_t               first_count,
+    uint32_t               second_count,
+    int                    reply_chunk,
+    int                    short_chunk,
+    int                    corrupt_length)
+{
+    struct MultiReadRequest call  = { first_count, second_count, corrupt_length };
+    struct multiread_state  state = { 0 };
+    int                     rc, capacity = short_chunk ? 16 : READ_SIZE;
+
+    state.count[0]         = first_count;
+    state.count[1]         = second_count;
+    state.rdma             = conn->rdma;
+    state.expect_untouched = short_chunk;
+    state.expect_error     = !conn->rdma ? (corrupt_length >= 2 ? EVPL_RPC2_REPLY_DECODE_ERROR : 0) :
+        (short_chunk ? EVPL_RPC2_REPLY_RDMA_ERROR :
+         (corrupt_length ? EVPL_RPC2_REPLY_DECODE_ERROR : 0));
+
+    /* Malformed replies use an internally owned destination: the decoder's
+     * failure path, rather than this test, must release its reference. */
+    if (state.rdma && (!corrupt_length || corrupt_length == 3)) {
+        rc = evpl_iovec_alloc(evpl, capacity, 1, 1, 0, &state.dest);
+        evpl_test_abort_if(rc != 1, "MULTIREAD destination allocation failed");
+        memset(state.dest.data, 0xCC, capacity);
+    }
+    prog->send_call_MULTIREAD(&prog->rpc2, evpl, conn, NULL, &call, 0,
+                              state.rdma ? capacity : 0,
+                              state.dest.data ? &state.dest : NULL, state.dest.data ? 1 : 0,
+                              reply_chunk ? REDUCE_SIZE + REPLY_CHUNK_SLACK : 0,
+                              client_recv_multiread, &state);
+    while (!state.done) {
+        evpl_continue(evpl);
+    }
+    if (state.dest.data) {
+        evpl_iovec_release(evpl, &state.dest);
+    }
+} /* run_multiread */
 
 /* Client-side: Handle READ reply */
 void
@@ -414,11 +851,12 @@ main(
 
     /* Initialize server program */
     RDMA_DDP_V1_init(&prog);
-    prog.recv_call_READ   = server_recv_read;
-    prog.recv_call_WRITE  = server_recv_write;
-    prog.recv_call_REDUCE = server_recv_reduce;
-    programs[0]           = &prog.rpc2;
-    state.prog            = &prog;
+    prog.recv_call_READ      = server_recv_read;
+    prog.recv_call_WRITE     = server_recv_write;
+    prog.recv_call_REDUCE    = server_recv_reduce;
+    prog.recv_call_MULTIREAD = server_recv_multiread;
+    programs[0]              = &prog.rpc2;
+    state.prog               = &prog;
 
     /* Create RPC2 server */
     server = evpl_rpc2_server_init(programs, 1);
@@ -520,6 +958,25 @@ main(
             evpl_continue(evpl);
         }
     }
+
+    /* Two READ-like results with a single Write chunk.  Repeat over a Reply
+     * chunk so actual returned Write lengths are honored for RDMA_NOMSG too. */
+    run_multiread(evpl, conn, &prog, 31, 67, 0, 0, 0);
+    run_multiread(evpl, conn, &prog, 0, 67, 0, 0, 0);
+    run_multiread(evpl, conn, &prog, 31, REDUCE_SIZE, 1, 0, 0);
+    run_multiread(evpl, conn, &prog, 0, REDUCE_SIZE, 1, 0, 0);
+    run_multiread(evpl, conn, &prog, 31, 67, 0, 1, 0);
+    run_multiread(evpl, conn, &prog, 31, 67, 0, 0, 1);
+    run_multiread(evpl, conn, &prog, 31, 67, 0, 0, 2);
+    run_multiread(evpl, conn, &prog, 31, 67, 0, 0, 3);
+    run_multiread(evpl, conn, &prog, 31, 67, 0, 0, 4);
+    run_multiread(evpl, conn, &prog, 31, 67, 0, 0, 5);
+    run_multiread(evpl, conn, &prog, 31, REDUCE_SIZE, 1, 0, 2);
+    /* A transport-level refusal must leave the connection usable. */
+    run_multiread(evpl, conn, &prog, 31, 67, 0, 0, 0);
+
+    check_decode_ownership(evpl, &prog);
+    check_raw_chunks(evpl, endpoint, conn->rdma);
 
     /* Cleanup */
     evpl_rpc2_server_stop(server);
