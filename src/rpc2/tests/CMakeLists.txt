@@ -167,6 +167,9 @@ endmacro()
 unit_test_rpc2(hello_world hello_world.x hello_world.c)
 unit_test_rpc2(builtin_bool builtin_bool.x builtin_bool.c)
 unit_test_rpc2(rdma_ddp rdma_ddp.x rdma_ddp.c)
+set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/../rpcrdma1_xdr.c PROPERTIES
+                           COMPILE_OPTIONS "${EVPL_XDR_WARNING_FLAGS}")
+target_sources(evpl_rpc2_rdma_ddp PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/../rpcrdma1_xdr.c)
 unit_test_rpc2(multifrag hello_world.x multifrag.c)
 unit_test_rpc2(client_xid hello_world.x client_xid.c)
 
