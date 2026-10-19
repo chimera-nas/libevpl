@@ -114,7 +114,12 @@ evpl_tls_generate_self_signed_cert(SSL_CTX *ctx)
 
     X509_set_pubkey(cert, pkey);
 
-    name = X509_get_subject_name(cert);
+    /* OpenSSL 4 returns the certificate's own subject as const, so build the
+     * name separately; X509_set_subject_name() and X509_set_issuer_name()
+     * each store a copy. */
+    name = X509_NAME_new();
+    evpl_tls_abort_if(!name, "Failed to create certificate name");
+
     X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, (unsigned char *) "US", -1, -1, 0);
     X509_NAME_add_entry_by_txt(name, "ST", MBSTRING_ASC, (unsigned char *) "Self-Signed", -1, -1, 0);
     X509_NAME_add_entry_by_txt(name, "L", MBSTRING_ASC, (unsigned char *) "Self-Signed", -1, -1, 0);
@@ -122,7 +127,13 @@ evpl_tls_generate_self_signed_cert(SSL_CTX *ctx)
     X509_NAME_add_entry_by_txt(name, "OU", MBSTRING_ASC, (unsigned char *) "Self-Signed", -1, -1, 0);
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char *) "localhost", -1, -1, 0);
 
-    X509_set_issuer_name(cert, name);
+    rc = X509_set_subject_name(cert, name);
+    evpl_tls_abort_if(rc <= 0, "Failed to set certificate subject");
+
+    rc = X509_set_issuer_name(cert, name);
+    evpl_tls_abort_if(rc <= 0, "Failed to set certificate issuer");
+
+    X509_NAME_free(name);
 
     X509V3_CTX      ctx_v3;
     X509V3_set_ctx(&ctx_v3, cert, cert, NULL, NULL, 0);
