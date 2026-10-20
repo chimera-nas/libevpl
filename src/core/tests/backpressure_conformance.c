@@ -126,9 +126,13 @@ peer_context(void)
     X509_gmtime_adj(X509_get_notBefore(cert), -60);
     X509_gmtime_adj(X509_get_notAfter(cert), 3600);
     X509_set_pubkey(cert, key);
-    X509_NAME *name = X509_get_subject_name(cert);
+    /* OpenSSL 4 returns the subject as const; build the name separately. */
+    X509_NAME *name = X509_NAME_new();
+    evpl_test_abort_if(!name, "TLS name allocation failed");
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char *) "localhost", -1, -1, 0);
-    X509_set_issuer_name(cert, name);
+    evpl_test_abort_if(X509_set_subject_name(cert, name) != 1 || X509_set_issuer_name(cert, name) != 1,
+                       "TLS certificate name setup failed");
+    X509_NAME_free(name);
     evpl_test_abort_if(!X509_sign(cert, key, EVP_sha256()) || SSL_CTX_use_certificate(ctx, cert) != 1 ||
                        SSL_CTX_use_PrivateKey(ctx, key) != 1, "TLS certificate setup failed");
     X509_free(cert);
