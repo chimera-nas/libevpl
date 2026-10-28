@@ -25,6 +25,11 @@ struct evpl_thread_config {
     char         spdk_cpumask[40];
 };
 
+/* Whether a thread created with this config (NULL for the defaults) runs as
+ * an spdk_thread rather than a native thread. */
+int evpl_thread_config_is_spdk(
+    const struct evpl_thread_config *config);
+
 /*
  * Headroom an RPC2 message must leave inside one iovec buffer: the RPC and
  * record-marking headers, the GSS credential and verifier, and the framing a

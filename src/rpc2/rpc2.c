@@ -4327,10 +4327,21 @@ evpl_rpc2_server_init(
     int                        nprograms)
 {
     struct evpl_rpc2_server *server;
+    char                     listener_name[32];
 
     server = evpl_zalloc(sizeof(*server));
 
-    server->listener = evpl_listener_create();
+    /* Name the accept thread after the server's first program, e.g.
+     * evpl_rpc_100003 for NFS, so the listeners of servers for different
+     * programs can be told apart.  Two servers that start with the same
+     * program share a name. */
+    if (nprograms > 0) {
+        snprintf(listener_name, sizeof(listener_name), "evpl_rpc_%u",
+                 programs[0]->program);
+        server->listener = evpl_listener_create_named(listener_name);
+    } else {
+        server->listener = evpl_listener_create();
+    }
 
     server->programs  = evpl_zalloc(nprograms * sizeof(*programs));
     server->nprograms = nprograms;

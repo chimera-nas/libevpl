@@ -149,8 +149,10 @@ EVPL_API void evpl_thread_config_set_wait_ms(
     struct evpl_thread_config *config,
     int                        wait_ms);
 
-/* Thread name, used e.g. to name the spdk_thread created for an evpl_thread
- * under EVPL_CORE_MECH_SPDK.  Truncated to the config field size. */
+/* Thread name.  Native workers take it as their OS thread name (cut to 15
+ * bytes; threadpool workers add _0, _1, ...), and under
+ * EVPL_CORE_MECH_SPDK it names the spdk_thread created for an evpl_thread.
+ * Truncated to the config field size. */
 EVPL_API void evpl_thread_config_set_name(
     struct evpl_thread_config *config,
     const char                *name);
