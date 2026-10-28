@@ -22,6 +22,8 @@ struct evpl_thread {
     void                           *private_data;
     evpl_completion_t               completion;
     void                           *completion_private;
+    /* Index in a threadpool, or -1; numbers a native worker's OS name. */
+    int                             pool_index;
 #ifdef HAVE_SPDK
     struct evpl_wakeup              stop_wakeup;
     struct evpl_event               stop_event;

@@ -32,6 +32,14 @@ evpl_thread_create(
 EVPL_API void evpl_thread_destroy(
     struct evpl_thread *thread);
 
+/* Name the calling thread as ps, top and debuggers show it.  Names are cut to
+ * 15 bytes, the Linux limit, without splitting a UTF-8 character; NULL is
+ * ignored.  Native threads created with a named config (see
+ * evpl_thread_config_set_name) are named this way automatically, and
+ * threadpool workers get the name plus _0, _1, ... */
+EVPL_API void evpl_thread_set_name(
+    const char *name);
+
 EVPL_API struct evpl_threadpool *
 evpl_threadpool_create(
     struct evpl_thread_config      *config,

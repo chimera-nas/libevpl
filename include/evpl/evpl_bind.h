@@ -247,6 +247,11 @@ EVPL_API int evpl_bind_is_closing(
  * backend as the attached workers when creating an SPDK listener. */
 EVPL_API struct evpl_listener * evpl_listener_create_config(
     struct evpl_thread_config *config);
+/* evpl_listener_create() with a name for its native accept thread, which ps
+ * and top then show.  An SPDK listener keeps the unnamed default, so its
+ * spdk_thread stays evpl-<id>. */
+EVPL_API struct evpl_listener * evpl_listener_create_named(
+    const char *name);
 /* Completion runs on the listener worker; validation failures may complete
 * inline. Endpoint resolution follows the existing synchronous resolver. */
 EVPL_API void evpl_listen_async(

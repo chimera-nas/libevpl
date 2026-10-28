@@ -292,9 +292,24 @@ evpl_listener_create_config(struct evpl_thread_config *config)
 } /* evpl_listener_create_config */
 
 SYMBOL_EXPORT struct evpl_listener *
+evpl_listener_create_named(const char *name)
+{
+    struct evpl_thread_config *config = NULL;
+
+    /* A copy of the thread defaults behaves exactly like no config.  Only a
+     * native accept thread takes the name, which ps and top then show. */
+    if (!evpl_thread_config_is_spdk(NULL)) {
+        config = evpl_thread_config_init();
+        evpl_thread_config_set_name(config, name);
+    }
+
+    return evpl_listener_create_config(config);
+} /* evpl_listener_create_named */
+
+SYMBOL_EXPORT struct evpl_listener *
 evpl_listener_create(void)
 {
-    return evpl_listener_create_config(NULL);
+    return evpl_listener_create_named("evpl_listen");
 } /* evpl_listener_create */
 
 static void
