@@ -47,6 +47,7 @@ evpl_global_config_init(void)
     config->max_datagram_size      = 65536;
     config->max_datagram_batch     = 16;
     config->resolve_timeout_ms     = 5000;
+    config->tcp_connect_timeout_ms = 0;
     /* 0 means derive from buffer_size when read -- see
      * evpl_config_rpc2_max_message_size().  Deriving late rather than here is
      * what lets a caller set buffer_size afterwards and still get a coherent
@@ -571,6 +572,14 @@ evpl_global_config_set_resolve_timeout_ms(
 {
     config->resolve_timeout_ms = timeout_ms;
 } /* evpl_global_config_set_resolve_timeout_ms */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_tcp_connect_timeout_ms(
+    struct evpl_global_config *config,
+    unsigned int               timeout_ms)
+{
+    config->tcp_connect_timeout_ms = timeout_ms;
+} /* evpl_global_config_set_tcp_connect_timeout_ms */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_io_uring_enabled(

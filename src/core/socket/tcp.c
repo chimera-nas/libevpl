@@ -265,6 +265,40 @@ evpl_socket_tcp_error(
     evpl_close(evpl, bind);
 } /* evpl_error_tcp */
 
+/* Apply the configured connect timeout to a socket about to connect().
+ * Failure to set it is logged and the kernel default stands; a bound that
+ * cannot be applied is no reason not to dial. */
+static void
+evpl_socket_tcp_set_connect_timeout(int fd)
+{
+    unsigned int timeout_ms = evpl_shared->config->tcp_connect_timeout_ms;
+    int          value, rc;
+
+    if (!timeout_ms) {
+        return;
+    }
+
+#if defined(__linux__)
+    value = (int) evpl_socket_tcp_syn_retries(timeout_ms);
+    rc    = setsockopt(fd, IPPROTO_TCP, TCP_SYNCNT, &value, sizeof(value));
+#elif defined(__APPLE__)
+    value = (int) (timeout_ms / 1000);
+    if (value < 1) {
+        value = 1;
+    }
+    rc = setsockopt(fd, IPPROTO_TCP, TCP_CONNECTIONTIMEOUT, &value, sizeof(value));
+#else  /* if defined(__linux__) */
+    (void) fd;
+    value = 0;
+    rc    = 0;
+#endif /* if defined(__linux__) */
+
+    if (rc < 0) {
+        evpl_socket_error("Failed to set tcp connect timeout (%d): %s",
+                          value, strerror(errno));
+    }
+} /* evpl_socket_tcp_set_connect_timeout */
+
 void
 evpl_socket_tcp_connect(
     struct evpl      *evpl,
@@ -292,6 +326,8 @@ evpl_socket_tcp_connect(
     rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
     evpl_socket_abort_if(rc, "Failed to set TCP_NODELAY on socket: %s", strerror(errno));
+
+    evpl_socket_tcp_set_connect_timeout(s->fd);
 
     rc = connect(s->fd, bind->remote->addr, bind->remote->addrlen);
 

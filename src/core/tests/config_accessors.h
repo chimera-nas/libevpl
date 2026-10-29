@@ -35,6 +35,7 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_global_config_set_rdma_request_ring_size(config, before.rdma_request_ring_size);
     evpl_global_config_set_max_datagram_batch(config, before.max_datagram_batch);
     evpl_global_config_set_resolve_timeout_ms(config, before.resolve_timeout_ms);
+    evpl_global_config_set_tcp_connect_timeout_ms(config, before.tcp_connect_timeout_ms);
     evpl_global_config_set_io_uring_enabled(config, before.io_uring_enabled);
     evpl_global_config_set_io_uring_entries(config, before.io_uring_entries);
     evpl_global_config_set_io_uring_sqpoll(config, before.io_uring_sqpoll);
