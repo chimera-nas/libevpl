@@ -204,6 +204,19 @@ EVPL_API void evpl_global_config_set_resolve_timeout_ms(
     struct evpl_global_config *config,
     unsigned int               timeout_ms);
 
+/*
+ * Bound how long a TCP connect may wait for a SYN that is never answered.
+ *
+ * Applies to the kernel socket STREAM_SOCKET_TCP transport only, not to
+ * io_uring, RDMA or the Windows winsock transport.  Linux rounds the value
+ * down to the kernel's SYN retry schedule (3, 7, 15, 31, 63, 127 s) and never
+ * below 3 s; macOS honours whole seconds, at least 1; other platforms ignore
+ * it.  0, the default, keeps the kernel's own schedule (about 127 s on Linux).
+ */
+EVPL_API void evpl_global_config_set_tcp_connect_timeout_ms(
+    struct evpl_global_config *config,
+    unsigned int               timeout_ms);
+
 EVPL_API void evpl_global_config_set_io_uring_enabled(
     struct evpl_global_config *config,
     int                        enabled);
