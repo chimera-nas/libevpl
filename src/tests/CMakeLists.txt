@@ -17,6 +17,12 @@ endmacro()
 evpl_test(hello_world_msg)
 evpl_test(hello_world_connected_msg) 
 evpl_test(hello_world_stream)
+# The kernel socket TCP transport is not built on Windows (winsock stands in
+# for it), and this test reaches it through POSIX socket calls.
+if(NOT WIN32)
+    evpl_test(connect_refused)
+    evpl_test(connect_unreachable)
+endif()
 evpl_test(ping_pong_msg)
 evpl_test(ping_pong_connected_msg)
 evpl_test(ping_pong_stream)

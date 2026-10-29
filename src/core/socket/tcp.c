@@ -271,39 +271,64 @@ evpl_socket_tcp_connect(
     struct evpl_bind *bind)
 {
     struct evpl_socket     *s = evpl_bind_private(bind);
-    int                     rc, yes = 1;
+    int                     rc, yes = 1, err = 0;
     struct sockaddr_storage ss;
     socklen_t               sslen = sizeof(ss);
-    int                     rc_getsockname;
 
     s->fd = socket(bind->remote->addr->sa_family, SOCK_STREAM, 0);
 
     evpl_socket_abort_if(s->fd < 0, "Failed to create tcp socket: %s", strerror(
                              errno));
 
-    rc = connect(s->fd, bind->remote->addr, bind->remote->addrlen);
-
-    evpl_socket_abort_if(rc < 0 && errno != EINPROGRESS,
-                         "Failed to connect tcp socket: %s", strerror(errno));
-
-
-    rc_getsockname = getsockname(s->fd, (struct sockaddr *) &ss, &sslen);
-    evpl_socket_abort_if(rc_getsockname < 0, "Failed to getsockname on socket: %s", strerror(errno));
-
-    bind->local          = evpl_address_alloc();
-    bind->local->addrlen = sslen;
-    memcpy(bind->local->addr, &ss, sslen);
-
+    /* Non-blocking before connect(), so a peer that never answers the SYN
+     * costs the loop nothing: the handshake completes (or fails) through the
+     * event loop, where evpl_check_conn reads SO_ERROR on the first event. */
     evpl_socket_init(evpl, s, s->fd, 0);
 
+    /* Every option goes on before connect().  Once the dial is in flight the
+     * peer's RST can land at any moment, and macOS refuses TCP options on a
+     * connection it has already torn down, so setting them afterwards races
+     * the refusal this function exists to survive. */
     rc = setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
-    evpl_socket_abort_if(rc, "Failed to set TCP_QUICKACK on socket");
+    evpl_socket_abort_if(rc, "Failed to set TCP_NODELAY on socket: %s", strerror(errno));
+
+    rc = connect(s->fd, bind->remote->addr, bind->remote->addrlen);
+
+    if (rc < 0 && errno != EINPROGRESS) {
+        err = errno;
+    }
+
+    bind->local = evpl_address_alloc();
+
+    /* A socket whose dial was just rejected may have no local name to give;
+     * the bind is closing anyway, so it keeps the empty address. */
+    rc = getsockname(s->fd, (struct sockaddr *) &ss, &sslen);
+
+    if (likely(rc == 0)) {
+        bind->local->addrlen = sslen;
+        memcpy(bind->local->addr, &ss, sslen);
+    } else {
+        evpl_socket_abort_if(!err, "Failed to getsockname on socket: %s", strerror(errno));
+    }
 
     evpl_add_event(evpl, &s->event, s->fd,
                    evpl_socket_tcp_read,
                    evpl_socket_tcp_write,
                    evpl_socket_tcp_error);
+
+    /* A failure that connect() reported itself (an unreachable network, a
+     * multicast destination) is the bind's owner's problem, not the process's:
+     * close the bind so it hears DISCONNECTED.  No read or write interest is
+     * registered on this path on purpose -- connect() has already consumed
+     * the pending SO_ERROR, so evpl_check_conn would find it clear and report
+     * a CONNECTED that never happened.  The event is still added above so the
+     * deferred pending_close finds the descriptor registered, as it expects. */
+    if (unlikely(err)) {
+        evpl_socket_debug("Failed to connect tcp socket: %s", strerror(err));
+        evpl_close(evpl, bind);
+        return;
+    }
 
     evpl_event_read_interest(evpl, &s->event);
     evpl_event_write_interest(evpl, &s->event);

@@ -241,11 +241,10 @@ evpl_socket_unix_connect(
     evpl_socket_abort_if(s->fd < 0, "Failed to create unix socket: %s",
                          strerror(errno));
 
-    /* Deliberately connects while the fd is still blocking, matching the TCP
-     * backend, which also calls evpl_socket_init() only afterwards.  AF_UNIX
-     * has no EINPROGRESS handshake to wait on, so a non-blocking connect
-     * against a full backlog would return EAGAIN with nothing for epoll to
-     * report -- blocking here is strictly better. */
+    /* Deliberately connects while the fd is still blocking, unlike the TCP
+     * backend.  AF_UNIX has no EINPROGRESS handshake to wait on, so a
+     * non-blocking connect against a full backlog would return EAGAIN with
+     * nothing for epoll to report -- blocking here is strictly better. */
     rc = connect(s->fd, bind->remote->addr, bind->remote->addrlen);
 
     evpl_socket_abort_if(rc < 0 && errno != EINPROGRESS && errno != EAGAIN,
