@@ -193,5 +193,14 @@ evpl_socket_flush(
 {
     struct evpl_socket *s = evpl_bind_private(bind);
 
+    /* A send queued in the same pass as a close -- a dial that failed on the
+     * spot, followed by the caller's first send -- flushes after pending_close
+     * has already removed the event.  Reviving its write interest would put
+     * the removed event back on the active list, where nothing ever clears
+     * it, and the loop would never block again. */
+    if (unlikely(s->fd < 0)) {
+        return;
+    }
+
     evpl_event_write_interest(evpl, &s->event);
-} /* evpl_socket_udp_flush */
+} /* evpl_socket_flush */

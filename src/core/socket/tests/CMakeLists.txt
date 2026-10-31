@@ -8,6 +8,16 @@
 unit_test_bin_all_mechs(socket hello_world_msg_udp hello_world_msg -r DATAGRAM_SOCKET_UDP)
 unit_test_bin_all_mechs(socket hello_world_stream_tcp hello_world_stream -r STREAM_SOCKET_TCP)
 unit_test_bin_all_mechs(socket hello_world_connected_msg_tcp hello_world_connected_msg -r STREAM_SOCKET_TCP)
+if(NOT WIN32)
+    unit_test_bin_all_mechs(socket connect_refused_tcp connect_refused -r STREAM_SOCKET_TCP)
+    unit_test_bin_all_mechs(socket connect_unreachable_tcp connect_unreachable -r STREAM_SOCKET_TCP)
+endif()
+# connect_timeout fills a backlog-1 listener so the kernel drops the next SYN
+# and the tcp_connect_timeout_ms bound is what ends the wait.  That drop is
+# Linux behaviour: Windows resets such a SYN and macOS is unverified.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    unit_test_bin_all_mechs(socket connect_timeout_tcp connect_timeout -r STREAM_SOCKET_TCP)
+endif()
 
 unit_test_bin_all_mechs_spdk(socket ping_pong_msg_udp ping_pong_msg -r DATAGRAM_SOCKET_UDP)
 unit_test_bin_all_mechs(socket ping_pong_stream_tcp ping_pong_stream -r STREAM_SOCKET_TCP)

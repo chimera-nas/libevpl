@@ -77,6 +77,9 @@ struct evpl_global_config {
     unsigned int              rdma_request_ring_size;
     unsigned int              dgram_ring_size;
     unsigned int              resolve_timeout_ms;
+    /* Bounds the SYN wait of an evpl_connect on the kernel socket TCP
+    * transport; 0 leaves the kernel's own retry schedule in place. */
+    unsigned int              tcp_connect_timeout_ms;
 
     unsigned int              io_uring_enabled;
     unsigned int              io_uring_entries;
