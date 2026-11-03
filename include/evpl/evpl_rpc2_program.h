@@ -44,7 +44,8 @@
 /*
  * Status passed to a client reply callback when the peer answered with an
  * RPC-over-RDMA RDMA_ERROR (RFC 8166 sec 4.5) rather than an RPC reply: the
- * transport could not carry the call, so it never ran.  Distinct from
+ * transport could not carry the call or its reply; this does not imply that
+ * the operation never ran. Distinct from
  * EVPL_RPC2_REPLY_DENIED, which means the call reached the RPC layer and was
  * refused there, and from CONN_LOST, which leaves the connection unusable --
  * here the connection is fine and the caller may retry, typically by offering
@@ -71,6 +72,8 @@ struct evpl_rpc2_rdma_chunk {
     uint32_t           xdr_position;
     uint32_t           length;
     uint32_t           max_length;
+    /* A nonempty offered Write chunk remains selected when capacity is zero. */
+    uint32_t           num_segments;
     struct evpl_iovec *iov;
     int                niov;
 };
@@ -96,9 +99,9 @@ struct evpl_rpc2_rdma_segment_list {
  * NFSv3 duplicate-request cache.
  *
  * What the callback is shown is the RESULTS -- not the outgoing message.  The
- * iov array spans a buffer whose first `body_offset` bytes are reserved
- * headroom; the results run from there to total_length, and that span is the
- * whole of what to store.
+ * iov array begins with `body_offset` bytes of reserved headroom. The logical
+ * result length is total_length - body_offset, including any omitted
+ * Write-chunk payload and padding that must be restored as described below.
  *
  * That is deliberately narrower than the wire form, because everything the
  * wire form adds is a property of the send rather than of the answer.  The
@@ -111,10 +114,14 @@ struct evpl_rpc2_rdma_segment_list {
  * Storing the results and letting the reply be built afresh is what keeps a
  * cached reply correct under every service.
  *
- * The callback runs before any Reply-chunk reduction, so the results are
- * always present in full here even when the wire form sends the body by RDMA
- * write and leaves only the header inline.  It runs only for a MSG_ACCEPTED /
- * SUCCESS reply: anything else carries no results, so there is nothing to
+ * The callback runs before Reply-chunk reduction. If write_chunk is non-NULL,
+ * the marshaller has already removed that payload (and its XDR padding) from
+ * iov. Restore write_chunk->length bytes at body_offset + xdr_position, followed
+ * by zero padding to four bytes. total_length includes these omitted bytes;
+ * iov itself contains only the reduced results plus reserved headroom. An
+ * empty selected payload needs no insertion and is reported as NULL.
+ *
+ * It runs only for a MSG_ACCEPTED / SUCCESS reply: anything else carries no results, so there is nothing to
  * replay -- which is also what keeps a call the dispatcher refused out of an
  * application's cache.
  *
@@ -122,11 +129,12 @@ struct evpl_rpc2_rdma_segment_list {
  * copy any bytes it wishes to retain.
  */
 typedef void (*evpl_rpc2_reply_capture_cb_t)(
-    const struct evpl_iovec *iov,
-    int                      niov,
-    int                      total_length,
-    uint32_t                 body_offset,
-    void                    *private_data);
+    const struct evpl_iovec           *iov,
+    int                                niov,
+    int                                total_length,
+    uint32_t                           body_offset,
+    const struct evpl_rpc2_rdma_chunk *write_chunk,
+    void                              *private_data);
 
 /*
  * evpl_rpc2_encoding is the public interface between libevpl and applications.
@@ -141,6 +149,14 @@ struct evpl_rpc2_encoding {
     struct evpl_rpc2_rdma_chunk *read_chunk;  /* RDMA read chunk (for writes) */
     struct evpl_rpc2_rdma_chunk *write_chunk; /* RDMA write chunk (for replies) */
     uint32_t                     xid;         /* RPC transaction id for this request */
+    /* Bounds for application reply admission, available before dispatch.
+     * overhead includes the RPC header/verifier and security wrapping, but
+     * excludes transport framing. reply_chunk_capacity is zero if no Reply
+     * chunk was offered; a present chunk also permits a <=512-byte inline
+     * RPC reply. The logical body includes any data placed in a Write chunk. */
+    uint32_t                     reply_overhead;
+    uint64_t                     reply_chunk_capacity;
+    int                          reply_chunk_present;
     /* Optional reply-capture hook -- see evpl_rpc2_reply_capture_cb_t.
      * NULL means "do not capture". */
     evpl_rpc2_reply_capture_cb_t reply_capture_cb;
@@ -276,6 +292,13 @@ evpl_rpc2_encoding_take_write_chunk(
     }
     encoding->write_chunk->niov = 0;
 } /* evpl_rpc2_encoding_take_write_chunk */
+
+/* Complete an application request with RPC SYSTEM_ERR and no result capture.
+ * Use when a saved answer cannot be delivered; do not re-execute mutations. */
+EVPL_RPC2_API int
+evpl_rpc2_send_reply_system_error(
+    struct evpl               *evpl,
+    struct evpl_rpc2_encoding *encoding);
 
 static inline int
 evpl_rpc2_send_reply_dispatch(

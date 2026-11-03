@@ -38,6 +38,19 @@ struct ReduceResponse {
     opaque         data<>;
 };
 
+/* Two independently owned zero-copy results exercise one Write chunk followed
+ * by inline data, including the empty first-result case. */
+struct MultiReadRequest {
+    uint32_t first_count;
+    uint32_t second_count;
+    uint32_t corrupt_length;
+};
+
+struct MultiReadResponse {
+    ReadResponse reads[2];
+    uint32_t sentinel;
+};
+
 program RDMA_DDP_PROGRAM {
     version RDMA_DDP_V1 {
         /* Read data - response uses write chunks for DDP (server writes to client) */
@@ -48,5 +61,7 @@ program RDMA_DDP_PROGRAM {
 
         /* Reduce - triggers large reply chunk */
         ReduceResponse REDUCE(ReduceRequest) = 3;
+
+        MultiReadResponse MULTIREAD(MultiReadRequest) = 4;
     } = 1;
 } = 0x20250001;

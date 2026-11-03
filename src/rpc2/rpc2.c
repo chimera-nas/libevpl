@@ -6,6 +6,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 
 #include <complex.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,6 +80,7 @@ struct evpl_rpc2_request {
     uint32_t                              proc;
     uint32_t                              rdma_credits;
     uint16_t                              pending_reads;
+    int                                   read_error;
     uint8_t                               dbg_reply_sent; /* RNR diag: 1 once reply SENT */
     struct evpl_bind                     *bind;
     struct evpl_rpc2_conn                *conn;
@@ -103,6 +105,7 @@ struct evpl_rpc2_request {
     struct evpl_iovec                     reply_chunk_iov;
     struct evpl_rpc2_rdma_segment_list    reply_segments;
     struct evpl_rpc2_rdma_segment_list    write_segments;
+    int                                   write_chunk_present;
     struct evpl_iovec                     reply_segment_iov;
     struct evpl_rpc2_msg                 *msg;
     struct evpl_rpc2_request             *next;
@@ -277,16 +280,19 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
     request->rdma_credits                = 1;
     request->dbg_reply_sent              = 0;
     request->pending_reads               = 0;
+    request->read_error                  = 0;
     request->read_chunk.niov             = 0;
     request->read_chunk.length           = 0;
     request->write_chunk.niov            = 0;
     request->write_chunk.length          = 0;
     request->write_chunk.max_length      = 0;
+    request->write_chunk.num_segments    = 0;
     request->write_chunk_borrowed        = 0;
     request->reply_chunk.iov             = &request->reply_chunk_iov;
     request->reply_chunk.niov            = 0;
     request->reply_chunk.length          = 0;
     request->write_segments.num_segments = 0;
+    request->write_chunk_present         = 0;
     request->reply_segments.num_segments = 0;
     request->msg                         = NULL;
     request->gss_authenticated           = 0;
@@ -829,7 +835,8 @@ evpl_rpc2_send_reply(
 {
     struct evpl_iovec             iov, reply_iov;
     int                           reply_len, reply_niov, offset, rpc_len, reply_chunk_len;
-    uint32_t                      hdr, write_left, left, chunk, reply_chunk_cap;
+    uint32_t                      hdr, write_left, left, chunk;
+    uint64_t                      reply_chunk_cap;
     struct rpc_msg                rpc_reply;
     struct rdma_msg               rdma_msg;
     struct xdr_write_chunk        reply_chunk;
@@ -895,9 +902,14 @@ evpl_rpc2_send_reply(
          * stream of malformed requests.
          */
         if (error_stat == SUCCESS && request->encoding.reply_capture_cb) {
+            const struct evpl_rpc2_rdma_chunk *captured_chunk =
+                request->write_chunk.length ? &request->write_chunk : NULL;
+            uint64_t                           captured_length = (uint64_t) length +
+                (captured_chunk ? ((uint64_t) captured_chunk->length + 3) & ~UINT64_C(3) : 0);
+            evpl_rpc2_abort_if(captured_length > INT_MAX, "captured reply is too large");
             request->encoding.reply_capture_cb(
-                msg_iov, msg_niov, length, (uint32_t) reserve,
-                request->encoding.reply_capture_private);
+                msg_iov, msg_niov, (int) captured_length, (uint32_t) reserve,
+                captured_chunk, request->encoding.reply_capture_private);
         }
 
         /* Integrity service (krb5i): reframe the proc results as
@@ -966,7 +978,7 @@ evpl_rpc2_send_reply(
         rdma_msg.rdma_body.rdma_msg.rdma_writes = NULL;
         rdma_msg.rdma_body.rdma_msg.rdma_reply  = NULL;
 
-        if (request->write_segments.num_segments > 0) {
+        if (request->write_chunk_present) {
             write_list.entry.num_target = request->write_segments.num_segments;
             write_list.entry.target     = (struct xdr_rdma_segment *) request->write_segments.segments;
             write_list.next             = NULL;
@@ -982,35 +994,15 @@ evpl_rpc2_send_reply(
 
         write_left = request->write_chunk.length;
 
-        if (request->write_segments.num_segments > 0) {
-
-            evpl_rpc2_iovec_cursor_init(&write_cursor, request->write_chunk.iov, request->write_chunk.niov);
-
-            for (i = 0; i < write_list.entry.num_target; i++) {
-                target = &write_list.entry.target[i];
-
-                if (write_left < target->length) {
-                    target->length = write_left;
-                    write_left     = 0;
-                } else {
-                    write_left -= target->length;
-                }
-
-                if (target->length) {
-
-                    segment_niov = evpl_rpc2_iovec_cursor_move(&write_cursor, &request->msg->dbuf, &segment_iov,
-                                                               target->length);
-
-                    evpl_rpc2_abort_if(segment_niov < 0,
-                                       "Failed to move segment iovec");
-
-                    evpl_rdma_write(evpl, request->bind,
-                                    target->handle, target->offset,
-                                    segment_iov, segment_niov,
-                                    EVPL_RDMA_FLAG_TAKE_REF,
-                                    NULL, NULL);
-                }
-            }
+        /* An offered non-empty Write chunk must carry its matching result.
+         * A short chunk is a transport error, never an inline fallback (RFC
+         * 8166 sections 4.3.2 and 4.5.2).  Check before issuing any writes. */
+        if (write_left > request->write_chunk.max_length) {
+            evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
+            evpl_rpc2_send_rdma_error(evpl, request->bind, request->xid,
+                                      request->rdma_credits, ERR_CHUNK);
+            evpl_rpc2_request_free(request->thread, request);
+            return 0;
         }
 
         if (request->reply_segments.num_segments > 0) {
@@ -1034,8 +1026,8 @@ evpl_rpc2_send_reply(
             if (reply_chunk_len > 512 &&
                 (uint32_t) reply_chunk_len > reply_chunk_cap) {
                 evpl_rpc2_error(
-                    "rpc2 reply of %d bytes exceeds the %u-byte reply chunk offered; ERR_CHUNK",
-                    reply_chunk_len, reply_chunk_cap);
+                    "rpc2 reply of %d bytes exceeds the %llu-byte reply chunk offered; ERR_CHUNK",
+                    reply_chunk_len, (unsigned long long) reply_chunk_cap);
 
                 evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
 
@@ -1071,6 +1063,37 @@ evpl_rpc2_send_reply(
 
                 for (i = 0; i < reply_chunk.num_target; i++) {
                     reply_chunk.target[ i].length = 0;
+                }
+            }
+        }
+
+        if (request->write_chunk_present && request->write_segments.num_segments > 0) {
+
+            evpl_rpc2_iovec_cursor_init(&write_cursor, request->write_chunk.iov, request->write_chunk.niov);
+
+            for (i = 0; i < write_list.entry.num_target; i++) {
+                target = &write_list.entry.target[i];
+
+                if (write_left < target->length) {
+                    target->length = write_left;
+                    write_left     = 0;
+                } else {
+                    write_left -= target->length;
+                }
+
+                if (target->length) {
+
+                    segment_niov = evpl_rpc2_iovec_cursor_move(&write_cursor, &request->msg->dbuf, &segment_iov,
+                                                               target->length);
+
+                    evpl_rpc2_abort_if(segment_niov < 0,
+                                       "Failed to move segment iovec");
+
+                    evpl_rdma_write(evpl, request->bind,
+                                    target->handle, target->offset,
+                                    segment_iov, segment_niov,
+                                    EVPL_RDMA_FLAG_TAKE_REF,
+                                    NULL, NULL);
                 }
             }
         }
@@ -1183,6 +1206,14 @@ evpl_rpc2_send_reply_error(
     return evpl_rpc2_send_reply(evpl, request, NULL, &msg_iov, msg_niov, 4096, 4096,
                                 MSG_ACCEPTED, accept_error);
 } /* evpl_rpc2_send_reply_error */
+
+int
+evpl_rpc2_send_reply_system_error(
+    struct evpl               *evpl,
+    struct evpl_rpc2_encoding *encoding)
+{
+    return evpl_rpc2_send_reply_error(evpl, evpl_rpc2_request_from_encoding(encoding), SYSTEM_ERR);
+} /* evpl_rpc2_send_reply_system_error */
 
 /*
  * Send an authentication error reply (MSG_DENIED, AUTH_ERROR).
@@ -3153,6 +3184,21 @@ evpl_rpc2_server_handle_request(
     request->encoding.read_chunk  = &request->read_chunk;
     request->encoding.write_chunk = &request->write_chunk;
 
+    /* AUTH_NONE accepted RPC header, plus the actual reply verifier. GSS
+     * wrappers use bounded scratch; reserve their maximum expansion without
+     * invoking a security provider from an application's retry callbacks. */
+    request->encoding.reply_overhead = 24 + ((request->reply_verf_len + 3) & ~3U);
+    if (request->gss_service == EVPL_RPC2_GSS_SVC_INTEGRITY) {
+        request->encoding.reply_overhead += 12 + 512;
+    } else if (request->gss_service == EVPL_RPC2_GSS_SVC_PRIVACY) {
+        request->encoding.reply_overhead += 8 + EVPL_RPC2_GSS_SEAL_MAX;
+    }
+    request->encoding.reply_chunk_present  = request->reply_segments.num_segments > 0;
+    request->encoding.reply_chunk_capacity = 0;
+    for (int i = 0; i < request->reply_segments.num_segments; i++) {
+        request->encoding.reply_chunk_capacity += request->reply_segments.segments[i].length;
+    }
+
     error = request->program->recv_call_dispatch(evpl, conn, &request->encoding,
                                                  request->proc,
                                                  request->program->program_data,
@@ -3196,17 +3242,133 @@ evpl_rpc2_read_segment_callback(
     struct evpl_rpc2_request       *request = ctx->request;
     const struct authsys_parms     *authsys;
 
-    evpl_rpc2_abort_if(status, "Failed to read rdma segment");
+    if (status) {
+        request->read_error = status;
+    }
 
     request->pending_reads--;
 
     if (request->pending_reads == 0) {
+        if (request->read_error) {
+            evpl_rpc2_send_rdma_error(request->thread->evpl, request->bind, request->xid,
+                                      request->rdma_credits, ERR_CHUNK);
+            evpl_rpc2_request_free(request->thread, request);
+            return;
+        }
         /* authsys is stored right after the ctx in msg->dbuf */
         authsys = (ctx->flavor == AUTH_SYS) ? (const struct authsys_parms *) (ctx + 1) : NULL;
         evpl_rpc2_server_handle_request(request, ctx->req_iov, ctx->req_niov,
                                         ctx->request_length, authsys, ctx->flavor);
     }
 } /* evpl_rpc2_read_segment_callback */
+
+static int
+evpl_rpc2_chunk_lists_valid(const struct rdma_msg *msg)
+{
+    const struct xdr_read_list   *reads;
+    const struct xdr_write_list  *writes;
+    const struct xdr_write_chunk *reply;
+    unsigned int                  count = 0;
+
+    if (msg->rdma_body.proc == RDMA_MSG) {
+        reads  = msg->rdma_body.rdma_msg.rdma_reads;
+        writes = msg->rdma_body.rdma_msg.rdma_writes;
+        reply  = msg->rdma_body.rdma_msg.rdma_reply;
+    } else if (msg->rdma_body.proc == RDMA_NOMSG) {
+        reads  = msg->rdma_body.rdma_nomsg.rdma_reads;
+        writes = msg->rdma_body.rdma_nomsg.rdma_writes;
+        reply  = msg->rdma_body.rdma_nomsg.rdma_reply;
+    } else {
+        return 1;
+    }
+    if ((writes && (writes->next || writes->entry.num_target > 16)) ||
+        (reply && reply->num_target > 16)) {
+        return 0;
+    }
+    for (; reads; reads = reads->next) {
+        if (++count > 16) {
+            return 0;
+        }
+    }
+    return 1;
+} /* evpl_rpc2_chunk_lists_valid */
+
+/* Validate the complete supported nonzero-position chunk before allocating or
+ * posting reads. Multiple positions require reconstruction of multiple XDR
+ * items, which this transport does not yet implement. */
+static void
+evpl_rpc2_read_chunk(
+    struct evpl_rpc2_request   *request,
+    struct xdr_read_list       *reads,
+    struct evpl_iovec          *req_iov,
+    int                         req_niov,
+    int                         request_length,
+    int                         rpc_length,
+    const struct authsys_parms *authsys,
+    auth_flavor                 flavor)
+{
+    struct evpl                    *evpl = request->thread->evpl;
+    struct xdr_read_list           *entry;
+    struct evpl_rpc2_rdma_read_ctx *ctx;
+    struct evpl_iovec               segment;
+    uint64_t                        total = 0;
+    uint32_t                        count = 0, offset = 0, position = reads->entry.position;
+
+    if (position < (uint32_t) rpc_length ||
+        position > (uint64_t) rpc_length + request_length || (position & 3)) {
+        goto invalid;
+    }
+    for (entry = reads; entry; entry = entry->next) {
+        total += entry->entry.target.length;
+        if (++count > 16 || entry->entry.position != position ||
+            entry->entry.target.offset > UINT64_MAX - entry->entry.target.length ||
+            total + rpc_length + request_length > evpl_config_rpc2_max_message_size() ||
+            total + rpc_length + request_length > INT_MAX) {
+            goto invalid;
+        }
+    }
+    ctx = xdr_dbuf_alloc_space(sizeof(*ctx) + (flavor == AUTH_SYS ? sizeof(*authsys) : 0),
+                               &request->msg->dbuf);
+    request->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*request->read_chunk.iov), &request->msg->dbuf);
+    if (!ctx || !request->read_chunk.iov) {
+        goto invalid;
+    }
+    int niov = evpl_iovec_alloc(evpl, (uint32_t) total, 4096, 1, 0, request->read_chunk.iov);
+    if (niov < 0) {
+        goto invalid;
+    }
+    request->read_chunk.niov         = niov;
+    request->read_chunk.length       = (uint32_t) total;
+    request->read_chunk.xdr_position = position - rpc_length;
+    ctx->request                     = request;
+    ctx->req_iov                     = req_iov;
+    ctx->req_niov                    = req_niov;
+    ctx->request_length              = request_length;
+    ctx->flavor                      = flavor;
+    if (flavor == AUTH_SYS) {
+        *(struct authsys_parms *) (ctx + 1) = *authsys;
+    }
+
+    /* The submission reference prevents a synchronous completion from freeing
+     * this request while the remaining segments are still being posted. */
+    request->pending_reads = 1;
+    for (entry = reads; entry; entry = entry->next) {
+        if (!entry->entry.target.length) {
+            continue;
+        }
+        evpl_iovec_clone_segment(&segment, request->read_chunk.iov, offset, entry->entry.target.length);
+        request->pending_reads++;
+        evpl_rdma_read(evpl, request->bind, entry->entry.target.handle, entry->entry.target.offset,
+                       &segment, 1, evpl_rpc2_read_segment_callback, ctx);
+        evpl_iovec_release_internal(evpl, &segment);
+        offset += entry->entry.target.length;
+    }
+    evpl_rpc2_read_segment_callback(0, ctx);
+    return;
+ invalid:
+    evpl_rpc2_send_rdma_error(evpl, request->bind, request->xid, request->rdma_credits, ERR_CHUNK);
+    evpl_rpc2_request_free(request->thread, request);
+} /* evpl_rpc2_read_chunk */
 
 static void
 evpl_rpc2_client_handle_reply(
@@ -3331,7 +3493,12 @@ evpl_rpc2_client_handle_reply(
         evpl_iovec_release(evpl, gss_opened_iov);
     }
 
-    if (chunk_unclaimed) {
+    /* A chunk whose encoded length failed validation was never handed to
+     * the consumer.  The decoder marks it unclaimed by clearing length while
+     * retaining its iovecs for us to release.  This decision must follow
+     * dispatch, since the RPC envelope itself can have indicated SUCCESS. */
+    if ((chunk_unclaimed || request->read_chunk.length == 0) &&
+        !request->write_chunk_borrowed) {
         evpl_iovecs_release_internal(evpl, request->read_chunk.iov,
                                      request->read_chunk.niov);
     }
@@ -3485,7 +3652,7 @@ evpl_rpc2_recv_msg(
     struct evpl_rpc2_server_binding *server_binding = rpc2_conn->server_binding;
     struct evpl_rpc2_program        *program;
     struct rpc_msg                   rpc_msg;
-    struct rdma_msg                  rdma_msg;
+    struct rdma_msg                  rdma_msg = { 0 };
     uint32_t                         hdr;
     struct evpl_iovec               *hdr_iov, *req_iov;
     int                              hdr_niov, req_niov;
@@ -3493,10 +3660,7 @@ evpl_rpc2_recv_msg(
     int                              nomsg_rc;
     int                              prog_exported, can_deny;
     uint32_t                         vers_low, vers_high, deny_xid;
-    struct xdr_read_list            *read_list;
     struct xdr_write_list           *write_list;
-    struct evpl_iovec               *segment_iov;
-    int                              segment_offset;
     auth_flavor                      flavor;
     struct authsys_parms            *authsys = NULL;
 
@@ -3516,18 +3680,28 @@ evpl_rpc2_recv_msg(
                                      NULL,
                                      &msg->dbuf);
 
-        /* RFC 8166 sec 4.5: a header whose version we do not speak cannot be
-         * interpreted beyond its first three fields, whose position is fixed
-         * for all versions.  Answer with the range we do support and stop --
-         * parsing the body under our own version's rules would be reading a
-         * layout the peer never sent. */
-        if (unlikely(rdma_msg.rdma_vers != EVPL_RPC2_RDMA_VERSION)) {
-            evpl_rpc2_error("rpc2 received RPC-over-RDMA version %u, expected %u",
-                            rdma_msg.rdma_vers, EVPL_RPC2_RDMA_VERSION);
-
-            evpl_rpc2_send_rdma_error(evpl, bind, rdma_msg.rdma_xid,
-                                      rdma_msg.rdma_credit, ERR_VERS);
-
+        /* Bound chunk metadata before allocating any RPC views in this same
+         * arena: an excessive but decodable list can leave no room for them.
+         * Only the fixed prefix can be trusted after failed decoding or an
+         * unsupported version. A malformed response must complete its waiting
+         * caller too; sending an error back would leave that call stranded. */
+        if (offset < 0 || rdma_msg.rdma_vers != EVPL_RPC2_RDMA_VERSION ||
+            !evpl_rpc2_chunk_lists_valid(&rdma_msg)) {
+            struct evpl_rpc2_request *pending = NULL;
+            if (length >= 4) {
+                HASH_FIND(hh, rpc2_conn->pending_calls, &rdma_msg.rdma_xid,
+                          sizeof(rdma_msg.rdma_xid), pending);
+            }
+            if (pending) {
+                struct evpl_rpc2_verf verf = { 0 };
+                HASH_DELETE(hh, rpc2_conn->pending_calls, pending);
+                evpl_rpc2_client_handle_reply(pending, &verf, NULL, 0, 0, EVPL_RPC2_REPLY_DECODE_ERROR);
+            } else if (length >= 12) {
+                evpl_rpc2_send_rdma_error(evpl, bind, rdma_msg.rdma_xid, rdma_msg.rdma_credit,
+                                          rdma_msg.rdma_vers != EVPL_RPC2_RDMA_VERSION ? ERR_VERS : ERR_CHUNK);
+            } else {
+                evpl_close(evpl, bind);
+            }
             evpl_rpc2_msg_free(thread, msg);
             evpl_iovecs_release_internal(evpl, iovec, niov);
             return;
@@ -3812,129 +3986,6 @@ evpl_rpc2_recv_msg(
                     return;
             } /* switch */
 
-            if (rdma) {
-                /* Grant the requester exactly the credit it asked for.  Per
-                 * RFC 8166 this is the max number of RPCs the client may keep
-                 * outstanding on this connection; previously we shipped an
-                 * uninitialized request->rdma_credits (always 0), which the
-                 * Linux client floored to 1 -- serializing each connection.
-                 * NOTE: experimental echo with no server-side ceiling; a
-                 * proper grant should clamp to receive capacity. */
-                request->rdma_credits = rdma_msg.rdma_credit ? rdma_msg.rdma_credit : 1;
-
-                if (rdma_msg.rdma_body.proc == RDMA_MSG) {
-
-                    read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
-
-                    if (read_list) {
-                        request->read_chunk.xdr_position = read_list->entry.position - rc;
-                    }
-
-                    while (read_list) {
-                        request->read_chunk.length += read_list->entry.target.length;
-
-                        read_list = read_list->next;
-                    }
-
-                    request->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*request->read_chunk.iov), &msg->dbuf);
-
-                    evpl_rpc2_abort_if(request->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
-
-                    request->read_chunk.niov = evpl_iovec_alloc(evpl, request->read_chunk.length, 4096, 1, 0,
-                                                                request->read_chunk.iov);
-
-                    read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
-
-                    segment_offset = 0;
-
-                    while (read_list) {
-                        /* Allocate context for RDMA read callback */
-                        struct evpl_rpc2_rdma_read_ctx *ctx;
-                        size_t                          ctx_size = sizeof(*ctx);
-
-                        /* If AUTH_SYS, allocate space for authsys after ctx */
-                        if (flavor == AUTH_SYS) {
-                            ctx_size += sizeof(struct authsys_parms);
-                        }
-
-                        ctx = xdr_dbuf_alloc_space(ctx_size, &msg->dbuf);
-                        evpl_rpc2_abort_if(ctx == NULL, "Failed to allocate rdma read ctx");
-
-                        ctx->request        = request;
-                        ctx->req_iov        = req_iov;
-                        ctx->req_niov       = req_niov;
-                        ctx->request_length = request_length;
-                        ctx->flavor         = flavor;
-
-                        /* Copy authsys right after ctx if needed */
-                        if (flavor == AUTH_SYS && authsys) {
-                            struct authsys_parms *ctx_authsys = (struct authsys_parms *) (ctx + 1);
-                            *ctx_authsys = *authsys;
-                        }
-
-                        segment_iov = xdr_dbuf_alloc_space(sizeof(*segment_iov), &msg->dbuf);
-
-                        evpl_rpc2_abort_if(segment_iov == NULL, "Failed to allocate segment iovec");
-
-                        evpl_iovec_clone_segment(segment_iov, request->read_chunk.iov, segment_offset,
-                                                 read_list->entry.target.length);
-
-                        evpl_rdma_read(evpl, request->bind,
-                                       read_list->entry.target.handle, read_list->entry.target.offset,
-                                       segment_iov, 1,
-                                       evpl_rpc2_read_segment_callback, ctx);
-
-                        /* evpl_rdma_read takes its own clone, so release our reference */
-                        evpl_iovec_release_internal(evpl, segment_iov);
-
-                        request->pending_reads++;
-
-                        segment_offset += read_list->entry.target.length;
-
-                        read_list = read_list->next;
-                    }
-
-                    write_list = rdma_msg.rdma_body.rdma_msg.rdma_writes;
-
-                    while (write_list) {
-
-                        for (i = 0; i < write_list->entry.num_target; i++) {
-                            request->write_chunk.max_length += write_list->entry.target[i].length;
-                        }
-
-                        evpl_rpc2_abort_if(write_list->entry.num_target >
-                                           (int) (sizeof(request->write_segments.segments) /
-                                                  sizeof(request->write_segments.segments[0])),
-                                           "Too many RPC2 RDMA write segments: %u",
-                                           write_list->entry.num_target);
-
-                        request->write_segments.num_segments = write_list->entry.num_target;
-                        memcpy(request->write_segments.segments,
-                               write_list->entry.target,
-                               write_list->entry.num_target * sizeof(struct xdr_rdma_segment));
-
-                        write_list = write_list->next;
-                    }
-
-                    if (rdma_msg.rdma_body.rdma_msg.rdma_reply) {
-                        evpl_rpc2_abort_if(rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target >
-                                           (int) (sizeof(request->reply_segments.segments) /
-                                                  sizeof(request->reply_segments.segments[0])),
-                                           "Too many RPC2 RDMA reply segments: %u",
-                                           rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target);
-
-                        request->reply_segments.num_segments =
-                            rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target;
-                        memcpy(request->reply_segments.segments,
-                               rdma_msg.rdma_body.rdma_msg.rdma_reply->target,
-                               request->reply_segments.num_segments * sizeof(struct xdr_rdma_segment));
-                    }
-
-                } else {
-                    evpl_rpc2_error("rpc2 received rdma msg with unhandled proc %d", rdma_msg.rdma_body.proc);
-                }
-            }
-
             /* Look for an exact (program, version) match, and while scanning
              * note whether the program number is exported at all and over
              * what version range.  RFC 5531 distinguishes the two failures: a
@@ -4013,7 +4064,64 @@ evpl_rpc2_recv_msg(
 
             request->metric = server_binding ? server_binding->metrics[i][request->proc] : NULL;
 
-            if (request->pending_reads == 0) {
+            if (rdma) {
+                /* Grant the requester exactly the credit it asked for.  Per
+                 * RFC 8166 this is the max number of RPCs the client may keep
+                 * outstanding on this connection; previously we shipped an
+                 * uninitialized request->rdma_credits (always 0), which the
+                 * Linux client floored to 1 -- serializing each connection.
+                 * NOTE: experimental echo with no server-side ceiling; a
+                 * proper grant should clamp to receive capacity. */
+                request->rdma_credits = rdma_msg.rdma_credit ? rdma_msg.rdma_credit : 1;
+
+                if (rdma_msg.rdma_body.proc == RDMA_MSG) {
+                    uint64_t write_capacity = 0;
+
+                    write_list = rdma_msg.rdma_body.rdma_msg.rdma_writes;
+
+                    if (write_list) {
+                        for (i = 0; i < write_list->entry.num_target; i++) {
+                            write_capacity += write_list->entry.target[i].length;
+                        }
+                        if (write_capacity > UINT32_MAX) {
+                            evpl_rpc2_send_rdma_error(evpl, bind, request->xid,
+                                                      request->rdma_credits, ERR_CHUNK);
+                            evpl_rpc2_request_free(thread, request);
+                            return;
+                        }
+                        request->write_chunk_present      = 1;
+                        request->write_chunk.num_segments = write_list->entry.num_target;
+                        request->write_chunk.max_length   = (uint32_t) write_capacity;
+                    }
+
+                    write_list = rdma_msg.rdma_body.rdma_msg.rdma_writes;
+
+                    if (write_list) {
+                        request->write_segments.num_segments = write_list->entry.num_target;
+                        memcpy(request->write_segments.segments,
+                               write_list->entry.target,
+                               write_list->entry.num_target * sizeof(struct xdr_rdma_segment));
+                    }
+
+                    if (rdma_msg.rdma_body.rdma_msg.rdma_reply) {
+                        request->reply_segments.num_segments =
+                            rdma_msg.rdma_body.rdma_msg.rdma_reply->num_target;
+                        memcpy(request->reply_segments.segments,
+                               rdma_msg.rdma_body.rdma_msg.rdma_reply->target,
+                               request->reply_segments.num_segments * sizeof(struct xdr_rdma_segment));
+                    }
+
+                } else {
+                    evpl_rpc2_error("rpc2 received rdma msg with unhandled proc %d", rdma_msg.rdma_body.proc);
+                }
+            }
+
+
+            if (rdma && rdma_msg.rdma_body.proc == RDMA_MSG &&
+                rdma_msg.rdma_body.rdma_msg.rdma_reads) {
+                evpl_rpc2_read_chunk(request, rdma_msg.rdma_body.rdma_msg.rdma_reads,
+                                     req_iov, req_niov, request_length, rc, authsys, flavor);
+            } else {
                 evpl_rpc2_server_handle_request(request, req_iov, req_niov, request_length, authsys, flavor);
             }
             break;
@@ -4056,11 +4164,14 @@ evpl_rpc2_recv_msg(
              * declined the chunk returns it unused (all segments empty, sec
              * 3.4.6), which lands here as length 0 and correctly sends the
              * decoder back to the inline payload. */
-            if (rdma && rdma_msg.rdma_body.proc == RDMA_MSG &&
+            if (rdma && (rdma_msg.rdma_body.proc == RDMA_MSG ||
+                         rdma_msg.rdma_body.proc == RDMA_NOMSG) &&
                 request->write_chunk.niov) {
-                uint32_t written = 0;
+                uint64_t written = 0;
 
-                write_list = rdma_msg.rdma_body.rdma_msg.rdma_writes;
+                write_list = rdma_msg.rdma_body.proc == RDMA_MSG ?
+                    rdma_msg.rdma_body.rdma_msg.rdma_writes :
+                    rdma_msg.rdma_body.rdma_nomsg.rdma_writes;
 
                 while (write_list) {
                     for (i = 0; i < write_list->entry.num_target; i++) {
@@ -4069,7 +4180,13 @@ evpl_rpc2_recv_msg(
                     write_list = write_list->next;
                 }
 
-                request->write_chunk.length = written;
+                if (written > request->write_chunk.length) {
+                    evpl_rpc2_msg_free(thread, msg);
+                    evpl_rpc2_client_handle_reply(request, &verf, NULL, 0, 0,
+                                                  EVPL_RPC2_REPLY_DECODE_ERROR);
+                    return;
+                }
+                request->write_chunk.length = (uint32_t) written;
             }
 
             /* Free the old msg allocated for the call, replace with reply msg */
