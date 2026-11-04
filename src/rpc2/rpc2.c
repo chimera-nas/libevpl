@@ -80,6 +80,7 @@ struct evpl_rpc2_request {
     uint32_t                              rdma_credits;
     uint16_t                              pending_reads;
     uint8_t                               dbg_reply_sent; /* RNR diag: 1 once reply SENT */
+    uint8_t                               conn_ref;  /* counted in conn->server_requests */
     struct evpl_bind                     *bind;
     struct evpl_rpc2_conn                *conn;
     struct evpl_rpc2_thread              *thread;
@@ -276,6 +277,7 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
     request->metric                      = NULL;
     request->rdma_credits                = 1;
     request->dbg_reply_sent              = 0;
+    request->conn_ref                    = 0;
     request->pending_reads               = 0;
     request->read_chunk.niov             = 0;
     request->read_chunk.length           = 0;
@@ -317,6 +319,17 @@ evpl_rpc2_request_free(
     if (request->m_inflight) {
         prometheus_gauge_add(request->m_inflight, -1);
         request->m_inflight = NULL;
+    }
+
+    /* The last request of a connection that has already disconnected frees
+     * it (see evpl_rpc2_conn.server_requests). */
+    if (request->conn_ref) {
+        struct evpl_rpc2_conn *conn = request->conn;
+
+        request->conn_ref = 0;
+        if (--conn->server_requests == 0 && conn->closed) {
+            evpl_free(conn);
+        }
     }
 
     evpl_iovecs_release_internal(evpl, request->read_chunk.iov, request->read_chunk.niov);
@@ -900,6 +913,17 @@ evpl_rpc2_send_reply(
                 request->encoding.reply_capture_private);
         }
 
+        /* The peer this call came from has disconnected while it executed.
+         * The capture above still ran -- a replay cache owes the answer to the
+         * client's retransmit on its next connection -- but there is nobody
+         * to send it to here, and the bind it would go out through is gone
+         * with the connection. */
+        if (unlikely(request->conn->closed)) {
+            evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
+            evpl_rpc2_request_free(request->thread, request);
+            return 0;
+        }
+
         /* Integrity service (krb5i): reframe the proc results as
          * rpc_gss_integ_data before the RPC header is prepended.  Non-RDMA
          * only (GSS over RDMA is not a supported transport).  On failure we
@@ -948,6 +972,12 @@ evpl_rpc2_send_reply(
         /* MSG_DENIED / AUTH_ERROR: error_stat carries the auth_stat. */
         rpc_reply.body.rbody.rreply.stat = AUTH_ERROR;
         rpc_reply.body.rbody.rreply.auth = error_stat;
+    }
+
+    if (unlikely(request->conn->closed)) {
+        evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
+        evpl_rpc2_request_free(request->thread, request);
+        return 0;
     }
 
     rpc_len         = marshall_length_rpc_msg(&rpc_reply);
@@ -3686,7 +3716,9 @@ evpl_rpc2_recv_msg(
             request->m_inflight = thread->m_inflight[EVPL_RPC2_ROLE_SERVER];
             prometheus_gauge_add(request->m_inflight, 1);
 
-            request->conn         = rpc2_conn;
+            request->conn     = rpc2_conn;
+            request->conn_ref = 1;
+            rpc2_conn->server_requests++;
             request->bind         = bind;
             request->xid          = deny_xid;
             request->encoding.xid = deny_xid;
@@ -3747,7 +3779,9 @@ evpl_rpc2_recv_msg(
             request->m_inflight = thread->m_inflight[EVPL_RPC2_ROLE_SERVER];
             prometheus_gauge_add(request->m_inflight, 1);
 
-            request->conn         = rpc2_conn;
+            request->conn     = rpc2_conn;
+            request->conn_ref = 1;
+            rpc2_conn->server_requests++;
             request->bind         = bind;
             request->xid          = rpc_msg.xid;
             request->encoding.xid = request->xid;
@@ -4154,7 +4188,12 @@ evpl_rpc2_event(
             evpl_rpc2_reasm_reset(evpl, rpc2_conn);
             /* Tear down any RPCSEC_GSS contexts established on this conn. */
             evpl_rpc2_gss_conn_cleanup(rpc2_conn->thread, rpc2_conn);
-            evpl_free(rpc2_conn);
+            /* Calls still executing hold the connection; the last of them to
+             * end frees it (evpl_rpc2_request_free). */
+            rpc2_conn->closed = 1;
+            if (rpc2_conn->server_requests == 0) {
+                evpl_free(rpc2_conn);
+            }
             break;
         case EVPL_NOTIFY_RECV_MSG:
 
