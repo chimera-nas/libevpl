@@ -171,6 +171,7 @@ unit_test_rpc2(multifrag hello_world.x multifrag.c)
 unit_test_rpc2(client_xid hello_world.x client_xid.c)
 unit_test_rpc2(server_discard hello_world.x server_discard.c)
 unit_test_rpc2(server_late_reply hello_world.x server_late_reply.c)
+unit_test_rpc2(server_request_end hello_world.x server_request_end.c)
 
 # Client-side RPCSEC_GSS.  Needs a real mechanism -- the whole point is that
 # the initiator and the acceptor are not the same few lines of test code -- so
@@ -194,6 +195,7 @@ unit_test_rpc2_instance(multifrag STREAM_SOCKET_TCP 8103)
 unit_test_rpc2_instance(client_xid STREAM_SOCKET_TCP 8104)
 unit_test_rpc2_instance(server_discard STREAM_SOCKET_TCP 8105)
 unit_test_rpc2_instance(server_late_reply STREAM_SOCKET_TCP 8108)
+unit_test_rpc2_instance(server_request_end STREAM_SOCKET_TCP 8109)
 
 # One instance per service: the credential and verifier are common to all
 # three, but what rides on top of them is not, so a failure should name which.
@@ -241,6 +243,7 @@ unit_test_rpc2_instance_named(hello_world STREAM_INPROC)
 unit_test_rpc2_instance_named(client_xid STREAM_INPROC)
 unit_test_rpc2_instance_named(server_discard STREAM_INPROC)
 unit_test_rpc2_instance_named(server_late_reply STREAM_INPROC)
+unit_test_rpc2_instance_named(server_request_end STREAM_INPROC)
 unit_test_rpc2_instance_named(builtin_bool STREAM_INPROC)
 unit_test_rpc2_instance_named(rdma_ddp STREAM_INPROC)
 

@@ -129,6 +129,19 @@ typedef void (*evpl_rpc2_reply_capture_cb_t)(
     void                    *private_data);
 
 /*
+ * Optional request-end hook for server requests: called exactly once when the
+ * request ends, whichever way it ends -- a reply sent, a reply dropped because
+ * the connection had closed, an RPC-level error reply, or
+ * evpl_rpc2_discard_request.  It runs on the request's own thread, before the
+ * request and its dbuf are released, so private_data may live in the dbuf; the
+ * encoding must not be used from inside it.  Combined with the reply-capture
+ * hook it tells an application, without exception, that a call it was waiting
+ * on is over and whether its reply was seen.
+ */
+typedef void (*evpl_rpc2_request_end_cb_t)(
+    void *private_data);
+
+/*
  * evpl_rpc2_encoding is the public interface between libevpl and applications.
  *
  * This structure contains pointers to everything needed for XDR encoding/decoding
@@ -145,6 +158,10 @@ struct evpl_rpc2_encoding {
      * NULL means "do not capture". */
     evpl_rpc2_reply_capture_cb_t reply_capture_cb;
     void                        *reply_capture_private;
+    /* Optional request-end hook -- see evpl_rpc2_request_end_cb_t.  Server
+     * requests only; NULL means "not interested". */
+    evpl_rpc2_request_end_cb_t   request_end_cb;
+    void                        *request_end_private;
 };
 
 struct evpl_rpc2_program {

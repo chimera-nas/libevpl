@@ -302,6 +302,8 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
      * this recycled request -- the application must re-arm per-call. */
     request->encoding.reply_capture_cb      = NULL;
     request->encoding.reply_capture_private = NULL;
+    request->encoding.request_end_cb        = NULL;
+    request->encoding.request_end_private   = NULL;
 
     return request;
 } /* evpl_rpc2_request_alloc */
@@ -312,6 +314,16 @@ evpl_rpc2_request_free(
     struct evpl_rpc2_request *request)
 {
     struct evpl *evpl = thread->evpl;
+
+    /* Tell the application this request is over, before anything it may have
+     * put in the request's dbuf is released.  Every way a request ends comes
+     * through here, so this is the one place that cannot be bypassed. */
+    if (request->encoding.request_end_cb) {
+        evpl_rpc2_request_end_cb_t end_cb = request->encoding.request_end_cb;
+
+        request->encoding.request_end_cb = NULL;
+        end_cb(request->encoding.request_end_private);
+    }
 
     /* Drop the in-flight count for whichever role (server/client) claimed
      * this request at allocation.  Centralized here so every teardown path
