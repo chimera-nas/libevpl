@@ -288,3 +288,24 @@ evpl_rpc2_send_reply_dispatch(
 {
     return encoding->program->send_reply_dispatch(evpl, encoding, verf, iov, niov, length);
 } // evpl_rpc2_send_reply_dispatch
+
+/*
+ * Release a server request without sending any reply.
+ *
+ * For a server that has decided a call must go unanswered -- typically a
+ * duplicate-request cache dropping a retransmit of a call that is still in
+ * progress, which the client will simply retransmit again.  The request and
+ * everything allocated from its encoding's dbuf (decoded arguments, iovecs,
+ * any context the application bump-allocated there) are released, so neither
+ * may be touched afterwards.
+ *
+ * Exactly one of a reply or this call must end every server request, and it
+ * must be made on the thread that received the call.  A request whose
+ * connection has disconnected must be released from inside the
+ * EVPL_RPC2_NOTIFY_DISCONNECTED callback at the latest: the connection is
+ * freed as soon as that callback returns.
+ */
+EVPL_RPC2_API void
+evpl_rpc2_discard_request(
+    struct evpl               *evpl,
+    struct evpl_rpc2_encoding *encoding);

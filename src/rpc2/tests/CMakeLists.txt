@@ -169,6 +169,7 @@ unit_test_rpc2(builtin_bool builtin_bool.x builtin_bool.c)
 unit_test_rpc2(rdma_ddp rdma_ddp.x rdma_ddp.c)
 unit_test_rpc2(multifrag hello_world.x multifrag.c)
 unit_test_rpc2(client_xid hello_world.x client_xid.c)
+unit_test_rpc2(server_discard hello_world.x server_discard.c)
 unit_test_rpc2(server_late_reply hello_world.x server_late_reply.c)
 
 # Client-side RPCSEC_GSS.  Needs a real mechanism -- the whole point is that
@@ -191,6 +192,7 @@ unit_test_rpc2_instance(rdma_ddp STREAM_SOCKET_TCP 8102)
 # multifrag is TCP-only: RDMA bypasses rpc2_segment_callback entirely.
 unit_test_rpc2_instance(multifrag STREAM_SOCKET_TCP 8103)
 unit_test_rpc2_instance(client_xid STREAM_SOCKET_TCP 8104)
+unit_test_rpc2_instance(server_discard STREAM_SOCKET_TCP 8105)
 unit_test_rpc2_instance(server_late_reply STREAM_SOCKET_TCP 8108)
 
 # One instance per service: the credential and verifier are common to all
@@ -237,6 +239,7 @@ unit_test_rpc2_instance_named(rdma_ddp DATAGRAM_INPROC)
 
 unit_test_rpc2_instance_named(hello_world STREAM_INPROC)
 unit_test_rpc2_instance_named(client_xid STREAM_INPROC)
+unit_test_rpc2_instance_named(server_discard STREAM_INPROC)
 unit_test_rpc2_instance_named(server_late_reply STREAM_INPROC)
 unit_test_rpc2_instance_named(builtin_bool STREAM_INPROC)
 unit_test_rpc2_instance_named(rdma_ddp STREAM_INPROC)

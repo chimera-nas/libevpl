@@ -5093,3 +5093,19 @@ evpl_rpc2_conn_set_next_xid(
 {
     conn->next_xid = xid;
 } /* evpl_rpc2_conn_set_next_xid */
+
+SYMBOL_EXPORT void
+evpl_rpc2_discard_request(
+    struct evpl               *evpl,
+    struct evpl_rpc2_encoding *encoding)
+{
+    struct evpl_rpc2_request *request = evpl_rpc2_request_from_encoding(encoding);
+
+    evpl_rpc2_abort_if(request->thread->evpl != evpl,
+                       "rpc2 request discarded off the thread that received it");
+
+    /* The same teardown a sent reply ends in (evpl_rpc2_dispatch_reply), minus
+     * the send: chunks, message, dbuf and verifier go back, and the in-flight
+     * gauge is balanced. */
+    evpl_rpc2_request_free(request->thread, request);
+} /* evpl_rpc2_discard_request */
