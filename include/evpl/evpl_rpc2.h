@@ -111,6 +111,14 @@ struct evpl_rpc2_conn {
     int                              num_server_programs;
     struct evpl_rpc2_program        *server_programs[4];
 
+    /* Server requests received on this connection and not yet ended (replied
+     * to or discarded).  A server may still be executing calls when the peer
+     * goes away, and each of those requests keeps pointing here; so a
+     * connection that disconnects with any outstanding is only marked closed,
+     * and is freed when the last of them ends.  Their replies are not sent. */
+    int                              server_requests;
+    int                              closed;
+
     /* TCP record-mark reassembly accumulator (unused for RDMA).
      * Holds clones of payload iovecs from prior L=0 fragments. */
     struct evpl_iovec               *reasm_iov;
