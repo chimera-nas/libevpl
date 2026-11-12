@@ -1344,6 +1344,7 @@ struct vers_probe {
     volatile int done;
     int          got_rdma_error;
     int          err;
+    uint32_t     xid;
     uint32_t     vers_low;
     uint32_t     vers_high;
 };
@@ -1371,6 +1372,7 @@ vers_probe_callback(
         reply.rdma_body.proc == RDMA_ERROR) {
         vp->got_rdma_error = 1;
         vp->err            = reply.rdma_body.rdma_error.err;
+        vp->xid            = reply.rdma_xid;
 
         if (reply.rdma_body.rdma_error.err == ERR_VERS) {
             vp->vers_low  = reply.rdma_body.rdma_error.range.rdma_vers_low;
@@ -1475,6 +1477,111 @@ check_rdma_version_mismatch(
 
     evpl_close(evpl, bind);
 } /* check_rdma_version_mismatch */
+
+/*
+ * A Read chunk the server cannot read: its handle names no registered memory,
+ * so the server's RDMA Read fails -- the Remote Access Error of RFC 8166 sec
+ * 4.5.3, which is also what a Requester that deregisters a region, or loses
+ * the connection, while its call is being read looks like.  The server must
+ * answer RDMA_ERROR / ERR_CHUNK for that XID ("no RPC-level reply is possible
+ * for that XID") and carry on serving; it used to abort the whole process.
+ *
+ * The call is well formed in every other respect: an RPC CALL header for a
+ * real procedure, carrying one Read chunk.  RDMA only.
+ */
+static void
+check_rdma_read_failure(
+    struct evpl          *evpl,
+    struct evpl_endpoint *endpoint,
+    int                   proto,
+    int                   rdma)
+{
+    /* The RPC CALL header that follows the transport header: xid, CALL,
+     * RPC version 2, program 44 version 1 procedure ECHO_ZBYTES (3), and
+     * AUTH_NONE credential and verifier. */
+    const uint32_t       xid         = 0x52445246;
+    const uint32_t       rpc_hdr[10] = {
+        xid, 0, 2, 44, 1, 3, 0, 0, 0, 0,
+    };
+    struct vers_probe    vp;
+    struct rdma_msg      msg;
+    struct xdr_read_list rl;
+    struct evpl_bind    *bind;
+    struct evpl_iovec    iov, out_iov;
+    uint8_t             *p;
+    int                  hdr_len, len, niov, out_niov = 0, spins = 0, i;
+
+    if (!rdma) {
+        return;
+    }
+
+    memset(&vp, 0, sizeof(vp));
+    memset(&msg, 0, sizeof(msg));
+    memset(&rl, 0, sizeof(rl));
+
+    bind = evpl_connect(evpl, proto, NULL, endpoint, vers_probe_callback,
+                        NULL, &vp);
+
+    evpl_test_abort_if(!bind, "read failure probe: failed to connect a plain bind");
+
+    g_connections_opened++;
+
+    rl.entry.position      = sizeof(rpc_hdr);
+    rl.entry.target.handle = 0x7fff1234;      /* registered by nobody */
+    rl.entry.target.length = 64;
+    rl.entry.target.offset = 0x1000;
+    rl.next                = NULL;
+
+    msg.rdma_xid                       = xid;
+    msg.rdma_vers                      = 1;
+    msg.rdma_credit                    = 1;
+    msg.rdma_body.proc                 = RDMA_MSG;
+    msg.rdma_body.rdma_msg.rdma_reads  = &rl;
+    msg.rdma_body.rdma_msg.rdma_writes = NULL;
+    msg.rdma_body.rdma_msg.rdma_reply  = NULL;
+
+    hdr_len = marshall_length_rdma_msg(&msg);
+    len     = hdr_len + (int) sizeof(rpc_hdr);
+    niov    = evpl_iovec_alloc(evpl, len, 0, 1, 0, &iov);
+
+    evpl_test_abort_if(niov != 1, "read failure probe: iovec alloc failed");
+
+    marshall_rdma_msg(&msg, &iov, &out_iov, &out_niov, NULL, 0);
+
+    if (out_niov > 0) {
+        evpl_iovec_release(evpl, &out_iov);
+    }
+
+    p = (uint8_t *) evpl_iovec_data(&iov) + hdr_len;
+    for (i = 0; i < 10; i++) {
+        p[4 * i]     = (uint8_t) (rpc_hdr[i] >> 24);
+        p[4 * i + 1] = (uint8_t) (rpc_hdr[i] >> 16);
+        p[4 * i + 2] = (uint8_t) (rpc_hdr[i] >> 8);
+        p[4 * i + 3] = (uint8_t) rpc_hdr[i];
+    }
+
+    evpl_iovec_set_length(&iov, len);
+
+    evpl_sendv(evpl, bind, &iov, 1, len, EVPL_SEND_FLAG_TAKE_REF);
+
+    while (!vp.done && ++spins < 100000000) {
+        test_mbt_continue(evpl);
+    }
+
+    evpl_test_abort_if(!vp.done, "read failure probe: no answer to an unreadable chunk");
+    evpl_test_abort_if(!vp.got_rdma_error,
+                       "read failure probe: answer was not an RDMA_ERROR");
+    evpl_test_abort_if(vp.err != ERR_CHUNK,
+                       "read failure probe: expected ERR_CHUNK (%d), got %d",
+                       ERR_CHUNK, vp.err);
+    evpl_test_abort_if(vp.xid != xid,
+                       "read failure probe: ERR_CHUNK for xid 0x%x, expected 0x%x",
+                       vp.xid, xid);
+
+    g_results.rdma_error_checks++;
+
+    evpl_close(evpl, bind);
+} /* check_rdma_read_failure */
 
 /* ------------------------------------------------------------------ *
 * RPC-over-RDMA data placement
@@ -4438,6 +4545,7 @@ main(
     /* Needs a peer that writes its own transport header, so it runs outside
      * the rpc2 client -- see the comment on the function. */
     check_rdma_version_mismatch(evpl, endpoint, proto, conn->rdma);
+    check_rdma_read_failure(evpl, endpoint, proto, conn->rdma);
 
     /* The raw-socket phase needs a stream transport it can open a socket of
      * its own onto: TCP or AF_UNIX.  RDMA carries no record marks, so the
@@ -4497,8 +4605,9 @@ main(
            g_results.value_run, g_results.value_failed, g_results.value_chunked,
            g_results.rdma_capable ? "by RDMA" : "inline -- transport reports no RDMA");
     if (g_results.rdma_error_checks) {
-        printf("rdma error:   %d assertions (ERR_CHUNK refusal, connection survives, ERR_VERS range)\n",
-               g_results.rdma_error_checks);
+        printf(
+            "rdma error:   %d assertions (ERR_CHUNK refusal, connection survives, ERR_VERS range, unreadable Read chunk)\n",
+            g_results.rdma_error_checks);
     }
     printf("defect cases: %d run, %d matched spec, %d known divergences, "
            "%d unexpected, %d not applicable\n",

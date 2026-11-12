@@ -79,6 +79,7 @@ struct evpl_rpc2_request {
     uint32_t                              proc;
     uint32_t                              rdma_credits;
     uint16_t                              pending_reads;
+    uint8_t                               read_failed; /* an RDMA read of a call chunk failed */
     uint8_t                               dbg_reply_sent; /* RNR diag: 1 once reply SENT */
     uint8_t                               conn_ref;  /* counted in conn->server_requests */
     struct evpl_bind                     *bind;
@@ -279,6 +280,7 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
     request->dbg_reply_sent              = 0;
     request->conn_ref                    = 0;
     request->pending_reads               = 0;
+    request->read_failed                 = 0;
     request->read_chunk.niov             = 0;
     request->read_chunk.length           = 0;
     request->write_chunk.niov            = 0;
@@ -3238,9 +3240,34 @@ evpl_rpc2_read_segment_callback(
     struct evpl_rpc2_request       *request = ctx->request;
     const struct authsys_parms     *authsys;
 
-    evpl_rpc2_abort_if(status, "Failed to read rdma segment");
+    /* A read of the Requester's chunk can fail: a memory region that is no
+     * longer registered, a length past its end, or a connection lost while
+     * the read was in flight.  It is a Remote Access Error (RFC 8166 sec
+     * 4.5.3) and says nothing about the server, which used to abort here --
+     * so any peer could stop it by naming an rkey it does not hold. */
+    if (unlikely(status)) {
+        request->read_failed = 1;
+    }
 
     request->pending_reads--;
+
+    if (request->pending_reads == 0 && unlikely(request->read_failed)) {
+        /* Every read is back, so nothing still refers to this request.  The
+         * call's arguments are incomplete and it is not executed; RFC 8166
+         * sec 4.5.3: answer ERR_CHUNK, "no RPC-level reply is possible for
+         * that XID".  Nobody to tell if the connection has gone. */
+        evpl_rpc2_error("rpc2 could not read the call chunk of xid %u (status %d); "
+                        "ERR_CHUNK", request->xid, status);
+
+        if (!request->conn->closed) {
+            evpl_rpc2_send_rdma_error(request->thread->evpl, request->bind,
+                                      request->xid, request->rdma_credits,
+                                      ERR_CHUNK);
+        }
+
+        evpl_rpc2_request_free(request->thread, request);
+        return;
+    }
 
     if (request->pending_reads == 0) {
         /* authsys is stored right after the ctx in msg->dbuf */
