@@ -79,6 +79,7 @@ struct evpl_rpc2_request {
     uint32_t                              proc;
     uint32_t                              rdma_credits;
     uint16_t                              pending_reads;
+    int                                   read_status; /* first failure of a call chunk read */
     uint8_t                               dbg_reply_sent; /* RNR diag: 1 once reply SENT */
     uint8_t                               conn_ref;  /* counted in conn->server_requests */
     struct evpl_bind                     *bind;
@@ -279,6 +280,7 @@ evpl_rpc2_request_alloc(struct evpl_rpc2_thread *thread)
     request->dbg_reply_sent              = 0;
     request->conn_ref                    = 0;
     request->pending_reads               = 0;
+    request->read_status                 = 0;
     request->read_chunk.niov             = 0;
     request->read_chunk.length           = 0;
     request->write_chunk.niov            = 0;
@@ -3238,9 +3240,43 @@ evpl_rpc2_read_segment_callback(
     struct evpl_rpc2_request       *request = ctx->request;
     const struct authsys_parms     *authsys;
 
-    evpl_rpc2_abort_if(status, "Failed to read rdma segment");
+    /* A read of the Requester's chunk can fail.  A region that is not, or no
+     * longer, registered, or a length past its end, is a Remote Access Error
+     * (RFC 8166 sec 4.5.3); a connection lost while the read is in flight
+     * fails it too.  The handle is untrusted input, so neither says anything
+     * about the server. */
+    if (unlikely(status) && !request->read_status) {
+        request->read_status = status;
+    }
 
     request->pending_reads--;
+
+    if (request->pending_reads == 0 && unlikely(request->read_status)) {
+        /* Every read is back, so nothing still refers to this request.  The
+         * call's arguments are incomplete and it is not executed; RFC 8166
+         * sec 4.5.3: answer ERR_CHUNK, "no RPC-level reply is possible for
+         * that XID".  The same section notes such errors are typically fatal
+         * to the connection: on a real RC queue pair it is already in error
+         * and the answer is never delivered, so only send it on a connection
+         * that is not on its way out.  conn->closed is tested first so the
+         * bind is never touched once the connection has gone. */
+        if (!request->conn->closed && !evpl_bind_is_closing(request->bind)) {
+            evpl_rpc2_debug("rpc2 could not read the call chunk of xid %u "
+                            "(status %d); ERR_CHUNK",
+                            request->xid, request->read_status);
+
+            evpl_rpc2_send_rdma_error(request->thread->evpl, request->bind,
+                                      request->xid, request->rdma_credits,
+                                      ERR_CHUNK);
+        } else {
+            evpl_rpc2_debug("rpc2 could not read the call chunk of xid %u "
+                            "(status %d) on a closing connection",
+                            request->xid, request->read_status);
+        }
+
+        evpl_rpc2_request_free(request->thread, request);
+        return;
+    }
 
     if (request->pending_reads == 0) {
         /* authsys is stored right after the ctx in msg->dbuf */
@@ -3870,76 +3906,6 @@ evpl_rpc2_recv_msg(
 
                 if (rdma_msg.rdma_body.proc == RDMA_MSG) {
 
-                    read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
-
-                    if (read_list) {
-                        request->read_chunk.xdr_position = read_list->entry.position - rc;
-                    }
-
-                    while (read_list) {
-                        request->read_chunk.length += read_list->entry.target.length;
-
-                        read_list = read_list->next;
-                    }
-
-                    request->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*request->read_chunk.iov), &msg->dbuf);
-
-                    evpl_rpc2_abort_if(request->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
-
-                    request->read_chunk.niov = evpl_iovec_alloc(evpl, request->read_chunk.length, 4096, 1, 0,
-                                                                request->read_chunk.iov);
-
-                    read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
-
-                    segment_offset = 0;
-
-                    while (read_list) {
-                        /* Allocate context for RDMA read callback */
-                        struct evpl_rpc2_rdma_read_ctx *ctx;
-                        size_t                          ctx_size = sizeof(*ctx);
-
-                        /* If AUTH_SYS, allocate space for authsys after ctx */
-                        if (flavor == AUTH_SYS) {
-                            ctx_size += sizeof(struct authsys_parms);
-                        }
-
-                        ctx = xdr_dbuf_alloc_space(ctx_size, &msg->dbuf);
-                        evpl_rpc2_abort_if(ctx == NULL, "Failed to allocate rdma read ctx");
-
-                        ctx->request        = request;
-                        ctx->req_iov        = req_iov;
-                        ctx->req_niov       = req_niov;
-                        ctx->request_length = request_length;
-                        ctx->flavor         = flavor;
-
-                        /* Copy authsys right after ctx if needed */
-                        if (flavor == AUTH_SYS && authsys) {
-                            struct authsys_parms *ctx_authsys = (struct authsys_parms *) (ctx + 1);
-                            *ctx_authsys = *authsys;
-                        }
-
-                        segment_iov = xdr_dbuf_alloc_space(sizeof(*segment_iov), &msg->dbuf);
-
-                        evpl_rpc2_abort_if(segment_iov == NULL, "Failed to allocate segment iovec");
-
-                        evpl_iovec_clone_segment(segment_iov, request->read_chunk.iov, segment_offset,
-                                                 read_list->entry.target.length);
-
-                        evpl_rdma_read(evpl, request->bind,
-                                       read_list->entry.target.handle, read_list->entry.target.offset,
-                                       segment_iov, 1,
-                                       evpl_rpc2_read_segment_callback, ctx);
-
-                        /* evpl_rdma_read takes its own clone, so release our reference */
-                        evpl_iovec_release_internal(evpl, segment_iov);
-
-                        request->pending_reads++;
-
-                        segment_offset += read_list->entry.target.length;
-
-                        read_list = read_list->next;
-                    }
-
                     write_list = rdma_msg.rdma_body.rdma_msg.rdma_writes;
 
                     while (write_list) {
@@ -4058,6 +4024,83 @@ evpl_rpc2_recv_msg(
             }
 
             request->metric = server_binding ? server_binding->metrics[i][request->proc] : NULL;
+
+            /* Read the call's chunk only now that the call is known to be one
+             * we will run.  A reject above answers and frees the request at
+             * once, so reads issued before it would complete on a freed
+             * request. */
+            if (rdma && rdma_msg.rdma_body.proc == RDMA_MSG &&
+                rdma_msg.rdma_body.rdma_msg.rdma_reads) {
+                read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
+
+                if (read_list) {
+                    request->read_chunk.xdr_position = read_list->entry.position - rc;
+                }
+
+                while (read_list) {
+                    request->read_chunk.length += read_list->entry.target.length;
+
+                    read_list = read_list->next;
+                }
+
+                request->read_chunk.iov = xdr_dbuf_alloc_space(sizeof(*request->read_chunk.iov), &msg->dbuf);
+
+                evpl_rpc2_abort_if(request->read_chunk.iov == NULL, "Failed to allocate read chunk iovec");
+
+                request->read_chunk.niov = evpl_iovec_alloc(evpl, request->read_chunk.length, 4096, 1, 0,
+                                                            request->read_chunk.iov);
+
+                read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
+
+                segment_offset = 0;
+
+                while (read_list) {
+                    /* Allocate context for RDMA read callback */
+                    struct evpl_rpc2_rdma_read_ctx *ctx;
+                    size_t                          ctx_size = sizeof(*ctx);
+
+                    /* If AUTH_SYS, allocate space for authsys after ctx */
+                    if (flavor == AUTH_SYS) {
+                        ctx_size += sizeof(struct authsys_parms);
+                    }
+
+                    ctx = xdr_dbuf_alloc_space(ctx_size, &msg->dbuf);
+                    evpl_rpc2_abort_if(ctx == NULL, "Failed to allocate rdma read ctx");
+
+                    ctx->request        = request;
+                    ctx->req_iov        = req_iov;
+                    ctx->req_niov       = req_niov;
+                    ctx->request_length = request_length;
+                    ctx->flavor         = flavor;
+
+                    /* Copy authsys right after ctx if needed */
+                    if (flavor == AUTH_SYS && authsys) {
+                        struct authsys_parms *ctx_authsys = (struct authsys_parms *) (ctx + 1);
+                        *ctx_authsys = *authsys;
+                    }
+
+                    segment_iov = xdr_dbuf_alloc_space(sizeof(*segment_iov), &msg->dbuf);
+
+                    evpl_rpc2_abort_if(segment_iov == NULL, "Failed to allocate segment iovec");
+
+                    evpl_iovec_clone_segment(segment_iov, request->read_chunk.iov, segment_offset,
+                                             read_list->entry.target.length);
+
+                    evpl_rdma_read(evpl, request->bind,
+                                   read_list->entry.target.handle, read_list->entry.target.offset,
+                                   segment_iov, 1,
+                                   evpl_rpc2_read_segment_callback, ctx);
+
+                    /* evpl_rdma_read takes its own clone, so release our reference */
+                    evpl_iovec_release_internal(evpl, segment_iov);
+
+                    request->pending_reads++;
+
+                    segment_offset += read_list->entry.target.length;
+
+                    read_list = read_list->next;
+                }
+            }
 
             if (request->pending_reads == 0) {
                 evpl_rpc2_server_handle_request(request, req_iov, req_niov, request_length, authsys, flavor);
