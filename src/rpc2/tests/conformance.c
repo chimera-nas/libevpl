@@ -1342,6 +1342,7 @@ check_reply_chunk_too_small(
  */
 struct vers_probe {
     volatile int done;
+    int          disconnected;
     int          got_rdma_error;
     int          err;
     uint32_t     xid;
@@ -1359,6 +1360,14 @@ vers_probe_callback(
     struct vers_probe *vp = private_data;
     struct rdma_msg    reply;
     xdr_dbuf          *dbuf;
+
+    /* The core destroys the bind once this has been dispatched, so the
+     * caller must not close it afterwards. */
+    if (notify->notify_type == EVPL_NOTIFY_DISCONNECTED) {
+        vp->disconnected = 1;
+        vp->done         = 1;
+        return;
+    }
 
     if (notify->notify_type != EVPL_NOTIFY_RECV_MSG) {
         return;
@@ -1388,6 +1397,28 @@ vers_probe_callback(
 
     vp->done = 1;
 } /* vers_probe_callback */
+
+/*
+ * Close a probe's bind and wait for the disconnect: the core reports it to
+ * vers_probe_callback once the deferred close runs, and the probe state lives
+ * on the caller's stack.
+ */
+static void
+vers_probe_close(
+    struct evpl       *evpl,
+    struct evpl_bind  *bind,
+    struct vers_probe *vp)
+{
+    int spins = 0;
+
+    evpl_close(evpl, bind);
+
+    while (!vp->disconnected && ++spins < 100000000) {
+        test_mbt_continue(evpl);
+    }
+
+    evpl_test_abort_if(!vp->disconnected, "probe: bind never reported its close");
+} /* vers_probe_close */
 
 /*
  * A transport header naming a version we do not speak must be answered with
@@ -1475,7 +1506,7 @@ check_rdma_version_mismatch(
 
     g_results.rdma_error_checks++;
 
-    evpl_close(evpl, bind);
+    vers_probe_close(evpl, bind, &vp);
 } /* check_rdma_version_mismatch */
 
 /*
@@ -1485,6 +1516,12 @@ check_rdma_version_mismatch(
  * the connection, while its call is being read looks like.  The server must
  * answer RDMA_ERROR / ERR_CHUNK for that XID ("no RPC-level reply is possible
  * for that XID") and carry on serving; it used to abort the whole process.
+ *
+ * On a real RDMA fabric the failed Read also moves the connection to an error
+ * state, so the ERR_CHUNK cannot always be delivered: libfabric's tcp provider
+ * drops the endpoint just as an RNIC would.  A disconnect is therefore an
+ * acceptable answer, as long as the server keeps serving -- which the version
+ * probe, run again on a fresh connection, then proves.
  *
  * The call is well formed in every other respect: an RPC CALL header for a
  * real procedure, carrying one Read chunk.  RDMA only.
@@ -1569,6 +1606,15 @@ check_rdma_read_failure(
     }
 
     evpl_test_abort_if(!vp.done, "read failure probe: no answer to an unreadable chunk");
+
+    if (vp.disconnected) {
+        evpl_test_info("read failure probe: the transport dropped the connection "
+                       "instead of carrying ERR_CHUNK");
+        g_results.rdma_error_checks++;
+        check_rdma_version_mismatch(evpl, endpoint, proto, rdma);
+        return;
+    }
+
     evpl_test_abort_if(!vp.got_rdma_error,
                        "read failure probe: answer was not an RDMA_ERROR");
     evpl_test_abort_if(vp.err != ERR_CHUNK,
@@ -1580,7 +1626,7 @@ check_rdma_read_failure(
 
     g_results.rdma_error_checks++;
 
-    evpl_close(evpl, bind);
+    vers_probe_close(evpl, bind, &vp);
 } /* check_rdma_read_failure */
 
 /* ------------------------------------------------------------------ *
