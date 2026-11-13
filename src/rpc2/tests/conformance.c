@@ -1337,17 +1337,24 @@ check_reply_chunk_too_small(
     g_results.rdma_error_checks++;
 } /* check_reply_chunk_too_small */
 
+static uint32_t get32(
+    const uint8_t *p);
+
 /*
- * State for the ERR_VERS check below.
+ * State for the raw RPC-over-RDMA probes below.  Every message the server
+ * sends is counted, and the first one is decoded: a probe must get exactly one
+ * answer, and a second one (an ERR_CHUNK after a reply, or a reply after an
+ * ERR_CHUNK) is as much a failure as none.
  */
 struct vers_probe {
-    volatile int done;
-    int          disconnected;
-    int          got_rdma_error;
-    int          err;
-    uint32_t     xid;
-    uint32_t     vers_low;
-    uint32_t     vers_high;
+    int      nmsgs;
+    int      disconnected;
+    int      rdma_proc;
+    int      err;
+    uint32_t xid;
+    uint32_t vers_low;
+    uint32_t vers_high;
+    int      accept_stat; /* of an RPC reply carried in an RDMA_MSG, else -1 */
 };
 
 static void
@@ -1360,12 +1367,13 @@ vers_probe_callback(
     struct vers_probe *vp = private_data;
     struct rdma_msg    reply;
     xdr_dbuf          *dbuf;
+    uint8_t            flat[64];
+    int                hdr_len, have = 0, i, n;
 
     /* The core destroys the bind once this has been dispatched, so the
      * caller must not close it afterwards. */
     if (notify->notify_type == EVPL_NOTIFY_DISCONNECTED) {
         vp->disconnected = 1;
-        vp->done         = 1;
         return;
     }
 
@@ -1373,30 +1381,82 @@ vers_probe_callback(
         return;
     }
 
-    dbuf = xdr_dbuf_alloc(4096);
+    if (vp->nmsgs++ == 0) {
+        vp->rdma_proc   = -1;
+        vp->accept_stat = -1;
 
-    if (dbuf &&
-        unmarshall_rdma_msg(&reply, notify->recv_msg.iovec,
-                            notify->recv_msg.niov, NULL, dbuf) > 0 &&
-        reply.rdma_body.proc == RDMA_ERROR) {
-        vp->got_rdma_error = 1;
-        vp->err            = reply.rdma_body.rdma_error.err;
-        vp->xid            = reply.rdma_xid;
+        dbuf = xdr_dbuf_alloc(4096);
 
-        if (reply.rdma_body.rdma_error.err == ERR_VERS) {
-            vp->vers_low  = reply.rdma_body.rdma_error.range.rdma_vers_low;
-            vp->vers_high = reply.rdma_body.rdma_error.range.rdma_vers_high;
+        hdr_len = dbuf ? unmarshall_rdma_msg(&reply, notify->recv_msg.iovec,
+                                             notify->recv_msg.niov, NULL, dbuf) : -1;
+
+        if (hdr_len > 0) {
+            vp->rdma_proc = reply.rdma_body.proc;
+            vp->xid       = reply.rdma_xid;
+
+            if (reply.rdma_body.proc == RDMA_ERROR) {
+                vp->err = reply.rdma_body.rdma_error.err;
+
+                if (vp->err == ERR_VERS) {
+                    vp->vers_low  = reply.rdma_body.rdma_error.range.rdma_vers_low;
+                    vp->vers_high = reply.rdma_body.rdma_error.range.rdma_vers_high;
+                }
+            } else if (reply.rdma_body.proc == RDMA_MSG) {
+                /* The inline RPC reply follows the transport header: xid,
+                 * REPLY, MSG_ACCEPTED, an AUTH_NONE verifier (flavor and a
+                 * zero length), then accept_stat. */
+                for (i = 0; i < notify->recv_msg.niov && have < (int) sizeof(flat); i++) {
+                    n = evpl_iovec_length(&notify->recv_msg.iovec[i]);
+                    if (n > (int) sizeof(flat) - have) {
+                        n = (int) sizeof(flat) - have;
+                    }
+                    memcpy(flat + have, evpl_iovec_data(&notify->recv_msg.iovec[i]), n);
+                    have += n;
+                }
+
+                if (have >= hdr_len + 24 && get32(flat + hdr_len + 4) == 1 &&
+                    get32(flat + hdr_len + 8) == 0) {
+                    vp->accept_stat = (int) get32(flat + hdr_len + 20);
+                }
+            }
+        }
+
+        if (dbuf) {
+            xdr_dbuf_free(dbuf);
         }
     }
 
-    if (dbuf) {
-        xdr_dbuf_free(dbuf);
+    evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
+} /* vers_probe_callback */
+
+/*
+ * Wait for the probe's answer -- a message or a disconnect -- against a real
+ * deadline, so a missing one fails with the caller's message rather than as a
+ * bare ctest timeout.  Then keep the loop running a little longer, so that a
+ * second message the server should not have sent is counted.
+ */
+static void
+vers_probe_wait(
+    struct evpl       *evpl,
+    struct vers_probe *vp,
+    const char        *what)
+{
+    uint64_t deadline = now_ms() + 10000;
+
+    while (!vp->nmsgs && !vp->disconnected && now_ms() < deadline) {
+        test_mbt_continue(evpl);
     }
 
-    evpl_iovecs_release(evpl, notify->recv_msg.iovec, notify->recv_msg.niov);
+    evpl_test_abort_if(!vp->nmsgs && !vp->disconnected, "%s: no answer", what);
 
-    vp->done = 1;
-} /* vers_probe_callback */
+    deadline = now_ms() + 100;
+    while (now_ms() < deadline) {
+        test_mbt_continue(evpl);
+    }
+
+    evpl_test_abort_if(vp->nmsgs > 1, "%s: %d answers, expected one",
+                       what, vp->nmsgs);
+} /* vers_probe_wait */
 
 /*
  * Close a probe's bind and wait for the disconnect: the core reports it to
@@ -1409,11 +1469,11 @@ vers_probe_close(
     struct evpl_bind  *bind,
     struct vers_probe *vp)
 {
-    int spins = 0;
+    uint64_t deadline = now_ms() + 10000;
 
     evpl_close(evpl, bind);
 
-    while (!vp->disconnected && ++spins < 100000000) {
+    while (!vp->disconnected && now_ms() < deadline) {
         test_mbt_continue(evpl);
     }
 
@@ -1443,7 +1503,7 @@ check_rdma_version_mismatch(
     struct rdma_msg   bad;
     struct evpl_bind *bind;
     struct evpl_iovec iov, out_iov;
-    int               len, niov, out_niov = 0, spins = 0;
+    int               len, niov, out_niov = 0;
 
     if (!rdma) {
         return;
@@ -1490,12 +1550,11 @@ check_rdma_version_mismatch(
 
     evpl_sendv(evpl, bind, &iov, 1, len, EVPL_SEND_FLAG_TAKE_REF);
 
-    while (!vp.done && ++spins < 100000000) {
-        test_mbt_continue(evpl);
-    }
+    vers_probe_wait(evpl, &vp, "version probe");
 
-    evpl_test_abort_if(!vp.done, "version probe: no answer to a bad version");
-    evpl_test_abort_if(!vp.got_rdma_error,
+    evpl_test_abort_if(vp.disconnected && !vp.nmsgs,
+                       "version probe: connection dropped instead of ERR_VERS");
+    evpl_test_abort_if(vp.rdma_proc != RDMA_ERROR,
                        "version probe: answer was not an RDMA_ERROR");
     evpl_test_abort_if(vp.err != ERR_VERS,
                        "version probe: expected ERR_VERS (%d), got %d",
@@ -1506,60 +1565,45 @@ check_rdma_version_mismatch(
 
     g_results.rdma_error_checks++;
 
-    vers_probe_close(evpl, bind, &vp);
+    if (!vp.disconnected) {
+        vers_probe_close(evpl, bind, &vp);
+    }
 } /* check_rdma_version_mismatch */
 
 /*
- * A Read chunk the server cannot read: its handle names no registered memory,
- * so the server's RDMA Read fails -- the Remote Access Error of RFC 8166 sec
- * 4.5.3, which is also what a Requester that deregisters a region, or loses
- * the connection, while its call is being read looks like.  The server must
- * answer RDMA_ERROR / ERR_CHUNK for that XID ("no RPC-level reply is possible
- * for that XID") and carry on serving; it used to abort the whole process.
- *
- * On a real RDMA fabric the failed Read also moves the connection to an error
- * state, so the ERR_CHUNK cannot always be delivered: libfabric's tcp provider
- * drops the endpoint just as an RNIC would.  A disconnect is therefore an
- * acceptable answer, as long as the server keeps serving -- which the version
- * probe, run again on a fresh connection, then proves.
- *
- * The call is well formed in every other respect: an RPC CALL header for a
- * real procedure, carrying one Read chunk.  RDMA only.
+ * Send, on a fresh plain bind, an RDMA_MSG carrying an RPC CALL for
+ * (prog, 1, proc) with AUTH_NONE, whose arguments are one Read chunk naming a
+ * handle nobody registered.  Returns the bind; the answer lands in *vp.
  */
-static void
-check_rdma_read_failure(
+static struct evpl_bind *
+send_unreadable_call(
     struct evpl          *evpl,
     struct evpl_endpoint *endpoint,
     int                   proto,
-    int                   rdma)
+    uint32_t              xid,
+    uint32_t              prog,
+    uint32_t              proc,
+    struct vers_probe    *vp,
+    const char           *what)
 {
-    /* The RPC CALL header that follows the transport header: xid, CALL,
-     * RPC version 2, program 44 version 1 procedure ECHO_ZBYTES (3), and
-     * AUTH_NONE credential and verifier. */
-    const uint32_t       xid         = 0x52445246;
     const uint32_t       rpc_hdr[10] = {
-        xid, 0, 2, 44, 1, 3, 0, 0, 0, 0,
+        xid, 0, 2, prog, 1, proc, 0, 0, 0, 0,
     };
-    struct vers_probe    vp;
     struct rdma_msg      msg;
     struct xdr_read_list rl;
     struct evpl_bind    *bind;
     struct evpl_iovec    iov, out_iov;
     uint8_t             *p;
-    int                  hdr_len, len, niov, out_niov = 0, spins = 0, i;
+    int                  hdr_len, len, niov, out_niov = 0, i;
 
-    if (!rdma) {
-        return;
-    }
-
-    memset(&vp, 0, sizeof(vp));
+    memset(vp, 0, sizeof(*vp));
     memset(&msg, 0, sizeof(msg));
     memset(&rl, 0, sizeof(rl));
 
     bind = evpl_connect(evpl, proto, NULL, endpoint, vers_probe_callback,
-                        NULL, &vp);
+                        NULL, vp);
 
-    evpl_test_abort_if(!bind, "read failure probe: failed to connect a plain bind");
+    evpl_test_abort_if(!bind, "%s: failed to connect a plain bind", what);
 
     g_connections_opened++;
 
@@ -1581,7 +1625,7 @@ check_rdma_read_failure(
     len     = hdr_len + (int) sizeof(rpc_hdr);
     niov    = evpl_iovec_alloc(evpl, len, 0, 1, 0, &iov);
 
-    evpl_test_abort_if(niov != 1, "read failure probe: iovec alloc failed");
+    evpl_test_abort_if(niov != 1, "%s: iovec alloc failed", what);
 
     marshall_rdma_msg(&msg, &iov, &out_iov, &out_niov, NULL, 0);
 
@@ -1601,21 +1645,56 @@ check_rdma_read_failure(
 
     evpl_sendv(evpl, bind, &iov, 1, len, EVPL_SEND_FLAG_TAKE_REF);
 
-    while (!vp.done && ++spins < 100000000) {
-        test_mbt_continue(evpl);
-    }
+    return bind;
+} /* send_unreadable_call */
 
-    evpl_test_abort_if(!vp.done, "read failure probe: no answer to an unreadable chunk");
+/*
+ * A Read chunk the server cannot read: its handle names no registered memory,
+ * so the server's RDMA Read fails with a Remote Access Error (RFC 8166 sec
+ * 4.5.3).  The handle is untrusted input, so the failure says nothing about
+ * the server, which must not stop serving because of it.  The call's
+ * arguments are incomplete, so it is not executed, and the answer for that
+ * XID is RDMA_ERROR / ERR_CHUNK.
+ *
+ * Section 4.5.3 also notes that such errors are typically fatal to the
+ * connection.  On a real RC queue pair, and on libfabric's tcp provider, the
+ * failed Read takes the connection down and the ERR_CHUNK never arrives; only
+ * the emulated transports keep the connection.  So a disconnect is accepted
+ * in its place, and the caller then shows the server still serving.  Either
+ * way there must be no second answer: the call must not also be dispatched.
+ * RDMA only.
+ */
+static void
+check_rdma_read_failure(
+    struct evpl          *evpl,
+    struct evpl_endpoint *endpoint,
+    int                   proto,
+    int                   rdma)
+{
+    const uint32_t    xid = 0x52445246;
+    struct vers_probe vp;
+    struct evpl_bind *bind;
 
-    if (vp.disconnected) {
-        evpl_test_info("read failure probe: the transport dropped the connection "
-                       "instead of carrying ERR_CHUNK");
-        g_results.rdma_error_checks++;
-        check_rdma_version_mismatch(evpl, endpoint, proto, rdma);
+    if (!rdma) {
         return;
     }
 
-    evpl_test_abort_if(!vp.got_rdma_error,
+    /* Program 44 version 1 procedure ECHO_ZBYTES (3): a real procedure, so
+     * only the unreadable chunk is wrong with the call. */
+    bind = send_unreadable_call(evpl, endpoint, proto, xid, 44, 3, &vp,
+                                "read failure probe");
+
+    vers_probe_wait(evpl, &vp, "read failure probe");
+
+    g_results.rdma_error_checks++;
+
+    if (!vp.nmsgs) {
+        evpl_test_info("read failure probe: the transport dropped the connection "
+                       "instead of carrying ERR_CHUNK");
+        return;
+    }
+
+    evpl_test_abort_if(vp.rdma_proc != RDMA_ERROR,
                        "read failure probe: answer was not an RDMA_ERROR");
     evpl_test_abort_if(vp.err != ERR_CHUNK,
                        "read failure probe: expected ERR_CHUNK (%d), got %d",
@@ -1624,10 +1703,71 @@ check_rdma_read_failure(
                        "read failure probe: ERR_CHUNK for xid 0x%x, expected 0x%x",
                        vp.xid, xid);
 
+    if (!vp.disconnected) {
+        vers_probe_close(evpl, bind, &vp);
+    }
+} /* check_rdma_read_failure */
+
+/*
+ * The same unreadable Read chunk on a call the server rejects before running
+ * it: a program it does not export, and a procedure past the program's
+ * maxproc.  The reject must be the only answer.  The server used to issue the
+ * chunk's reads before looking the call up, so the reject freed the request
+ * while they were in flight, and the failed read then answered ERR_CHUNK for
+ * the same XID and freed the request a second time.  RDMA only.
+ */
+static void
+check_one_reject(
+    struct evpl          *evpl,
+    struct evpl_endpoint *endpoint,
+    int                   proto,
+    uint32_t              xid,
+    uint32_t              prog,
+    uint32_t              proc,
+    int                   accept_stat,
+    const char           *what)
+{
+    struct vers_probe vp;
+    struct evpl_bind *bind;
+
+    bind = send_unreadable_call(evpl, endpoint, proto, xid, prog, proc, &vp, what);
+
+    vers_probe_wait(evpl, &vp, what);
+
+    evpl_test_abort_if(!vp.nmsgs, "%s: connection dropped instead of a reply", what);
+    evpl_test_abort_if(vp.rdma_proc != RDMA_MSG,
+                       "%s: answer was RDMA proc %d, expected an RPC reply",
+                       what, vp.rdma_proc);
+    evpl_test_abort_if(vp.xid != xid, "%s: reply for xid 0x%x, expected 0x%x",
+                       what, vp.xid, xid);
+    evpl_test_abort_if(vp.accept_stat != accept_stat,
+                       "%s: accept_stat %d, expected %d",
+                       what, vp.accept_stat, accept_stat);
+
     g_results.rdma_error_checks++;
 
-    vers_probe_close(evpl, bind, &vp);
-} /* check_rdma_read_failure */
+    if (!vp.disconnected) {
+        vers_probe_close(evpl, bind, &vp);
+    }
+} /* check_one_reject */
+
+static void
+check_rdma_reject_with_read_chunk(
+    struct evpl          *evpl,
+    struct evpl_endpoint *endpoint,
+    int                   proto,
+    int                   rdma)
+{
+    if (!rdma) {
+        return;
+    }
+
+    /* accept_stat values from RFC 5531: PROG_UNAVAIL 1, PROC_UNAVAIL 3 */
+    check_one_reject(evpl, endpoint, proto, 0x524a0000, 45, 3, 1,
+                     "PROG_UNAVAIL probe");
+    check_one_reject(evpl, endpoint, proto, 0x524a0001, 44, 99, 3,
+                     "PROC_UNAVAIL probe");
+} /* check_rdma_reject_with_read_chunk */
 
 /* ------------------------------------------------------------------ *
 * RPC-over-RDMA data placement
@@ -4592,6 +4732,13 @@ main(
      * the rpc2 client -- see the comment on the function. */
     check_rdma_version_mismatch(evpl, endpoint, proto, conn->rdma);
     check_rdma_read_failure(evpl, endpoint, proto, conn->rdma);
+    check_rdma_reject_with_read_chunk(evpl, endpoint, proto, conn->rdma);
+
+    /* On the RDMA transports nothing after this talks to the server, so make
+     * one ordinary call to show it is still serving after the probes. */
+    if (conn->rdma) {
+        run_value_case(evpl, &ctx.prog, conn, &conf_value_cases[0]);
+    }
 
     /* The raw-socket phase needs a stream transport it can open a socket of
      * its own onto: TCP or AF_UNIX.  RDMA carries no record marks, so the
@@ -4652,7 +4799,7 @@ main(
            g_results.rdma_capable ? "by RDMA" : "inline -- transport reports no RDMA");
     if (g_results.rdma_error_checks) {
         printf(
-            "rdma error:   %d assertions (ERR_CHUNK refusal, connection survives, ERR_VERS range, unreadable Read chunk)\n",
+            "rdma error:   %d assertions (ERR_CHUNK refusal, connection survives, ERR_VERS range, unreadable Read chunk, reject with a Read chunk)\n",
             g_results.rdma_error_checks);
     }
     printf("defect cases: %d run, %d matched spec, %d known divergences, "
