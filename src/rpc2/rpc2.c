@@ -1,7 +1,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif /* ifndef _GNU_SOURCE */
-// SPDX-FileCopyrightText: 2025 Ben Jarvis
+// SPDX-FileCopyrightText: 2025-2026 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
@@ -77,6 +77,7 @@ struct evpl_rpc2_msg {
 struct evpl_rpc2_request {
     uint32_t                              xid;
     uint32_t                              proc;
+    uint32_t                              observed_program_bit;
     uint32_t                              rdma_credits;
     uint16_t                              pending_reads;
     int                                   read_status; /* first failure of a call chunk read */
@@ -193,6 +194,7 @@ struct evpl_rpc2_server {
 };
 
 struct evpl_rpc2_server_binding {
+    unsigned int                            active_connections;
     struct evpl_rpc2_thread                *thread;
     struct evpl_rpc2_server                *server;
     struct evpl_listener_binding           *binding;
@@ -3197,6 +3199,10 @@ evpl_rpc2_server_handle_request(
     request->encoding.read_chunk  = &request->read_chunk;
     request->encoding.write_chunk = &request->write_chunk;
 
+    if (!(conn->observed_program_mask & request->observed_program_bit)) {
+        conn->observed_program_mask |= request->observed_program_bit;
+    }
+
     error = request->program->recv_call_dispatch(evpl, conn, &request->encoding,
                                                  request->proc,
                                                  request->program->program_data,
@@ -4023,7 +4029,8 @@ evpl_rpc2_recv_msg(
                 return;
             }
 
-            request->metric = server_binding ? server_binding->metrics[i][request->proc] : NULL;
+            request->observed_program_bit = 1U << i;
+            request->metric               = server_binding ? server_binding->metrics[i][request->proc] : NULL;
 
             /* Read the call's chunk only now that the call is known to be one
              * we will run.  A reject above answers and frees the request at
@@ -4218,6 +4225,9 @@ evpl_rpc2_event(
             }
             break;
         case EVPL_NOTIFY_DISCONNECTED:
+            if (rpc2_conn->server_binding) {
+                rpc2_conn->server_binding->active_connections--;
+            }
             DL_DELETE(rpc2_thread->conns, rpc2_conn);
             HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_request, tmp)
             {
@@ -4295,6 +4305,7 @@ evpl_rpc2_accept(
     *segment_callback  = rpc2_segment_callback;
     *conn_private_data = rpc2_conn;
 
+    server_binding->active_connections++;
     DL_APPEND(server_binding->thread->conns, rpc2_conn);
 
     if (server_binding->thread->notify_callback) {
@@ -4523,6 +4534,17 @@ evpl_rpc2_server_detach(
     DL_DELETE(thread->servers, server_binding);
 
     evpl_listener_detach(thread->evpl, server_binding->binding);
+
+    /* Accepted connections can outlive a detached listener. They must no
+     * longer reference its freed per-binding counters or metric instances. */
+    struct evpl_rpc2_conn *conn;
+    DL_FOREACH(thread->conns, conn)
+    {
+        if (conn->server_binding == server_binding) {
+            conn->server_binding = NULL;
+        }
+    }
+
 
     for (i = 0; i < server->nprograms; i++) {
         program = server->programs[i];
@@ -5164,3 +5186,104 @@ evpl_rpc2_discard_request(
      * gauge is balanced. */
     evpl_rpc2_request_free(request->thread, request);
 } /* evpl_rpc2_discard_request */
+
+SYMBOL_EXPORT unsigned int
+evpl_rpc2_visit_connections(
+    struct evpl_rpc2_thread *thread,
+    unsigned int limit,
+    int ( *visit )(const struct evpl_rpc2_connection_info *, void *),
+    void *data,
+    int *truncated)
+{
+    struct evpl_rpc2_conn *conn;
+    unsigned int           scanned = 0;
+
+    *truncated = 0;
+    DL_FOREACH(thread->conns, conn)
+    {
+        if (scanned == limit) {
+            *truncated = 1; break;
+        }
+        scanned++;
+        if (!conn->server_binding) {
+            continue;
+        }
+        struct evpl_rpc2_connection_info info = { 0 };
+        evpl_bind_get_info(conn->bind, &info.bind);
+        info.server          = conn->server_binding->server;
+        info.application_tag = conn->application_tag;
+        info.rdma_framing    = conn->rdma;
+        for (int i = 0; i < conn->num_server_programs; i++) {
+            if (conn->observed_program_mask & (1U << i)) {
+                info.programs[info.nprograms].program   = conn->server_programs[i]->program;
+                info.programs[info.nprograms++].version = conn->server_programs[i]->version;
+            }
+        }
+        if (!visit(&info, data)) {
+            *truncated = conn->next != NULL; break;
+        }
+    }
+    return scanned;
+} /* evpl_rpc2_visit_connections */
+SYMBOL_EXPORT void
+evpl_rpc2_get_thread_stats(
+    struct evpl_rpc2_thread       *thread,
+    struct evpl_rpc2_thread_stats *stats)
+{
+    stats->thread_id       = thread->id;
+    stats->server_inflight = thread->m_inflight[EVPL_RPC2_ROLE_SERVER]->value;
+    stats->client_inflight = thread->m_inflight[EVPL_RPC2_ROLE_CLIENT]->value;
+} /* evpl_rpc2_get_thread_stats */
+SYMBOL_EXPORT unsigned int
+evpl_rpc2_server_connection_count(
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_server *server)
+{
+    struct evpl_rpc2_server_binding *binding;
+    unsigned int                     count = 0;
+
+    DL_FOREACH(thread->servers, binding)
+    {
+        if (binding->server == server) {
+            count += binding->active_connections;
+        }
+    }
+    return count;
+} /* evpl_rpc2_server_connection_count */
+SYMBOL_EXPORT int
+evpl_rpc2_visit_procedure_stats(
+    struct evpl_rpc2_thread *thread,
+    int ( *visit )(const struct evpl_rpc2_procedure_stats *, void *),
+    void *data)
+{
+    struct evpl_rpc2_server_binding *binding;
+
+    DL_FOREACH(thread->servers, binding)
+    {
+        for (int i = 0; i < binding->server->nprograms; i++) {
+            struct evpl_rpc2_program *program = binding->server->programs[i];
+            for (uint32_t j = 0; j <= program->maxproc; j++) {
+                if (!binding->metrics[i][j]) {
+                    continue;
+                }
+                struct evpl_rpc2_procedure_stats stats = { 0 };
+                stats.program               = program->program;
+                stats.version               = program->version;
+                stats.procedure             = j;
+                stats.latency_samples_total = binding->metrics[i][j]->count;
+                snprintf(stats.name, sizeof(stats.name), "%s", program->procs && program->procs[j] ? program->procs[j] :
+                         "unknown");
+                if (!visit(&stats, data)) {
+                    return 0;
+                }
+            }
+        }
+    }
+    return 1;
+} /* evpl_rpc2_visit_procedure_stats */
+SYMBOL_EXPORT uint64_t
+evpl_rpc2_conn_get_application_tag(struct evpl_rpc2_conn *conn) { return conn->application_tag; }
+SYMBOL_EXPORT void
+evpl_rpc2_conn_set_application_tag(
+    struct evpl_rpc2_conn *conn,
+    uint64_t               tag) { conn->application_tag = tag; }

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2025 Ben Jarvis
+// SPDX-FileCopyrightText: 2025-2026 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
@@ -267,3 +267,22 @@ EVPL_API void evpl_listener_destroy_async(
     struct evpl_listener *listener,
     evpl_completion_t     callback,
     void                 *private_data);
+
+/* Copied endpoint metadata; port is -1 for non-IP endpoints. */
+struct evpl_endpoint_info {
+    char     family[16];
+    char     address[256];
+    int      port;
+    uint32_t scope_id;
+};
+struct evpl_bind_info {
+    uint64_t                  serial;
+    uint64_t                  created_monotonic_ns;
+    enum evpl_protocol_id protocol;
+    int                       closing;
+    struct evpl_endpoint_info local, remote;
+};
+/* Owner-thread only. No borrowed pointers in the result. */
+EVPL_API void evpl_bind_get_info(
+    struct evpl_bind      *bind,
+    struct evpl_bind_info *info);

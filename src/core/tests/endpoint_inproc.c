@@ -70,6 +70,15 @@ server_callback(
     evpl_bind_get_local_address(bind, server_local_trunc,
                                 sizeof(server_local_trunc));
 
+    struct evpl_bind_info info;
+    static uint64_t       previous_serial;
+    evpl_bind_get_info(bind, &info);
+    CHECK(info.serial > previous_serial, "fresh connection serial on every accept");
+    CHECK(info.created_monotonic_ns > 0, "creation timestamp present");
+    CHECK(!strcmp(info.local.family, "inproc") && !strcmp(info.remote.family, "inproc"), "structured inproc endpoints");
+    CHECK(info.local.port == -1 && info.remote.port == -1, "inproc has no IP ports");
+    previous_serial = info.serial;
+
     conn_count++;
 } /* server_callback */
 

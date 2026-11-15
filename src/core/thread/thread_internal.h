@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2025 Ben Jarvis
+// SPDX-FileCopyrightText: 2025-2026 Ben Jarvis
 // SPDX-License-Identifier: LGPL-2.1-only
 #pragma once
 #include "evpl/evpl_platform.h"
@@ -56,7 +56,8 @@ evpl_thread_create_spdk(
     evpl_thread_init_callback_t     init_function,
     evpl_thread_shutdown_callback_t shutdown_function,
     void                           *private_data,
-    int                             wait_ready);
+    int                             wait_ready,
+    int                             pool_index);
 
 void
 evpl_thread_destroy_spdk(

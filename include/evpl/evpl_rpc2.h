@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2025 Ben Jarvis
+// SPDX-FileCopyrightText: 2025-2026 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
@@ -116,6 +116,8 @@ struct evpl_rpc2_conn {
      * goes away, and each of those requests keeps pointing here; so a
      * connection that disconnects with any outstanding is only marked closed,
      * and is freed when the last of them ends.  Their replies are not sent. */
+    uint64_t                         application_tag;
+    uint32_t                         observed_program_mask;
     int                              server_requests;
     int                              closed;
 
@@ -249,3 +251,43 @@ EVPL_RPC2_API void
 evpl_rpc2_conn_set_next_xid(
     struct evpl_rpc2_conn *conn,
     uint32_t               xid);
+/* Owner-thread inspection. Visitors must copy values, must not mutate lists,
+* and must not retain any callback pointers. Return 0 to stop enumeration. */
+struct evpl_rpc2_connection_info {
+    struct evpl_bind_info    bind;
+    struct evpl_rpc2_server *server; /* identity only, valid during callback */
+    uint64_t                 application_tag;
+    int                      rdma_framing;
+    int                      nprograms;
+    struct { uint32_t program, version; } programs[4];
+};
+struct evpl_rpc2_thread_stats {
+    int     thread_id;
+    int64_t server_inflight, client_inflight;
+};
+struct evpl_rpc2_procedure_stats {
+    uint32_t program, version, procedure;
+    char     name[128];
+    uint64_t latency_samples_total;
+};
+EVPL_RPC2_API unsigned int evpl_rpc2_visit_connections(
+    struct evpl_rpc2_thread *thread,
+    unsigned int limit,
+    int ( *visit )(const struct evpl_rpc2_connection_info *, void *),
+    void *private_data,
+    int *truncated);
+EVPL_RPC2_API void evpl_rpc2_get_thread_stats(
+    struct evpl_rpc2_thread       *thread,
+    struct evpl_rpc2_thread_stats *stats);
+EVPL_RPC2_API unsigned int evpl_rpc2_server_connection_count(
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_server *server);
+EVPL_RPC2_API int evpl_rpc2_visit_procedure_stats(
+    struct evpl_rpc2_thread *thread,
+    int ( *visit )(const struct evpl_rpc2_procedure_stats *, void *),
+    void *private_data);
+EVPL_RPC2_API uint64_t evpl_rpc2_conn_get_application_tag(
+    struct evpl_rpc2_conn *conn);
+EVPL_RPC2_API void evpl_rpc2_conn_set_application_tag(
+    struct evpl_rpc2_conn *conn,
+    uint64_t               tag);

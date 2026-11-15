@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2025 Ben Jarvis
+// SPDX-FileCopyrightText: 2025-2026 Ben Jarvis
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
@@ -184,7 +184,15 @@ evpl_thread_function(void *ptr)
     evpl                = evpl_create(evpl_thread->config);
     evpl_thread->config = NULL;
 
-    evpl_thread->evpl = evpl;
+    evpl_thread->evpl         = evpl;
+    evpl->identity.pool_index = evpl_thread->pool_index;
+    if (evpl_thread->pool_index >= 0) {
+        snprintf(evpl->identity.name, sizeof(evpl->identity.name), "%s_%d",
+                 evpl->config.name, evpl_thread->pool_index);
+    } else {
+        snprintf(evpl->identity.name, sizeof(evpl->identity.name), "%s", evpl->config.name);
+    }
+    snprintf(evpl->identity.executor, sizeof(evpl->identity.executor), "native");
 
     evpl_add_doorbell(evpl, &evpl_thread->stop_receiver, evpl_thread_event);
     evpl_thread->stop_sender = evpl_doorbell_sender(&evpl_thread->stop_receiver);
@@ -248,7 +256,7 @@ evpl_thread_create_internal(
 #ifdef HAVE_SPDK
     if (evpl_thread_config_is_spdk(config)) {
         return evpl_thread_create_spdk(config, init_function,
-                                       shutdown_function, private_data, wait_ready);
+                                       shutdown_function, private_data, wait_ready, pool_index);
     }
 #endif /* ifdef HAVE_SPDK */
 
@@ -472,3 +480,11 @@ evpl_threadpool_destroy_async(
     evpl_free(pool);
     evpl_pool_stopped(stop);
 } /* evpl_threadpool_destroy_async */
+
+SYMBOL_EXPORT void
+evpl_thread_get_identity(
+    struct evpl                 *evpl,
+    struct evpl_thread_identity *identity)
+{
+    *identity = evpl->identity;
+} /* evpl_thread_get_identity */
