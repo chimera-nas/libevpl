@@ -209,6 +209,15 @@ struct evpl_thread_identity {
     char name[64];
     char executor[16];
 };
+
+struct evpl_loop_stats {
+    uint64_t loop_iters;
+    uint64_t loop_iters_with_work;
+};
+
+EVPL_API void evpl_get_loop_stats(
+    struct evpl            *evpl,
+    struct evpl_loop_stats *stats);
 EVPL_API void evpl_thread_get_identity(
     struct evpl                 *evpl,
     struct evpl_thread_identity *identity);

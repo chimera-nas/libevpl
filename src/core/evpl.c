@@ -642,6 +642,9 @@ evpl_create(struct evpl_thread_config *config)
 
     evpl = evpl_zalloc(sizeof(*evpl));
 
+    atomic_init(&evpl->loop_iters, 0);
+    atomic_init(&evpl->loop_iters_with_work, 0);
+
     evpl_mutex_init(&evpl->lock, NULL);
 
     evpl->poll     = evpl_calloc(256, sizeof(struct evpl_poll));
@@ -996,12 +999,28 @@ evpl_continue(struct evpl *evpl)
         }
     }
 
+    uint64_t loop_iters = atomic_load_explicit(&evpl->loop_iters, memory_order_relaxed);
+    atomic_store_explicit(&evpl->loop_iters, loop_iters + 1, memory_order_relaxed);
+    if (work > 0) {
+        uint64_t loop_iters_with_work = atomic_load_explicit(&evpl->loop_iters_with_work, memory_order_relaxed);
+        atomic_store_explicit(&evpl->loop_iters_with_work, loop_iters_with_work + 1, memory_order_relaxed);
+    }
+
     if (evpl->loop_hooks.iteration_end) {
         evpl->loop_hooks.iteration_end(evpl, evpl->loop_hooks.private_data);
     }
 
     return work;
 } /* evpl_continue */
+
+SYMBOL_EXPORT void
+evpl_get_loop_stats(
+    struct evpl            *evpl,
+    struct evpl_loop_stats *stats)
+{
+    stats->loop_iters           = atomic_load_explicit(&evpl->loop_iters, memory_order_relaxed);
+    stats->loop_iters_with_work = atomic_load_explicit(&evpl->loop_iters_with_work, memory_order_relaxed);
+} /* evpl_get_loop_stats */
 
 SYMBOL_EXPORT void
 evpl_virtual_clock_advance(uint64_t ns)

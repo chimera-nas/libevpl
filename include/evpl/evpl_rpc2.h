@@ -6,6 +6,7 @@
 #include "evpl/evpl_export.h"
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <evpl/evpl.h>
 struct xdr_dbuf;
 
@@ -19,6 +20,12 @@ struct evpl_rpc2_program;
 struct evpl_rpc2_call;
 struct evpl_rpc2_gss_context;
 struct evpl_rpc2_gss_client;
+
+struct evpl_rpc2_worker_counters {
+    _Alignas(64) _Atomic uint64_t rx_msgs;
+    _Atomic uint64_t            tx_msgs, rx_bytes, tx_bytes;
+    _Atomic uint64_t            rpc_errors, accepts, closes, active_connections;
+};
 
 /*
  * Verifier structure for RPC authentication.
@@ -117,6 +124,9 @@ struct evpl_rpc2_conn {
      * connection that disconnects with any outstanding is only marked closed,
      * and is freed when the last of them ends.  Their replies are not sent. */
     uint64_t                         application_tag;
+    uint64_t                         rx_msgs, tx_msgs, rx_bytes, tx_bytes;
+    uint64_t                         requests_done, inflight;
+    uint64_t                         accepted_monotonic_ns;
     uint32_t                         observed_program_mask;
     int                              server_requests;
     int                              closed;
@@ -142,6 +152,10 @@ evpl_rpc2_thread_init(
     int                         nprograms,
     evpl_rpc2_notify_callback_t notify_callback,
     void                       *private_data);
+EVPL_RPC2_API void
+evpl_rpc2_thread_set_worker_counters(
+    struct evpl_rpc2_thread          *thread,
+    struct evpl_rpc2_worker_counters *counters);
 
 EVPL_RPC2_API void
 evpl_rpc2_thread_destroy(
@@ -257,18 +271,42 @@ struct evpl_rpc2_connection_info {
     struct evpl_bind_info    bind;
     struct evpl_rpc2_server *server; /* identity only, valid during callback */
     uint64_t                 application_tag;
+    uint64_t                 rx_msgs, tx_msgs, rx_bytes, tx_bytes;
+    uint64_t                 requests_done, inflight;
+    uint64_t                 accepted_monotonic_ns;
     int                      rdma_framing;
     int                      nprograms;
     struct { uint32_t program, version; } programs[4];
 };
+#define EVPL_RPC2_MAX_LISTENERS 32
+#define EVPL_RPC2_MAX_REMOTE_IPS 64
 struct evpl_rpc2_thread_stats {
-    int     thread_id;
-    int64_t server_inflight, client_inflight;
+    int      thread_id;
+    int64_t  server_inflight, client_inflight;
+    uint64_t rx_msgs, tx_msgs, rx_bytes, tx_bytes, rpc_errors, accepts, closes;
+    uint64_t active_connections;
+    unsigned int nlisteners;
+    struct {
+        uint32_t program;
+        uint32_t version;
+        uint64_t assigned_total;
+        uint64_t live_connections;
+        unsigned int placement_policy;
+    } listeners[EVPL_RPC2_MAX_LISTENERS];
+    unsigned int nrdma_remote_ips;
+    struct {
+        char     address[64];
+        uint64_t accepts;
+    } rdma_remote_ips[EVPL_RPC2_MAX_REMOTE_IPS];
+    uint64_t rdma_remote_ip_overflow_accepts;
 };
 struct evpl_rpc2_procedure_stats {
-    uint32_t program, version, procedure;
-    char     name[128];
-    uint64_t latency_samples_total;
+    uint32_t     program, version, procedure;
+    char         name[128];
+    uint64_t     latency_samples_total;
+    uint64_t     latency_sum_ticks;
+    uint64_t     latency_buckets[64];
+    unsigned int latency_bucket_count;
 };
 EVPL_RPC2_API unsigned int evpl_rpc2_visit_connections(
     struct evpl_rpc2_thread *thread,

@@ -37,9 +37,17 @@
  * reply not yet received).  Each rpc2 thread keeps one gauge instance per
  * role so the scrape can break out offered depth by direction and thread.
  */
-#define EVPL_RPC2_ROLE_SERVER 0
-#define EVPL_RPC2_ROLE_CLIENT 1
-#define EVPL_RPC2_NUM_ROLES   2
+#define EVPL_RPC2_ROLE_SERVER      0
+#define EVPL_RPC2_ROLE_CLIENT      1
+#define EVPL_RPC2_NUM_ROLES        2
+#define EVPL_RPC2_REMOTE_IP_SLOTS  EVPL_RPC2_MAX_REMOTE_IPS
+#define EVPL_RPC2_REMOTE_IP_LENGTH 64
+
+struct evpl_rpc2_remote_ip_counter {
+    _Atomic unsigned int valid;
+    _Atomic char         address[EVPL_RPC2_REMOTE_IP_LENGTH];
+    _Atomic uint64_t     accepts;
+};
 
 static const char *evpl_rpc2_role_names[EVPL_RPC2_NUM_ROLES] = {
     [EVPL_RPC2_ROLE_SERVER] = "server",
@@ -194,7 +202,7 @@ struct evpl_rpc2_server {
 };
 
 struct evpl_rpc2_server_binding {
-    unsigned int                            active_connections;
+    _Atomic uint64_t                        active_connections;
     struct evpl_rpc2_thread                *thread;
     struct evpl_rpc2_server                *server;
     struct evpl_listener_binding           *binding;
@@ -214,8 +222,14 @@ struct evpl_rpc2_thread {
     struct evpl_rpc2_msg                *free_msg;
     struct evpl_rpc2_request            *free_requests;
     struct evpl_rpc2_server_binding     *servers;
+    _Atomic unsigned int                 server_slot_count;
+    _Atomic(struct evpl_rpc2_server_binding *) server_slots[EVPL_RPC2_MAX_LISTENERS];
     xdr_dbuf                            *client_dbuf;
     int                                  id;
+    struct evpl_rpc2_worker_counters    *local_counters;
+    struct evpl_rpc2_worker_counters    *counters;
+    struct evpl_rpc2_remote_ip_counter   rdma_remote_ips[EVPL_RPC2_REMOTE_IP_SLOTS];
+    _Atomic uint64_t                     rdma_remote_ip_overflow_accepts;
     struct prometheus_gauge_series      *m_inflight_series[EVPL_RPC2_NUM_ROLES];
     struct prometheus_gauge_instance    *m_inflight[EVPL_RPC2_NUM_ROLES];
 
@@ -223,6 +237,34 @@ struct evpl_rpc2_thread {
     const struct evpl_rpc2_gss_provider *gss_provider;
     void                                *gss_provider_arg;
 };
+
+static inline void
+evpl_rpc2_stat_add(
+    _Atomic uint64_t *counter,
+    uint64_t          amount)
+{
+    uint64_t value = atomic_load_explicit(counter, memory_order_relaxed);
+
+    atomic_store_explicit(counter, value + amount, memory_order_relaxed);
+} /* evpl_rpc2_stat_add */
+
+static inline void
+evpl_rpc2_stat_sub(
+    _Atomic uint64_t *counter,
+    uint64_t          amount)
+{
+    uint64_t value = atomic_load_explicit(counter, memory_order_relaxed);
+
+    atomic_store_explicit(counter, value - amount, memory_order_relaxed);
+} /* evpl_rpc2_stat_sub */
+
+static inline void
+evpl_rpc2_conn_stat_add(
+    uint64_t *counter,
+    uint64_t  amount)
+{
+    *counter = *counter + amount;
+} /* evpl_rpc2_conn_stat_add */
 
 static struct evpl_rpc2_msg *
 evpl_rpc2_msg_alloc(struct evpl_rpc2_thread *thread)
@@ -343,6 +385,8 @@ evpl_rpc2_request_free(
         struct evpl_rpc2_conn *conn = request->conn;
 
         request->conn_ref = 0;
+        conn->inflight--;
+        conn->requests_done++;
         if (--conn->server_requests == 0 && conn->closed) {
             evpl_free(conn);
         }
@@ -748,11 +792,12 @@ evpl_rpc2_reassemble(
  */
 static void
 evpl_rpc2_send_rdma_error(
-    struct evpl      *evpl,
-    struct evpl_bind *bind,
-    uint32_t          xid,
-    uint32_t          credit,
-    rpc_rdma_errcode  err)
+    struct evpl_rpc2_thread *thread,
+    struct evpl             *evpl,
+    struct evpl_bind        *bind,
+    uint32_t                 xid,
+    uint32_t                 credit,
+    rpc_rdma_errcode         err)
 {
     struct rdma_msg   rdma_msg;
     struct evpl_iovec iov, out_iov;
@@ -792,6 +837,9 @@ evpl_rpc2_send_rdma_error(
 
     evpl_iovec_set_length(&iov, len);
 
+    evpl_rpc2_stat_add(&thread->counters->tx_msgs, 1);
+    evpl_rpc2_stat_add(&thread->counters->tx_bytes, len);
+
     /* TAKE_REF hands our reference to the send ring, as everywhere else in
      * rpc2 -- without it the send clones and this iovec's reference stays
      * ours to drop, which is a leak per error message. */
@@ -807,6 +855,11 @@ evpl_rpc2_dispatch_reply(
     int                       reply_length)
 {
     struct evpl_rpc2_thread *thread = request->thread;
+
+    evpl_rpc2_stat_add(&thread->counters->tx_msgs, 1);
+    evpl_rpc2_stat_add(&thread->counters->tx_bytes, (uint64_t) reply_length);
+    evpl_rpc2_conn_stat_add(&request->conn->tx_msgs, 1);
+    evpl_rpc2_conn_stat_add(&request->conn->tx_bytes, (uint64_t) reply_length);
 
     evpl_sendv(
         evpl,
@@ -1085,7 +1138,7 @@ evpl_rpc2_send_reply(
 
                 evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
 
-                evpl_rpc2_send_rdma_error(evpl, request->bind, request->xid,
+                evpl_rpc2_send_rdma_error(request->thread, evpl, request->bind, request->xid,
                                           request->rdma_credits, ERR_CHUNK);
 
                 evpl_rpc2_request_free(request->thread, request);
@@ -3210,6 +3263,7 @@ evpl_rpc2_server_handle_request(
                                                  conn->server_private_data);
 
     if (unlikely(error)) {
+        evpl_rpc2_stat_add(&thread->counters->rpc_errors, 1);
         if (error == 1) {
             evpl_rpc2_error("rpc2 procedure %u not implemented", request->proc);
             evpl_rpc2_send_reply_error(evpl, request, PROC_UNAVAIL);
@@ -3271,7 +3325,7 @@ evpl_rpc2_read_segment_callback(
                             "(status %d); ERR_CHUNK",
                             request->xid, request->read_status);
 
-            evpl_rpc2_send_rdma_error(request->thread->evpl, request->bind,
+            evpl_rpc2_send_rdma_error(request->thread, request->thread->evpl, request->bind,
                                       request->xid, request->rdma_credits,
                                       ERR_CHUNK);
         } else {
@@ -3584,6 +3638,11 @@ evpl_rpc2_recv_msg(
     auth_flavor                      flavor;
     struct authsys_parms            *authsys = NULL;
 
+    evpl_rpc2_stat_add(&thread->counters->rx_msgs, 1);
+    evpl_rpc2_stat_add(&thread->counters->rx_bytes, (uint64_t) length);
+    evpl_rpc2_conn_stat_add(&rpc2_conn->rx_msgs, 1);
+    evpl_rpc2_conn_stat_add(&rpc2_conn->rx_bytes, (uint64_t) length);
+
     /* Allocate msg first - this gives us a dbuf for unmarshalling */
     msg = evpl_rpc2_msg_alloc(thread);
 
@@ -3606,10 +3665,11 @@ evpl_rpc2_recv_msg(
          * parsing the body under our own version's rules would be reading a
          * layout the peer never sent. */
         if (unlikely(rdma_msg.rdma_vers != EVPL_RPC2_RDMA_VERSION)) {
+            evpl_rpc2_stat_add(&thread->counters->rpc_errors, 1);
             evpl_rpc2_error("rpc2 received RPC-over-RDMA version %u, expected %u",
                             rdma_msg.rdma_vers, EVPL_RPC2_RDMA_VERSION);
 
-            evpl_rpc2_send_rdma_error(evpl, bind, rdma_msg.rdma_xid,
+            evpl_rpc2_send_rdma_error(thread, evpl, bind, rdma_msg.rdma_xid,
                                       rdma_msg.rdma_credit, ERR_VERS);
 
             evpl_rpc2_msg_free(thread, msg);
@@ -3728,6 +3788,7 @@ evpl_rpc2_recv_msg(
     rc = unmarshall_rpc_msg(&rpc_msg, hdr_iov, hdr_niov, NULL, &msg->dbuf);
 
     if (rc < 0) {
+        evpl_rpc2_stat_add(&thread->counters->rpc_errors, 1);
         /* Truncated / undecodable RPC header (RFC 5531 §8).  Reusing the
          * negative return as a byte offset below would drive a
          * negative-offset, over-length iovec clone, so nothing further may be
@@ -3773,6 +3834,7 @@ evpl_rpc2_recv_msg(
             request->conn     = rpc2_conn;
             request->conn_ref = 1;
             rpc2_conn->server_requests++;
+            rpc2_conn->inflight++;
             request->bind         = bind;
             request->xid          = deny_xid;
             request->encoding.xid = deny_xid;
@@ -3836,6 +3898,7 @@ evpl_rpc2_recv_msg(
             request->conn     = rpc2_conn;
             request->conn_ref = 1;
             rpc2_conn->server_requests++;
+            rpc2_conn->inflight++;
             request->bind         = bind;
             request->xid          = rpc_msg.xid;
             request->encoding.xid = request->xid;
@@ -4196,6 +4259,7 @@ evpl_rpc2_recv_msg(
         }
         break;
         default:
+            evpl_rpc2_stat_add(&thread->counters->rpc_errors, 1);
             evpl_rpc2_error("rpc2 received unexpected message type %d", rpc_msg.body.mtype);
             evpl_rpc2_msg_free(thread, msg);
             evpl_close(evpl, bind);
@@ -4225,8 +4289,10 @@ evpl_rpc2_event(
             }
             break;
         case EVPL_NOTIFY_DISCONNECTED:
+            evpl_rpc2_stat_add(&rpc2_thread->counters->closes, 1);
             if (rpc2_conn->server_binding) {
-                rpc2_conn->server_binding->active_connections--;
+                evpl_rpc2_stat_sub(&rpc2_conn->server_binding->active_connections, 1);
+                evpl_rpc2_stat_sub(&rpc2_thread->counters->active_connections, 1);
             }
             DL_DELETE(rpc2_thread->conns, rpc2_conn);
             HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_request, tmp)
@@ -4294,6 +4360,50 @@ evpl_rpc2_accept(
     rpc2_conn->rdma = evpl_bind_is_rdma(bind) &&
         !evpl_protocol_is_stream(rpc2_conn->protocol);
 
+    if (rpc2_conn->rdma) {
+        struct evpl_bind_info info;
+        evpl_bind_get_info(bind, &info);
+        if ((!strcmp(info.remote.family, "ipv4") || !strcmp(info.remote.family, "ipv6")) &&
+            info.remote.address[0]) {
+            unsigned int slot = EVPL_RPC2_REMOTE_IP_SLOTS;
+            for (unsigned int i = 0; i < EVPL_RPC2_REMOTE_IP_SLOTS; i++) {
+                struct evpl_rpc2_remote_ip_counter *candidate = &rpc2_conn->thread->rdma_remote_ips[i];
+                if (!atomic_load_explicit(&candidate->valid, memory_order_relaxed)) {
+                    if (slot == EVPL_RPC2_REMOTE_IP_SLOTS) {
+                        slot = i;
+                    }
+                    continue;
+                }
+                unsigned int                        j = 0;
+                while (j < EVPL_RPC2_REMOTE_IP_LENGTH &&
+                       atomic_load_explicit(&candidate->address[j], memory_order_relaxed) == info.remote.address[j] &&
+                       info.remote.address[j]) {
+                    j++;
+                }
+                if (j < EVPL_RPC2_REMOTE_IP_LENGTH && !info.remote.address[j] &&
+                    atomic_load_explicit(&candidate->address[j], memory_order_relaxed) == '\0') {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < EVPL_RPC2_REMOTE_IP_SLOTS) {
+                struct evpl_rpc2_remote_ip_counter *counter = &rpc2_conn->thread->rdma_remote_ips[slot];
+                if (!atomic_load_explicit(&counter->valid, memory_order_relaxed)) {
+                    for (unsigned int i = 0; i < EVPL_RPC2_REMOTE_IP_LENGTH; i++) {
+                        atomic_store_explicit(&counter->address[i], info.remote.address[i], memory_order_relaxed);
+                        if (!info.remote.address[i]) {
+                            break;
+                        }
+                    }
+                    atomic_store_explicit(&counter->valid, 1, memory_order_relaxed);
+                }
+                evpl_rpc2_stat_add(&counter->accepts, 1);
+            } else {
+                evpl_rpc2_stat_add(&rpc2_conn->thread->rdma_remote_ip_overflow_accepts, 1);
+            }
+        }
+    }
+
     memcpy(rpc2_conn->server_programs,
            server_binding->server->programs,
            server_binding->server->nprograms * sizeof(*rpc2_conn->server_programs));
@@ -4305,8 +4415,10 @@ evpl_rpc2_accept(
     *segment_callback  = rpc2_segment_callback;
     *conn_private_data = rpc2_conn;
 
-    server_binding->active_connections++;
+    evpl_rpc2_stat_add(&server_binding->active_connections, 1);
     DL_APPEND(server_binding->thread->conns, rpc2_conn);
+    evpl_rpc2_stat_add(&server_binding->thread->counters->accepts, 1);
+    evpl_rpc2_stat_add(&server_binding->thread->counters->active_connections, 1);
 
     if (server_binding->thread->notify_callback) {
         rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_ACCEPTED;
@@ -4331,7 +4443,31 @@ evpl_rpc2_thread_init(
     char                     thread_id_str[16];
     int                      role;
 
-    thread = evpl_zalloc(sizeof(*thread));
+    thread                 = evpl_zalloc(sizeof(*thread));
+    thread->local_counters = evpl_valloc(sizeof(*thread->local_counters), 64);
+    memset(thread->local_counters, 0, sizeof(*thread->local_counters));
+    thread->counters = thread->local_counters;
+    atomic_init(&thread->counters->rx_msgs, 0);
+    atomic_init(&thread->counters->tx_msgs, 0);
+    atomic_init(&thread->counters->rx_bytes, 0);
+    atomic_init(&thread->counters->tx_bytes, 0);
+    atomic_init(&thread->counters->rpc_errors, 0);
+    atomic_init(&thread->counters->accepts, 0);
+    atomic_init(&thread->counters->closes, 0);
+    atomic_init(&thread->counters->active_connections, 0);
+    atomic_init(&thread->rdma_remote_ip_overflow_accepts, 0);
+    atomic_init(&thread->server_slot_count, 0);
+    for (unsigned int i = 0; i < EVPL_RPC2_MAX_LISTENERS; i++) {
+        atomic_init(&thread->server_slots[i], NULL);
+    }
+    for (unsigned int i = 0; i < EVPL_RPC2_REMOTE_IP_SLOTS; i++) {
+        struct evpl_rpc2_remote_ip_counter *counter = &thread->rdma_remote_ips[i];
+        atomic_init(&counter->valid, 0);
+        atomic_init(&counter->accepts, 0);
+        for (unsigned int j = 0; j < EVPL_RPC2_REMOTE_IP_LENGTH; j++) {
+            atomic_init(&counter->address[j], '\0');
+        }
+    }
 
     thread->evpl            = evpl;
     thread->nprograms       = nprograms;
@@ -4364,6 +4500,14 @@ evpl_rpc2_thread_init(
 
     return thread;
 } /* evpl_rpc2_thread_init */
+
+SYMBOL_EXPORT void
+evpl_rpc2_thread_set_worker_counters(
+    struct evpl_rpc2_thread          *thread,
+    struct evpl_rpc2_worker_counters *counters)
+{
+    thread->counters = counters;
+} /* evpl_rpc2_thread_set_worker_counters */
 
 SYMBOL_EXPORT void
 evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
@@ -4416,6 +4560,7 @@ evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
         }
     }
 
+    evpl_free(thread->local_counters);
     evpl_free(thread);
 } /* evpl_rpc2_thread_destroy */
 
@@ -4482,6 +4627,7 @@ evpl_rpc2_server_attach(
     int                              i, j;
 
     server_binding = evpl_zalloc(sizeof(*server_binding));
+    atomic_init(&server_binding->active_connections, 0);
 
     server_binding->thread       = thread;
     server_binding->server       = server;
@@ -4510,6 +4656,10 @@ evpl_rpc2_server_attach(
         server_binding);
 
     DL_APPEND(thread->servers, server_binding);
+    unsigned int slot = atomic_load_explicit(&thread->server_slot_count, memory_order_relaxed);
+    evpl_rpc2_abort_if(slot >= EVPL_RPC2_MAX_LISTENERS, "too many RPC listeners on one worker");
+    atomic_store_explicit(&thread->server_slots[slot], server_binding, memory_order_release);
+    atomic_store_explicit(&thread->server_slot_count, slot + 1, memory_order_relaxed);
 
 } /* evpl_rpc2_attach */
 
@@ -5121,6 +5271,10 @@ evpl_rpc2_call_full(
     /* Send the request - use out_iov which contains the marshalled header + payload */
 
     evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length, EVPL_SEND_FLAG_TAKE_REF);
+    evpl_rpc2_stat_add(&conn->thread->counters->tx_msgs, 1);
+    evpl_rpc2_stat_add(&conn->thread->counters->tx_bytes, (uint64_t) total_length);
+    evpl_rpc2_conn_stat_add(&conn->tx_msgs, 1);
+    evpl_rpc2_conn_stat_add(&conn->tx_bytes, (uint64_t) total_length);
 
     return 0;
 } /* evpl_rpc2_call */
@@ -5210,9 +5364,16 @@ evpl_rpc2_visit_connections(
         }
         struct evpl_rpc2_connection_info info = { 0 };
         evpl_bind_get_info(conn->bind, &info.bind);
-        info.server          = conn->server_binding->server;
-        info.application_tag = conn->application_tag;
-        info.rdma_framing    = conn->rdma;
+        info.server                = conn->server_binding->server;
+        info.application_tag       = conn->application_tag;
+        info.rx_msgs               = conn->rx_msgs;
+        info.tx_msgs               = conn->tx_msgs;
+        info.rx_bytes              = conn->rx_bytes;
+        info.tx_bytes              = conn->tx_bytes;
+        info.requests_done         = conn->requests_done;
+        info.inflight              = conn->inflight;
+        info.accepted_monotonic_ns = conn->accepted_monotonic_ns;
+        info.rdma_framing          = conn->rdma;
         for (int i = 0; i < conn->num_server_programs; i++) {
             if (conn->observed_program_mask & (1U << i)) {
                 info.programs[info.nprograms].program   = conn->server_programs[i]->program;
@@ -5230,9 +5391,58 @@ evpl_rpc2_get_thread_stats(
     struct evpl_rpc2_thread       *thread,
     struct evpl_rpc2_thread_stats *stats)
 {
-    stats->thread_id       = thread->id;
-    stats->server_inflight = thread->m_inflight[EVPL_RPC2_ROLE_SERVER]->value;
-    stats->client_inflight = thread->m_inflight[EVPL_RPC2_ROLE_CLIENT]->value;
+    stats->thread_id                       = thread->id;
+    stats->nlisteners                      = 0;
+    stats->nrdma_remote_ips                = 0;
+    stats->rdma_remote_ip_overflow_accepts =
+        atomic_load_explicit(&thread->rdma_remote_ip_overflow_accepts, memory_order_relaxed);
+    stats->server_inflight = atomic_load_explicit(&thread->m_inflight[EVPL_RPC2_ROLE_SERVER]->value,
+                                                  memory_order_relaxed);
+    stats->client_inflight = atomic_load_explicit(&thread->m_inflight[EVPL_RPC2_ROLE_CLIENT]->value,
+                                                  memory_order_relaxed);
+    stats->rx_msgs            = atomic_load_explicit(&thread->counters->rx_msgs, memory_order_relaxed);
+    stats->tx_msgs            = atomic_load_explicit(&thread->counters->tx_msgs, memory_order_relaxed);
+    stats->rx_bytes           = atomic_load_explicit(&thread->counters->rx_bytes, memory_order_relaxed);
+    stats->tx_bytes           = atomic_load_explicit(&thread->counters->tx_bytes, memory_order_relaxed);
+    stats->rpc_errors         = atomic_load_explicit(&thread->counters->rpc_errors, memory_order_relaxed);
+    stats->accepts            = atomic_load_explicit(&thread->counters->accepts, memory_order_relaxed);
+    stats->closes             = atomic_load_explicit(&thread->counters->closes, memory_order_relaxed);
+    stats->active_connections = atomic_load_explicit(&thread->counters->active_connections, memory_order_relaxed);
+    unsigned int nservers = atomic_load_explicit(&thread->server_slot_count, memory_order_relaxed);
+    for (unsigned int s = 0; s < nservers; s++) {
+        struct evpl_rpc2_server_binding *binding = atomic_load_explicit(&thread->server_slots[s],
+                                                                        memory_order_acquire);
+        if (!binding) {
+            continue;
+        }
+        if (stats->nlisteners == sizeof(stats->listeners) / sizeof(stats->listeners[0])) {
+            break;
+        }
+        unsigned int                     index = stats->nlisteners++;
+        stats->listeners[index].program        = binding->server->nprograms ? binding->server->programs[0]->program : 0;
+        stats->listeners[index].version        = binding->server->nprograms ? binding->server->programs[0]->version : 0;
+        stats->listeners[index].assigned_total = atomic_load_explicit(&binding->binding->assigned_total,
+                                                                      memory_order_relaxed);
+        stats->listeners[index].live_connections = atomic_load_explicit(&binding->active_connections,
+                                                                        memory_order_relaxed);
+        stats->listeners[index].placement_policy = atomic_load_explicit(&binding->binding->listener->placement_policy,
+                                                                        memory_order_relaxed);
+    }
+    for (unsigned int i = 0; i < EVPL_RPC2_REMOTE_IP_SLOTS; i++) {
+        struct evpl_rpc2_remote_ip_counter *counter = &thread->rdma_remote_ips[i];
+        if (!atomic_load_explicit(&counter->valid, memory_order_relaxed)) {
+            continue;
+        }
+        unsigned int                        index = stats->nrdma_remote_ips++;
+        for (unsigned int j = 0; j < EVPL_RPC2_REMOTE_IP_LENGTH; j++) {
+            stats->rdma_remote_ips[index].address[j] =
+                atomic_load_explicit(&counter->address[j], memory_order_relaxed);
+            if (!stats->rdma_remote_ips[index].address[j]) {
+                break;
+            }
+        }
+        stats->rdma_remote_ips[index].accepts = atomic_load_explicit(&counter->accepts, memory_order_relaxed);
+    }
 } /* evpl_rpc2_get_thread_stats */
 SYMBOL_EXPORT unsigned int
 evpl_rpc2_server_connection_count(
@@ -5245,7 +5455,7 @@ evpl_rpc2_server_connection_count(
     DL_FOREACH(thread->servers, binding)
     {
         if (binding->server == server) {
-            count += binding->active_connections;
+            count += atomic_load_explicit(&binding->active_connections, memory_order_relaxed);
         }
     }
     return count;
@@ -5256,10 +5466,14 @@ evpl_rpc2_visit_procedure_stats(
     int ( *visit )(const struct evpl_rpc2_procedure_stats *, void *),
     void *data)
 {
-    struct evpl_rpc2_server_binding *binding;
+    unsigned int nservers = atomic_load_explicit(&thread->server_slot_count, memory_order_relaxed);
 
-    DL_FOREACH(thread->servers, binding)
-    {
+    for (unsigned int s = 0; s < nservers; s++) {
+        struct evpl_rpc2_server_binding *binding = atomic_load_explicit(&thread->server_slots[s],
+                                                                        memory_order_acquire);
+        if (!binding) {
+            continue;
+        }
         for (int i = 0; i < binding->server->nprograms; i++) {
             struct evpl_rpc2_program *program = binding->server->programs[i];
             for (uint32_t j = 0; j <= program->maxproc; j++) {
@@ -5270,7 +5484,16 @@ evpl_rpc2_visit_procedure_stats(
                 stats.program               = program->program;
                 stats.version               = program->version;
                 stats.procedure             = j;
-                stats.latency_samples_total = binding->metrics[i][j]->count;
+                stats.latency_samples_total = atomic_load_explicit(&binding->metrics[i][j]->count,
+                                                                   memory_order_relaxed);
+                stats.latency_sum_ticks = atomic_load_explicit(&binding->metrics[i][j]->sum,
+                                                               memory_order_relaxed);
+                stats.latency_bucket_count = binding->metrics[i][j]->num_buckets < 64 ?
+                    (unsigned int) binding->metrics[i][j]->num_buckets : 64;
+                for (unsigned int bucket = 0; bucket < stats.latency_bucket_count; bucket++) {
+                    stats.latency_buckets[bucket] = atomic_load_explicit(&binding->metrics[i][j]->buckets[bucket],
+                                                                         memory_order_relaxed);
+                }
                 snprintf(stats.name, sizeof(stats.name), "%s", program->procs && program->procs[j] ? program->procs[j] :
                          "unknown");
                 if (!visit(&stats, data)) {

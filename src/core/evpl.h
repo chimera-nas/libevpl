@@ -190,6 +190,8 @@ struct evpl {
     struct evpl_thread_identity   identity;
     uint64_t                      next_bind_serial;
     uint64_t                      poll_iters;
+    _Atomic uint64_t              loop_iters;
+    _Atomic uint64_t              loop_iters_with_work;
 
     uint64_t                      last_activity_ticks;
     uint64_t                      spin_ticks;
@@ -289,8 +291,15 @@ struct evpl_listener_binding {
     void                         *private_data;
     int                           enabled;
     atomic_uint                   refs;
+    _Atomic uint64_t              assigned_total;
     struct evpl_listener_binding *prev;
     struct evpl_listener_binding *next;
+};
+
+enum evpl_listener_placement_policy {
+    EVPL_LISTENER_PLACEMENT_UNKNOWN = 0,
+    EVPL_LISTENER_PLACEMENT_ROUND_ROBIN = 1,
+    EVPL_LISTENER_PLACEMENT_DISTRIBUTED = 2
 };
 
 struct evpl_connect_request {
@@ -355,6 +364,7 @@ struct evpl_listener {
     int                            max_attached;
     int                            rotor;
     int                            closing;
+    _Atomic unsigned int           placement_policy;
     evpl_completion_t              completion;
     void                          *completion_private;
 };
