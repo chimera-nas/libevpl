@@ -224,6 +224,7 @@ struct evpl_rpc2_thread {
     struct evpl_rpc2_server_binding     *servers;
     _Atomic unsigned int                 server_slot_count;
     _Atomic(struct evpl_rpc2_server_binding *) server_slots[EVPL_RPC2_MAX_LISTENERS];
+    _Atomic unsigned int                 stats_readers;
     xdr_dbuf                            *client_dbuf;
     int                                  id;
     struct evpl_rpc2_worker_counters    *local_counters;
@@ -4457,6 +4458,7 @@ evpl_rpc2_thread_init(
     atomic_init(&thread->counters->active_connections, 0);
     atomic_init(&thread->rdma_remote_ip_overflow_accepts, 0);
     atomic_init(&thread->server_slot_count, 0);
+    atomic_init(&thread->stats_readers, 0);
     for (unsigned int i = 0; i < EVPL_RPC2_MAX_LISTENERS; i++) {
         atomic_init(&thread->server_slots[i], NULL);
     }
@@ -4658,8 +4660,8 @@ evpl_rpc2_server_attach(
     DL_APPEND(thread->servers, server_binding);
     unsigned int slot = atomic_load_explicit(&thread->server_slot_count, memory_order_relaxed);
     evpl_rpc2_abort_if(slot >= EVPL_RPC2_MAX_LISTENERS, "too many RPC listeners on one worker");
-    atomic_store_explicit(&thread->server_slots[slot], server_binding, memory_order_release);
-    atomic_store_explicit(&thread->server_slot_count, slot + 1, memory_order_relaxed);
+    atomic_store_explicit(&thread->server_slots[slot], server_binding, memory_order_seq_cst);
+    atomic_store_explicit(&thread->server_slot_count, slot + 1, memory_order_release);
 
 } /* evpl_rpc2_attach */
 
@@ -4682,6 +4684,20 @@ evpl_rpc2_server_detach(
     evpl_rpc2_abort_if(!server_binding, "Server binding not found");
 
     DL_DELETE(thread->servers, server_binding);
+
+    /* Remove the binding from lock-free stats readers and wait for readers
+     * that may already have loaded it before releasing its storage below. */
+    unsigned int nservers = atomic_load_explicit(&thread->server_slot_count, memory_order_acquire);
+    for (unsigned int slot = 0; slot < nservers; slot++) {
+        struct evpl_rpc2_server_binding *published = atomic_load_explicit(&thread->server_slots[slot],
+                                                                         memory_order_seq_cst);
+        if (published == server_binding) {
+            atomic_store_explicit(&thread->server_slots[slot], NULL, memory_order_seq_cst);
+            break;
+        }
+    }
+    while (atomic_load_explicit(&thread->stats_readers, memory_order_seq_cst)) {
+    }
 
     evpl_listener_detach(thread->evpl, server_binding->binding);
 
@@ -4713,6 +4729,18 @@ evpl_rpc2_server_detach(
     evpl_free(server_binding);
 
 } /* evpl_rpc2_detach */
+
+static void
+evpl_rpc2_stats_read_begin(struct evpl_rpc2_thread *thread)
+{
+    atomic_fetch_add_explicit(&thread->stats_readers, 1, memory_order_seq_cst);
+}
+
+static void
+evpl_rpc2_stats_read_end(struct evpl_rpc2_thread *thread)
+{
+    atomic_fetch_sub_explicit(&thread->stats_readers, 1, memory_order_seq_cst);
+}
 
 SYMBOL_EXPORT void
 evpl_rpc2_server_stop(struct evpl_rpc2_server *server)
@@ -5391,6 +5419,7 @@ evpl_rpc2_get_thread_stats(
     struct evpl_rpc2_thread       *thread,
     struct evpl_rpc2_thread_stats *stats)
 {
+    evpl_rpc2_stats_read_begin(thread);
     stats->thread_id                       = thread->id;
     stats->nlisteners                      = 0;
     stats->nrdma_remote_ips                = 0;
@@ -5408,10 +5437,10 @@ evpl_rpc2_get_thread_stats(
     stats->accepts            = atomic_load_explicit(&thread->counters->accepts, memory_order_relaxed);
     stats->closes             = atomic_load_explicit(&thread->counters->closes, memory_order_relaxed);
     stats->active_connections = atomic_load_explicit(&thread->counters->active_connections, memory_order_relaxed);
-    unsigned int nservers = atomic_load_explicit(&thread->server_slot_count, memory_order_relaxed);
+    unsigned int nservers = atomic_load_explicit(&thread->server_slot_count, memory_order_acquire);
     for (unsigned int s = 0; s < nservers; s++) {
         struct evpl_rpc2_server_binding *binding = atomic_load_explicit(&thread->server_slots[s],
-                                                                        memory_order_acquire);
+                                                                        memory_order_seq_cst);
         if (!binding) {
             continue;
         }
@@ -5443,6 +5472,7 @@ evpl_rpc2_get_thread_stats(
         }
         stats->rdma_remote_ips[index].accepts = atomic_load_explicit(&counter->accepts, memory_order_relaxed);
     }
+    evpl_rpc2_stats_read_end(thread);
 } /* evpl_rpc2_get_thread_stats */
 SYMBOL_EXPORT unsigned int
 evpl_rpc2_server_connection_count(
@@ -5466,11 +5496,12 @@ evpl_rpc2_visit_procedure_stats(
     int ( *visit )(const struct evpl_rpc2_procedure_stats *, void *),
     void *data)
 {
-    unsigned int nservers = atomic_load_explicit(&thread->server_slot_count, memory_order_relaxed);
+    evpl_rpc2_stats_read_begin(thread);
+    unsigned int nservers = atomic_load_explicit(&thread->server_slot_count, memory_order_acquire);
 
     for (unsigned int s = 0; s < nservers; s++) {
         struct evpl_rpc2_server_binding *binding = atomic_load_explicit(&thread->server_slots[s],
-                                                                        memory_order_acquire);
+                                                                        memory_order_seq_cst);
         if (!binding) {
             continue;
         }
@@ -5497,11 +5528,13 @@ evpl_rpc2_visit_procedure_stats(
                 snprintf(stats.name, sizeof(stats.name), "%s", program->procs && program->procs[j] ? program->procs[j] :
                          "unknown");
                 if (!visit(&stats, data)) {
+                    evpl_rpc2_stats_read_end(thread);
                     return 0;
                 }
             }
         }
     }
+    evpl_rpc2_stats_read_end(thread);
     return 1;
 } /* evpl_rpc2_visit_procedure_stats */
 SYMBOL_EXPORT uint64_t
