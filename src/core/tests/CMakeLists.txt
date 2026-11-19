@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Ben Jarvis
+# SPDX-FileCopyrightText: 2025-2026 Ben Jarvis
 #
 # SPDX-License-Identifier: LGPL-2.1-only
 
@@ -511,3 +511,5 @@ if(HAVE_LIBFABRIC AND TARGET core_listener_conformance)
         endforeach()
     endforeach()
 endif()
+
+unit_test(core inspect_metadata inspect_metadata.c)

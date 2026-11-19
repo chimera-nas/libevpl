@@ -82,6 +82,10 @@ evpl_listener_accept_local(
     struct evpl_listener_binding *binding = private_data;
     struct evpl_bind             *new_bind;
 
+    uint64_t                      assigned = atomic_load_explicit(&binding->assigned_total, memory_order_relaxed);
+
+    atomic_store_explicit(&binding->assigned_total, assigned + 1, memory_order_relaxed);
+
     new_bind = evpl_bind_prepare(evpl,
                                  listen_bind->protocol,
                                  NULL,
@@ -118,6 +122,11 @@ evpl_listener_accept(
     }
 
     binding = listener->attached[listener->rotor];
+
+    uint64_t assigned = atomic_load_explicit(&binding->assigned_total, memory_order_relaxed);
+    atomic_store_explicit(&binding->assigned_total, assigned + 1, memory_order_relaxed);
+    atomic_store_explicit(&listener->placement_policy, EVPL_LISTENER_PLACEMENT_ROUND_ROBIN,
+                          memory_order_relaxed);
 
     listener->rotor++;
 
@@ -202,6 +211,8 @@ evpl_listener_callback(
         if (proto->listen_distributed &&
             proto->listen_distributed(listener, request->protocol_id,
                                       request->address) == 0) {
+            atomic_store_explicit(&listener->placement_policy, EVPL_LISTENER_PLACEMENT_DISTRIBUTED,
+                                  memory_order_relaxed);
             request->status = 0;
             evpl_listen_complete(request);
             continue;
@@ -214,6 +225,8 @@ evpl_listener_callback(
         if (request->status) {
             evpl_bind_abort(evpl, bind);
         } else {
+            atomic_store_explicit(&listener->placement_policy, EVPL_LISTENER_PLACEMENT_ROUND_ROBIN,
+                                  memory_order_relaxed);
             if (listener->num_binds == listener->max_binds) {
                 listener->max_binds *= 2;
                 listener->binds      = evpl_realloc(listener->binds,
@@ -265,6 +278,7 @@ evpl_listener_create_config(struct evpl_thread_config *config)
     __evpl_init();
 
     listener = evpl_zalloc(sizeof(*listener));
+    atomic_init(&listener->placement_policy, EVPL_LISTENER_PLACEMENT_UNKNOWN);
 
     /* Open the doorbell before the worker exists so evpl_listen can ring it
      * immediately; the worker registers it on its own evpl in
@@ -380,6 +394,7 @@ evpl_listener_attach(
     binding->private_data    = private_data;
     binding->enabled         = 1;
     atomic_init(&binding->refs, 1);
+    atomic_init(&binding->assigned_total, 0);
 
     DL_APPEND(evpl->listener_bindings, binding);
 

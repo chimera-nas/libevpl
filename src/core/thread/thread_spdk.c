@@ -131,7 +131,11 @@ evpl_thread_spdk_start(void *ctx)
     evpl                = evpl_create(evpl_thread->config);
     evpl_thread->config = NULL;
 
-    evpl_thread->evpl = evpl;
+    evpl_thread->evpl         = evpl;
+    evpl->identity.pool_index = evpl_thread->pool_index;
+    snprintf(evpl->identity.name, sizeof(evpl->identity.name), "%s",
+             spdk_thread_get_name(spdk_get_thread()));
+    snprintf(evpl->identity.executor, sizeof(evpl->identity.executor), "spdk");
 
     evpl_add_event(evpl, &evpl_thread->stop_event,
                    evpl_thread->stop_wakeup.rfd,
@@ -157,7 +161,8 @@ evpl_thread_create_spdk(
     evpl_thread_init_callback_t     init_function,
     evpl_thread_shutdown_callback_t shutdown_function,
     void                           *private_data,
-    int                             wait_ready)
+    int                             wait_ready,
+    int                             pool_index)
 {
     static unsigned int evpl_thread_spdk_id = 0;
     struct evpl_thread *evpl_thread;
@@ -170,6 +175,7 @@ evpl_thread_create_spdk(
 
     evpl_thread = evpl_zalloc(sizeof(*evpl_thread));
 
+    evpl_thread->pool_index        = pool_index;
     evpl_thread->spdk_mode         = 1;
     evpl_thread->init_callback     = init_function;
     evpl_thread->shutdown_callback = shutdown_function;
