@@ -56,7 +56,8 @@ evpl_thread_create_spdk(
     evpl_thread_init_callback_t     init_function,
     evpl_thread_shutdown_callback_t shutdown_function,
     void                           *private_data,
-    int                             wait_ready);
+    int                             wait_ready,
+    int                             pool_index);
 
 void
 evpl_thread_destroy_spdk(
