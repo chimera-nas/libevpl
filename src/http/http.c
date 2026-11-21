@@ -2382,6 +2382,9 @@ evpl_http_event(
              * been failed, and the struct waits for the
              * evpl_http_client_close() its owner still owes it.
              */
+            if (http_conn->is_server) {
+                http_conn->server->active_connections--;
+            }
             if (http_conn->is_server || http_conn->released) {
                 DL_DELETE(http_conn->agent->conns, http_conn);
                 evpl_free(http_conn);
@@ -2944,6 +2947,7 @@ evpl_http_accept(
     evpl_deferral_init(&http_conn->parse, evpl_http_parse_deferred, http_conn);
 
     DL_APPEND(server->agent->conns, http_conn);
+    server->active_connections++;
 
 } /* evpl_http_accept */
 
@@ -3550,3 +3554,41 @@ evpl_http_request_get_datav(
 {
     return evpl_iovec_ring_copyv(evpl, iov, &request->recv_ring, length);
 } /* evpl_http_request_get_datav */
+
+SYMBOL_EXPORT unsigned int
+evpl_http_server_connection_count(struct evpl_http_server *server)
+{
+    return server->active_connections;
+} /* evpl_http_server_connection_count */
+SYMBOL_EXPORT unsigned int
+evpl_http_visit_server_connections(
+    struct evpl_http_server *server,
+    unsigned int limit,
+    int ( *visit )(const struct evpl_http_connection_info *, void *),
+    void *data,
+    int *truncated)
+{
+    struct evpl_http_conn *conn;
+    unsigned int           scanned = 0;
+
+    *truncated = 0;
+    DL_FOREACH(server->agent->conns, conn)
+    {
+        if (scanned == limit) {
+            *truncated = 1; break;
+        }
+        scanned++;
+        if (conn->server != server || !conn->bind) {
+            continue;
+        }
+        struct evpl_http_connection_info info = { 0 };
+        evpl_bind_get_info(conn->bind, &info.bind);
+        snprintf(info.framing, sizeof(info.framing), "%s",
+                 conn->proto == EVPL_HTTP_PROTO_H1 ? "h1" :
+                 conn->proto == EVPL_HTTP_PROTO_H2 ? "h2" : "unknown");
+        if (!visit(&info, data)) {
+            *truncated = conn->next != NULL; break;
+        }
+    }
+    return scanned;
+} /* evpl_http_visit_server_connections */

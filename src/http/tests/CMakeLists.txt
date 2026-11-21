@@ -10,6 +10,10 @@ unit_test(http chunked http_chunked.c)
 target_link_libraries(http_basic evpl_http CURL::libcurl)
 target_link_libraries(http_chunked evpl_http CURL::libcurl)
 
+# Connection count and visitor of an HTTP server, checked from its own thread
+unit_test(http inspect http_inspect.c)
+target_link_libraries(http_inspect evpl_http CURL::libcurl)
+
 # evpl HTTP/1.1 client <-> evpl server (no nghttp2 required)
 unit_test(http client http1_client.c)
 target_link_libraries(http_client evpl_http)
