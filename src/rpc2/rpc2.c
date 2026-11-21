@@ -200,6 +200,7 @@ struct evpl_rpc2_server_binding {
     void                                   *private_data;
     struct evpl_rpc2_server_binding        *prev;
     struct evpl_rpc2_server_binding        *next;
+    unsigned int                            active_connections; /* accepted, still open */
 };
 
 struct evpl_rpc2_thread {
@@ -341,6 +342,8 @@ evpl_rpc2_request_free(
         struct evpl_rpc2_conn *conn = request->conn;
 
         request->conn_ref = 0;
+        conn->inflight--;
+        conn->requests_done++;
         if (--conn->server_requests == 0 && conn->closed) {
             evpl_free(conn);
         }
@@ -805,6 +808,9 @@ evpl_rpc2_dispatch_reply(
     int                       reply_length)
 {
     struct evpl_rpc2_thread *thread = request->thread;
+
+    request->conn->tx_msgs++;
+    request->conn->tx_bytes += reply_length;
 
     evpl_sendv(
         evpl,
@@ -3578,6 +3584,9 @@ evpl_rpc2_recv_msg(
     auth_flavor                      flavor;
     struct authsys_parms            *authsys = NULL;
 
+    rpc2_conn->rx_msgs++;
+    rpc2_conn->rx_bytes += length;
+
     /* Allocate msg first - this gives us a dbuf for unmarshalling */
     msg = evpl_rpc2_msg_alloc(thread);
 
@@ -3767,6 +3776,7 @@ evpl_rpc2_recv_msg(
             request->conn     = rpc2_conn;
             request->conn_ref = 1;
             rpc2_conn->server_requests++;
+            rpc2_conn->inflight++;
             request->bind         = bind;
             request->xid          = deny_xid;
             request->encoding.xid = deny_xid;
@@ -3830,6 +3840,7 @@ evpl_rpc2_recv_msg(
             request->conn     = rpc2_conn;
             request->conn_ref = 1;
             rpc2_conn->server_requests++;
+            rpc2_conn->inflight++;
             request->bind         = bind;
             request->xid          = rpc_msg.xid;
             request->encoding.xid = request->xid;
@@ -4022,6 +4033,10 @@ evpl_rpc2_recv_msg(
                 evpl_rpc2_send_reply_error(evpl, request, PROC_UNAVAIL);
                 return;
             }
+
+            /* The call is accepted for dispatch: note, for inspection, that
+             * this connection has used program i. */
+            rpc2_conn->observed_program_mask |= 1U << i;
 
             request->metric = server_binding ? server_binding->metrics[i][request->proc] : NULL;
 
@@ -4218,6 +4233,9 @@ evpl_rpc2_event(
             }
             break;
         case EVPL_NOTIFY_DISCONNECTED:
+            if (rpc2_conn->server_binding) {
+                rpc2_conn->server_binding->active_connections--;
+            }
             DL_DELETE(rpc2_thread->conns, rpc2_conn);
             HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_request, tmp)
             {
@@ -4296,6 +4314,7 @@ evpl_rpc2_accept(
     *conn_private_data = rpc2_conn;
 
     DL_APPEND(server_binding->thread->conns, rpc2_conn);
+    server_binding->active_connections++;
 
     if (server_binding->thread->notify_callback) {
         rpc2_notify.notify_type = EVPL_RPC2_NOTIFY_ACCEPTED;
@@ -4510,6 +4529,7 @@ evpl_rpc2_server_detach(
     int                              i, j;
     struct evpl_rpc2_program        *program;
     struct evpl_rpc2_server_binding *server_binding;
+    struct evpl_rpc2_conn           *conn;
 
     DL_FOREACH(thread->servers, server_binding)
     {
@@ -4523,6 +4543,16 @@ evpl_rpc2_server_detach(
     DL_DELETE(thread->servers, server_binding);
 
     evpl_listener_detach(thread->evpl, server_binding->binding);
+
+    /* Accepted connections can outlive the listener.  They point at the
+     * binding for its metric instances and for inspection, and both are freed
+     * below, so cut that link first. */
+    DL_FOREACH(thread->conns, conn)
+    {
+        if (conn->server_binding == server_binding) {
+            conn->server_binding = NULL;
+        }
+    }
 
     for (i = 0; i < server->nprograms; i++) {
         program = server->programs[i];
@@ -5100,6 +5130,9 @@ evpl_rpc2_call_full(
 
     evpl_sendv(evpl, conn->bind, req_iov, req_niov, total_length, EVPL_SEND_FLAG_TAKE_REF);
 
+    conn->tx_msgs++;
+    conn->tx_bytes += total_length;
+
     return 0;
 } /* evpl_rpc2_call */
 
@@ -5164,3 +5197,93 @@ evpl_rpc2_discard_request(
      * gauge is balanced. */
     evpl_rpc2_request_free(request->thread, request);
 } /* evpl_rpc2_discard_request */
+
+SYMBOL_EXPORT unsigned int
+evpl_rpc2_visit_connections(
+    struct evpl_rpc2_thread *thread,
+    unsigned int limit,
+    int ( *visit )(const struct evpl_rpc2_connection_info *, void *),
+    void *private_data,
+    int *truncated)
+{
+    struct evpl_rpc2_conn *conn;
+    unsigned int           scanned = 0;
+    int                    i;
+
+    *truncated = 0;
+
+    DL_FOREACH(thread->conns, conn)
+    {
+        struct evpl_rpc2_connection_info info = { 0 };
+
+        if (scanned == limit) {
+            *truncated = 1;
+            break;
+        }
+
+        scanned++;
+
+        if (!conn->server_binding) {
+            continue;
+        }
+
+        evpl_bind_get_info(conn->bind, &info.bind);
+
+        info.server          = conn->server_binding->server;
+        info.application_tag = conn->application_tag;
+        info.rx_msgs         = conn->rx_msgs;
+        info.tx_msgs         = conn->tx_msgs;
+        info.rx_bytes        = conn->rx_bytes;
+        info.tx_bytes        = conn->tx_bytes;
+        info.requests_done   = conn->requests_done;
+        info.inflight        = conn->inflight;
+        info.rdma_framing    = conn->rdma;
+
+        for (i = 0; i < conn->num_server_programs; i++) {
+            if (conn->observed_program_mask & (1U << i)) {
+                info.programs[info.nprograms].program = conn->server_programs[i]->program;
+                info.programs[info.nprograms].version = conn->server_programs[i]->version;
+                info.nprograms++;
+            }
+        }
+
+        if (!visit(&info, private_data)) {
+            *truncated = conn->next != NULL;
+            break;
+        }
+    }
+
+    return scanned;
+} /* evpl_rpc2_visit_connections */
+
+SYMBOL_EXPORT unsigned int
+evpl_rpc2_server_connection_count(
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_server *server)
+{
+    struct evpl_rpc2_server_binding *binding;
+    unsigned int                     count = 0;
+
+    DL_FOREACH(thread->servers, binding)
+    {
+        if (binding->server == server) {
+            count += binding->active_connections;
+        }
+    }
+
+    return count;
+} /* evpl_rpc2_server_connection_count */
+
+SYMBOL_EXPORT uint64_t
+evpl_rpc2_conn_get_application_tag(struct evpl_rpc2_conn *conn)
+{
+    return conn->application_tag;
+} /* evpl_rpc2_conn_get_application_tag */
+
+SYMBOL_EXPORT void
+evpl_rpc2_conn_set_application_tag(
+    struct evpl_rpc2_conn *conn,
+    uint64_t               tag)
+{
+    conn->application_tag = tag;
+} /* evpl_rpc2_conn_set_application_tag */

@@ -111,6 +111,17 @@ struct evpl_rpc2_conn {
     int                              num_server_programs;
     struct evpl_rpc2_program        *server_programs[4];
 
+    /* Inspection state.  Plain fields: only the thread that owns the
+     * connection writes them, and only that thread reads them (see
+     * evpl_rpc2_visit_connections).  inflight counts server requests received
+     * and not yet ended; requests_done counts those that have ended.
+     * observed_program_mask has bit i set once a call for server_programs[i]
+     * has been accepted for dispatch. */
+    uint64_t                         application_tag;
+    uint64_t                         rx_msgs, tx_msgs, rx_bytes, tx_bytes;
+    uint64_t                         requests_done, inflight;
+    uint32_t                         observed_program_mask;
+
     /* Server requests received on this connection and not yet ended (replied
      * to or discarded).  A server may still be executing calls when the peer
      * goes away, and each of those requests keeps pointing here; so a
@@ -249,3 +260,54 @@ EVPL_RPC2_API void
 evpl_rpc2_conn_set_next_xid(
     struct evpl_rpc2_conn *conn,
     uint32_t               xid);
+/*
+ * Connection inspection.
+ *
+ * Call these only from the thread that runs the event loop of `thread`.  The
+ * connection list and the per-connection counters are plain data with no
+ * synchronization.  A visitor gets a copy of each connection's state: it must
+ * not keep pointers into it, and must not create or close connections.  It
+ * returns 0 to stop the walk early.
+ *
+ * Only connections accepted by a server are visited.  `limit` bounds how many
+ * connections are examined; *truncated is set when some were left unvisited.
+ * The return value is the number examined.
+ */
+struct evpl_rpc2_connection_info {
+    struct evpl_bind_info    bind;
+    struct evpl_rpc2_server *server; /* identity only, valid during the callback */
+    uint64_t                 application_tag;
+    uint64_t                 rx_msgs, tx_msgs, rx_bytes, tx_bytes;
+    uint64_t                 requests_done, inflight;
+    int                      rdma_framing;
+    int                      nprograms;
+    struct {
+        uint32_t program, version;
+    } programs[4];
+};
+
+EVPL_RPC2_API unsigned int
+evpl_rpc2_visit_connections(
+    struct evpl_rpc2_thread *thread,
+    unsigned int limit,
+    int ( *visit )(const struct evpl_rpc2_connection_info *, void *),
+    void *private_data,
+    int *truncated);
+
+/* Connections `server` has accepted on this thread that are still open. */
+EVPL_RPC2_API unsigned int
+evpl_rpc2_server_connection_count(
+    struct evpl_rpc2_thread *thread,
+    struct evpl_rpc2_server *server);
+
+/* An opaque value the application can attach to a connection and read back
+ * during inspection, for example to identify the client the connection
+ * belongs to.  It is 0 until set. */
+EVPL_RPC2_API uint64_t
+evpl_rpc2_conn_get_application_tag(
+    struct evpl_rpc2_conn *conn);
+
+EVPL_RPC2_API void
+evpl_rpc2_conn_set_application_tag(
+    struct evpl_rpc2_conn *conn,
+    uint64_t               tag);
