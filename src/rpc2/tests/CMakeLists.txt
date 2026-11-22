@@ -174,6 +174,10 @@ unit_test_rpc2(server_late_reply hello_world.x server_late_reply.c)
 unit_test_rpc2(server_request_end hello_world.x server_request_end.c)
 unit_test_rpc2(server_inspect hello_world.x server_inspect.c)
 
+# The queue depth series is named by thread and shared by the contexts on it.
+unit_test(rpc2 queue_depth_names queue_depth_names.c)
+target_link_libraries(rpc2_queue_depth_names evpl_rpc2)
+
 # Client-side RPCSEC_GSS.  Needs a real mechanism -- the whole point is that
 # the initiator and the acceptor are not the same few lines of test code -- so
 # it is registered only where krb5 is available, and skips (77) at runtime if
