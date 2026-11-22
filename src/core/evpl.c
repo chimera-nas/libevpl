@@ -263,6 +263,13 @@ evpl_shared_init(struct evpl_global_config *config)
         evpl_shared->metrics, "evpl_rpc2_queue_depth",
         "Outstanding RPC2 requests");
 
+    /* RPC2 requests per thread, labelled by role and thread name like the
+     * queue depth: replies sent by the server side, calls sent by the client
+     * side.  Two series per thread. */
+    evpl_shared->rpc2_requests = prometheus_metrics_create_counter(
+        evpl_shared->metrics, "evpl_rpc2_requests_total",
+        "RPC2 requests served and issued");
+
     evpl_shared->allocator = evpl_allocator_create();
 
     evpl_protocol_init(evpl_shared, EVPL_DATAGRAM_SOCKET_UDP,
@@ -500,6 +507,106 @@ evpl_metrics_scrape(
     return prometheus_metrics_scrape(evpl_shared->metrics, buffer, buffer_size);
 } /* evpl_metrics_scrape */
 
+/* One series per (metric, label, thread), however many rpc2 contexts the
+ * thread runs.  Each context keeps its own instance and the scrape sums the
+ * instances of a series, so contexts on one thread can share the series but
+ * must not each create it, or the exposition would carry the same label set
+ * twice.  The series is refcounted here and destroyed with its last user.
+ */
+struct evpl_rpc2_series_entry {
+    void                          *metric;
+    void                          *series;
+    int                            is_counter;
+    char                           label[16];
+    char                           thread[80];
+    int                            refcnt;
+    struct evpl_rpc2_series_entry *next;
+};
+
+static struct evpl_rpc2_series_entry *evpl_rpc2_series_entries;
+
+static void *
+evpl_rpc2_series_acquire(
+    void       *metric,
+    int         is_counter,
+    const char *label_name,
+    const char *label,
+    const char *thread)
+{
+    struct evpl_rpc2_series_entry *entry;
+    void                          *series;
+
+    __evpl_init();
+
+    evpl_mutex_lock(&evpl_shared->lock);
+
+    for (entry = evpl_rpc2_series_entries; entry; entry = entry->next) {
+        if (entry->metric == metric && !strcmp(entry->label, label) &&
+            !strcmp(entry->thread, thread)) {
+            entry->refcnt++;
+            series = entry->series;
+            evpl_mutex_unlock(&evpl_shared->lock);
+            return series;
+        }
+    }
+
+    entry = evpl_zalloc(sizeof(*entry));
+
+    entry->metric     = metric;
+    entry->is_counter = is_counter;
+    entry->refcnt     = 1;
+    snprintf(entry->label, sizeof(entry->label), "%s", label);
+    snprintf(entry->thread, sizeof(entry->thread), "%s", thread);
+
+    if (is_counter) {
+        entry->series = prometheus_counter_create_series(
+            metric,
+            (const char *[]) { label_name, "thread" },
+            (const char *[]) { entry->label, entry->thread }, 2);
+    } else {
+        entry->series = prometheus_gauge_create_series(
+            metric,
+            (const char *[]) { label_name, "thread" },
+            (const char *[]) { entry->label, entry->thread }, 2);
+    }
+
+    entry->next              = evpl_rpc2_series_entries;
+    evpl_rpc2_series_entries = entry;
+
+    series = entry->series;
+
+    evpl_mutex_unlock(&evpl_shared->lock);
+
+    return series;
+} /* evpl_rpc2_series_acquire */
+
+static void
+evpl_rpc2_series_release(void *series)
+{
+    struct evpl_rpc2_series_entry **link, *entry;
+
+    evpl_mutex_lock(&evpl_shared->lock);
+
+    for (link = &evpl_rpc2_series_entries; (entry = *link); link = &entry->next) {
+        if (entry->series != series) {
+            continue;
+        }
+
+        if (--entry->refcnt == 0) {
+            *link = entry->next;
+            if (entry->is_counter) {
+                prometheus_counter_destroy_series(entry->metric, series);
+            } else {
+                prometheus_gauge_destroy_series(entry->metric, series);
+            }
+            evpl_free(entry);
+        }
+        break;
+    }
+
+    evpl_mutex_unlock(&evpl_shared->lock);
+} /* evpl_rpc2_series_release */
+
 SYMBOL_EXPORT struct prometheus_gauge_series *
 evpl_rpc2_queue_depth_create_series(
     const char *role,
@@ -507,17 +614,32 @@ evpl_rpc2_queue_depth_create_series(
 {
     __evpl_init();
 
-    return prometheus_gauge_create_series(
-        evpl_shared->rpc2_queue_depth,
-        (const char *[]) { "role", "thread" },
-        (const char *[]) { role, thread }, 2);
+    return evpl_rpc2_series_acquire(evpl_shared->rpc2_queue_depth, 0,
+                                    "role", role, thread);
 } /* evpl_rpc2_queue_depth_create_series */
 
 SYMBOL_EXPORT void
 evpl_rpc2_queue_depth_destroy_series(struct prometheus_gauge_series *series)
 {
-    prometheus_gauge_destroy_series(evpl_shared->rpc2_queue_depth, series);
+    evpl_rpc2_series_release(series);
 } /* evpl_rpc2_queue_depth_destroy_series */
+
+SYMBOL_EXPORT struct prometheus_counter_series *
+evpl_rpc2_requests_create_series(
+    const char *role,
+    const char *thread)
+{
+    __evpl_init();
+
+    return evpl_rpc2_series_acquire(evpl_shared->rpc2_requests, 1,
+                                    "role", role, thread);
+} /* evpl_rpc2_requests_create_series */
+
+SYMBOL_EXPORT void
+evpl_rpc2_requests_destroy_series(struct prometheus_counter_series *series)
+{
+    evpl_rpc2_series_release(series);
+} /* evpl_rpc2_requests_destroy_series */
 
 static inline struct evpl_global_config *
 evpl_get_config(void)

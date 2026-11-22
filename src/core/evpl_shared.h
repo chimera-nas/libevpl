@@ -50,6 +50,7 @@ struct evpl_shared {
     struct prometheus_histogram *block_request_size;
     struct prometheus_gauge     *block_queue_depth;
     struct prometheus_gauge     *rpc2_queue_depth;
+    struct prometheus_counter   *rpc2_requests;
     struct evpl_allocator       *allocator;
     struct evpl_framework       *framework[EVPL_NUM_FRAMEWORK];
     void                        *framework_private[EVPL_NUM_FRAMEWORK];
@@ -105,6 +106,13 @@ EVPL_API struct prometheus_gauge_series * evpl_rpc2_queue_depth_create_series(
 
 EVPL_API void evpl_rpc2_queue_depth_destroy_series(
     struct prometheus_gauge_series *series);
+
+EVPL_API struct prometheus_counter_series * evpl_rpc2_requests_create_series(
+    const char *role,
+    const char *thread);
+
+EVPL_API void evpl_rpc2_requests_destroy_series(
+    struct prometheus_counter_series *series);
 
 
 static inline void

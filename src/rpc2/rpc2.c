@@ -218,6 +218,11 @@ struct evpl_rpc2_thread {
     struct prometheus_gauge_series      *m_inflight_series[EVPL_RPC2_NUM_ROLES];
     struct prometheus_gauge_instance    *m_inflight[EVPL_RPC2_NUM_ROLES];
 
+    /* Requests through this thread, by role: replies sent as a server, calls
+     * sent as a client.  Plain adds on the owning thread. */
+    struct prometheus_counter_series    *m_requests_series[EVPL_RPC2_NUM_ROLES];
+    struct prometheus_counter_instance  *m_requests[EVPL_RPC2_NUM_ROLES];
+
     /* RPCSEC_GSS acceptor provider (NULL == RPCSEC_GSS disabled). */
     const struct evpl_rpc2_gss_provider *gss_provider;
     void                                *gss_provider_arg;
@@ -811,6 +816,7 @@ evpl_rpc2_dispatch_reply(
 
     request->conn->tx_msgs++;
     request->conn->tx_bytes += reply_length;
+    prometheus_counter_increment(thread->m_requests[EVPL_RPC2_ROLE_SERVER]);
 
     evpl_sendv(
         evpl,
@@ -4335,9 +4341,10 @@ evpl_rpc2_thread_init(
     evpl_rpc2_notify_callback_t notify_callback,
     void                       *private_data)
 {
-    struct evpl_rpc2_thread *thread;
-    char                     thread_id_str[16];
-    int                      role;
+    struct evpl_rpc2_thread    *thread;
+    struct evpl_thread_identity identity;
+    char                        thread_id_str[sizeof(identity.name)];
+    int                         role;
 
     thread = evpl_zalloc(sizeof(*thread));
 
@@ -4350,9 +4357,18 @@ evpl_rpc2_thread_init(
     thread->id = atomic_fetch_add_explicit(&evpl_rpc2_next_thread_id, 1,
                                            memory_order_relaxed);
 
-    /* One in-flight gauge instance per role, labelled with role and thread
-     * id.  The I/O path mutates the instance on this thread only. */
-    snprintf(thread_id_str, sizeof(thread_id_str), "%d", thread->id);
+    /* One in-flight gauge instance per role, labelled with role and the name
+     * of the event loop thread, so the series are the same from run to run
+     * whatever order threads start in.  A thread without a name falls back to
+     * the creation counter.  Several rpc2 contexts on one thread share the
+     * series.  The I/O path mutates the instance on this thread only. */
+    evpl_thread_get_identity(evpl, &identity);
+
+    if (identity.name[0]) {
+        snprintf(thread_id_str, sizeof(thread_id_str), "%s", identity.name);
+    } else {
+        snprintf(thread_id_str, sizeof(thread_id_str), "%d", thread->id);
+    }
 
     for (role = 0; role < EVPL_RPC2_NUM_ROLES; ++role) {
         thread->m_inflight_series[role] =
@@ -4361,6 +4377,15 @@ evpl_rpc2_thread_init(
                 thread_id_str);
         thread->m_inflight[role] = prometheus_gauge_series_create_instance(
             thread->m_inflight_series[role]);
+    }
+
+    for (role = 0; role < EVPL_RPC2_NUM_ROLES; ++role) {
+        thread->m_requests_series[role] =
+            evpl_rpc2_requests_create_series(
+                evpl_rpc2_role_names[role], thread_id_str);
+        thread->m_requests[role] =
+            prometheus_counter_series_create_instance(
+                thread->m_requests_series[role]);
     }
 
     if (nprograms) {
@@ -4421,6 +4446,18 @@ evpl_rpc2_thread_destroy(struct evpl_rpc2_thread *thread)
         if (thread->m_inflight_series[role]) {
             evpl_rpc2_queue_depth_destroy_series(
                 thread->m_inflight_series[role]);
+        }
+    }
+
+    for (int role = 0; role < EVPL_RPC2_NUM_ROLES; ++role) {
+        if (thread->m_requests[role]) {
+            prometheus_counter_series_destroy_instance(
+                thread->m_requests_series[role],
+                thread->m_requests[role]);
+        }
+
+        if (thread->m_requests_series[role]) {
+            evpl_rpc2_requests_destroy_series(thread->m_requests_series[role]);
         }
     }
 
@@ -5132,6 +5169,7 @@ evpl_rpc2_call_full(
 
     conn->tx_msgs++;
     conn->tx_bytes += total_length;
+    prometheus_counter_increment(conn->thread->m_requests[EVPL_RPC2_ROLE_CLIENT]);
 
     return 0;
 } /* evpl_rpc2_call */
