@@ -210,6 +210,7 @@ struct evpl_http_conn {
 };
 
 struct evpl_http_server {
+    unsigned int                  active_connections;
     struct evpl_http_agent       *agent;
     struct evpl_listener         *listener;
     struct evpl_listener_binding *binding;

@@ -25,6 +25,8 @@
 #define EVPL_BIND_CLOSE_DEFERRED 0x10
 
 struct evpl_bind {
+    uint64_t                serial;
+    uint64_t                created_monotonic_ns;
     struct evpl_protocol   *protocol;
     uint64_t                flags;
     unsigned int            outstanding;

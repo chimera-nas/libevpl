@@ -511,3 +511,5 @@ if(HAVE_LIBFABRIC AND TARGET core_listener_conformance)
         endforeach()
     endforeach()
 endif()
+
+unit_test(core inspect_metadata inspect_metadata.c)

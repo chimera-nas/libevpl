@@ -668,6 +668,10 @@ evpl_create(struct evpl_thread_config *config)
     if (evpl->config.core_mech == EVPL_CORE_MECH_INHERIT) {
         evpl->config.core_mech = evpl_shared->config->core_mech;
     }
+    evpl->identity.pool_index = -1;
+    snprintf(evpl->identity.name, sizeof(evpl->identity.name), "%s", evpl->config.name);
+    snprintf(evpl->identity.executor, sizeof(evpl->identity.executor), "%s",
+             evpl->config.core_mech == EVPL_CORE_MECH_SPDK ? "spdk" : "native");
     evpl_check_core_mech(evpl->config.core_mech);
     atomic_fetch_add(&evpl_shared->contexts, 1);
 

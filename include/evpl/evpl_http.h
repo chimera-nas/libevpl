@@ -360,3 +360,16 @@ evpl_http_response_header_iterate(
     struct evpl_http_request     *request,
     evpl_http_request_header_cb_t callback,
     void                         *private_data);
+/* Synchronous owner-thread inspection; callback may copy only. */
+struct evpl_http_connection_info {
+    struct evpl_bind_info bind;
+    char                  framing[16];
+};
+EVPL_HTTP_API unsigned int evpl_http_server_connection_count(
+    struct evpl_http_server *server);
+EVPL_HTTP_API unsigned int evpl_http_visit_server_connections(
+    struct evpl_http_server *server,
+    unsigned int limit,
+    int ( *visit )(const struct evpl_http_connection_info *, void *),
+    void *private_data,
+    int *truncated);

@@ -233,10 +233,14 @@ evpl_bind_prepare(
     bind->private_data     = NULL;
     bind->flags            = 0;
 
-    bind->outstanding = 0;
-    bind->protocol    = protocol;
-    bind->local       = local;
-    bind->remote      = remote;
+    struct timespec now;
+    evpl_clock_gettime(CLOCK_MONOTONIC, &now);
+    bind->serial               = ++evpl->next_bind_serial;
+    bind->created_monotonic_ns = (uint64_t) now.tv_sec * 1000000000 + now.tv_nsec;
+    bind->outstanding          = 0;
+    bind->protocol             = protocol;
+    bind->local                = local;
+    bind->remote               = remote;
 
     memset(bind + 1, 0, EVPL_MAX_PRIVATE);
 
@@ -394,3 +398,77 @@ evpl_bind_request_send_notifications(
 {
     bind->flags |= EVPL_BIND_SENT_NOTIFY;
 } /* evpl_bind_request_send_notifications */
+
+static void
+evpl_endpoint_copy_info(
+    struct evpl_address       *address,
+    struct evpl_endpoint_info *info)
+{
+    memset(info, 0, sizeof(*info));
+    info->port = -1;
+    snprintf(info->family, sizeof(info->family), "unknown");
+    if (!address) {
+        return;
+    }
+    switch (address->addr->sa_family) {
+        case AF_INET: {
+            struct sockaddr_in *sa = (struct sockaddr_in *) address->addr;
+            snprintf(info->family, sizeof(info->family), "ipv4");
+            inet_ntop(AF_INET, &sa->sin_addr, info->address, sizeof(info->address));
+            info->port = ntohs(sa->sin_port);
+            break;
+        }
+        case AF_INET6: {
+            struct sockaddr_in6 *sa = (struct sockaddr_in6 *) address->addr;
+            snprintf(info->family, sizeof(info->family), "ipv6");
+            inet_ntop(AF_INET6, &sa->sin6_addr, info->address, sizeof(info->address));
+            info->port     = ntohs(sa->sin6_port);
+            info->scope_id = sa->sin6_scope_id;
+            break;
+        }
+        case AF_UNIX: {
+            const struct sockaddr_un *sa     = (const struct sockaddr_un *) address->addr;
+            int                       length = (int) address->addrlen - (int) offsetof(struct sockaddr_un, sun_path);
+            snprintf(info->family, sizeof(info->family), "unix");
+            if (length > (int) sizeof(sa->sun_path)) {
+                length = sizeof(sa->sun_path);
+            }
+            if (length <= 0) {
+                snprintf(info->address, sizeof(info->address), "*");
+            } else if (sa->sun_path[0]) {
+                snprintf(info->address, sizeof(info->address), "%.*s", length, sa->sun_path);
+            } else {
+#ifdef __linux__
+                snprintf(info->address, sizeof(info->address), "@%.*s", length - 1, sa->sun_path + 1);
+#else  /* ifdef __linux__ */
+                snprintf(info->address, sizeof(info->address), "*");
+#endif /* ifdef __linux__ */
+            }
+            break;
+        }
+        case EVPL_AF_INPROC: {
+            const struct evpl_sockaddr_inproc *sa = (const struct evpl_sockaddr_inproc *) address->addr;
+            snprintf(info->family, sizeof(info->family), "inproc");
+            if (sa->id) {
+                snprintf(info->address, sizeof(info->address), "%.*s#%u", (int) sizeof(sa->name), sa->name, sa->id);
+            } else {
+                snprintf(info->address, sizeof(info->address), "%.*s", (int) sizeof(sa->name), sa->name);
+            }
+            break;
+        }
+    } /* switch */
+} /* evpl_endpoint_copy_info */
+
+SYMBOL_EXPORT void
+evpl_bind_get_info(
+    struct evpl_bind      *bind,
+    struct evpl_bind_info *info)
+{
+    memset(info, 0, sizeof(*info));
+    info->serial               = bind->serial;
+    info->created_monotonic_ns = bind->created_monotonic_ns;
+    info->protocol             = bind->protocol->id;
+    info->closing              = evpl_bind_is_closing(bind);
+    evpl_endpoint_copy_info(bind->local, &info->local);
+    evpl_endpoint_copy_info(bind->remote, &info->remote);
+} /* evpl_bind_get_info */

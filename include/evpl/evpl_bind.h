@@ -267,3 +267,32 @@ EVPL_API void evpl_listener_destroy_async(
     struct evpl_listener *listener,
     evpl_completion_t     callback,
     void                 *private_data);
+
+/*
+ * Inspection.  Endpoint metadata is copied out; `port` is -1 for endpoints
+ * that have no IP port (unix, inproc).
+ */
+struct evpl_endpoint_info {
+    char     family[16];
+    char     address[256];
+    int      port;
+    uint32_t scope_id;
+};
+
+/*
+ * `serial` numbers the binds created on one event loop in creation order,
+ * starting at 1.  It is unique within the thread that owns the bind, not
+ * across threads, so name a bind by (thread, serial).
+ */
+struct evpl_bind_info {
+    uint64_t                  serial;
+    uint64_t                  created_monotonic_ns;
+    enum evpl_protocol_id protocol;
+    int                       closing;
+    struct evpl_endpoint_info local, remote;
+};
+
+/* Call from the thread that owns `bind`.  The result holds copies only. */
+EVPL_API void evpl_bind_get_info(
+    struct evpl_bind      *bind,
+    struct evpl_bind_info *info);

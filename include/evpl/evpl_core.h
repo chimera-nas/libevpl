@@ -202,3 +202,18 @@ EVPL_API int evpl_protocol_is_local(
 EVPL_API int evpl_protocol_is_inproc(
     enum evpl_protocol_id protocol);
 
+
+/*
+ * Logical identity of an event loop: its index in the threadpool that created
+ * it (-1 when it was not created by a pool), its name, and what runs it
+ * ("native" or "spdk").  Call from the loop's own thread; the result is a copy.
+ */
+struct evpl_thread_identity {
+    int  pool_index;
+    char name[64];
+    char executor[16];
+};
+
+EVPL_API void evpl_thread_get_identity(
+    struct evpl                 *evpl,
+    struct evpl_thread_identity *identity);

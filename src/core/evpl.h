@@ -187,6 +187,8 @@ typedef void (*evpl_accept_callback_t)(
 struct evpl {
     struct evpl_core              core;           /* must be first */
 
+    struct evpl_thread_identity   identity;
+    uint64_t                      next_bind_serial;
     uint64_t                      poll_iters;
 
     uint64_t                      last_activity_ticks;
