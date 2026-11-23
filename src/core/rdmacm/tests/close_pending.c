@@ -51,6 +51,7 @@
 #define NUM_WRITES      8
 #define NUM_LATE_WRITES 8
 #define NUM_OPS         (NUM_READS + NUM_WRITES + NUM_LATE_WRITES)
+#define MAX_ATTEMPTS    20
 
 struct operation {
     int called;
@@ -159,7 +160,7 @@ loop(void)
     return evpl_create(config);
 } /* loop */
 
-static void
+static int
 run(
     const char *name,
     const char *address,
@@ -299,7 +300,6 @@ run(
                        done + eio);
 
     evpl_test_abort_if(reset == 0, "%s: no operation was still queued at close", name);
-    evpl_test_abort_if(eio == 0, "%s: no posted operation was flushed by the close", name);
     evpl_test_abort_if(evpl_iovec_get_ref(&local)->refcnt != 1,
                        "%s: the library kept references to the operations' buffers", name);
 
@@ -311,6 +311,10 @@ run(
     evpl_destroy(client);
     evpl_destroy(server);
     client = server = NULL;
+
+    /* Whether a posted operation was still in flight when the close took
+     * effect depends on timing, so the caller retries until one was. */
+    return eio > 0;
 } /* run */
 
 int
@@ -321,6 +325,7 @@ main(
     struct evpl_global_config *config  = evpl_global_config_init();
     const char                *address = getenv("EVPL_TEST_RDMA_IP");
     int                        port    = argc > 1 ? atoi(argv[1]) : 8019;
+    int                        attempt;
 
     evpl_test_abort_if(!address, "RDMA test address is required");
     evpl_global_config_set_buffer_size(config, REGION_SIZE);
@@ -329,8 +334,30 @@ main(
     evpl_global_config_set_rdmacm_srq_size(config, 256);
     evpl_init(config);
 
-    run("close", address, port, 0);
-    run("peer close", address, port + 1, 1);
+    /* Every other check is hard on each attempt.  Only the presence of a
+     * flushed operation is timing dependent: on a fast link every posted
+     * operation may complete before the close.  Teardown destroys the
+     * listener and the connection ids, which frees the port, so the same
+     * port serves every attempt. */
+    for (attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (run("close", address, port, 0)) {
+            break;
+        }
+    }
+    evpl_test_abort_if(attempt > MAX_ATTEMPTS,
+                       "close: no posted operation was flushed in %d attempts",
+                       MAX_ATTEMPTS);
+    evpl_test_info("close: flushed operations seen on attempt %d", attempt);
+
+    for (attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (run("peer close", address, port + 1, 1)) {
+            break;
+        }
+    }
+    evpl_test_abort_if(attempt > MAX_ATTEMPTS,
+                       "peer close: no posted operation was flushed in %d attempts",
+                       MAX_ATTEMPTS);
+    evpl_test_info("peer close: flushed operations seen on attempt %d", attempt);
 
     printf("Test PASSED\n");
     return 0;
