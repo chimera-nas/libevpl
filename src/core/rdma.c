@@ -8,6 +8,7 @@
 #include "core/bind.h"
 #include "core/protocol.h"
 #include "core/evpl.h"
+#include "core/logging.h"
 
 SYMBOL_EXPORT void
 evpl_rdma_get_address(
@@ -51,6 +52,11 @@ evpl_rdma_read(
         callback(ENOTSUP, private_data);
         return;
     }
+
+    /* Its completion could only come after DISCONNECTED; see evpl_rdma.h. */
+    evpl_core_abort_if(bind->flags & (EVPL_BIND_DISCONNECTING | EVPL_BIND_CLOSED),
+                       "evpl_rdma_read on bind %p after its DISCONNECTED notification",
+                       bind);
 
     for (i = 0; i < niov; ++i) {
         /* Clone instead of move so app keeps their reference.
@@ -98,6 +104,11 @@ evpl_rdma_write(
         callback(ENOTSUP, private_data);
         return;
     }
+
+    /* Its completion could only come after DISCONNECTED; see evpl_rdma.h. */
+    evpl_core_abort_if(bind->flags & (EVPL_BIND_DISCONNECTING | EVPL_BIND_CLOSED),
+                       "evpl_rdma_write on bind %p after its DISCONNECTED notification",
+                       bind);
 
     if (unlikely(niov == 0)) {
         return;

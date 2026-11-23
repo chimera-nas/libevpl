@@ -177,6 +177,7 @@ unit_test_rpc2(server_inspect hello_world.x server_inspect.c)
 # The queue depth series is named by thread and shared by the contexts on it.
 unit_test(rpc2 queue_depth_names queue_depth_names.c)
 target_link_libraries(rpc2_queue_depth_names evpl_rpc2)
+unit_test_rpc2(server_read_disconnect rdma_ddp.x server_read_disconnect.c)
 
 # Client-side RPCSEC_GSS.  Needs a real mechanism -- the whole point is that
 # the initiator and the acceptor are not the same few lines of test code -- so
@@ -218,6 +219,26 @@ endif()
 unit_test_rpc2_instance(hello_world DATAGRAM_TCP_RDMA 8200)
 unit_test_rpc2_instance(builtin_bool DATAGRAM_TCP_RDMA 8201)
 unit_test_rpc2_instance(rdma_ddp DATAGRAM_TCP_RDMA 8202)
+
+# A client that disconnects while the server reads its calls' chunks.  The
+# TCP-emulated instance runs anywhere; the RDMA CM one needs Soft-RoCE or a
+# device and runs in the RDMA lane, where -c also requires that the
+# disconnect cut a read short.
+unit_test_rpc2_instance(server_read_disconnect DATAGRAM_TCP_RDMA 8206)
+if(HAVE_RDMACM AND EVPL_RDMA_TEST_IP)
+    # Not unit_test_rpc2_instance: that runs every EVPL_MECHANISMS value inside
+    # a network namespace, but this instance has a single mechanism and needs
+    # the soft-RoCE address, which belongs to the host namespace.  The other
+    # rdma-label tests (src/core/rdmacm/tests) likewise run without netns, take
+    # -a ${EVPL_RDMA_TEST_IP} and use TIMEOUT 120, the RDMA lane's allowance for
+    # connection setup over Soft-RoCE.
+    add_test(NAME libevpl/rpc2/server_read_disconnect_DATAGRAM_RDMACM_RC
+             COMMAND $<TARGET_FILE:evpl_rpc2_server_read_disconnect>
+                     -r DATAGRAM_RDMACM_RC -p 8207 -a ${EVPL_RDMA_TEST_IP} -c)
+    set_tests_properties(libevpl/rpc2/server_read_disconnect_DATAGRAM_RDMACM_RC
+        PROPERTIES LABELS rdma RESOURCE_LOCK evpl_net TIMEOUT 120
+        ENVIRONMENT "TEST_FILE=${RPC2_TEST_SRC_server_read_disconnect};EVPL_TEST_RDMA_IP=${EVPL_RDMA_TEST_IP}")
+endif()
 
 # AF_UNIX.  rpc2 is transport-agnostic above the bind, so these mirror the
 # STREAM_SOCKET_TCP set exactly; rdma_ddp is included for the same reason it is

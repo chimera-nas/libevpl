@@ -514,6 +514,17 @@ evpl_rdmacm_event_callback(
                 rdmacm_id->resolve_addr = NULL;
                 evpl_defer(evpl, &bind->flush_deferral);
 
+            } else if (unlikely(!rdmacm_id->ud &&
+                                (bind->flags & EVPL_BIND_PENDING_CLOSED))) {
+                /* Closed while the connection was coming up.  Do not mark it
+                 * connected, which would let it post; take it down instead, so
+                 * the peer is not left half-open, and keep the bind until the
+                 * DISCONNECTED event arrives, as evpl_rdmacm_pending_close
+                 * does.  Unlike that path, which ignores the return of
+                 * rdma_disconnect, a failure here aborts. */
+                bind->flags |= EVPL_BIND_CLOSE_DEFERRED;
+                rc           = rdma_disconnect(rdmacm_id->id);
+                evpl_rdmacm_abort_if(rc, "rdma_disconnect: %s", strerror(errno));
             } else {
                 if (!rdmacm_id->ud) {
                     /* Use the negotiated outbound depth on both peers. A
@@ -717,6 +728,7 @@ evpl_rdmacm_process_send_completions(
         }
 
         if (dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_WRITE) {
+            evpl_bind_operation_end(bind);
             if (dgram->callback) {
                 dgram->callback(status, dgram->private_data);
             }
@@ -785,6 +797,7 @@ evpl_rdmacm_process_rdma_read_completions(
 
         --rdmacm_id->cur_rdma_reads;
         rdmacm_id->reads_completed = (rdmacm_id->reads_completed + 1) & EVPL_RDMACM_WR_MASK;
+        evpl_bind_operation_end(bind);
 
         if (dgram->callback) {
             dgram->callback(status, dgram->private_data);
@@ -1756,6 +1769,9 @@ evpl_rdmacm_flush_rdma_reads(
 
         evpl_rdmacm_wr_posted(rdmacm_id);
 
+        /* Held until its completion is polled, so close waits for it. */
+        evpl_bind_operation_begin(bind);
+
         bind->dgram_read.waist = (bind->dgram_read.waist + 1) & bind->dgram_read.mask;
     }
 } /* evpl_rdmacm_flush_rdma_read */
@@ -1779,6 +1795,19 @@ evpl_rdmacm_flush_datagram(
     int                    posted     = 0;
 
     if (unlikely(!qp || (!rdmacm_id->ud && !rdmacm_id->connected))) {
+        return;
+    }
+
+    /* evpl_close is the abortive close (evpl_finish is the graceful one), so
+     * a closing connection posts nothing more: its queue pair is in the error
+     * state or about to be, and some providers refuse posts there.  What is
+     * still queued is completed with ECONNRESET when the bind is destroyed. */
+    if (unlikely(!rdmacm_id->ud && (bind->flags & EVPL_BIND_PENDING_CLOSED))) {
+        if (rdmacm_id->flush_listed) {
+            DL_DELETE2(rdmacm_id->rdmacm->flush_pending, rdmacm_id,
+                       flush_prev, flush_next);
+            rdmacm_id->flush_listed = 0;
+        }
         return;
     }
 
@@ -1891,6 +1920,8 @@ evpl_rdmacm_flush_datagram(
             }
         } else {
             ibv_wr_rdma_write(qp, dgram->remote_key, dgram->remote_address);
+            /* Held until its completion is polled, so close waits for it. */
+            evpl_bind_operation_begin(bind);
         }
 
         if (send_inline) {
@@ -2026,6 +2057,9 @@ evpl_rdmacm_pending_close(
          * cm_id is not torn down, and so the core does not free the bind's
          * private state out from under the still-live cm_id. */
         bind->flags |= EVPL_BIND_CLOSE_DEFERRED;
+        /* The return value is ignored here, unlike the ESTABLISHED-while-
+         * closing branch of evpl_rdmacm_event_callback, which aborts on
+         * failure. */
         rdma_disconnect(rdmacm_id->id);
     }
 
@@ -2042,6 +2076,14 @@ evpl_rdmacm_close(
     struct evpl_rdmacm_id     *rdmacm_id = evpl_bind_private(bind);
     struct evpl_rdmacm        *rdmacm    = rdmacm_id->rdmacm;
     struct evpl_rdmacm_device *dev       = rdmacm_id->dev;
+
+    /* The outstanding-operation gate keeps the core from closing the bind
+     * until every posted RDMA read and write has completed.  Destroying the
+     * queue pair earlier would drop their completions, and a later queue pair
+     * that reused its number could be handed them. */
+    evpl_rdmacm_abort_if(bind->outstanding || rdmacm_id->cur_rdma_reads,
+                         "rdmacm close with %u RDMA operations outstanding (%d reads posted)",
+                         bind->outstanding, rdmacm_id->cur_rdma_reads);
 
     if (rdmacm_id->flush_listed) {
         DL_DELETE2(rdmacm->flush_pending, rdmacm_id, flush_prev, flush_next);

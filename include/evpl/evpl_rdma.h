@@ -20,6 +20,31 @@ EVPL_API void evpl_rdma_get_address(
     uint32_t          *r_key,
     uint64_t          *r_address);
 
+/*
+ * Queue a one-sided RDMA read or write on a connected bind.  callback runs
+ * exactly once for every operation, on the bind's thread, also when the
+ * connection closes first: with 0 when the operation completed, with the
+ * transport's error when the close cut it short after it had started, and
+ * with ECONNRESET when it was still queued.  Every callback runs before the
+ * bind's EVPL_NOTIFY_DISCONNECTED, never after it, so state the application
+ * frees at DISCONNECTED is never called into.  Queuing an operation from
+ * inside that notification, or later, aborts the process: it could only
+ * complete afterwards.  On a bind whose protocol has no RDMA, callback runs at
+ * once with ENOTSUP.  By DISCONNECTED the library has dropped its references
+ * to iov.
+ *
+ * When the close completes operations that were still queued, it completes
+ * the queued reads first and then the queued writes; operations the transport
+ * had already started complete as it returns them.  The abort for queuing
+ * after DISCONNECTED is best-effort for its EVPL_BIND_CLOSED part: a bind may
+ * be reused once closed and reuse resets its flags, so a stale bind pointer
+ * can pass the check.
+ *
+ * Two cases are not exactly-once.  evpl_rdma_write with niov == 0 queues
+ * nothing and returns without calling callback.  The ENOTSUP case above
+ * runs callback synchronously, from inside the call and before any
+ * DISCONNECTED, not later on the bind's thread.
+ */
 EVPL_API void evpl_rdma_read(
     struct evpl       *evpl,
     struct evpl_bind  *bind,
