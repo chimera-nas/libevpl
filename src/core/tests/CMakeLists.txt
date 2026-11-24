@@ -6,6 +6,30 @@ unit_test(core init_no_config init_no_config.c)
 unit_test_all_mechs(core destroy_pending destroy_pending.c)
 unit_test_all_mechs(core listener_lifetime listener_lifetime.c)
 
+# RDMA operations left on a bind as it is torn down complete exactly once,
+# before its DISCONNECTED notification, and give back their buffers.  Over
+# the RDMA transports that need no device; the RDMA CM equivalent is
+# rdmacm/tests/close_pending.c.
+unit_test_all_mechs(core rdma_close_queued rdma_close_queued.c)
+
+foreach(mech ${EVPL_MECHANISMS})
+    set_tests_properties(libevpl/core/rdma_close_queued_${mech}
+                         PROPERTIES TIMEOUT 30)
+endforeach()
+
+# Queuing an RDMA operation from inside DISCONNECTED aborts.  In-process
+# only, so no namespace or port lock; passes on the abort message.  The test
+# forks so that it outlives the abort, hence POSIX only.
+if(NOT WIN32)
+    unit_test_local(core rdma_after_disconnect rdma_after_disconnect.c)
+
+    foreach(mech ${EVPL_MECHANISMS})
+        set_tests_properties(libevpl/core/rdma_after_disconnect_${mech}
+                             PROPERTIES TIMEOUT 30
+                             PASS_REGULAR_EXPRESSION "evpl_rdma_read on bind .* after its DISCONNECTED notification")
+    endforeach()
+endif()
+
 # Builds the binary and registers the platform-default case; the loop below
 # then runs the same binary once per mechanism compiled into this build.
 # These create and destroy an evpl without touching the network, so they need

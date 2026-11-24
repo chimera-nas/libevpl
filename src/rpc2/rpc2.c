@@ -942,9 +942,15 @@ evpl_rpc2_send_reply(
         /* The peer this call came from has disconnected while it executed.
          * The capture above still ran -- a replay cache owes the answer to the
          * client's retransmit on its next connection -- but there is nobody
-         * to send it to here, and the bind it would go out through is gone
-         * with the connection. */
-        if (unlikely(request->conn->closed)) {
+         * to send it to here.  The bind it would go out through is gone with
+         * the connection, or closing: nothing may be queued on it then, least
+         * of all RDMA writes into the peer's chunks.  conn->closed is tested
+         * first so the bind is never touched once the connection has gone. */
+        /* evpl_bind_is_closing also covers a local evpl_finish, so a reply
+         * after a server-side evpl_finish is dropped here too; rpc2 itself
+         * never calls evpl_finish. */
+        if (unlikely(request->conn->closed ||
+                     evpl_bind_is_closing(request->bind))) {
             evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
             evpl_rpc2_request_free(request->thread, request);
             return 0;
@@ -1000,7 +1006,11 @@ evpl_rpc2_send_reply(
         rpc_reply.body.rbody.rreply.auth = error_stat;
     }
 
-    if (unlikely(request->conn->closed)) {
+    /* evpl_bind_is_closing also covers a local evpl_finish, so a reply
+     * after a server-side evpl_finish is dropped here too; rpc2 itself
+     * never calls evpl_finish. */
+    if (unlikely(request->conn->closed ||
+                 evpl_bind_is_closing(request->bind))) {
         evpl_iovecs_release_internal(evpl, msg_iov, msg_niov);
         evpl_rpc2_request_free(request->thread, request);
         return 0;
@@ -3263,6 +3273,12 @@ evpl_rpc2_read_segment_callback(
 
     request->pending_reads--;
 
+    if (request->pending_reads == 0) {
+        /* Its last read is back; see evpl_rpc2_conn.reads_waiting.  The
+         * request holds the connection, so it is still allocated. */
+        request->conn->reads_waiting--;
+    }
+
     if (request->pending_reads == 0 && unlikely(request->read_status)) {
         /* Every read is back, so nothing still refers to this request.  The
          * call's arguments are incomplete and it is not executed; RFC 8166
@@ -4073,6 +4089,10 @@ evpl_rpc2_recv_msg(
 
                 read_list = rdma_msg.rdma_body.rdma_msg.rdma_reads;
 
+                /* Counted until its last read is back; see
+                 * evpl_rpc2_conn.reads_waiting. */
+                rpc2_conn->reads_waiting++;
+
                 segment_offset = 0;
 
                 while (read_list) {
@@ -4242,6 +4262,12 @@ evpl_rpc2_event(
             if (rpc2_conn->server_binding) {
                 rpc2_conn->server_binding->active_connections--;
             }
+            /* The transport completes every RDMA read before it reports the
+             * disconnect, so no request here can still wait on its chunk.
+             * One that did would never end, and the connection would leak. */
+            evpl_rpc2_abort_if(rpc2_conn->reads_waiting,
+                               "rpc2 connection disconnected with %d server requests still waiting on RDMA reads",
+                               rpc2_conn->reads_waiting);
             DL_DELETE(rpc2_thread->conns, rpc2_conn);
             HASH_ITER(hh, rpc2_conn->pending_calls, rpc2_request, tmp)
             {

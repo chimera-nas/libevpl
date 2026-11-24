@@ -136,6 +136,13 @@ struct evpl_rpc2_conn {
     int                              reasm_niov;
     int                              reasm_cap;
     uint32_t                         reasm_length;
+
+    /* Server requests on this connection still reading their call chunks.
+     * The transport completes every RDMA read before it reports the
+     * disconnect, so this is zero by then; rpc2 aborts if it is not.
+     * Appended at the end of the struct to keep earlier fields at their
+     * offsets. */
+    int                              reads_waiting;
 };
 
 typedef void (*evpl_rpc2_notify_callback_t)(

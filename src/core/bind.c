@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-only
 
+#include <errno.h>
 #include <utlist.h>
 
 #include "core/macros.h"
@@ -284,6 +285,53 @@ evpl_finish(
 
 } /* evpl_finish */
 
+/* Every RDMA read or write an application queues completes exactly once, and
+ * before the bind's EVPL_NOTIFY_DISCONNECTED.  When a bind is destroyed its
+ * transport has finished with it: TCP-emulated RDMA and libfabric completed
+ * or freed their operations in their close, and RDMA CM does not let a bind
+ * close while a posted operation's completion is still owed.  An operation
+ * still on the rings was never started, or was given up without a
+ * completion; complete each with ECONNRESET, as TCP-emulated RDMA does for
+ * its own pending operations.  The library's references to their buffers
+ * are released by evpl_bind_destroy, also before DISCONNECTED.  A callback
+ * may queue another read or write on this bind, onto either ring, so both
+ * are drained again until a whole pass finds them empty. */
+static void
+evpl_bind_complete_rdma(
+    struct evpl      *evpl,
+    struct evpl_bind *bind)
+{
+    void               (*callback)(
+        int   status,
+        void *private_data);
+    struct evpl_dgram *dgram;
+    void              *private_data;
+
+    (void) evpl;
+
+    do {
+        while ((dgram = evpl_dgram_ring_tail(&bind->dgram_read)) != NULL) {
+            callback     = dgram->callback;
+            private_data = dgram->private_data;
+            evpl_dgram_ring_remove(&bind->dgram_read);
+            if (callback) {
+                callback(ECONNRESET, private_data);
+            }
+        }
+
+        while ((dgram = evpl_dgram_ring_tail(&bind->dgram_send)) != NULL) {
+            callback = dgram->dgram_type == EVPL_DGRAM_TYPE_RDMA_WRITE ?
+                dgram->callback : NULL;
+            private_data = dgram->private_data;
+            evpl_dgram_ring_remove(&bind->dgram_send);
+            if (callback) {
+                callback(ECONNRESET, private_data);
+            }
+        }
+    } while (!evpl_dgram_ring_is_empty(&bind->dgram_read) ||
+             !evpl_dgram_ring_is_empty(&bind->dgram_send));
+} /* evpl_bind_complete_rdma */
+
 void
 evpl_bind_destroy(
     struct evpl      *evpl,
@@ -294,6 +342,23 @@ evpl_bind_destroy(
     evpl_core_abort_if(!(bind->flags & EVPL_BIND_PENDING_CLOSED),
                        "bind %p not pending closed at destroy", bind);
 
+    /* Every RDMA callback runs before DISCONNECTED, never after it: an
+     * application frees its per-connection state there and must not be
+     * called into afterwards. */
+    evpl_bind_complete_rdma(evpl, bind);
+
+    /* Nothing refers to the buffers of the operations just completed: their
+     * dgrams are gone and the transport closed before this.  Drop the
+     * library's references now, so that by DISCONNECTED the application owns
+     * its buffers again.  The clears below release whatever the notification
+     * handler queues. */
+    evpl_iovec_ring_clear(evpl, &bind->iovec_rdma_read);
+    evpl_iovec_ring_clear(evpl, &bind->iovec_send);
+    evpl_iovec_ring_clear(evpl, &bind->iovec_send_framed);
+
+    /* From here on nothing may be queued on the bind (see evpl_rdma_read). */
+    bind->flags |= EVPL_BIND_DISCONNECTING;
+
     if (bind->notify_callback) {
         notify.notify_type   = EVPL_NOTIFY_DISCONNECTED;
         notify.notify_status = 0;
@@ -301,9 +366,13 @@ evpl_bind_destroy(
         bind->notify_callback(evpl, bind, &notify, bind->private_data);
     }
 
+    /* A flush armed for this bind must not run against it once destroyed. */
+    evpl_remove_deferral(evpl, &bind->flush_deferral);
+
     evpl_iovec_ring_clear(evpl, &bind->iovec_recv);
     evpl_iovec_ring_clear(evpl, &bind->iovec_send);
     evpl_iovec_ring_clear(evpl, &bind->iovec_send_framed);
+    evpl_iovec_ring_clear(evpl, &bind->iovec_rdma_read);
     evpl_dgram_ring_clear(evpl, &bind->dgram_send);
     evpl_dgram_ring_clear(evpl, &bind->dgram_read);
 

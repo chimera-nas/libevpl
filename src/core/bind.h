@@ -24,6 +24,12 @@
  * finalized. */
 #define EVPL_BIND_CLOSE_DEFERRED 0x10
 
+/* Set by evpl_bind_destroy just before it delivers EVPL_NOTIFY_DISCONNECTED.
+ * Every RDMA callback for the bind has run by then; an RDMA operation queued
+ * from here on could only complete after DISCONNECTED, so evpl_rdma_read and
+ * evpl_rdma_write refuse it. */
+#define EVPL_BIND_DISCONNECTING  0x20
+
 struct evpl_bind {
     uint64_t                serial;
     uint64_t                created_monotonic_ns;
