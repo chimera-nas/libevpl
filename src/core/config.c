@@ -158,6 +158,7 @@ evpl_global_config_init(void)
     config->rdmacm_srq_prefill            = 0;
     config->rdmacm_retry_count            = 4;
     config->rdmacm_rnr_retry_count        = 4;
+    config->rdmacm_bind_address           = NULL;
 
     config->xlio_enabled            = 1;
     config->xlio_socket_buffer_size = 16 * 1024 * 1024;
@@ -222,6 +223,9 @@ evpl_global_config_free(struct evpl_global_config *config)
     }
     if (config->spdk_sock_impl) {
         evpl_free(config->spdk_sock_impl);
+    }
+    if (config->rdmacm_bind_address) {
+        evpl_free(config->rdmacm_bind_address);
     }
 
     evpl_free(config);
@@ -340,6 +344,20 @@ evpl_global_config_set_rdmacm_srq_prefill(
 {
     config->rdmacm_srq_prefill = prefill;
 } /* evpl_global_config_set_rdmacm_srq_prefill */
+
+SYMBOL_EXPORT void
+evpl_global_config_set_rdmacm_bind_address(
+    struct evpl_global_config *config,
+    const char                *address)
+{
+    /* Copy first so that re-applying the stored value is safe. */
+    char *copy = address ? evpl_strdup(address) : NULL;
+
+    if (config->rdmacm_bind_address) {
+        evpl_free(config->rdmacm_bind_address);
+    }
+    config->rdmacm_bind_address = copy;
+} /* evpl_global_config_set_rdmacm_bind_address */
 
 SYMBOL_EXPORT void
 evpl_global_config_set_rdmacm_datagram_size_override(

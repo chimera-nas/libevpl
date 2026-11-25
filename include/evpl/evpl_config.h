@@ -88,6 +88,20 @@ EVPL_API void evpl_global_config_set_rdmacm_srq_prefill(
     struct evpl_global_config *config,
     int                        prefill);
 
+/* Restrict the rdmacm framework to the RDMA device that owns this host name
+ * or address (for example a server's RDMA listen address).  Only that device
+ * gets a protection domain, memory registrations, and per-thread CQ/SRQ;
+ * every other device on the host is left untouched.  NULL (the default) or a
+ * wildcard address keeps all devices.  An address no RDMA device owns is
+ * reported and ignored.  Must be set before evpl_init().
+ *
+ * With a restriction in place, an rdmacm connection that routes over any
+ * other device fails, so set it only on processes whose RDMA traffic all
+ * uses this device. */
+EVPL_API void evpl_global_config_set_rdmacm_bind_address(
+    struct evpl_global_config *config,
+    const char                *address);
+
 EVPL_API void evpl_global_config_set_tls_cert(
     struct evpl_global_config *config,
     const char                *cert_file);
