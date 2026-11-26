@@ -120,6 +120,9 @@ struct evpl_global_config {
     unsigned int              rdmacm_srq_prefill;
     unsigned int              rdmacm_retry_count;
     unsigned int              rdmacm_rnr_retry_count;
+    /* Host name or address whose RDMA device is the only one the rdmacm
+     * framework opens; NULL or a wildcard address uses every device. */
+    char                     *rdmacm_bind_address;
 
     unsigned int              xlio_enabled;
 

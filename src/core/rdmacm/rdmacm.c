@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <sys/eventfd.h>
+#include <netdb.h>
 #include <rdma/rdma_cma.h>
 #include <infiniband/verbs.h>
 
@@ -75,6 +76,12 @@ struct evpl_rdmacm_sr_ring {
 };
 
 struct evpl_rdmacm_devices {
+    /* Every device on the host, as rdma_get_devices returned it; kept only
+     * so cleanup can hand it back to rdma_free_devices. */
+    struct ibv_context    **all_context;
+    /* The devices this process uses: all of them, or only the one owning
+     * config->rdmacm_bind_address.  Indexes here are dev->index and the
+     * slots of every mrset. */
     struct ibv_context    **context;
     struct ibv_pd         **pd;
     struct ibv_device_attr *device_attr;
@@ -1036,16 +1043,120 @@ evpl_rdmacm_comp_callback(
     ibv_ack_cq_events(dev->cq, 1);
 } /* evpl_rdmacm_comp_callback */
 
+/* Find the RDMA device that owns the given host name or address by binding a
+ * throwaway cm_id to it: the binding resolves the address to the device the
+ * kernel would use, which is exactly the one a listener on that address is
+ * served by.  Returns NULL when the address is a wildcard (no single owner),
+ * or when it cannot be resolved or no RDMA device owns it (reported). */
+static struct ibv_context *
+evpl_rdmacm_find_bind_device(const char *address)
+{
+    struct rdma_cm_id  *id;
+    struct addrinfo     hints, *res, *ai;
+    struct ibv_context *verbs = NULL;
+    int                 rc, bound = 0, wildcard = 0;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    rc = getaddrinfo(address, NULL, &hints, &res);
+
+    if (rc) {
+        evpl_rdmacm_error("Cannot resolve rdmacm bind address %s: %s; "
+                          "using all RDMA devices",
+                          address, gai_strerror(rc));
+        return NULL;
+    }
+
+    for (ai = res; ai && !bound; ai = ai->ai_next) {
+
+        /* No event channel: the id is synchronous and only bound, never
+         * listened or connected on, so it generates no events. */
+        rc = rdma_create_id(NULL, &id, NULL, RDMA_PS_TCP);
+
+        if (rc) {
+            evpl_rdmacm_error("rdma_create_id error %s", strerror(errno));
+            break;
+        }
+
+        if (rdma_bind_addr(id, ai->ai_addr) == 0) {
+            bound = 1;
+            verbs = id->verbs;
+
+            if (ai->ai_family == AF_INET) {
+                wildcard = ((struct sockaddr_in *) ai->ai_addr)->sin_addr.s_addr ==
+                    htonl(INADDR_ANY);
+            } else if (ai->ai_family == AF_INET6) {
+                wildcard = IN6_IS_ADDR_UNSPECIFIED(
+                    &((struct sockaddr_in6 *) ai->ai_addr)->sin6_addr);
+            }
+        }
+
+        rdma_destroy_id(id);
+    }
+
+    freeaddrinfo(res);
+
+    /* A wildcard binds to no device by design.  Anything else that comes
+     * back without one (loopback, for instance, binds but names no device)
+     * is not an RDMA address, and is reported like a failed bind. */
+    if (!verbs && !wildcard) {
+        evpl_rdmacm_error("No RDMA device owns rdmacm bind address %s; "
+                          "using all RDMA devices", address);
+    }
+
+    return verbs;
+} /* evpl_rdmacm_find_bind_device */
+
 void *
 evpl_rdmacm_init()
 {
     struct evpl_rdmacm_devices *devices;
-    int                         i;
+    struct ibv_context         *only = NULL;
+    const char                 *bind_address;
+    int                         i, num_all;
 
 
     devices = evpl_zalloc(sizeof(*devices));
 
-    devices->context = rdma_get_devices(&devices->num_devices);
+    devices->all_context = rdma_get_devices(&num_all);
+
+    bind_address = evpl_shared->config->rdmacm_bind_address;
+
+    if (bind_address && bind_address[0] && num_all > 0) {
+        only = evpl_rdmacm_find_bind_device(bind_address);
+    }
+
+    devices->context = evpl_zalloc(sizeof(struct ibv_context *) *
+                                   (num_all > 0 ? num_all : 1));
+
+    for (i = 0; i < num_all; ++i) {
+        if (only && devices->all_context[i] != only) {
+            continue;
+        }
+
+        devices->context[devices->num_devices++] = devices->all_context[i];
+    }
+
+    if (only) {
+        if (devices->num_devices) {
+            evpl_rdmacm_info("Using only RDMA device %s, which owns %s "
+                             "(%d device(s) on host)",
+                             ibv_get_device_name(only->device),
+                             bind_address, num_all);
+        } else {
+            /* The cm_id was bound to a context rdma_get_devices did not
+             * list; leave nothing behind rather than guess. */
+            evpl_rdmacm_error("RDMA device %s owning %s is not in the device "
+                              "list; using all RDMA devices",
+                              ibv_get_device_name(only->device), bind_address);
+
+            for (i = 0; i < num_all; ++i) {
+                devices->context[devices->num_devices++] = devices->all_context[i];
+            }
+        }
+    }
 
     devices->pd = evpl_zalloc(sizeof(struct ibv_pd *) * devices->num_devices);
 
@@ -1073,7 +1184,8 @@ evpl_rdmacm_cleanup(void *private_data)
         ibv_dealloc_pd(devices->pd[i]);
     }
 
-    rdma_free_devices(devices->context);
+    rdma_free_devices(devices->all_context);
+    evpl_free(devices->context);
     evpl_free(devices->device_attr);
     evpl_free(devices->pd);
     evpl_free(devices);

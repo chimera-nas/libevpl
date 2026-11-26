@@ -50,6 +50,7 @@ mbt_config_defaults(struct evpl_global_config *config)
     evpl_global_config_set_rdmacm_srq_batch(config, before.rdmacm_srq_batch);
     evpl_global_config_set_rdmacm_retry_count(config, before.rdmacm_retry_count);
     evpl_global_config_set_rdmacm_rnr_retry_count(config, before.rdmacm_rnr_retry_count);
+    evpl_global_config_set_rdmacm_bind_address(config, before.rdmacm_bind_address);
     evpl_global_config_set_libfabric_enabled(config, before.libfabric_enabled);
     evpl_global_config_set_libfabric_srq_enabled(config, before.libfabric_srq_enabled);
     evpl_global_config_set_libfabric_cq_size(config, before.libfabric_cq_size);
